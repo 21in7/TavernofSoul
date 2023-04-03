@@ -63,8 +63,13 @@ def parse(c = None):
     parse_mon_constants('field_monster_status_ep14_2_d_castle_2.ies',c)
     parse_mon_constants('field_monster_status_ep14_2_d_castle_3.ies',c)
     parse_mon_constants('field_monster_status_id_Unknownsanctuary_2.ies',c)
+    parse_mon_constants('field_monster_status_ep15_1_f_abbey_1.ies', c) # EP15
+    parse_mon_constants('field_monster_status_ep15_1_f_abbey_2.ies', c)
+    parse_mon_constants('field_monster_status_ep15_1_f_abbey_3.ies', c)
+    parse_mon_constants('field_monster_status_id_Unknownsanctuary_2.ies',c)
     
     parse_monsters('monster.ies', c)
+    parse_monsters('monster2.ies', c) # 추종자
     parse_monsters('monster_event.ies', c)
     parse_monsters('monster_npc.ies', c)
     parse_monsters('Monster_solo_dungeon.ies',c)
