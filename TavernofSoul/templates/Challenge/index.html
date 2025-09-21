@@ -1,0 +1,27 @@
+{% extends 'base/index.html' %}
+{% load static %}
+{% block head %}
+    <title>오늘의 챌린지 - Gihyeon of Soul</title>
+    <meta content="오늘의 챌린지" property="og:title" />
+    <meta content="Tree of Savior 오늘의 월드맵 챌린지" property="og:description" />
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <h4 class="mb-3">{{ title_label }}</h4>
+  {% if today %}
+    <div class="card" style="max-width: 520px; background-color: transparent; border: 0; box-shadow: none;">
+      <div class="card-body">
+        <h5 class="card-title mb-2">{{ display_name }}</h5>
+        <div class="text-muted mb-2">{{ today_str }}</div>
+        <img src="https://r2.gihyeonofsoul.com/{{ group_key }}/{{ today.image }}" alt="{{ today.name }}" class="img-fluid">
+      </div>
+    </div>
+  {% else %}
+    <p>준비된 데이터가 없습니다.</p>
+  {% endif %}
+  <p class="mt-3" style="font-size: 12px; color:#bbb;">맵 표기 제공: 한일할게요</p>
+  <p class="mt-1" style="font-size: 12px; color:#999;">{{ refresh_notice }}</p>
+{% endblock %}
+
+
