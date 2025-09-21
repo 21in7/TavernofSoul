@@ -92,7 +92,17 @@ LUA_OVERRIDE = [
     "function IS_TOS_HERO_ZONE(pc) return 'NO' end",
     "function IsJoinColonyWarMap(pc) return 0 end ",
     "function GetBuffByProp(row,keyword, key) return nil end",
-
+    '''
+    -- Session and World objects for monster calculations
+    session = {}
+    session.world = {}
+    session.world.IsDungeon = function() 
+        if world and world.is_dungeon then
+            return world.is_dungeon
+        end
+        return false 
+    end
+    ''',
     '''
     function SCR_STRING_CUT(inputstr, sep)
         if sep == nil then
@@ -218,6 +228,11 @@ def init_global_data(c):
     ies_ADD('monster', iesutil.load('monster.ies',c))
     ies_ADD('monster', iesutil.load('monster_event.ies',c))
     ies_ADD('monster', iesutil.load('Monster_solo_dungeon.ies',c))
+    ies_ADD('monster', iesutil.load('monster_pcsummon.ies',c))
+    ies_ADD('monster', iesutil.load('monster_pet.ies',c))
+    ies_ADD('monster', iesutil.load('Monster_BountyHunt.ies',c))
+    ies_ADD('monster', iesutil.load('monster_guild.ies',c))
+    ies_ADD('monster', iesutil.load('monster_mgame.ies',c))
     ies_ADD('stat_monster', iesutil.load('statbase_monster.ies',c))
     ies_ADD('stat_monster_race', iesutil.load('statbase_monster_race.ies',c))
     ies_ADD('stat_monster_type', iesutil.load('statbase_monster_type.ies',c))
