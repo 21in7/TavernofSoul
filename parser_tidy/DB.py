@@ -31,12 +31,20 @@ class ToS_DB():
     CONVERTER_PATH                  = join("XAC", 'XAC2DAE.jar')
     
     EQUIPMENT_IES   = ['item_equip.ies',
+                        'item_Equip.ies',
                         'item_Equip_EP12.ies',
                         'item_Equip_EP13.ies',
-                        'item_event_equip.ies',]
+                        'item_event_equip.ies',
+                        'item_event_Equip.ies',]
     EQUIPMENT_REINFORCE_IES = {'item_goddess_reinforce.ies' : 460, 
                 'item_goddess_reinforce_470.ies' : 470,
-                'item_goddess_reinforce_480.ies' : 480}
+                'item_goddess_reinforce_480.ies' : 480,
+                'item_goddess_reinforce_490.ies' : 490,
+                'item_goddess_reinforce_500.ies' : 500,
+                'item_goddess_reinforce_510.ies' : 510,
+                'item_goddess_reinforce_520.ies' : 520,
+                'item_goddess_reinforce_530.ies' : 530,
+                'item_goddess_reinforce_540.ies' : 540}
     ITEM_IES = {
         "item.ies",
         'item_colorspray.ies',
@@ -103,13 +111,14 @@ class ToS_DB():
        }
     
     
-    def build(self, region):
+    def build(self, region, base_path):
+        project_root = os.path.dirname(base_path)
         region = region.lower()
         self.region                          = region
-        self.BASE_PATH_INPUT                 = join("..", "TavernofSoul", "JSON_{}".format(region))
-        self.BASE_PATH_OUTPUT                = join( "..", "TavernofSoul", "JSON_{}".format(region))
+        self.BASE_PATH_INPUT                 = join(project_root, "TavernofSoul", "JSON_{}".format(region))
+        self.BASE_PATH_OUTPUT                = join(project_root, "TavernofSoul", "JSON_{}".format(region))
         #self.STATIC_ROOT                     = '/home/tavp7339/www/itos/static'
-        self.STATIC_ROOT                     = join("..", "TavernofSoul", "staticfiles_itos")
+        self.STATIC_ROOT                     = join(project_root, "TavernofSoul", "staticfiles_itos")
         self.PATH_BUILD_ASSETS_ICONS         = join (self.STATIC_ROOT,"icons")
         self.PATH_BUILD_ASSETS_IMAGES_MAPS   = join (self.STATIC_ROOT,"maps")
         self.PATH_BUILD_ASSETS_MODELS        = join (self.STATIC_ROOT,"models")
@@ -127,14 +136,14 @@ class ToS_DB():
         except:
             pass
         
-        self.PATH_INPUT_DATA                 = join('..','{}_unpack'.format(region))
-        self.PATH_INPUT_DATA_LUA             = join('..','{}_unpack'.format(region))
+        self.PATH_INPUT_DATA                 = join(project_root,'{}_unpack'.format(region))
+        self.PATH_INPUT_DATA_LUA             = join(project_root,'{}_unpack'.format(region))
         if region == 'itos':
-            self.transaltion_path                = join ("..","Translation", 'English')
+            self.transaltion_path                = join (project_root,"Translation", 'English')
         elif region == 'jtos':
-            self.transaltion_path                = join ("..","Translation", 'Japanese')
+            self.transaltion_path                = join (project_root,"Translation", 'Japanese')
         elif region == 'twtos':
-            self.transaltion_path                = join ("..","Translation", 'Taiwanese')
+            self.transaltion_path                = join (project_root,"Translation", 'Taiwanese')
         else:
             self.transaltion_path                = "."
             
