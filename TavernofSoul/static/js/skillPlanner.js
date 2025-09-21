@@ -5,7 +5,7 @@ mode = 0
 jobs = [null,null,null,null]
 tree = null 
 index = 0
-max_sp = [15,45,45,45]
+max_sp = [15,66,66,66]
 spent_sp = [0,0,0,0]
 skills = [[],[],[],[]]
 tree_by_id = {'1001':"Warrior", '2001': 'Wizard', '3001':'Archer', '4001': 'Cleric', '5001': 'Scout'}
@@ -42,7 +42,7 @@ function parseUrl(){
   jobs = [null,null,null,null]
   tree = null 
   index = 0
-  max_sp = [15,45,45,45]
+  max_sp = [15,66,66,66]
   spent_sp = [0,0,0,0]
   skills = [[],[],[],[]]
   curUrl = window.location.href 
@@ -117,7 +117,12 @@ function pickJob(ids, index_cur){
   container = $("#class"+index)[0]
   container.appendChild(element[0])
 
-  
+  let spInput = $('<div class="sp-input-container">' +
+    '<label>최대 SP: </label>' +
+    '<input type="number" min="0" class="max-sp-input" value="' + max_sp[index] + 
+    '" onchange="updateMaxSP(' + index + ', this.value)">' +
+    '</div>');
+  $("#skillbar" + index).prepend(spInput);
 
 
 
@@ -276,6 +281,26 @@ function addSkillPoint(ids, job, dataset){
   return 1
 }
 
+function updateMaxSP(jobIndex, value) {
+  max_sp[jobIndex] = parseInt(value);
+  // SP 제한 확인 및 초과된 스킬 포인트 리셋
+  if (spent_sp[jobIndex] > max_sp[jobIndex]) {
+    // 모든 스킬 포인트 초기화
+    skills[jobIndex] = skills[jobIndex].map(() => 0);
+    spent_sp[jobIndex] = 0;
+    
+    // UI 업데이트
+    let jobId = jobs[jobIndex];
+    $("#skillbar" + jobIndex).find(".skill-level").each(function(i) {
+      $(this).text("0");
+      let skillId = $(this).attr("id").split("-")[1];
+      let dataset = $("#img-" + skillId + "-" + jobId)[0].dataset;
+      setDesc(skillId, jobId, dataset, 0);
+    });
+    $("#spentPoint-" + jobId)[0].innerText = "0";
+  }
+  makeUrl();
+}
 
 function removeSkillPoint(ids, job, dataset){
   job = job+""
