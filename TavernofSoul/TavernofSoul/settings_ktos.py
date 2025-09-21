@@ -49,12 +49,15 @@ INSTALLED_APPS = [
     'Monsters.apps.MonstersConfig',
     'Maps.apps.MapsConfig',
     'Planner.apps.PlannerConfig',
+    'Challenge.apps.ChallengeConfig',
     'django.contrib.humanize',
     'Other.apps.OtherConfig',        
-    'django.contrib.sitemaps', 
+    'django.contrib.sitemaps',
+
 ]
 
 MIDDLEWARE = [
+    'django_prometheus.middleware.PrometheusBeforeMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -65,6 +68,8 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'TavernofSoul.urls'
+
+
 
 TEMPLATES = [
     {
@@ -90,12 +95,16 @@ WSGI_APPLICATION = 'TavernofSoul.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.mysql', 
-        'NAME': 'tavernofsoul',
-        'USER': 'root',
+        'ENGINE': 'django_prometheus.db.backends.mysql', 
+        'NAME': 'ktos',
+        'USER': 'gihyeon',
         'PASSWORD': '',
         'HOST': 'localhost',   # Or an IP Address that your DB is hosted on
         'PORT': '3306',
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'use_unicode': True,
+        }
     }
 }
 
@@ -132,7 +141,7 @@ CACHES = {
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Seoul'
 
 USE_I18N = True
 
