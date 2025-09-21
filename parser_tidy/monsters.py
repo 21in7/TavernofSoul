@@ -54,19 +54,30 @@ def parse(c = None):
         c= constants()
         c.build()
         luautil.init()
+    
+    # 몬스터 데이터 딕셔너리 초기화
+    c.data['monsters'] = {}
+    c.data['monsters_by_name'] = {}
+    
     parse_monsters_statbase('statbase_monster.ies', statbase_monster,c)
     parse_monsters_statbase('monster_const.ies', monster_const,c)
     parse_monsters_statbase('statbase_monster_type.ies', statbase_monster_type,c)
     parse_monsters_statbase('statbase_monster_race.ies', statbase_monster_race,c)
 
-    parse_mon_constants('field_monster_status_ep14_2_d_castle_1.ies',c)
-    parse_mon_constants('field_monster_status_ep14_2_d_castle_2.ies',c)
-    parse_mon_constants('field_monster_status_ep14_2_d_castle_3.ies',c)
-    parse_mon_constants('field_monster_status_id_Unknownsanctuary_2.ies',c)
-    parse_mon_constants('field_monster_status_ep15_1_f_abbey_1.ies', c) # EP15
-    parse_mon_constants('field_monster_status_ep15_1_f_abbey_2.ies', c)
-    parse_mon_constants('field_monster_status_ep15_1_f_abbey_3.ies', c)
-    parse_mon_constants('field_monster_status_id_Unknownsanctuary_2.ies',c)
+    # field_monster_status 파일들을 자동으로 찾아서 처리
+    field_monster_files = []
+    for filename in c.file_dict.keys():
+        if filename.startswith('field_monster_status') and filename.endswith('.ies'):
+            field_monster_files.append(filename)
+    
+    # 파일명 순서로 정렬하여 일관된 처리 순서 보장
+    field_monster_files.sort()
+    
+    log.info(f'Found {len(field_monster_files)} field_monster_status files to process')
+    
+    # 모든 field_monster_status 파일들 처리
+    for field_file in field_monster_files:
+        parse_mon_constants(field_file, c)
     
     parse_monsters('monster.ies', c)
     parse_monsters('monster2.ies', c) # 추종자
@@ -196,15 +207,17 @@ def parse_monsters(file_name, constants):
             obj['Stat_ATTACK_PHYSICAL_MIN'] = int(row['MINPATK'])
             obj['Stat_DEFENSE_MAGICAL']     = int(row['MDEF'])
             obj['Stat_DEFENSE_PHYSICAL']    = int(row['DEF'])
-            obj['Stat_Accuracy']            = int(row['HR'])
-            obj['Stat_Evasion']             = int(row['DR'])
-            obj['Stat_CriticalDamage']      = int(row['CRTATK'])
-            obj['Stat_CriticalDefense']     = int(row['CRTDR'])
-            obj['Stat_CriticalRate']        = int(row['CRTHR'])
-            obj['Stat_BlockRate']           = int(row['BLK'])
-            obj['Stat_BlockPenetration']    = int(row['BLK_BREAK'])
-            obj['EXP']                      = int(row['JOBEXP'])
-            obj['EXPClass']                 = int(row['EXP'])
+            
+            # 누락된 키들에 대해 기본값 0 설정
+            obj['Stat_Accuracy']            = int(row.get('HR', '0'))
+            obj['Stat_Evasion']             = int(row.get('DR', '0'))
+            obj['Stat_CriticalDamage']      = int(row.get('CRTATK', '0'))
+            obj['Stat_CriticalDefense']     = int(row.get('CRTDR', '0'))
+            obj['Stat_CriticalRate']        = int(row.get('CRTHR', '0'))
+            obj['Stat_BlockRate']           = int(row.get('BLK', '0'))
+            obj['Stat_BlockPenetration']    = int(row.get('BLK_BREAK', '0'))
+            obj['EXP']                      = int(row.get('JOBEXP', '0'))
+            obj['EXPClass']                 = int(row.get('EXP', '0'))
             constants.data['monsters'][obj['$ID']] = obj
             constants.data['monsters_by_name'][obj['$ID_NAME']] = obj
         
@@ -325,4 +338,4 @@ def parse_skill_mon(constants):
             skill_mon[row['ClassID']]  = skill
 
 
-        constants.data['skill_mon'] = skill_mon         
+        constants.data['skill_mon'] = skill_mon      
