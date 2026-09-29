@@ -42,7 +42,8 @@ def copyfiles(output):
              'char_hi.ipf',
              'char_texture.ipf',
              'item_hi.ipf',
-             'item_texture.ipf']
+             'item_texture.ipf',
+             'addon.ipf']
     for i in files:
         if os.path.exists (join('extract',i)):
             subprocess.run(['cp', '-r', join('extract',i), output])
@@ -195,11 +196,13 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
     revision_list = revision_decrypt(revision_list)
     revision_old = read_version(revision_path)
     revision_new = revision_old
+    has_changes = False
 
     for revision in revision_list:
         revision = revision.split(' ')[0]
      
         if (int(revision) > int(revision_old[region]) or repatch==1) and revision not in ['147674']:
+            has_changes = True
             # Process patch
             patch_name = revision + '_001001' + patch_ext
             patch_file = os.path.join(patch_path, patch_name)
@@ -213,7 +216,7 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
             revision_new[region] = revision
             print_version(revision_path, revision_new)
 
-    return revision_old, revision_new
+    return revision_old, revision_new, has_changes
 
 
 
@@ -260,15 +263,22 @@ if __name__ == "__main__":
     
     if ('full' in sys.argv ):
         do_patch_full(output, url_patch)
+        sys.exit(0)
     else:
-        version_data, version_data_new = patch_partial(
+        version_data, version_data_new, has_data_chages = patch_partial(
             output , url_patch + 'partial/data/', '.ipf', False,
             'revision.csv', url_patch + 'partial/data.revision.txt' ,0
         )
-        version_release, version_release_new = patch_partial(
+        version_release, version_release_new, has_release_chages = patch_partial(
             output, url_patch + 'partial/release/', '.pak', True,
             'release.csv', url_patch + 'partial/release.revision.txt',0
         )
 
         move_language(region)
+
+        # 변경 사항이 있으면 0, 없으면 1을 반환
+        if has_data_chages or has_release_chages:
+            sys.exit(0)
+        else:
+            sys.exit(1)
     

@@ -10,8 +10,8 @@ tree = null
 index = 0
 
 sp_pot = 0
-max_sp = [15,45,45,45]
-max_sp_default = [15,45,45,45]
+max_sp = [15,66,66,66]
+max_sp_default = [15,66,66,66]
 spent_sp = [0,0,0,0]
 skills = [[],[],[],[]]
 tree_by_id = {'1001':"Warrior", '2001': 'Wizard', '3001':'Archer', '4001': 'Cleric', '5001': 'Scout'}
@@ -73,7 +73,7 @@ function parseUrl(){
     jobs = [null,null,null,null]
     tree = null 
     index = 0
-    max_sp = [15,45,45,45]
+    max_sp = [15,66,66,66]
     spent_sp = [0,0,0,0]
     skills = [[],[],[],[]]
     curUrl = window.location.href 
@@ -381,8 +381,13 @@ function setDesc(skill,job, dataset, skillLV){
     if (dataset.captionratio1 != "None"){
         datasrc = JSON.parse(dataset.captionratio1)
         element = elementparent.find('#CaptionRatio')
+        var value = datasrc[skillLV]
+        // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+        if (value < 1 && value > 0) {
+            value = value * 100
+        }
         for (i in element){
-            element[i].innerText = datasrc[skillLV]
+            element[i].innerText = value
         }
         
     }
@@ -390,16 +395,26 @@ function setDesc(skill,job, dataset, skillLV){
     if (dataset.captionratio2 != "None"){
         datasrc = JSON.parse(dataset.captionratio2)
         element = elementparent.find('#CaptionRatio2')
+        var value = datasrc[skillLV]
+        // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+        if (value < 1 && value > 0) {
+            value = value * 100
+        }
         for (i in element){
-            element[i].innerText = datasrc[skillLV]
+            element[i].innerText = value
         }
     }
 
     if (dataset.captionratio3 != "None"){
         datasrc = JSON.parse(dataset.captionratio3)
         element = elementparent.find('#CaptionRatio3')
+        var value = datasrc[skillLV]
+        // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+        if (value < 1 && value > 0) {
+            value = value * 100
+        }
         for (i in element){
-            element[i].innerText = datasrc[skillLV]
+            element[i].innerText = value
         }
     }
 
@@ -607,7 +622,7 @@ function getOneJob(ids, index_one_skill){
 	 url: '{% url "Planner:getJob"%}',
 	 data: {"ids" : ids[index_one_skill]},
 	 success: function(data){
-		maxSkl 	= 45 
+		maxSkl 	= 66 
 		job 	=data
 		if (job.is_starter){
 			maxSkl=15

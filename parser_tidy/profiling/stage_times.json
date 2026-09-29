@@ -1,0 +1,125 @@
+{
+  "total_sec": 238.42053295485675,
+  "stages": [
+    {
+      "name": "DB.build",
+      "sec": 1.757618049159646,
+      "status": "ok"
+    },
+    {
+      "name": "parse_xac.parse_xac",
+      "sec": 0.14007193595170975,
+      "status": "ok"
+    },
+    {
+      "name": "luautil.init",
+      "sec": 9.082644054666162,
+      "status": "ok"
+    },
+    {
+      "name": "asset.parse",
+      "sec": 0.6407031621783972,
+      "status": "ok"
+    },
+    {
+      "name": "jobs.parse",
+      "sec": 0.00556846521794796,
+      "status": "ok"
+    },
+    {
+      "name": "skill_bytool.parse",
+      "sec": 1.1627699546515942,
+      "status": "ok"
+    },
+    {
+      "name": "skills.parse",
+      "sec": 1.7645275183022022,
+      "status": "ok"
+    },
+    {
+      "name": "attributes.parse",
+      "sec": 0.09588003344833851,
+      "status": "ok"
+    },
+    {
+      "name": "attributes.parse_links",
+      "sec": 0.05185133405029774,
+      "status": "ok"
+    },
+    {
+      "name": "attributes.parse_clean",
+      "sec": 2.3180912006646395,
+      "status": "ok"
+    },
+    {
+      "name": "skills.parse_clean",
+      "sec": 1.1792274210602045,
+      "status": "ok"
+    },
+    {
+      "name": "buff.parse",
+      "sec": 0.1730861533433199,
+      "status": "ok"
+    },
+    {
+      "name": "items.parse",
+      "sec": 85.12140711769462,
+      "status": "ok"
+    },
+    {
+      "name": "vaivora.parse_additional_options",
+      "sec": 8.129495536908507,
+      "status": "ok"
+    },
+    {
+      "name": "add_item_static",
+      "sec": 2.2603198885917664e-05,
+      "status": "ok"
+    },
+    {
+      "name": "items.parse_goddess_EQ",
+      "sec": 0.008104074746370316,
+      "status": "ok"
+    },
+    {
+      "name": "monsters.parse",
+      "sec": 14.648170713335276,
+      "status": "ok"
+    },
+    {
+      "name": "monsters.parse_links",
+      "sec": 9.142473185434937,
+      "status": "ok"
+    },
+    {
+      "name": "monsters.parse_skill_mon",
+      "sec": 62.075759092345834,
+      "status": "ok"
+    },
+    {
+      "name": "maps.parse",
+      "sec": 0.01958240009844303,
+      "status": "ok"
+    },
+    {
+      "name": "maps.parse_maps_images",
+      "sec": 0.019160998985171318,
+      "status": "ok"
+    },
+    {
+      "name": "maps.parse_links",
+      "sec": 0.37727379612624645,
+      "status": "ok"
+    },
+    {
+      "name": "misc.parse_achievements",
+      "sec": 0.02570914290845394,
+      "status": "ok"
+    },
+    {
+      "name": "export(redirected)",
+      "sec": 40.48017648793757,
+      "status": "ok"
+    }
+  ]
+}

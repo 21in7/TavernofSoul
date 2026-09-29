@@ -124,10 +124,13 @@ def parse_icons_step(file_name, work,c):
 
         return
 
+    if os.path.exists(copy_to) and os.path.getmtime(copy_to) >= os.path.getmtime(copy_from):
+        c.data['assets_icons'][image_name.lower()] = image_name.lower()
+        return
 
     #logging.warning("parsing {}".format(copy_to))
     if (not os.path.exists(c.PATH_BUILD_ASSETS_ICONS)):
-        
+
         os.mkdir (c.PATH_BUILD_ASSETS_ICONS)
     shutil.copy(copy_from, copy_to)
     #os.remove(copy_from)

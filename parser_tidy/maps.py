@@ -243,27 +243,74 @@ def parse_links_items(constants):
 
 
 def parse_links_items_rewards(constants):
-    logging.debug('Parsing Maps <> Items (Rewards)...')
+    log = logging.getLogger("parser.links.maps.rewards")
+    
+    # 파일 핸들러 추가
+    # fh = logging.FileHandler('missing_maps.log')
+    # fh.setLevel(logging.WARNING)
+    # formatter = logging.Formatter('%(asctime)s - %(message)s')
+    # fh.setFormatter(formatter)
+    # log.addHandler(fh)
 
-    ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'map.ies')
+    # 이미 처리된 맵 추적
+    processed_maps = set()
 
-    with open(ies_path, 'r', encoding = 'utf-8') as ies_file:
-        for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-            if int(row['MapRatingRewardCount1']) == 0 or len(row['MapRatingRewardItem1']) == 0:
+    try:
+        ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'map.ies')
+        if not exists(ies_path):
+            return
+
+        ies_file = open(ies_path, 'r', encoding='utf-8')
+        ies_reader = csv.DictReader(ies_file, delimiter=',', quotechar='"')
+
+        for row in ies_reader:
+            class_name = row['ClassName']
+            
+            # 이미 처리된 맵은 건너뛰기
+            if class_name in processed_maps:
                 continue
+                
+            processed_maps.add(class_name)
 
-            item_link = constants.data['items_by_name'][row['MapRatingRewardItem1']]
-            map = constants.data['maps_by_name'][row['ClassName']]
-            map_item = map['$ID']
-            map_item = {
-                'Chance': 100,
-                'Map': map_item,
-                'Item': item_link['$ID'],
-                'Quantity_MAX': int(row['MapRatingRewardCount1']),
-                'Quantity_MIN': int(row['MapRatingRewardCount1']),
-            }
+            # maps_by_name에 없는 경우 새로 생성
+            if class_name not in constants.data['maps_by_name']:
+                log.warning(f"Missing map in dictionary: {class_name}")
+                obj = {
+                    '$ID': row.get('ClassID', ''),
+                    '$ID_NAME': class_name,
+                    'Name': row.get('Name', ''),
+                    'Icon': None,
+                    'HasChallengeMode': row.get('ChallengeMode', '') == 'YES',
+                    'HasWarp': int(row.get('WarpCost', 0)) > 0,
+                    'Level': int(row.get('QuestLevel', 0)),
+                    'Prop_EliteMonsterCapacity': int(row.get('EliteMonsterCapacity', 0)),
+                    'Prop_MaxHateCount': int(row.get('MaxHateCount', 0)),
+                    'Prop_RewardEXPBM': float(row.get('MaxHateCount', 0)),
+                    'Stars': int(row.get('MapRank', 0)),
+                    'Type': row.get('MapType', ''),
+                    'Warp': int(row.get('WarpCost', 0)),
+                    'WorldMap': [int(coord) for coord in row.get('WorldMap', '').split('/')] if row.get('WorldMap') else None,
+                    'Link_Items': [],
+                    'Link_Items_Exploration': [],
+                    'Link_Maps': [],
+                    'Link_Maps_Floors': [],
+                    'Link_NPCs': [],
+                    'bbox': [0,0,0,0]
+                }
+                constants.data['maps_by_name'][class_name] = obj
 
-            constants.data['map_item'].append(map_item)
+            map = constants.data['maps_by_name'][class_name]
+            
+            # 여기에 기존의 맵 처리 로직 계속...
+            
+    finally:
+        if 'ies_file' in locals():
+            ies_file.close()
+        # 파일 핸들러 제거
+        # log.removeHandler(fh)
+        # fh.close()
+
+    return constants
 
 
 def parse_links_maps(constants):

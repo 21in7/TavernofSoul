@@ -1,0 +1,289 @@
+==== sort by cumulative time (top 60) ====
+Wed Jul 22 11:10:44 2026    /tmp/claude-1001/-home-ubuntu-TavernofSoul/bc21a1e3-461f-446e-9201-b98c9abc30ee/scratchpad/profile_out/parser_ktos.prof
+
+         451948770 function calls (394756983 primitive calls) in 238.420 seconds
+
+   Ordered by: cumulative time
+   List reduced from 456 to 60 due to restriction <60>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       24    0.000    0.000  238.420    9.934 profile_parser.py:40(run_stage)
+        1    0.000    0.000   85.121   85.121 profile_parser.py:71(<lambda>)
+        1    0.088    0.088   85.121   85.121 items.py:148(parse)
+        6   64.767   10.795   74.291   12.382 items.py:298(parse_equips)
+        1    0.013    0.013   62.076   62.076 profile_parser.py:77(<lambda>)
+        1    0.149    0.149   62.062   62.062 monsters.py:292(parse_skill_mon)
+     6534   47.345    0.007   61.133    0.009 DB.py:271(getMonbySkill)
+        1    0.000    0.000   40.480   40.480 profile_parser.py:51(redirect_and_export)
+        1    0.000    0.000   40.480   40.480 DB.py:158(export)
+       36    0.001    0.000   40.480    1.124 DB.py:243(printJSON)
+       36    8.323    0.231   40.475    1.124 __init__.py:120(dump)
+ 35058566    5.380    0.000   28.201    0.000 encoder.py:413(_iterencode)
+91932860/35058558   17.757    0.000   22.768    0.000 encoder.py:333(_iterencode_dict)
+        2    0.002    0.001   18.144    9.072 luautil.py:161(init)
+163879488   14.923    0.000   14.923    0.000 {method 'lower' of 'str' objects}
+        1    0.000    0.000   14.648   14.648 profile_parser.py:75(<lambda>)
+        1    0.020    0.020   14.648   14.648 monsters.py:52(parse)
+       10   11.357    1.136   14.599    1.460 monsters.py:107(parse_monsters)
+        2    0.272    0.136   10.025    5.013 luautil.py:184(init_global_data)
+       52    7.924    0.152    9.707    0.187 iesutil.py:14(load)
+        1    0.000    0.000    9.142    9.142 profile_parser.py:76(<lambda>)
+        1    0.000    0.000    9.142    9.142 monsters.py:242(parse_links)
+        1    2.469    2.469    9.142    9.142 monsters.py:250(parse_links_items)
+        1    0.000    0.000    9.083    9.083 profile_parser.py:60(<lambda>)
+ 44290517    9.003    0.000    9.003    0.000 luautil.py:18(attr_getter)
+        1    0.000    0.000    8.129    8.129 profile_parser.py:72(<lambda>)
+        1    0.002    0.002    8.129    8.129 vaivora.py:307(parse_additional_options)
+        2    1.222    0.611    8.110    4.055 luautil.py:414(init_runtime)
+      140    0.003    0.000    7.625    0.054 ElementTree.py:1192(parse)
+      140    0.001    0.000    7.621    0.054 ElementTree.py:571(parse)
+      140    7.553    0.054    7.620    0.054 {method '_parse_whole' of 'xml.etree.ElementTree.XMLParser' objects}
+   241627    2.820    0.000    7.134    0.000 csv.py:107(__next__)
+        1    0.208    0.208    6.789    6.789 vaivora.py:263(_build_tooltip_index)
+     9923    5.570    0.001    5.570    0.001 {built-in method posix.listdir}
+   593281    4.176    0.000    4.424    0.000 {built-in method builtins.next}
+ 35058594    3.950    0.000    3.950    0.000 {method 'write' of '_io.TextIOWrapper' objects}
+  1333286    0.515    0.000    2.790    0.000 re.py:203(sub)
+        1    0.001    0.001    2.318    2.318 profile_parser.py:68(<lambda>)
+        1    2.016    2.016    2.317    2.317 attributes.py:193(parse_clean)
+ 26937375    2.204    0.000    2.205    0.000 {built-in method builtins.isinstance}
+    24504    0.993    0.000    2.093    0.000 luautil.py:483(lua_function_load)
+ 13965877    1.877    0.000    1.877    0.000 {built-in method _json.encode_basestring_ascii}
+        1    0.000    0.000    1.765    1.765 profile_parser.py:65(<lambda>)
+        1    0.012    0.012    1.765    1.765 skills.py:40(parse)
+3619596/3335084    1.240    0.000    1.762    0.000 encoder.py:277(_iterencode_list)
+        1    0.000    0.000    1.758    1.758 profile_parser.py:58(<lambda>)
+        1    0.000    0.000    1.758    1.758 DB.py:114(build)
+   2882/1    0.323    0.000    1.712    1.712 DB.py:180(directoryDictionary)
+  1333286    1.143    0.000    1.553    0.000 {method 'sub' of 're.Pattern' objects}
+       19    0.270    0.014    1.362    0.072 items.py:207(parse_items)
+        1    0.010    0.010    1.341    1.341 skills.py:605(parse_skills_script)
+        1    0.095    0.095    1.337    1.337 vaivora.py:288(_scan_item_addopts)
+    14350    1.308    0.000    1.331    0.000 skills.py:577(run_lua)
+        1    0.001    0.001    1.179    1.179 profile_parser.py:69(<lambda>)
+        1    0.857    0.857    1.178    1.178 skills.py:677(parse_clean)
+        1    0.000    0.000    1.163    1.163 profile_parser.py:64(<lambda>)
+        1    0.129    0.129    1.163    1.163 skill_bytool.py:9(parse)
+  1087321    0.494    0.000    0.956    0.000 {built-in method builtins.any}
+  1704719    0.623    0.000    0.943    0.000 re.py:289(_compile)
+   367739    0.859    0.000    0.859    0.000 {built-in method posix.stat}
+
+
+
+==== sort by internal time (top 60) ====
+Wed Jul 22 11:10:44 2026    /tmp/claude-1001/-home-ubuntu-TavernofSoul/bc21a1e3-461f-446e-9201-b98c9abc30ee/scratchpad/profile_out/parser_ktos.prof
+
+         451948770 function calls (394756983 primitive calls) in 238.420 seconds
+
+   Ordered by: internal time
+   List reduced from 456 to 60 due to restriction <60>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        6   64.767   10.795   74.291   12.382 items.py:298(parse_equips)
+     6534   47.345    0.007   61.133    0.009 DB.py:271(getMonbySkill)
+91932860/35058558   17.757    0.000   22.768    0.000 encoder.py:333(_iterencode_dict)
+163879488   14.923    0.000   14.923    0.000 {method 'lower' of 'str' objects}
+       10   11.357    1.136   14.599    1.460 monsters.py:107(parse_monsters)
+ 44290517    9.003    0.000    9.003    0.000 luautil.py:18(attr_getter)
+       36    8.323    0.231   40.475    1.124 __init__.py:120(dump)
+       52    7.924    0.152    9.707    0.187 iesutil.py:14(load)
+      140    7.553    0.054    7.620    0.054 {method '_parse_whole' of 'xml.etree.ElementTree.XMLParser' objects}
+     9923    5.570    0.001    5.570    0.001 {built-in method posix.listdir}
+ 35058566    5.380    0.000   28.201    0.000 encoder.py:413(_iterencode)
+   593281    4.176    0.000    4.424    0.000 {built-in method builtins.next}
+ 35058594    3.950    0.000    3.950    0.000 {method 'write' of '_io.TextIOWrapper' objects}
+   241627    2.820    0.000    7.134    0.000 csv.py:107(__next__)
+        1    2.469    2.469    9.142    9.142 monsters.py:250(parse_links_items)
+ 26937375    2.204    0.000    2.205    0.000 {built-in method builtins.isinstance}
+        1    2.016    2.016    2.317    2.317 attributes.py:193(parse_clean)
+ 13965877    1.877    0.000    1.877    0.000 {built-in method _json.encode_basestring_ascii}
+    14350    1.308    0.000    1.331    0.000 skills.py:577(run_lua)
+3619596/3335084    1.240    0.000    1.762    0.000 encoder.py:277(_iterencode_list)
+        2    1.222    0.611    8.110    4.055 luautil.py:414(init_runtime)
+  1333286    1.143    0.000    1.553    0.000 {method 'sub' of 're.Pattern' objects}
+    24504    0.993    0.000    2.093    0.000 luautil.py:483(lua_function_load)
+   367739    0.859    0.000    0.859    0.000 {built-in method posix.stat}
+        1    0.857    0.857    1.178    1.178 skills.py:677(parse_clean)
+  1704719    0.623    0.000    0.943    0.000 re.py:289(_compile)
+  4065122    0.535    0.000    0.535    0.000 {method 'startswith' of 'str' objects}
+  1333286    0.515    0.000    2.790    0.000 re.py:203(sub)
+  1087321    0.494    0.000    0.956    0.000 {built-in method builtins.any}
+   888208    0.407    0.000    0.407    0.000 re.py:325(_subx)
+   249190    0.349    0.000    0.562    0.000 posixpath.py:71(join)
+    23748    0.348    0.000    0.652    0.000 luautil.py:487(<listcomp>)
+   2882/1    0.323    0.000    1.712    1.712 DB.py:180(directoryDictionary)
+  1673963    0.308    0.000    0.308    0.000 luautil.py:27(attr_setter)
+      970    0.293    0.000    0.309    0.000 {method 'readlines' of '_io._IOBase' objects}
+        2    0.272    0.136   10.025    5.013 luautil.py:184(init_global_data)
+       19    0.270    0.014    1.362    0.072 items.py:207(parse_items)
+  2195525    0.224    0.000    0.224    0.000 {method 'append' of 'list' objects}
+    31182    0.220    0.000    0.220    0.000 {built-in method _codecs.utf_8_decode}
+        1    0.208    0.208    6.789    6.789 vaivora.py:263(_build_tooltip_index)
+  2057513    0.199    0.000    0.199    0.000 {built-in method math.floor}
+     8850    0.189    0.000    0.196    0.000 {built-in method io.open}
+   141979    0.184    0.000    0.528    0.000 DB.py:197(translate)
+  1482378    0.184    0.000    0.184    0.000 {method 'replace' of 'str' objects}
+   144476    0.184    0.000    0.305    0.000 __init__.py:2084(debug)
+  1283040    0.182    0.000    0.182    0.000 items.py:462(<genexpr>)
+   948722    0.178    0.000    0.178    0.000 skills.py:693(<listcomp>)
+35662/5766    0.173    0.000    0.571    0.000 os.py:280(walk)
+  1120800    0.163    0.000    0.163    0.000 items.py:465(<genexpr>)
+   368569    0.152    0.000    0.152    0.000 {method 'match' of 're.Pattern' objects}
+   368425    0.151    0.000    0.520    0.000 re.py:188(match)
+        1    0.149    0.149   62.062   62.062 monsters.py:292(parse_skill_mon)
+    26450    0.144    0.000    0.463    0.000 asset.py:93(parse_icons_step)
+   964888    0.136    0.000    0.136    0.000 luautil.py:494(<genexpr>)
+   948722    0.131    0.000    0.131    0.000 skills.py:694(<listcomp>)
+  1589980    0.130    0.000    0.130    0.000 attributes.py:216(<listcomp>)
+   481188    0.129    0.000    0.175    0.000 csv.py:93(fieldnames)
+        1    0.129    0.129    1.163    1.163 skill_bytool.py:9(parse)
+  1589980    0.128    0.000    0.128    0.000 attributes.py:215(<listcomp>)
+    48999    0.122    0.000    0.122    0.000 {method 'join' of 'str' objects}
+
+
+
+==== callers of hottest internals (top 25) ====
+   Ordered by: internal time
+   List reduced from 456 to 25 due to restriction <25>
+
+Function                                                              was called by...
+                                                                          ncalls  tottime  cumtime
+items.py:298(parse_equips)                                            <-       6   64.767   74.291  items.py:148(parse)
+DB.py:271(getMonbySkill)                                              <-    6534   47.345   61.133  monsters.py:292(parse_skill_mon)
+encoder.py:333(_iterencode_dict)                                      <-  574058    0.163    0.261  encoder.py:277(_iterencode_list)
+                                                                       56530138/34486768   11.752   16.691  encoder.py:333(_iterencode_dict)
+                                                                        34828664    5.842   22.646  encoder.py:413(_iterencode)
+{method 'lower' of 'str' objects}                                     <-       1    0.000    0.000  DB.py:114(build)
+                                                                          168785    0.022    0.022  DB.py:180(directoryDictionary)
+                                                                           44520    0.008    0.008  DB.py:217(parse_entity_icon)
+                                                                       152059248   13.780   13.780  DB.py:271(getMonbySkill)
+                                                                               6    0.000    0.000  asset.py:72(parse_icons)
+                                                                          109416    0.015    0.015  asset.py:93(parse_icons_step)
+                                                                           16166    0.001    0.001  attributes.py:94(parse_links_jobs)
+                                                                               4    0.000    0.000  buff.py:27(parse_buff)
+                                                                             104    0.000    0.000  iesutil.py:14(load)
+                                                                              19    0.000    0.000  items.py:207(parse_items)
+                                                                               6    0.000    0.000  items.py:298(parse_equips)
+                                                                              18    0.000    0.000  items.py:1158(parse_goddess_EQ)
+                                                                               4    0.000    0.000  luautil.py:169(init_global_constants)
+                                                                              12    0.000    0.000  luautil.py:184(init_global_data)
+                                                                             690    0.000    0.000  maps.py:90(parse_maps_images)
+                                                                          161109    0.015    0.015  maps.py:160(parse_links_items)
+                                                                           72818    0.007    0.007  maps.py:343(parse_links_npcs)
+                                                                             358    0.000    0.000  monsters.py:97(parse_mon_constants)
+                                                                              10    0.000    0.000  monsters.py:107(parse_monsters)
+                                                                               4    0.000    0.000  monsters.py:228(parse_monsters_statbase)
+                                                                        11182196    1.059    1.059  monsters.py:250(parse_links_items)
+                                                                            6788    0.001    0.001  monsters.py:292(parse_skill_mon)
+                                                                           28728    0.004    0.004  parse_xac.py:13(parse_xac)
+                                                                            7743    0.004    0.004  parse_xac.py:25(getModelNamePrefix)
+                                                                           17363    0.005    0.005  parse_xac.py:50(eq_model_name)
+                                                                             912    0.000    0.000  skills.py:185(fill_missing_from_fallback_regions)
+                                                                            1824    0.001    0.001  skills.py:219(looks_like_dic_token)
+                                                                              25    0.000    0.000  vaivora.py:288(_scan_item_addopts)
+                                                                             611    0.000    0.000  vaivora.py:307(parse_additional_options)
+monsters.py:107(parse_monsters)                                       <-      10   11.357   14.599  monsters.py:52(parse)
+luautil.py:18(attr_getter)                                            <- 34393198    6.569    6.569  items.py:298(parse_equips)
+                                                                            8328    0.002    0.002  items.py:1158(parse_goddess_EQ)
+                                                                           97220    0.047    0.047  luautil.py:184(init_global_data)
+                                                                         9719211    2.369    2.369  monsters.py:107(parse_monsters)
+                                                                           72560    0.016    0.016  skills.py:577(run_lua)
+__init__.py:120(dump)                                                 <-      36    8.323   40.475  DB.py:243(printJSON)
+iesutil.py:14(load)                                                   <-      52    7.924    9.707  luautil.py:184(init_global_data)
+{method '_parse_whole' of 'xml.etree.ElementTree.XMLParser' objects}  <-     140    7.553    7.620  ElementTree.py:571(parse)
+{built-in method posix.listdir}                                       <-    2882    0.115    0.115  DB.py:180(directoryDictionary)
+                                                                             137    0.009    0.009  attributes.py:94(parse_links_jobs)
+                                                                             543    0.079    0.079  maps.py:160(parse_links_items)
+                                                                             543    0.040    0.040  maps.py:343(parse_links_npcs)
+                                                                            5818    5.327    5.327  monsters.py:250(parse_links_items)
+encoder.py:413(_iterencode)                                           <- 35058566    5.380   28.201  __init__.py:120(dump)
+{built-in method builtins.next}                                       <-    2558    0.037    0.045  csv.py:93(fieldnames)
+                                                                          241627    3.858    4.097  csv.py:107(__next__)
+                                                                          349096    0.281    0.281  os.py:280(walk)
+{method 'write' of '_io.TextIOWrapper' objects}                       <- 35058530    3.950    3.950  __init__.py:120(dump)
+                                                                              64    0.000    0.000  __init__.py:1073(emit)
+csv.py:107(__next__)                                                  <-    2923    0.008    0.024  attributes.py:25(parse_attributes)
+                                                                            2360    0.008    0.021  attributes.py:94(parse_links_jobs)
+                                                                            4948    0.037    0.104  buff.py:27(parse_buff)
+                                                                           48662    0.665    1.769  iesutil.py:14(load)
+                                                                           28762    0.287    0.926  items.py:207(parse_items)
+                                                                           17369    0.398    0.957  items.py:298(parse_equips)
+                                                                             279    0.000    0.001  items.py:533(parse_goddess_reinf)
+                                                                              15    0.000    0.000  items.py:551(parse_equipment_grade_ratios)
+                                                                              79    0.000    0.004  items.py:567(parse_equipment_sets)
+                                                                              79    0.000    0.001  items.py:598(parse_links_equipment_sets)
+                                                                            5712    0.036    0.141  items.py:629(parse_cards)
+                                                                             120    0.000    0.000  items.py:701(parse_cards_battle)
+                                                                            1451    0.002    0.004  items.py:728(parse_links_cubes)
+                                                                             352    0.001    0.003  items.py:776(parse_links_collections)
+                                                                            1006    0.006    0.019  items.py:895(parse_gems)
+                                                                            1368    0.006    0.013  items.py:1024(parse_links_recipes)
+                                                                             558    0.001    0.002  items.py:1158(parse_goddess_EQ)
+                                                                             138    0.001    0.004  jobs.py:20(parse_jobs)
+                                                                               7    0.000    0.000  jobs.py:48(parse_jobs_stats)
+                                                                            1088    0.002    0.005  luautil.py:169(init_global_constants)
+                                                                             544    0.004    0.012  maps.py:49(parse_maps)
+                                                                             544    0.004    0.011  maps.py:90(parse_maps_images)
+                                                                            1040    0.002    0.007  maps.py:160(parse_links_items)
+                                                                             544    0.004    0.010  maps.py:245(parse_links_items_rewards)
+                                                                             140    0.001    0.003  maps.py:316(parse_links_maps)
+                                                                           11319    0.028    0.085  maps.py:343(parse_links_npcs)
+                                                                            1247    0.004    0.015  misc.py:21(achievements)
+                                                                            1130    0.002    0.006  monsters.py:97(parse_mon_constants)
+                                                                            7847    0.497    0.767  monsters.py:107(parse_monsters)
+                                                                             888    0.002    0.003  monsters.py:228(parse_monsters_statbase)
+                                                                            9397    0.024    0.076  monsters.py:250(parse_links_items)
+                                                                            6535    0.272    0.669  monsters.py:292(parse_skill_mon)
+                                                                           28729    0.048    0.122  parse_xac.py:13(parse_xac)
+                                                                            2400    0.017    0.064  skills.py:70(fill_missing_skills_from_skilltree)
+                                                                             916    0.001    0.003  skills.py:280(normalize_skill_ids)
+                                                                            2400    0.020    0.084  skills.py:333(parse_skills)
+                                                                            1684    0.003    0.006  skills.py:473(parse_skills_overheats)
+                                                                             916    0.002    0.003  skills.py:651(parse_links_jobs)
+                                                                           46131    0.426    1.193  vaivora.py:288(_scan_item_addopts)
+monsters.py:250(parse_links_items)                                    <-       1    2.469    9.142  monsters.py:242(parse_links)
+{built-in method builtins.isinstance}                                 <-       1    0.000    0.000  __init__.py:43(normalize_encoding)
+                                                                               1    0.000    0.000  __init__.py:70(search_function)
+                                                                              31    0.000    0.000  __init__.py:193(_checkLevel)
+                                                                              31    0.000    0.000  __init__.py:288(__init__)
+                                                                               6    0.000    0.000  __init__.py:299(loads)
+                                                                              26    0.000    0.000  __init__.py:1284(getLogger)
+                                                                              19    0.000    0.000  __init__.py:1335(_fixupParents)
+                                                                             214    0.000    0.000  __init__.py:1372(_clear_cache)
+                                                                         3359882    0.262    0.262  encoder.py:277(_iterencode_list)
+                                                                        21175481    1.552    1.552  encoder.py:333(_iterencode_dict)
+                                                                             176    0.000    0.000  encoder.py:413(_iterencode)
+                                                                              10    0.000    0.000  enum.py:938(__and__)
+                                                                               1    0.000    0.000  fnmatch.py:38(_compile_pattern)
+                                                                               3    0.000    0.000  glob.py:147(has_magic)
+                                                                               6    0.000    0.000  items.py:1158(parse_goddess_EQ)
+                                                                          249259    0.035    0.035  posixpath.py:41(_get_sep)
+                                                                              64    0.000    0.000  posixpath.py:117(splitext)
+                                                                               1    0.000    0.000  posixpath.py:334(normpath)
+                                                                               8    0.000    0.000  re.py:270(escape)
+                                                                         1704729    0.318    0.318  re.py:289(_compile)
+                                                                            1824    0.000    0.000  skills.py:185(fill_missing_from_fallback_regions)
+                                                                            1824    0.000    0.000  skills.py:219(looks_like_dic_token)
+                                                                          443415    0.037    0.037  skills.py:473(parse_skills_overheats)
+                                                                              20    0.000    0.000  sre_compile.py:595(isstring)
+                                                                             319    0.000    0.000  sre_parse.py:164(__getitem__)
+                                                                              12    0.000    0.000  sre_parse.py:224(__init__)
+                                                                              10    0.000    0.000  sre_parse.py:921(fix_flags)
+                                                                               2    0.000    0.000  sre_parse.py:969(parse_template)
+attributes.py:193(parse_clean)                                        <-       1    2.016    2.317  profile_parser.py:68(<lambda>)
+{built-in method _json.encode_basestring_ascii}                       <-   89107    0.018    0.018  encoder.py:277(_iterencode_list)
+                                                                        13876770    1.859    1.859  encoder.py:333(_iterencode_dict)
+skills.py:577(run_lua)                                                <-   14350    1.308    1.331  skills.py:605(parse_skills_script)
+encoder.py:277(_iterencode_list)                                      <-  248048    0.104    0.137  encoder.py:277(_iterencode_list)
+                                                                         3141646    1.088    1.622  encoder.py:333(_iterencode_dict)
+                                                                          229902    0.049    0.175  encoder.py:413(_iterencode)
+luautil.py:414(init_runtime)                                          <-       2    1.222    8.110  luautil.py:161(init)
+{method 'sub' of 're.Pattern' objects}                                <- 1333286    1.143    1.553  re.py:203(sub)
+luautil.py:483(lua_function_load)                                     <-   24504    0.993    2.093  luautil.py:414(init_runtime)
+{built-in method posix.stat}                                          <-    3310    0.011    0.011  genericpath.py:16(exists)
+                                                                           18916    0.076    0.076  genericpath.py:27(isfile)
+                                                                          171666    0.470    0.470  genericpath.py:39(isdir)
+                                                                          173847    0.304    0.304  genericpath.py:53(getmtime)
+skills.py:677(parse_clean)                                            <-       1    0.857    1.178  profile_parser.py:69(<lambda>)
+
+

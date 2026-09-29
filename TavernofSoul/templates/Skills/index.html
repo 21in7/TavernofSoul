@@ -4,10 +4,10 @@
 {%load translate%}
 <!--Block content goes below-->
 {%block head%}
-    <title>{{item.name}} - Tavern of Soul</title>
-    <meta content="{{item.name}} - Tavern of Soul" property="og:title" />
-    <meta content="https://itos.tavernofsoul.com" property="og:url" />
-    <meta content="https://itos.tavernofsoul.com/static/icons/{{item.icon}}" property="og:image" />
+    <title>{{item.name}} - Gihyeon of Soul</title>
+    <meta content="{{item.name}} - Gihyeon of Soul" property="og:title" />
+    <meta content="https://itos.gihyeonofsoul.com" property="og:url" />
+    <meta content="https://itos.gihyeonofsoul.com/static/icons/{{item.icon}}" property="og:image" />
      <meta  property="og:description"content="
     {%if desc%}
         {% for line in desc%}
@@ -274,20 +274,35 @@
     {%endif%}
     {%if item.captionratio1%}
        element  = $("#CaptionRatio")
+      var value = captionratio1[lv]
+      // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+      if (value < 1 && value > 0) {
+        value = value * 100
+      }
       for (i in element){
-        element[i].innerHTML = captionratio1[lv]  
+        element[i].innerHTML = value  
       }
     {%endif%}
     {%if item.captionratio2%}
        element  = $("#CaptionRatio2")
+      var value = captionratio2[lv]
+      // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+      if (value < 1 && value > 0) {
+        value = value * 100
+      }
       for (i in element){
-        element[i].innerHTML = captionratio2[lv]  
+        element[i].innerHTML = value  
       }
     {%endif%}
     {%if item.captionratio3%}
        element  = $("#CaptionRatio3")
+      var value = captionratio3[lv]
+      // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+      if (value < 1 && value > 0) {
+        value = value * 100
+      }
       for (i in element){
-        element[i].innerHTML = captionratio3[lv]  
+        element[i].innerHTML = value  
       }
     {%endif%}
     {%if item.captiontime%}

@@ -4,18 +4,54 @@ Created on Wed Sep 22 13:47:21 2021
 @author: CPPG02619
 """
 
-from PIL import Image
+from PIL import Image, ImageFile
+import logging
+
+# 손상되었거나 잘린 이미지도 로드할 수 있도록 설정
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def optimize(path, mode, rect, size):
     format = 'JPEG' if mode == 'RGB' else 'PNG'
     quality = 80 if mode == 'RGB' else 1
 
-    image = Image.open(path)
-    image = image.convert(mode) if image.mode != mode else image
-    image = image.crop((rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])) if (rect[2], rect[3]) != image.size else image
-    image = image.resize((size[0], size[1]), Image.ANTIALIAS) if size < image.size else image
-    image = image.save(path, format, optimize=True, quality=quality)
+    try:
+        image = Image.open(path)
+        image.load()
+    except Exception as e:
+        logging.warning("Failed to open image %s: %s", path, e)
+        return
+
+    # 모드 변환
+    if image.mode != mode:
+        try:
+            image = image.convert(mode)
+        except Exception as e:
+            logging.warning("Failed to convert image mode for %s: %s", path, e)
+            return
+
+    # 크롭
+    try:
+        if rect is not None and (rect[2], rect[3]) != image.size:
+            image = image.crop((rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]))
+    except Exception as e:
+        logging.warning("Failed to crop image %s: %s", path, e)
+
+    # 리사이즈 (원본보다 큰 사이즈로 키우진 않음)
+    try:
+        if size and (size[0], size[1]) < image.size:
+            image = image.resize((size[0], size[1]), Image.LANCZOS)
+    except Exception as e:
+        logging.warning("Failed to resize image %s: %s", path, e)
+
+    # 저장
+    try:
+        save_kwargs = { 'optimize': True }
+        if format == 'JPEG':
+            save_kwargs['quality'] = quality
+        image.save(path, format, **save_kwargs)
+    except Exception as e:
+        logging.warning("Failed to save image %s: %s", path, e)
 
 
 # https://stackoverflow.com/a/6483549

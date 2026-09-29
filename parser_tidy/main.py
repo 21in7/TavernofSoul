@@ -28,16 +28,20 @@ import parse_xac
 from item_static import add_item_static
 import csv
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 region = "ktos"
 def print_version(filename, data):
     out = [ [key, data[key]] for key in data]
-    with open(filename, 'w') as f:  # You will need 'wb' mode in Python 2.x
+    filepath = os.path.join(SCRIPT_DIR, filename)
+    with open(filepath, 'w') as f:  # You will need 'wb' mode in Python 2.x
         w = csv.writer(f)
         w.writerows(out)
 
 def read_version(filename):
     rev = {}
-    with open(filename, 'r') as f:
+    filepath = os.path.join(SCRIPT_DIR, filename)
+    with open(filepath, 'r') as f:
         w = csv.reader(f)
         for lines in w:
             if len(lines)<2:
@@ -67,7 +71,7 @@ if __name__ == "__main__":
         logging.warning("ipf up to date")
         quit()
         
-    c.build(region)
+    c.build(region, SCRIPT_DIR)
     parse_xac.parse_xac(c)
     luautil.init(c)
     no_tl = ['ktos', 'ktest']
@@ -81,11 +85,16 @@ if __name__ == "__main__":
     attributes.parse_links(c)   
     attributes.parse_clean(c)
     skills.parse_clean(c)
+    # Early export for iTOS so English translations are saved even if later steps fail
+    try:
+        if region == 'itos':
+            c.printJSON(c.data['skills'], 'skills.json')
+            c.printJSON(c.data['skills_by_name'], 'skills_by_name.json')
+    except Exception as e:
+        logging.warning(f"Early export of skills failed: {e}")
     buff.parse(c)
     items.parse(c)
-    if (region not in no_tl):
-        vaivora.parse(c)
-        vaivora.parse_lv4(c)
+    vaivora.parse_additional_options(c)
     add_item_static(c)
     
     items.parse_goddess_EQ(c)
@@ -108,5 +117,3 @@ if __name__ == "__main__":
     with open(join(c.BASE_PATH_OUTPUT, 'version.json'), "w") as f:
         json.dump(v,f)
        
-   
-   

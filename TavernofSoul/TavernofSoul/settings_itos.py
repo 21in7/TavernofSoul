@@ -10,7 +10,14 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 import os
+import sys
 from pathlib import Path
+
+# importAll 명령어 실행 시 prometheus 비활성화
+if 'importAll' in sys.argv:
+    PROMETHEUS_EXPORT_METRICS = False
+    # INSTALLED_APPS에서 django_prometheus 제거를 위한 플래그
+    DISABLE_PROMETHEUS = True
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,7 +33,7 @@ SECRET_KEY = 'django-insecure-m+(03apos8*-mlw+ob@x&t&5r2d8%z=n23lyf62xc!^$d^%i53
 DEBUG = False
 REGION = 'itos'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['itos.gihyeonofsoul.com']
 
 
 # Application definition
@@ -48,13 +55,19 @@ INSTALLED_APPS = [
     'Monsters.apps.MonstersConfig',
     'Maps.apps.MapsConfig',
     'Planner.apps.PlannerConfig',
+    'Challenge.apps.ChallengeConfig',
     'django.contrib.humanize',
     'Other.apps.OtherConfig',
     'django.contrib.sitemaps',
-    
+    'rest_framework',  # Django REST Framework
 ]
 
+# importAll 명령어가 아닐 때만 django_prometheus 활성화
+if not 'importAll' in sys.argv:
+    INSTALLED_APPS.append('django_prometheus')
+
 MIDDLEWARE = [
+    'django_prometheus.middleware.PrometheusBeforeMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -62,9 +75,13 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'django_prometheus.middleware.PrometheusAfterMiddleware'
 ]
 
 ROOT_URLCONF = 'TavernofSoul.urls'
+
+PROMETHEUS_METRICS_EXPORT_PORT = 8001  # Itos용 포트
+PROMETHEUS_METRICS_EXPORT_ADDRESS = '0.0.0.0'  # 모든 인터페이스에서 수신
 
 TEMPLATES = [
     {
@@ -90,12 +107,16 @@ WSGI_APPLICATION = 'TavernofSoul.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.mysql', 
-        'NAME': 'tavernofsoul',
-        'USER': 'root',
-        'PASSWORD': '',
+        'ENGINE': 'django_prometheus.db.backends.mysql', 
+        'NAME': 'itos',
+        'USER': 'gihyeon',
+        'PASSWORD': '1234',
         'HOST': 'localhost',   # Or an IP Address that your DB is hosted on
         'PORT': '3306',
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'use_unicode': True,
+        }
     }
 }
 
@@ -133,7 +154,7 @@ CACHES = {
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Seoul'
 
 USE_I18N = True
 
@@ -170,3 +191,20 @@ LOGOUT_REDIRECT_URL = '/'
 #static_URL = 'static/'
 
 JSON_ROOT = BASE_DIR / "JSON_itos"
+
+# Django REST Framework 설정
+REST_FRAMEWORK = {
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 50,
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',  # 브라우저에서 API 테스트 가능
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',  # 읽기 전용 API
+    ],
+    'DEFAULT_FILTER_BACKENDS': [
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+    ],
+}

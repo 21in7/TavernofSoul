@@ -1,21 +1,48 @@
-from django.shortcuts import render
-from django.http import JsonResponse
-from Jobs.models import Jobs, getJobsByName
-from Skills.models import Skills
-from Attributes.models import Attributes
-from os.path import join
+from decimal import Decimal
 import json
 import re
+from os.path import join
+
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, render
+from django.urls import reverse
 from django.views.decorators.cache import cache_page
-# Create your views here.
-from django.templatetags.static import static
-from django.db.models import Q
+from django.views.decorators.http import require_GET
+
+from Jobs.models import Jobs
+from Skills.models import Skills
+
 APP_NAME = 'Planner'
+
+
+def _normalize_scalar(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _normalize_series(value):
+    if not value or value == 'None':
+        return []
+
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return _normalize_series(parsed)
+
+    if isinstance(value, (list, tuple, set)):
+        return [_normalize_scalar(v) for v in value]
+
+    return [_normalize_scalar(value)]
+
+
 def imcFormatRemover(string):
     string = string.split('{nl}')
     s2 = []
     for i in string:
-        s2.append( re.sub(r'\{(.*?)\}', '', i) )
+        s2.append(re.sub(r'\{(.*?)\}', '', i))
     return s2
 
 # def parseToJSfriendly(string):
@@ -65,73 +92,79 @@ def parseEffect(effect, obj):
         ef.append(lines)
     return ef
 
-#@cache_page(60 * 60)
+def _serialize_attribute(attribute):
+    descriptions = attribute.descriptions or ''
+    return {
+        'name': attribute.name,
+        'descriptions': descriptions.split("{nl}") if descriptions else [],
+        'ids': attribute.ids,
+        'icon': attribute.icon,
+    }
+
+
+def _serialize_skill(skill, counter):
+    return {
+        'counter': counter,
+        'ids': skill.ids,
+        'icon': skill.icon,
+        'name': skill.name,
+        'cooldown': (skill.cooldown or 0) / 1000 if skill.cooldown is not None else None,
+        'sp': _normalize_scalar(skill.sp),
+        'sfr': _normalize_series(skill.sfr),
+        'descriptions': imcFormatRemover(skill.descriptions) if skill.descriptions else [],
+        'cooldown_lv': _normalize_series(skill.cooldown_lv),
+        'max_lv': skill.max_lv,
+        'overheat': skill.overheat,
+        'captionratio1': _normalize_series(skill.captionratio1),
+        'captionratio2': _normalize_series(skill.captionratio2),
+        'captionratio3': _normalize_series(skill.captionratio3),
+        'captiontime': _normalize_series(skill.captiontime),
+        'skillsr': _normalize_series(skill.skillsr),
+        'spenditemcount': _normalize_series(skill.spenditemcount),
+        'spendsp': _normalize_series(skill.spendsp),
+        'spendpoison': _normalize_series(skill.spendpoison),
+        'other': _normalize_series(skill.other),
+        'stance': skill.stance,
+        'attributes_set': [_serialize_attribute(attr) for attr in skill.attributes_set.all()],
+        'effect': parseEffect(skill.effect or '', {}),
+    }
+
+
+def _serialize_job(job, skills_queryset):
+    return {
+        'ids': job.ids,
+        'name': job.name,
+        'icon': job.icon,
+        'is_starter': job.is_starter,
+        'job_tree': job.job_tree,
+        'skills': [
+            _serialize_skill(skill, counter)
+            for counter, skill in enumerate(skills_queryset)
+        ],
+    }
+
+
+@cache_page(60 * 10)
 def index(request):
-    FUNCT_NAME = 'index'
-    data = {}
-    deprecatedClass = [1005, #centurion
-                        2012, #mimic
-                        9001, #gm
-                        4013, #shepperd
-                        ]
-    data['jobs'] = Jobs.objects.filter().exclude(ids__in = deprecatedClass)
-    data['skills'] = []
-    data['specialvar']= [
-        'CaptionRatio', 'CaptionRatio2', 'CaptionRatio3',
-        'SkillSR', 'SpendItemCount', 'SkillFactor','CaptionTime',
-        'SpendItemCount', 'SpendPoison', 'SpendSP' 
-    ]
-    jobs = Jobs.objects.all()
-    for i in jobs:
-        a = {}
-        a['job'] = i
-        a['skills'] = []
-        s = Skills.objects.filter(job = i)
-        count = 0
-        
-        for l in s:
-            k = {}
-            k['ids']                = l.ids 
-            k['icon']               = l.icon 
-            k['name']               = l.name
-            k['cooldown']           = l.cooldown /1000
-            k['sp']                 = l.sp 
-            k['sfr']                = l.sfr 
-            k['descriptions']       = imcFormatRemover(l.descriptions )  
+    deprecatedClass = [1005, 2012, 9001, 4013]
+    jobs_qs = Jobs.objects.exclude(ids__in=deprecatedClass).order_by('ids')
+    job_ids = list(jobs_qs.values_list('ids', flat=True))
 
-            k['cooldown_lv']        = l.cooldown_lv
-            k['max_lv']             = l.max_lv 
-            k['overheat']           = l.overheat 
-            k['captionratio1']      = l.captionratio1
-            k['captionratio2']      = l.captionratio2
-            k['captionratio3']      = l.captionratio3
-            k['captiontime']        = l.captiontime
-            k['skillsr']            = l.skillsr
-            k['spenditemcount']     = l.spenditemcount 
-            k['spendsp']            = l.spendsp
-            k['spendpoison']        = l.spendpoison
-            k['other']              = l.other
-            k['job']                = l.job 
-            k['stance']             = l.stance 
-            k['attributes_set']     = l.attributes_set
+    bootstrap_payload = json.dumps({
+        'jobIds': job_ids,
+        'getJobUrl': reverse('Planner:getJob'),
+        'lazyAssets': [
+            '/staticfiles_itos/js/skillFunctions.js',
+            '/staticfiles_itos/js/ColladaLoader.js',
+        ],
+    })
 
-            new_attrib = []
-            for attr in k['attributes_set'].all():
-                n_attr = {}
-                n_attr['name'] = attr.name 
-                n_attr['descriptions'] = attr.descriptions.split("{nl}")
-                n_attr['ids'] = attr.ids
-                n_attr['icon'] = attr.icon
-                new_attrib.append(n_attr)
-            k['attributes_set'] = new_attrib
+    context = {
+        'jobs': jobs_qs,
+        'bootstrap_payload': bootstrap_payload,
+    }
 
-            k['counter']            = count 
-            k['effect']             = parseEffect(l.effect, k) 
-            count+=1
-            a['skills'].append(k)
-
-        data['skills'].append(a)
-    return render(request, join(APP_NAME,"index.html"), data)
+    return render(request, join(APP_NAME, "index.html"), context)
 
 def getTree(request):
     try:
@@ -155,88 +188,20 @@ def getTreeData(request):
         ret = {} 
         ret = json.dumps(ret)
         return JsonResponse(ret)
-import pandas as pd
-
-def getLast(item):
-    if item!=None:
-        return item[-1]
-    return None
-
+@require_GET
+@cache_page(60 * 30)
 def getJob(request):
-    jobs = Jobs.objects.all()
-    data = {'skills' : []}
-    for i in jobs:
-        a = {}
-        a['job'] = i.name
-        a['skills'] = []
-        s = Skills.objects.filter(job = i)
-        count = 0
-        
-        for l in s:
-            k = {}
-            k['ids']                = l.ids 
-            k['icon']               = l.icon 
-            k['name']               = l.name
-            k['cooldown']           = l.cooldown /1000
-            k['sp']                 = l.sp 
-            k['sfr']                = getLast(l.sfr)
-            k['descriptions']       = l.descriptions 
-            
-            k['max_lv']             = l.max_lv 
-            k['overheat']           = l.overheat 
-            k['captionratio1']      = getLast(l.captionratio1)
-            k['captionratio2']      = getLast(l.captionratio2)
-            k['captionratio3']      = getLast(l.captionratio3)
-            k['captiontime']        = getLast(l.captiontime)
-            k['skillsr']            = getLast(l.skillsr)
-            k['spenditemcount']     = getLast(l.spenditemcount )
-            k['spendsp']            = getLast(l.spendsp)
-            k['spendpoison']        = getLast(l.spendpoison)
-            k['other']              = getLast(l.other)
-            k['stance']             = l.stance 
+    job_id = request.GET.get('ids')
+    if not job_id:
+        return JsonResponse({'error': 'ids parameter is required'}, status=400)
 
-            k['counter']            = count 
-            k['effect']             = l.effect
-            count+=1
-            a['skills'].append(k)
+    job = get_object_or_404(Jobs.objects.all(), ids=job_id)
+    skills_qs = (
+        Skills.objects.filter(job=job)
+        .select_related('job')
+        .prefetch_related('attributes_set')
+        .order_by('ids')
+    )
 
-        data['skills'].append(a)
-    return JsonResponse(data,safe=False)
-    pass
-    #try:
-    # job = request.GET['ids']
-    # job = Jobs.objects.get(ids = job)
-    # skill = Skills.objects.filter(job = job)
-    # jobs = {}
-    # jobs['ids']     = job.ids 
-    # jobs['name']    = job.name 
-    # jobs['is_starter'] = job.is_starter 
-    # skills = []
-    # for s in skills:
-    #     k = {} 
-    #     k['ids']    = s.ids 
-    #     k['name']   = k.name 
-    #     k['max_lv'] = k.max_lv 
-    #     k['descriptions'] = k.descriptions
-    #     k['overheat']           = l.overheat 
-    #     k['captionratio1']      = l.captionratio1
-    #     k['captionratio2']      = l.captionratio2
-    #     k['captionratio3']      = l.captionratio3
-    #     k['captiontime']        = l.captiontime
-    #     k['skillsr']            = l.skillsr
-    #     k['spenditemcount']     = l.spenditemcount 
-    #     k['spendsp']            = l.spendsp
-    #     k['spendpoison']        = l.spendpoison
-    #     k['other']              = l.other
-    #     k['job']                = l.job 
-    #     k['stance']             = l.stance 
-    #     k['sfr']                = l.sfr[-1]
-    #     skills.append(k)
-
-    # ret = {'job' : jobs, 'skills' : skills }
-    # return JsonResponse(ret, safe = False)
- 
-    #except:
-    #    ret = {} 
-    #    ret = json.dumps(ret)
-    #    return JsonResponse(ret)
+    payload = _serialize_job(job, skills_qs)
+    return JsonResponse(payload)

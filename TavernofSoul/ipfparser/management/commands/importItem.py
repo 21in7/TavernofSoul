@@ -158,6 +158,7 @@ class Command(BaseCommand):
                 item_type_db.append(i['Type'])
             handler.grade           = i['Grade']
             handler.icon            = i['Icon']
+            handler.package_contents = json.dumps(i['PackageContents'], ensure_ascii=False) if i.get('PackageContents') else None
 
             handler.save()
             count+=1

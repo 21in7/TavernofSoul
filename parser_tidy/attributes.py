@@ -51,7 +51,22 @@ def parse_attributes( constants):
             obj['Link_Skills'] = [skill  for skill in row['SkillCategory'].split(';') if len(skill)]
             if obj['Link_Skills']  == []:
                 if row['Job']:
-                    obj['Link_Jobs'] = [constants.data['jobs_by_name'][j]['$ID'] for j in row['Job'].split(';')]  
+                    obj['Link_Jobs'] = []
+                    for j in row['Job'].split(';'):
+                        try:
+                            if j in constants.data['jobs_by_name']:
+                                obj['Link_Jobs'].append(constants.data['jobs_by_name'][j]['$ID'])
+                            else:
+                                # 해당 직업이 없는 경우 로그 출력
+                                logging.warning(f"Job {j} not found in jobs_by_name for attribute {row['ClassName']}.")
+                                
+                                # 첫 번째 토큰만 사용하여 다시 시도 (예: 'Char1_1' -> 'Char1')
+                                base_job = j.split('_')[0]
+                                if base_job in constants.data['jobs_by_name']:
+                                    obj['Link_Jobs'].append(constants.data['jobs_by_name'][base_job]['$ID'])
+                                    logging.info(f"Found alternative job {base_job} for {j}")
+                        except:
+                            logging.warning(f"Error processing job {j} for attribute {row['ClassName']}.")
                     obj['LevelMax'] = row['Level']
             
             popped = []
@@ -89,7 +104,22 @@ def parse_links_jobs(constants):
             return 
     with io.open(ies_path, 'r', encoding="utf-8") as ies_file:
         for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-            job = constants.data['jobs_by_name'][row['ClassName']]
+            try:
+                job = constants.data['jobs_by_name'][row['ClassName']]
+            except KeyError:
+                # 'Char1_1'와 같은 형식에서 'Char1'과 같은 기본 직업명 추출 시도
+                try:
+                    base_job_name = row['ClassName'].split('_')[0]
+                    if base_job_name in constants.data['jobs_by_name']:
+                        job = constants.data['jobs_by_name'][base_job_name]
+                        logging.info(f"Using alternative job {base_job_name} for {row['ClassName']}")
+                    else:
+                        logging.warning(f"Job {row['ClassName']} and base job {base_job_name} not found in jobs_by_name. Skipping.")
+                        continue
+                except Exception as e:
+                    logging.warning(f"Error processing job {row['ClassName']}: {e}. Skipping.")
+                    continue
+                    
             mongen_dir = os.listdir(os.path.join(constants.PATH_INPUT_DATA, 'ies_ability.ipf'))
             path_insensitive= {}
             for item in mongen_dir:
@@ -114,38 +144,50 @@ def parse_links_jobs(constants):
                         logging.warn('Missing attribute in ability.ies: %s', row2['ClassName'])
                         continue
 
-                    attribute = constants.data['attributes_by_name'][row2['ClassName']]
-                    attribute['DescriptionRequired'] = attribute['DescriptionRequired'] if attribute['DescriptionRequired'] else ''
-                    attribute['DescriptionRequired'] = attribute['DescriptionRequired'] + '{nl}{b}' + constants.translate(row2['UnlockDesc']) + '{b}'
-                    attribute['LevelMax'] = int(row2['MaxLevel'])
-                    
-                   
-                    # Parse attribute skill (in case it is missing in the ability.ies)
-                    if not attribute['Link_Skills'] and row2['UnlockArgStr'] in constants.data['skills_by_name']:
-                        logging.debug('adding missing skill %s', row2['UnlockArgStr'])
-                        skill = constants.data['skills_by_name'][row2['UnlockArgStr']]
-                        skill['Link_Attributes'].append( attribute['$ID'])
-                        attribute['Link_Skills'].append(skill['$ID'])
-                        constants.data['skills'][str(skill['$ID'])]['Link_Attributes'] = skill['Link_Attributes']
-                        constants.data['attributes'][str(attribute['$ID'])]['Link_Skills'] = attribute['Link_Skills']
+                    try:
+                        attribute = constants.data['attributes_by_name'][row2['ClassName']]
+                        attribute['DescriptionRequired'] = attribute['DescriptionRequired'] if attribute['DescriptionRequired'] else ''
+                        attribute['DescriptionRequired'] = attribute['DescriptionRequired'] + '{nl}{b}' + constants.translate(row2['UnlockDesc']) + '{b}'
+                        attribute['LevelMax'] = int(row2['MaxLevel'])
+                        
+                       
+                        # Parse attribute skill (in case it is missing in the ability.ies)
+                        if not attribute['Link_Skills'] and row2['UnlockArgStr'] in constants.data['skills_by_name']:
+                            logging.debug('adding missing skill %s', row2['UnlockArgStr'])
+                            try:
+                                skill = constants.data['skills_by_name'][row2['UnlockArgStr']]
+                                skill['Link_Attributes'].append(attribute['$ID'])
+                                attribute['Link_Skills'].append(skill['$ID'])
+                                constants.data['skills'][str(skill['$ID'])]['Link_Attributes'] = skill['Link_Attributes']
+                                constants.data['attributes'][str(attribute['$ID'])]['Link_Skills'] = attribute['Link_Skills']
+                            except KeyError as e:
+                                logging.warning(f"Error processing skill {row2['UnlockArgStr']}: {e}")
 
 
-                    # Parse attribute job
-                    if not attribute['Link_Skills'] or 'All' in attribute['Link_Skills']:
-                        attribute['Link_Jobs'].append(job['$ID'])
-                        job['Link_Attributes'].append(attribute['$ID'])
-                        constants.data['jobs'][str(job['$ID'])]['Link_Attributes'] = job['Link_Attributes']
-                        constants.data['attributes'][str(attribute['$ID'])] = attribute
+                        # Parse attribute job
+                        if not attribute['Link_Skills'] or 'All' in attribute['Link_Skills']:
+                            try:
+                                attribute['Link_Jobs'].append(job['$ID'])
+                                job['Link_Attributes'].append(attribute['$ID'])
+                                constants.data['jobs'][str(job['$ID'])]['Link_Attributes'] = job['Link_Attributes']
+                                constants.data['attributes'][str(attribute['$ID'])] = attribute
+                            except KeyError as e:
+                                logging.warning(f"Error linking job and attribute: {e}")
 
-                    # Parse attribute unlock
-                    #attribute['Unlock'] = luautil.lua_function_source_to_javascript(
-                    #    luautil.lua_function_source(LUA_SOURCE[row2['UnlockScr']])[1:-1]  # remove 'function' and 'end'
-                    #) if not attribute['Unlock'] and row2['UnlockScr'] else attribute['Unlock']
+                        # Parse attribute unlock
+                        #attribute['Unlock'] = luautil.lua_function_source_to_javascript(
+                        #    luautil.lua_function_source(LUA_SOURCE[row2['UnlockScr']])[1:-1]  # remove 'function' and 'end'
+                        #) if not attribute['Unlock'] and row2['UnlockScr'] else attribute['Unlock']
 
-                    attribute['UnlockArgs'][job['$ID']] = {
-                        'UnlockArgStr': row2['UnlockArgStr'],
-                        'UnlockArgNum': row2['UnlockArgNum'],
-                    }
+                        try:
+                            attribute['UnlockArgs'][job['$ID']] = {
+                                'UnlockArgStr': row2['UnlockArgStr'],
+                                'UnlockArgNum': row2['UnlockArgNum'],
+                            }
+                        except KeyError as e:
+                            logging.warning(f"Error setting UnlockArgs: {e}")
+                    except Exception as e:
+                        logging.warning(f"Error processing attribute {row2['ClassName']}: {e}")
 
 
 def parse_clean(constants):

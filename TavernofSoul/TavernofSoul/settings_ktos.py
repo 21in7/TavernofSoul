@@ -53,7 +53,8 @@ INSTALLED_APPS = [
     'django.contrib.humanize',
     'Other.apps.OtherConfig',        
     'django.contrib.sitemaps',
-
+    'rest_framework',  # Django REST Framework
+    'django_prometheus' 
 ]
 
 MIDDLEWARE = [
@@ -65,11 +66,13 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'django_prometheus.middleware.PrometheusAfterMiddleware'
 ]
 
 ROOT_URLCONF = 'TavernofSoul.urls'
 
-
+#PROMETHEUS_METRICS_EXPORT_PORT = 8003  # ktos용 포트
+#PROMETHEUS_METRICS_EXPORT_ADDRESS = '0.0.0.0'  # 모든 인터페이스에서 수신
 
 TEMPLATES = [
     {
@@ -178,3 +181,20 @@ LOGOUT_REDIRECT_URL = '/'
 #static_URL = 'static/'
 
 JSON_ROOT = BASE_DIR / "JSON_ktos"
+
+# Django REST Framework 설정
+REST_FRAMEWORK = {
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 50,
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',  # 브라우저에서 API 테스트 가능
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',  # 읽기 전용 API
+    ],
+    'DEFAULT_FILTER_BACKENDS': [
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+    ],
+}

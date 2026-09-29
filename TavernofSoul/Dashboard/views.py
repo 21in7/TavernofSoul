@@ -7,9 +7,13 @@ from Skills.models import Skills
 from Attributes.models import Attributes 
 from Maps.models import Maps
 from Dashboard.models import Version
+from django.http import HttpResponse
 
 # Create your views here.
 APP_NAME = "Dashboard"
+
+def Ads(request):
+	return HttpResponse("google.com, pub-2728591277096799, DIRECT, f08c47fec0942fa0")
 
 def index(request):
 

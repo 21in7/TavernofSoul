@@ -63,10 +63,14 @@ urlpatterns = [
     path('attributes/', include(('Attributes.urls',"Attributes"),namespace = "Attributes")), 
     path('buffs/', include(('Buffs.urls',"Buffs"),namespace = "Buffs")), 
     path('planner/', include(('Planner.urls',"Planner"),namespace = "Planner")), 
+    path('challenge/', include(('Challenge.urls','Challenge'), namespace='Challenge')),
     path('other/', include(('Other.urls',"Other"),namespace = "Other")), 
     #path('changes/', include(('ipfparser.urls',"Parser"),namespace = "Parser")), 
+    path('api/', include('TavernofSoul.api_urls')),  # API 엔드포인트
     path('admin/', admin.site.urls),
-    path('sitemap.xml', sitemap, {'sitemaps': sitemaps},name='django.contrib.sitemaps.views.sitemap')
+    path('sitemap.xml', sitemap, {'sitemaps': sitemaps},name='django.contrib.sitemaps.views.sitemap'),
+
+
 
 
 ]+ static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

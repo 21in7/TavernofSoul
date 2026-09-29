@@ -170,22 +170,49 @@ class Command(BaseCommand):
                 handler.sfr             = i['sfr']
             if 'CaptionRatio' in i:
                 try:
+                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+                    normalized_ratio = []
                     for h in i['CaptionRatio']:
-                        h = int(h)
+                        try:
+                            h_float = float(h)
+                            if 0 < h_float < 1:
+                                h_float = h_float * 100
+                            normalized_ratio.append(int(h_float))
+                        except (ValueError, TypeError):
+                            normalized_ratio.append(int(h))
+                    i['CaptionRatio'] = normalized_ratio
                 except:
                     i['CaptionRatio'] = None
                 handler.captionratio1   = i['CaptionRatio']
             if 'CaptionRatio2' in i:
                 try:
+                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+                    normalized_ratio = []
                     for h in i['CaptionRatio2']:
-                        h = int(h)
+                        try:
+                            h_float = float(h)
+                            if 0 < h_float < 1:
+                                h_float = h_float * 100
+                            normalized_ratio.append(int(h_float))
+                        except (ValueError, TypeError):
+                            normalized_ratio.append(int(h))
+                    i['CaptionRatio2'] = normalized_ratio
                 except:
                     i['CaptionRatio2'] = None
                 handler.captionratio2   = i['CaptionRatio2']
             if 'CaptionRatio3' in i:
                 try:
+                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+                    normalized_ratio = []
                     for h in i['CaptionRatio3']:
-                        h = int(h)
+                        try:
+                            h_float = float(h)
+                            if 0 < h_float < 1:
+                                h_float = h_float * 100
+                            normalized_ratio.append(int(h_float))
+                        except (ValueError, TypeError):
+                            normalized_ratio.append(int(h))
+                    i['CaptionRatio3'] = normalized_ratio
                 except:
                     i['CaptionRatio3'] = None
                 handler.captionratio3   = i['CaptionRatio3']
