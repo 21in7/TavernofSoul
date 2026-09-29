@@ -2,6 +2,35 @@
 
 이 문서는 `parsing_server_setup.sh` 스크립트를 GitHub Actions에서 사용하는 방법을 설명합니다.
 
+## 로컬 데이터와 버전 상태 준비
+
+로그, PID, `Translation/`, 다운로드·파서 버전 CSV는 서버별 데이터이므로
+Git에서 추적하지 않습니다. 기존 서버에서는 해당 파일을 유지하고, 서버 이전 시
+패치·unpack·JSON 데이터와 버전 CSV를 함께 백업·복원하세요.
+
+새 체크아웃에서는 저장소 루트에서 누락된 버전 파일만 초기화합니다.
+운영 중인 CSV를 예제로 덮어쓰면 처리한 패치를 다시 실행하므로 덮어쓰지 마세요.
+
+```bash
+mkdir -p Translation logs
+for state_file in downloader/release.csv downloader/revision.csv parser_tidy/parser_version.csv; do
+    if [ ! -e "$state_file" ]; then
+        cp "$state_file.example" "$state_file"
+    fi
+done
+```
+
+예제의 `0`은 아직 처리한 패치가 없다는 뜻입니다. 기존 패치·unpack 데이터를
+복원했다면 그 데이터와 일치하는 실제 버전 CSV도 복원해야 합니다.
+영어·일본어·대만어 번역은 각각 `downloader/downloader.py`의
+`itos`·`jtos`·`twtos` 실행 중 release 패치의 `languageData`에서 복사됩니다.
+새 환경에서는 해당 지역 다운로드를 먼저 완료한 뒤 파서를 실행하세요.
+다운로드가 성공했어도 필요한 번역 폴더가 없다면 기존 서버의 `Translation/`을
+복원하거나 해당 지역 언어 패치를 다시 준비해야 합니다.
+
+`motion_proto/`는 소스와 문서를 보관하고, 캐시·영상·`plans/`의 생성된 렌더 계획은
+제외합니다. 계획 재생성 방법은 `motion_proto/README.md`를 참고하세요.
+
 ## 🚀 GitHub Actions에서 사용하기
 
 ### 방법 1: 직접 실행 (Ubuntu Runner)

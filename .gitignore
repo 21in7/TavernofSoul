@@ -24,3 +24,15 @@ TavernofSoul/ktos/3.8/*
 # local-only
 .claude/
 .env
+
+# Runtime output and downloaded game data (keep local copies).
+/logs/
+/TavernofSoul/TavernofSoul/*.pid
+/Translation/
+/downloader/release.csv
+/downloader/revision.csv
+/parser_tidy/parser_version.csv
+
+# Local work notes and generated reports.
+/.zcode/
+/parser_tidy/skill_factor_report.xlsx
