@@ -115,8 +115,25 @@ LUA_OVERRIDE = [
         return t
     end
     ''',
-    '''function SyncFloor(item)
-        return item
+    # 게임 원본(shared.ipf/script/lib_math.lua:31)의 SyncFloor 는 항등함수가 아니라
+    # 반올림이다: value = math.floor((value*1.0)+0.5) / 1.0
+    # 항등 스텁이면 SCR_Get_SkillFactor 계열의 0.1 자리 반올림이 빠져
+    # 레벨별 스킬계수(sfr)가 누적 오차로 1 낮게 나온다.
+    #
+    # tonumber 가드: 게임에서는 산술 오류가 될 비(非)숫자 입력이 이 스텁 환경에는
+    # 실제로 들어온다. GET_TRANSCEND_MATERIAL_COUNT(item_transcend_shared.lua:275)는
+    # 가디스(Grade 6) 장비에서 재료 '목록 테이블'을 SyncFloor 에 넘기고,
+    # items.py:597~608 은 그 테이블이 그대로 반환되는 것에 의존해
+    # Premium_item_transcendence_Stone 개수를 꺼낸다. 숫자만 반올림하고
+    # 그 외 값은 예전 항등 스텁과 동일하게 통과시켜 그 경로를 보존한다.
+    # (tonumber 를 쓰므로 lua 산술이 자동 변환하던 숫자 문자열도 그대로 반올림된다.)
+    '''function SyncFloor(value)
+        local n = tonumber(value)
+        if n == nil then
+            return value
+        end
+        -- ROUND -- lib_math.lua:31 원본과 동일
+        return math.floor((n * 1.0) + 0.5) / 1.0
     end''',
     '''
     function SCR_Get_DEFAULT_MAXPATK(pc, value)
@@ -393,8 +410,14 @@ def init_global_functions(c):
             end
         end
         
-        function SyncFloor(item)
-            return item
+        -- lib_math.lua:31 원본과 동일한 반올림. 아래 LUA_OVERRIDE 의 정의가
+        -- 이 정의를 덮어쓰지만, 두 곳이 갈라지지 않도록 같이 맞춰 둔다.
+        function SyncFloor(value)
+            local n = tonumber(value)
+            if n == nil then
+                return value
+            end
+            return math.floor((n * 1.0) + 0.5) / 1.0
         end
         
         function get_TC_goddess(itemLv, classType, curCount, transcendCount)
