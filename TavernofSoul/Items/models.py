@@ -15,6 +15,9 @@ class Items (models.Model):
     type            = models.CharField(max_length = 15,default=None, blank=True, null=True, db_index=True) 
     grade           = models.IntegerField(default=0, blank=True, null=True, db_index=True)
     icon            = models.CharField(max_length = 100,default=None, blank=True, null=True)
+    # 패키지 구성물 JSON 문자열: {"random": bool, "items": [{"item","name","count"}]}
+    # (Python 3.8 / 구버전 스택 호환을 위해 JSONField 대신 TextField)
+    package_contents = models.TextField(default=None, blank=True, null=True)
     created         = models.DateTimeField(auto_now_add=True)
     updated         = models.DateTimeField(auto_now=True)
     def get_absolute_url(self):

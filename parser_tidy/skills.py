@@ -14,6 +14,7 @@ from os.path import exists
 from DB import ToS_DB as constants
 from DB import TOSElement, TOSAttackType
 import luautil
+import json
 
 EFFECT_DEPRECATE = {
     'SkillAtkAdd': 'SkillFactor'
@@ -45,13 +46,288 @@ def parse(c = None):
         luautil.init(c)
     c.skills={}
     c.skills_by_name={}
+    
+    # xml_skills가 없으면 초기화
+    if 'xml_skills' not in c.data:
+        c.data['xml_skills'] = {}
+    
     parse_skills(is_rebuild,c)
+    # Ensure all skills referenced by skilltree.ies exist in skills_by_name
+    fill_missing_skills_from_skilltree(c)
+    # Normalize non-numeric/too-long IDs to numeric ClassID
+    normalize_skill_ids(c)
+    # Ensure Name length fits DB constraints
+    normalize_skill_names(c)
     parse_skills_overheats(c)
     parse_skills_simony(c)
     # parse_skills_stances(c)
     parse_links_jobs(c)
     parse_skills_script(c)
+    ensure_skill_icons(c)
+    fill_missing_from_fallback_regions(c)
     
+
+def fill_missing_skills_from_skilltree(constants):
+    """
+    Some regions may include new skills referenced in skilltree.ies that don't have
+    fully defined base entries during the initial parse. To prevent downstream
+    linkages from dropping these skills, synthesize minimal entries using
+    available data from skill.ies when possible, otherwise safe defaults.
+    """
+    try:
+        skilltree_path = constants.file_dict['skilltree.ies']['path']
+    except Exception:
+        return
+    try:
+        skill_ies_path = constants.file_dict['skill.ies']['path']
+    except Exception:
+        skill_ies_path = None
+
+    # Index skill.ies rows by ClassName for richer defaults
+    skill_rows_by_name = {}
+    if skill_ies_path and exists(skill_ies_path):
+        with io.open(skill_ies_path, 'r', encoding='utf-8') as f:
+            for row in csv.DictReader(f, delimiter=',', quotechar='"'):
+                skill_rows_by_name[row['ClassName']] = row
+
+    # Walk skilltree and backfill
+    with io.open(skilltree_path, 'r', encoding='utf-8') as f:
+        for row in csv.DictReader(f, delimiter=',', quotechar='"'):
+            if row.get('Type') != 'Skill':
+                continue
+            skill_name = row['SkillName']
+            if skill_name in constants.data['skills_by_name']:
+                continue
+
+            src = skill_rows_by_name.get(skill_name)
+
+            obj = {}
+            obj['$ID_NAME'] = skill_name
+            obj['$ID'] = src['ClassID'] if src and 'ClassID' in src else row.get('ClassID', skill_name)
+            obj['Name'] = constants.translate(src['Name']) if src and 'Name' in src else skill_name
+            # Try original icon; if missing, will be filled later
+            obj['Icon'] = constants.parse_entity_icon(src['Icon']) if src and 'Icon' in src else None
+            obj['Description'] = constants.translate(src['Caption']) if src and 'Caption' in src else ''
+            obj['Effect'] = constants.translate(src['Caption2']) if src and 'Caption2' in src else ''
+            # Basic numerics
+            def to_int(val, default=0):
+                try:
+                    return int(float(val))
+                except Exception:
+                    return default
+            obj['BasicCoolDown'] = to_int(src['BasicCoolDown'], 0) if src and 'BasicCoolDown' in src else 0
+            obj['BasicPoison'] = to_int(src['BasicPoison'], 0) if src and 'BasicPoison' in src else 0
+            obj['BasicSP'] = to_int(src['BasicSP'], 0) if src and 'BasicSP' in src else 0
+            obj['OverHeat'] = 0
+            obj['LvUpSpendPoison'] = to_int(src['LvUpSpendPoison'], 0) if src and 'LvUpSpendPoison' in src else 0
+            obj['LvUpSpendSp'] = float(src['LvUpSpendSp']) if src and 'LvUpSpendSp' in src and src['LvUpSpendSp'] else 0.0
+            obj['SklAtkAdd'] = float(src['SklAtkAdd']) if src and 'SklAtkAdd' in src and src['SklAtkAdd'] else 0.0
+            obj['SklAtkAddByLevel'] = float(src['SklAtkAddByLevel']) if src and 'SklAtkAddByLevel' in src and src['SklAtkAddByLevel'] else 0.0
+            obj['SklFactor'] = float(src['SklFactor']) if src and 'SklFactor' in src and src['SklFactor'] else 0.0
+            obj['SklFactorByLevel'] = float(src['SklFactorByLevel']) if src and 'SklFactorByLevel' in src and src['SklFactorByLevel'] else 0.0
+            obj['SklSR'] = float(src['SklSR']) if src and 'SklSR' in src and src['SklSR'] else 0.0
+            obj['SpendItemBaseCount'] = to_int(src['SpendItemBaseCount'], 0) if src and 'SpendItemBaseCount' in src else 0
+            obj['RequiredStance'] = src['ReqStance'] if src and 'ReqStance' in src else ''
+            obj['RequiredStanceCompanion'] = src['EnableCompanion'] if src and 'EnableCompanion' in src else ''
+            obj['Keyword'] = src['Keyword'] if src and 'Keyword' in src else ''
+            obj['CoolDown'] = src['CoolDown'] if src and 'CoolDown' in src else ''
+            obj['IsEnchanter'] = False
+            obj['IsPardoner'] = False
+            obj['IsRunecaster'] = False
+            obj['MaxLevel'] = -1
+            obj['UnlockClassLevel'] = -1
+            obj['SP'] = None
+            obj['TypeAttack'] = []
+            # Element
+            try:
+                obj['Element'] = TOSElement.value_of(src['Attribute']) if src and 'Attribute' in src else TOSElement.MELEE
+            except Exception:
+                obj['Element'] = TOSElement.MELEE
+            obj['Link_Attributes'] = []
+            obj['Link_Gem'] = None
+            obj['Link_Job'] = None
+            obj['other'] = []
+            obj['TargetBuffs'] = []
+
+            constants.data['skills'][obj['$ID']] = obj
+            constants.data['skills_by_name'][obj['$ID_NAME']] = obj
+            if skill_name.startswith('Common_'):
+                logging.debug("[FALLBACK] Synthesized missing skill '%s' from skilltree.ies", skill_name)
+            else:
+                logging.info("[FALLBACK] Synthesized missing skill '%s' from skilltree.ies", skill_name)
+
+
+def ensure_skill_icons(constants):
+    """Guarantee every skill has a non-null Icon. Fill blanks with a safe default."""
+    # Prefer using a known generic icon present in assets; fall back to raw key
+    default_icon_key_candidates = [
+        'icon_common_velcoffer_tiksline',
+        'skill_common_unknown',
+        'icon_item_skillbook'
+    ]
+    default_icon_val = None
+    for key in default_icon_key_candidates:
+        if key in constants.data['assets_icons']:
+            default_icon_val = constants.data['assets_icons'][key]
+            break
+    # If not found in assets, keep the first candidate as plain string
+    if default_icon_val is None:
+        default_icon_val = default_icon_key_candidates[0]
+
+    for skill in constants.data['skills'].values():
+        if not skill.get('Icon'):
+            # Store resolved asset value if we have one, else the key string
+            skill['Icon'] = default_icon_val
+            constants.data['skills_by_name'][skill['$ID_NAME']] = skill
+            constants.data['skills'][skill['$ID']] = skill
+
+
+def fill_missing_from_fallback_regions(constants):
+    """Fill missing or placeholder skill Description and Icon using other regions.
+
+    Priority: ktos -> ktest. This helps itos when new content is not yet
+    translated or icons are not shipped, so the site can still show rich data.
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    fallback_regions = ['ktos', 'ktest']
+
+    # Preload fallback skill maps and icon maps
+    fallback_skills_by_name = {}
+    fallback_assets_icons = {}
+    for region in fallback_regions:
+        try:
+            skills_path = os.path.join(project_root, 'TavernofSoul', f'JSON_{region}', 'skills_by_name.json')
+            icons_path = os.path.join(project_root, 'TavernofSoul', f'JSON_{region}', 'assets_icons.json')
+            with open(skills_path, 'r', encoding='utf-8') as f:
+                fb_skills = json.load(f)
+            with open(icons_path, 'r', encoding='utf-8') as f:
+                fb_icons = json.load(f)
+            # Keep first region as higher priority; don't overwrite
+            for k, v in fb_skills.items():
+                if k not in fallback_skills_by_name:
+                    fallback_skills_by_name[k] = v
+            for k, v in fb_icons.items():
+                if k not in fallback_assets_icons:
+                    fallback_assets_icons[k] = v
+        except Exception:
+            continue
+
+    if not fallback_skills_by_name:
+        return
+
+    # Helper to detect untranslated dic tokens
+    def looks_like_dic_token(text):
+        if text is None:
+            return True
+        if not isinstance(text, str):
+            return False
+        lowered = text.lower()
+        return lowered.startswith('@dicid_') or lowered.startswith('{@dicid_')
+
+    # Apply fallbacks
+    default_icon_key_candidates = [
+        'icon_common_velcoffer_tiksline', 'skill_common_unknown', 'icon_item_skillbook'
+    ]
+    default_icon_set = set(
+        [constants.data['assets_icons'].get(k, k) for k in default_icon_key_candidates]
+    )
+
+    applied_count = 0
+    for skill_name, skill in list(constants.data['skills_by_name'].items()):
+        fb = fallback_skills_by_name.get(skill_name)
+        if not fb:
+            continue
+
+        changed = False
+        # Description/Effect fallback: avoid copying KToS text into iTOS; keep empty for EN
+        if str(getattr(constants, 'region', '')).lower() not in ('itos',):
+            # Only non-itos regions may borrow text
+            if (not skill.get('Description')) or looks_like_dic_token(skill.get('Description')):
+                if fb.get('Description'):
+                    skill['Description'] = fb['Description']
+                    changed = True
+            if (not skill.get('Effect')) or looks_like_dic_token(skill.get('Effect')):
+                if fb.get('Effect'):
+                    skill['Effect'] = fb['Effect']
+                    changed = True
+
+        # Icon fallback if missing or default placeholder or not in current assets map
+        icon_val = skill.get('Icon')
+        needs_icon_fb = (
+            (not icon_val)
+            or (isinstance(icon_val, str) and icon_val in default_icon_set)
+            or (isinstance(icon_val, str) and icon_val not in constants.data['assets_icons'])
+        )
+        if needs_icon_fb and fb.get('Icon'):
+            fb_icon = fb['Icon']
+            # Merge fallback icon key into current assets if missing
+            if isinstance(fb_icon, str) and fb_icon not in constants.data['assets_icons']:
+                if fb_icon in fallback_assets_icons:
+                    constants.data['assets_icons'][fb_icon] = fallback_assets_icons[fb_icon]
+            skill['Icon'] = fb_icon
+            changed = True
+
+        if changed:
+            applied_count += 1
+
+        # Persist back into both maps
+        constants.data['skills_by_name'][skill_name] = skill
+        constants.data['skills'][skill['$ID']] = skill
+
+    if applied_count:
+        logging.info('[SKILL-FALLBACK] Applied fallback data to %d skills', applied_count)
+
+def normalize_skill_ids(constants):
+    """Ensure every skill has numeric $ID (<= 30 chars) using ClassID from skilltree."""
+    try:
+        skilltree_path = constants.file_dict['skilltree.ies']['path']
+    except Exception:
+        return
+    name_to_classid = {}
+    with io.open(skilltree_path, 'r', encoding='utf-8') as f:
+        for row in csv.DictReader(f, delimiter=',', quotechar='"'):
+            if row.get('Type') == 'Skill':
+                name_to_classid[row['SkillName']] = str(row['ClassID'])
+
+    rebuilt = {}
+    for k, skill in list(constants.data['skills'].items()):
+        sid = str(skill.get('$ID', ''))
+        if len(sid) > 30 or not sid.isdigit():
+            new_id = name_to_classid.get(skill['$ID_NAME'])
+            if not new_id:
+                digits = ''.join(ch for ch in sid if ch.isdigit())
+                new_id = digits if digits else '0'
+            skill['$ID'] = str(new_id)
+        rebuilt[skill['$ID']] = skill
+    constants.data['skills'] = rebuilt
+
+
+def normalize_skill_names(constants):
+    """Clamp overly long Name values (varchar(30)) and prettify from $ID_NAME when needed."""
+    def prettify_from_id(id_name):
+        # Drop the first segment (usually job prefix) and humanize
+        parts = id_name.split('_')
+        pretty = ' '.join(parts[1:]) if len(parts) > 1 else id_name
+        pretty = pretty.replace('  ', ' ').strip()
+        # Title case, keep reasonable length
+        pretty = pretty.title()
+        return pretty
+
+    for skill in constants.data['skills'].values():
+        name = str(skill.get('Name', ''))
+        if len(name) <= 30 and name:
+            continue
+        # Build a better candidate from ID_NAME
+        candidate = prettify_from_id(skill.get('$ID_NAME', ''))
+        if not candidate:
+            candidate = name or skill.get('$ID_NAME', '')
+        if len(candidate) > 30:
+            candidate = candidate[:30]
+        if not candidate:
+            candidate = 'Skill'
+        skill['Name'] = candidate
+        constants.data['skills_by_name'][skill['$ID_NAME']] = skill
+        constants.data['skills'][skill['$ID']] = skill
 
 
 def parse_skills(is_rebuild, constants):
@@ -60,6 +336,18 @@ def parse_skills(is_rebuild, constants):
     LUA_RUNTIME = luautil.LUA_RUNTIME
     LUA_SOURCE = luautil.LUA_SOURCE
 
+    # Preload set of skills referenced by skilltree to decide whether to include Common_ skills
+    referenced_by_skilltree = set()
+    try:
+        st_path = constants.file_dict['skilltree.ies']['path']
+        if exists(st_path):
+            with io.open(st_path, 'r', encoding='utf-8') as st_file:
+                for tr in csv.DictReader(st_file, delimiter=',', quotechar='"'):
+                    if tr.get('Type') == 'Skill' and tr.get('SkillName'):
+                        referenced_by_skilltree.add(tr['SkillName'])
+    except Exception:
+        pass
+
     ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'skill.ies')
     ies_path = constants.file_dict['skill.ies']['path']
     if(not exists(ies_path)):
@@ -67,8 +355,8 @@ def parse_skills(is_rebuild, constants):
     rows = []
     with io.open(ies_path, 'r', encoding = 'utf-8') as ies_file:
         for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-            # Ignore 'Common_' skills (e.g. Bokor's Summon abilities)
-            if row['ClassName'].find('Common_') == 0:
+            # Include 'Common_' skills only when referenced in skilltree
+            if row['ClassName'].find('Common_') == 0 and row['ClassName'] not in referenced_by_skilltree:
                 continue
             rows.append(row)
             obj                 = {}
@@ -295,6 +583,9 @@ def run_lua(skill, key_special, key_dict):
             skill[key_dict] = []
             return
         try:
+            # CaptionRatio 값들은 퍼센트로 변환 필요 여부 확인
+            is_caption_ratio = key_dict in ['CaptionRatio', 'CaptionRatio2', 'CaptionRatio3']
+            
             for lv in range(0,skill['MaxLevel']+10,1):
                 skill['Level'] = lv
                 row = LUA_RUNTIME[skill[key_special]](skill) 
@@ -302,6 +593,9 @@ def run_lua(skill, key_special, key_dict):
                     row = 0
                 elif (math.isnan(row) ):
                     row = 0
+                # CaptionRatio 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+                elif is_caption_ratio and 0 < row < 1:
+                    row = row * 100
                 var.append(row)
             skill[key_dict] = var
         except:
@@ -331,9 +625,8 @@ def parse_skills_script(constants):
                pass
 
             
-
-def parse_links(c = None):
-    if c == None:
+def parse_links(c=None):
+    if c is None:
         c = constants()
         c.build(constants.iTOS)
     parse_links_gems(c)
@@ -343,14 +636,14 @@ def parse_links_gems(constants):
     logging.debug('Parsing gems for skills...')
     
     ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'item_gem.ies')
-    ies_path = constants.file_dict[ 'item_gem.ies']['path']
-    with io.open(ies_path, 'r', encoding = 'utf-8') as ies_file:
+    ies_path = constants.file_dict['item_gem.ies']['path']
+    with io.open(ies_path, 'r', encoding='utf-8') as ies_file:
         for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
             skill = row['ClassName'][len('Gem_'):]
-
+            
             if skill not in constants.data['skills_by_name']:
                 continue
-
+            
             skill = constants.data['skills_by_name'][skill]
             skill['Link_Gem'] = constants.get_gem_link(row['ClassName'])
 
@@ -358,10 +651,10 @@ def parse_links_gems(constants):
 def parse_links_jobs(constants):
     logging.debug('Parsing jobs for skills...')
     ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'skilltree.ies')
-    ies_path = constants.file_dict[ 'skilltree.ies']['path']
+    ies_path = constants.file_dict['skilltree.ies']['path']
 
     z = []
-    with io.open(ies_path, 'r', encoding = 'utf-8') as ies_file:
+    with io.open(ies_path, 'r', encoding='utf-8') as ies_file:
         for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
             z.append(row)
             # Ignore discarded skills

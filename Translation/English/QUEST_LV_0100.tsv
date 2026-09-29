@@ -5721,7 +5721,7 @@ QUEST_LV_0100_20150317_005720	Defeat Merge	머지 처치
 QUEST_LV_0100_20150317_005721	Removed the magic circle that was trapping Goddess Saule, but it is not enough. Talk to Goddess Saule again.	사울레 여신을 압박하고 있던 구속 마법진을 풀었지만 그것으론 아직 부족한 것 같습니다. 사울레 여신과 다시 대화해 보세요.				
 QUEST_LV_0100_20150317_005722	Collect the offering tools at Altar Grand Gallery.	대회랑에서 제사 도구 수집				
 QUEST_LV_0100_20150317_005723	Goddess Saule says the observer Clymen hid into the dimensional crack, but her strength isn't recovered yet so she cannot find him. Find the offering tools at Altar Grand Gallery to help the goddess regain her powers. 	사울레 여신은 감시자 클라이멘이 차원의 틈 속으로 숨어버렸지만 자신의 힘이 완전히 돌아오지 못했기 때문에 찾기 힘들다고 합니다. 사울레 여신에게 힘을 보탤 수 있도록 대회랑에서 제사 도구를 찾아 주세요.				
-QUEST_LV_0100_20150317_005724	{memo This line is used when both giving multiple items and a single item}Give it to Goddess Saule	사울레 여신에게 전달				
+QUEST_LV_0100_20150317_005724	Give it to Goddess Saule	사울레 여신에게 전달				
 QUEST_LV_0100_20150317_005725	Found the materials to help the goddess. Give them to the goddess.	사울레 여신에게 힘을 보탤 제사 도구를 찾았습니다. 사울레 여신에게 전해 주세요.				
 QUEST_LV_0100_20150317_005726	Done preparing to help the goddess regain her strength. Talk to Goddess Saule.	사울레 여신이 마족을 찾는 데 힘을 보탤 준비를 마쳤습니다. 사울레 여신과 대화해 보세요.				
 QUEST_LV_0100_20150317_005727	Defeat the monsters nearby.	주변의 몬스터를 처치				
@@ -10913,7 +10913,7 @@ QUEST_LV_0100_20151102_010911	---- --- --- a researchy on the security measures 
 QUEST_LV_0100_20151102_010912	---- ----- confirm it in the lab --------	---- ----- 실험실에서 확인을 --------				촌장의 손녀
 QUEST_LV_0100_20151102_010913	They have been conducting experiments to corrupt the lake.	그들은 여기서 계속 호수를 오염시키는 실험을 해왔던 것 같아요.				촌장의 손녀
 QUEST_LV_0100_20151102_010914	Go to my grandfather. He is at the Absenta Reservoir.	할아버님께 가보세요. 압셈타 수원지로 가셨을거에요.				촌장의 손녀
-QUEST_LV_0100_20151102_010915	You came.	오셨습니까?				
+QUEST_LV_0100_20151102_010915	You came.	오셨습니까?				전승자 우그뉴스
 QUEST_LV_0100_20151102_010916	I will pray to this obelisk to accept our offerings.{nl}Could you go to the other obelisk and submit the offerings?	저는 이 오벨리스크에 공물을 받치고 기도드리겠습니다.{nl} 다른 곳에도 오벨리스크가 있던데 그곳에 공물을 받쳐주실 수 있나요?				삼소나스
 QUEST_LV_0100_20151102_010917	I will pray to the goddess. {nl}I appreciate it if you could give the offerings to the goddess in the other place as well.	여신께 기도드리겠습니다. 다른 곳에 공물을 부탁드립니다.				삼소나스
 QUEST_LV_0100_20151102_010918	Hmm? A monster appeared again?{nl}That's strange, the obelisk I was praying to did indeed turn blight red but nothing happened...{nl}We need to find another way.{nl}Thank you for your help. I will tell the others.	음? 몬스터가 나타나 공격했다구요?{nl}이상하네요 저는 공물을 받치고 기도드리자 오벨리스크가 붉은 빛을 내긴 했지만 아무 일도 없었는데...{nl}다른 방법을 찾아봐야겠네요.{nl}도와주셔서 감사합니다.{nl}저는 먼저 마을 사람들에게 돌아가 보겠습니다.				삼소나스
@@ -14852,7 +14852,7 @@ QUEST_LV_0100_20160323_014849	Next time, I'll fight at the front line. {nl}I'm p
 QUEST_LV_0100_20160323_014850	Then we have no choice.{nl}As Erikas said, can you find Legwyn at Mires Grave using the Scroll of the Dead?{nl}I will stay here so that Erikas won't escape. 	어쩔 수 없죠.{nl}에리카스가 말한 대로 미레스 무덤가에서 망자 스크롤로 르귄님을 찾아 주시겠어요?{nl}저는 에리카스가 도망가지 못하도록 지키고 있으려고요.	QUEST_LV_0100_20151001_008588	Then we have no choice.{nl}As Erikas said, can you find Legwyn at Mires Grave using the Scroll of the Dead?{nl}I will stay here so that Erikas won't escape. 	어쩔 수 없죠.{nl}에리카스가 말한 대로 미레스 무덤가에서 망자 스크롤로 르귄님을 찾아 주시겠어요?{nl}저는 에리카스가 도망가지 못하도록 지키고 있으려구요.	스콰이어 윌리야
 QUEST_LV_0100_20160323_014851	Attention! Please read.{nl}Should the purifier be disabled, toxic substances will fill Crystal Mine 3F.{nl}Please proceed with the following steps as quickly as possible in the event of a purifier failure.	주의! 꼭 읽어주세요.{nl}정화장치가 정지하면 머지않아 유해물질이 수정광산 3층에 가득차게 됩니다.{nl}만약 정화장치가 정지했다면 다음 방법을 사용하여 동력을 최대한 빨리 복구해주세요.				경고문
 QUEST_LV_0100_20160323_014852	1. Next to the purifier 	1. 정화장치 곁의 				경고문
-QUEST_LV_0100_20160323_014853	Emergency Power Source	비상 동력장치				
+QUEST_LV_0100_20160323_014853	Emergency Power Source	비상 동력장치				경고문
 QUEST_LV_0100_20160323_014854	 check it{nl}2. 	를 확인{nl}2. 				경고문
 QUEST_LV_0100_20160323_014855	: take it and find magic crystals on 3F that have yet to be collected.{nl}3. 	를 들고 3층 곳곳에 아직 채굴하지 않은 마력이 담긴 수정을 찾자{nl}3. 	QUEST_LV_0100_20160323_014853	Emergency Power Source	비상 동력장치	경고문
 QUEST_LV_0100_20160323_014856	: collect the crystal's magic on it!{nl}4. 	에 마력이 담긴 수정의 마력을 수집하자!{nl}4. 				경고문
@@ -15841,7 +15841,7 @@ QUEST_LV_0100_20161005_015838	This will not do.{nl}The Tala and the demons are s
 QUEST_LV_0100_20161005_015839	There's a magic circle in the Abmathai Vacant Lot that leads to Goddess Dalia.{nl}You should meet Kupole Trija there.	압마타이 공터에 가면 달리아 여신께 바로 이동할 수 있는 마법진이 있어요.{nl}그 곳에서 큐폴 트리아를 만나봐야겠어요.				큐폴 메데나
 QUEST_LV_0100_20161005_015840	I think I've found the Teleportation Magic Circle.	이동 마법진을 찾은 것 같다.				PC
 QUEST_LV_0100_20161005_015841	Please, let Goddess Dalia be safe...	달리아 여신께서 무사하셔야 할 텐데요..				큐폴 메데나
-QUEST_LV_0100_20161005_015842	Uh...?	어..?				
+QUEST_LV_0100_20161005_015842	Uh...?	어..?				큐폴 메데나
 QUEST_LV_0100_20161005_015843	{nl}This is odd...{nl}The magic circle has lost its light...{nl}	{nl}이상하다..?{nl}이동 마법진이 빛을 잃었어요..{nl}				큐폴 메데나
 QUEST_LV_0100_20161005_015844	Something is sure to have happened.{nl}I need to ask Kupole Trija.	무슨 일이 있었던 게 분명해요.{nl}큐폴 트리아에게 물어봐야겠어요.				큐폴 메데나
 QUEST_LV_0100_20161005_015845	Ah... If Medena brought you here...{nl}Are you perhaps the Revelator?{nl}	아.. 메데나가 모시고 왔다는 건..{nl}혹시 구원자신가요?{nl}				큐폴 트리아
@@ -17789,3 +17789,160 @@ QUEST_LV_0100_20211021_017786	Complete the mission suggested by the Luchador Mas
 QUEST_LV_0100_20211021_017787	Luchador Master is curious about your talent{nl}Complete the tasks suggested by Luchador Master to prove that you are one of the best players on the continent.	루차도르 마스터는 당신이 얼마나 실력가인지 궁금하다고 합니다{nl}이 대륙에서 손꼽을 만한 실력가임을 증명하기위해 루차도르 마스터가 제안한 일들을 완료하세요				
 QUEST_LV_0100_20211021_017788	Return to Luchador Master	루차도르 마스터에게 돌아가기				
 QUEST_LV_0100_20211021_017789	This will make the Luchador Master recognize your skills{nl}Go back to the Saalus Convention and talk to Luchador Master.	이 정도면 루차도르 마스터가 당신의 실력을 인정해 줄 겁니다{nl}살러스 수녀원으로 돌아가 루차도르 마스터와 대화하세요				
+QUEST_LV_0100_20211217_017790	The sacrifices and asceticism you made for all the people have become a great example for our Sadhu, who practice soul.{nl}So I invited you here to judge what you can achieve on our behalf.	당신의 만민을 위한 희생과 고행이 영혼 수행을 하는 우리 사두들에게 큰 귀감이 되었습니다.{nl}그리하여 저는 우리를 대표하여 당신이 이룰 수 있는 경지를 가늠하기 위해 당신을 이리로 초대하였습니다.				사두 마스터
+QUEST_LV_0100_20211217_017791	We are the highest level to which the soul can reach through asceticism.	우리는 당신이 고행을 통해 영혼이 도달할 수 있는 최고의 경지.				사두 마스터
+QUEST_LV_0100_20211217_017792	We'd like to find out if you can reach the {#0431B4}Paramahansa{/} by yourself.{nl}Are you prepared to challenge the limits of the soul?	{#0431B4}파라마함사{/}에 당신 스스로가 깨우쳐 도달할 수 있을지 알아보고자 합니다.{nl}영혼의 경지에 도전할 준비가 되셨는지요.				사두 마스터
+QUEST_LV_0100_20211217_017793	We, Sadhu, must break the skin of our flesh and reach the highest level that a soul can reach.	우리 사두 모두는 스스로 육체의 껍질을 깨어내고 영혼이 도달할 수 있는 최고의 경지에 도달해야합니다.				사두 마스터
+QUEST_LV_0100_20211217_017794	If you train in a correct way and walk on the path of asceticism...{nl}the moonlight of the dark night will be warm, and the pain of hunger will be a fragrant breath.	당신이 올바른 수행으로 고행의 길을 걷다면..{nl} 어둔 밤의 달 빛은 따스할 것이며 허기의 고통은 향긋한 날숨이 될 것입니다.				사두 마스터
+QUEST_LV_0100_20211217_017795	We send you our congratulations and awe to the level you've reached.{nl}We will all look at the path you have taken and follow it.	당신의 경지에 축하와 경외를 보냅니다.{nl}우리 모두는 당신이 나아간 길을 바라보고 그 뒤를 따를 것입니다.				사두 마스터
+QUEST_LV_0100_20211217_017796	Sooner or later, you will be named 'Paramahansa' among us.	이윽고 당신은 우리에게 파라마함사라고 불리울 것 입니다.				사두 마스터
+QUEST_LV_0100_20211217_017797	Where I come from, a Hwarang starts learning to serve the king and parents from the master.{nl}You take the first step in receiving the master's instruction and build loyalty and trust with your brothers and sisters.{nl}But in this kingdom where you belong, the situation doesn't seem to be appropriate to serve or honor someone.	화랑이라 함은 내 나라에선 본디, 스승으로부터 왕과 부모를 모시 것부터 배우기 시작한다네.{nl}스승의 가르침을 받는 것에서 첫발을 내디디고 나아가 충성과 충의 그리고 형제, 자매들과의 신뢰를 쌓아가지.{nl}허나 자네가 속한 이 왕국에선 누군가를 모시거나 기리기엔 상황이 여의치 않은 것 같네.				화랑 마스터
+QUEST_LV_0100_20211217_017798	But do not worry, the way of a Hwarang is to carry out and enlighten the teacher and the ancestor's teachings in daily life.{nl}Even if the content of training changes a little, it can be called a Hwarang the ideal is pursued by effort.	하지만 걱정하지 말게 화랑도란 스승과 선현의 가르침을 일상에서 수행하고 깨우치는 것.{nl}수련의 내용이 조금 달라져도 추구하는 이상을 노력으로 성취할 수만 있다면 화랑이라 불릴 수 있지.				화랑 마스터
+QUEST_LV_0100_20211217_017799	So? How do you think? I would gladly be your master to guide you.{nl}Since the person I'm waiting for seems yet to come.	어떤가? 나라면 자네를 위해 스승 역할을 해줄 수도 있다네.{nl}마침 기다리는 사람도 아직 오지 않은 것 같으니 말일세.				화랑 마스터
+QUEST_LV_0100_20211217_017800	One day, you will have to take responsibility for those who follow you.{nl}I hope that day arrives as late as possible.	자네도 언젠가 자네를 따르는 자들을 책임져야 할 날이 오겠지.{nl}그런 날이 최대한 늦게 찾아오길 바라네.				화랑 마스터
+QUEST_LV_0100_20211217_017801	A great Hwarang grows under a great master.{nl}I believe you are now ready to look over this area on your own.{nl}Don't forget what I taught you.{nl}	훌륭한 스승에게서 더 훌륭한 생도가 나오는 법.{nl}이제 자네에게 이 지역을 맡겨도 좋을 것 같네.{nl}내가 지도한 내용을 잊지말게나.{nl}				화랑 마스터
+QUEST_LV_0100_20211217_017802	If you train only for the kingdom and the goddess, you can't say that you're practicing the way of a Hwarang.{nl}You should be able to gain knowledge and experience in literature, academics, customs, and enjoying games with restraint.{nl}How will someone who does not have the knowledge to look at things correctly judge those who follow the kingdom and the goddess?	왕국과 여신만을 위해 무예만을 갈고 닦는다면 화랑도를 올곧이 수행한다고 할 수 없다네.{nl}문예와 학문, 풍류 그리고 절제된 놀이에서도 지식과 경험을 얻을 수 있어야하지.{nl}사물과 현상을 옳바르게 바라볼 지식이 없는 자가 따르는 왕국과 여신을 사람들은 어떻게 평할 것인가.				화랑 마스터
+QUEST_LV_0100_20211217_017803	Can you call yourself a Hwarang?{nl}I believe my people would have different opinions.	자네는 스스로를 화랑이라 부를 수 있는가?{nl}내 나라의 사람들은 생각이 좀 다를것 같은데..				화랑 마스터
+QUEST_LV_0100_20211217_017804	I don't think you've trained yourself enough yet...	아직 수행을 충분히 하지 않은 것 같네만..				화랑 마스터
+QUEST_LV_0100_20211217_017805	Did you really do all of that?{nl}You indeed are an interesting fellow.{nl}To be honest with you, I did not think you were capable of it.{nl}It was half a joke, really...	그걸 정말 다 해냈단 말인가?{nl}자넨 정말 재밌는 사람이구만.{nl}솔직히 전부 해낼거라고 생각하진 않았거든.{nl}반쯤 농담으로 시킨건데..				화랑 마스터
+QUEST_LV_0100_20211217_017806	Don't be too pissed off.{nl}If a Hwarang loses its composure in this situation, won't it injure his or her prestige in front of the followers under command?	너무 그렇게 화내진 말게나.{nl}화랑이 이런 상황에서 평정심을 잃으면 휘하의 낭도들에게 체면이 안 서지 않는가?				화랑 마스터
+QUEST_LV_0100_20211217_017807	[Sadhu] The Disciplinant of Spirit	[사두] 영혼 수행자				
+QUEST_LV_0100_20211217_017808	I am ready to practice the asceticism	고행을 수행할 준비가 되었다고 한다				
+QUEST_LV_0100_20211217_017809	I'm in pain enough for now	지금도 충분히 힘들다고 한다				
+QUEST_LV_0100_20211217_017810	[Hwarang] Bouquet of the Goddess	[화랑] 여신의 향도				
+QUEST_LV_0100_20211217_017811	I will follow the path of the Hwarang.	화랑의 길을 걷겠다고 한다				
+QUEST_LV_0100_20211217_017812	[Hwarang] The Verity of Appreciating Arts 	[화랑] 풍류의 도				
+QUEST_LV_0100_20211217_017813	Ask for a chance to prove yourself.	증명할 기회를 요구한다.				
+QUEST_LV_0100_20211217_017814	Say that the evaluation of others is not necessary.	타인의 평가는 필요 없다고 한다.				
+QUEST_LV_0100_20211217_017815	Find the Sadhu Master at Akmens Ridge	아크멘스 능선의 사두 마스터 찾아가기				
+QUEST_LV_0100_20211217_017816	Sadhu Master at Akmens Ridge is waiting to talk with you	아크멘스 능선의 사두 마스터가 당신과의 대화를 기다리고 있습니다				
+QUEST_LV_0100_20211217_017817	Complete the tasks suggested by Sadhu Master	사두 마스터가 제안한 일들을 완수하기				
+QUEST_LV_0100_20211217_017818	Sadhu Master wishes to test if you can reach a certain high level.{nl}Practice her proposed asceticism to prove the enlightenment you have achieved.	사두 마스터는 당신이 높은 경지에 오를 수 있는지 시험하고자 합니다.{nl}그녀가 제안한 고행을 수행하여 당신이 성취한 깨달음을 증명하세요.				
+QUEST_LV_0100_20211217_017819	Return to Sadhu Master	사두 마스터에게 돌아가기				
+QUEST_LV_0100_20211217_017820	No one can doubt the state you've reached.{nl}Return to Akmens Ridge and talk to Sadhu Master	누구도 당신이 도달한 경지를 의심할 수 없습니다.{nl}이제 아크멘스 능선으로 돌아가 사두 마스터와 대화하세요				
+QUEST_LV_0100_20211217_017821	Go to the Hwarang Master at Orsha	오르샤의 화랑 마스터 찾아가기				
+QUEST_LV_0100_20211217_017822	A stranger is waiting for someone at the gate outside Orsha.{nl}Residents are wondering who he is as he smiles while observing passers-by outside for a few days.{nl}Go to the Hwarang master Saraham at Orsha.	오르샤 외곽의 성문에 이방인이 누군가를 기다리고 있습니다.{nl}몇 날 며칠을 해자 밖의 행인들을 관찰하며 미소 짓는 모습에 주민들은 그가 누군지 궁금해하고 있습니다.{nl}오르샤에서 화랑 마스터 사라함에게 찾아가 봅시다.				
+QUEST_LV_0100_20211217_017823	Complete the tasks suggested by Hwarang Master	화랑 마스터가 제안한 수행들을 완수하기				
+QUEST_LV_0100_20211217_017824	Hwarang Master wants to check how sincere you are to the way of the Hwarang.{nl}Carry out the training suggested by the Hwarang Master.	화랑 마스터는 당신이 화랑도에 얼마만큼 진심인지 확인하고자 합니다{nl}화랑 마스터가 제안한 수련들을 수행하세요				
+QUEST_LV_0100_20211217_017825	Return to Hwarang Master	화랑 마스터에게 돌아가기				
+QUEST_LV_0100_20211217_017826	This will make the Hwarang Master recognize your skills{nl}Go back to Orsha and talk to Hwarang Master.	이 정도면 화랑 마스터가 당신의 실력을 인정해 줄 겁니다{nl}오르샤로 돌아가 화랑 마스터와 대화하세요				
+QUEST_LV_0100_20220204_017827	Ah....{nl}What a pain in the neck.{nl}It's not wrong to charge against the demons..{nl}But the number of returning soldiers are getting less.	아아......{nl}골치 아프게 되었네.{nl}마족들을 상대로 기세 좋게 돌격하는 것도 좋지만..{nl}예전과 다르게 무사히 돌아오지 못하는 녀석들이 많아지고 있어.				하카펠 마스터
+QUEST_LV_0100_20220204_017828	{nl}As an instructor and master, I am in utter disgrace.{nl}However, giving advice to a commander who is admired both by the people of the kingdom and the Hackapells, is not an easy thing to do.{nl}A real pain.	{nl}교관이자 마스터로서 내 체면이 말이 아니야.{nl}그렇다고 왕국민과 하카펠들에게 선망받는 연대장에게 내가 뭐라고 충고하기도 애매해.{nl}정말 골치 아픈 일이야.				하카펠 마스터
+QUEST_LV_0100_20220204_017829	{nl}That's why I came up with this brilliant idea.{nl}Adjust the military a little bit and run it by the Revelators.	{nl}그래서 한가지 묘안을 생각해 냈다네.{nl}병과를 조금 손봐서 하카펠리테르를 양성하고 계시자들을 중심으로 운영하는 거지.				하카펠 마스터
+QUEST_LV_0100_20220204_017830	{nl}Experienced Revelators, both courageous and wise, will easily make great performances in battles, and naturally, people will talk about this.{nl}If their heroic tale spreads, the reputation for Hackapell and Hakkapeliter will become better.	{nl}경험이 많은 계시자라면 용맹과 지혜를 겸비했으니 전과도 올리고 살아 돌아와서 사람들 입에 오르내리고.{nl}영웅담이 퍼진다면 왕국 내에서 더 하카펠과 하카펠리테르에 대한 평가도 좋아지겠지.				하카펠 마스터
+QUEST_LV_0100_20220204_017831	{nl}How about it? I assume my suggestion is tempting to you based on your wisdom, courage, and battle techniques you've trained so far.{nl}If the outcome is good, I could even recommend you as the Commander when we create the Hakkapeliter Solidarity.	{nl}어떤가? 자네가 그동안 단련한 전투기술과 지혜, 용맹함이라면 내 제안이 솔깃할 거 같은데.{nl}성과가 좋다면 추후에 하카펠리테르 연대를 창설하면 자네를 연대장으로 추천할 수도 있다네.				하카펠 마스터
+QUEST_LV_0100_20220204_017832	{nl}Do you need some time to think?	{nl}생각할 시간이 필요한가?				하카펠 마스터
+QUEST_LV_0100_20220204_017833	Great! {nl}That's what I've wanted to hear!	좋아! {nl}그게 바로 내가 듣고 싶었던 말이야!				하카펠 마스터
+QUEST_LV_0100_20220204_017834	Just forget all about what I've said, and come back to me when you finish the trainings I suggested.	앞에서 이야기 한 건 잊고 내가 제시한 훈련들을 모두 해내거든 다시 내게 돌아오게나.				하카펠 마스터
+QUEST_LV_0100_20220204_017835	Think of yourself as the 1st trainee of Hackapell and show the successor and be the example to them.	하카펠리테르 1기 수련생이라고 생각하고 앞으로 자네 뒤를 따를 후임들에게 좋은 모습을 보여주게나.				하카펠 마스터
+QUEST_LV_0100_20220204_017836	Brilliant!{nl}Can't be better than this.	훌륭해!{nl}이보다 좋을 수 없지.				하카펠 마스터
+QUEST_LV_0100_20220204_017837	{nl}I already hear people praising Hakkapeliter!	{nl}벌써 사람들이 하칼펠리테르를 칭송하는 소리가 들리는 것 같군!				하카펠 마스터
+QUEST_LV_0100_20220204_017838	{nl}What? You don't?	{nl}뭐? 안 들린다고?				하카펠 마스터
+QUEST_LV_0100_20220204_017839	{nl}Ha ha.	{nl}하하.				하카펠 마스터
+QUEST_LV_0100_20220204_017840	{nl}Show your imagination.	{nl}상상력을 발휘해보게나.				하카펠 마스터
+QUEST_LV_0100_20220204_017841	I will give you one of them if you pay me the right price.{nl}I will take as same as the city tariff rate.{nl}Oh, and have you ever heard about the Ancient Golden Coin?{nl}I'm collecting those nowadays.{nl}If you give me the Ancient Golden Coin, I will give you for free. How's that? Want to trade?	일정량의 실버를 주면 내가 모은 보물 중 하나를 주지.{nl}실버는 도시 내 적립요율을 적용한 만큼 받아갈 테니 알아두고{nl}아! 그리고, 혹시 오래된 황금 주화라고 들어봤나?{nl}내가 요즘 그거를 수집하고 있거든.{nl}오래된 황금 주화를 준다면 공짜로 물건과 바꿔주지. 어때? 교환할 텐가?				유랑 상인 게랄다스
+QUEST_LV_0100_20220204_017842	Object Interaction	오브젝트 상호작용				
+QUEST_LV_0100_20220204_017843	Morothline	모로스라인				
+QUEST_LV_0100_20220204_017844	[Hakkapeliter] Running Towards Death	[하카펠리테르] 내달리는 죽음				
+QUEST_LV_0100_20220204_017845	I'm inevitable	그 누구도 날 막을 수 없다				
+QUEST_LV_0100_20220204_017846	Cherish yourself	자기자신을 소중히 여기겠다				
+QUEST_LV_0100_20220204_017847	Go to the Hackapell Master at Istora Ruins	이스토라 유적지의 하카펠 마스터 찾아가기				
+QUEST_LV_0100_20220204_017848	Complete the tasks suggested by Hackapell Master	하카펠 마스터가 제안한 수행들을 완수하기				
+QUEST_LV_0100_20220204_017849	Return to Hackapell Master	하카펠 마스터에게 돌아가기				
+QUEST_LV_0100_20220426_017850	I am studying how much power Keraunos can use in battle with demons in Klaipeda.{nl}In order to do so, there are a lot of things to experiment to do.	저는 클라페다에서 케라우노스가 마족과의 전투에서 어느 정도 위력을 낼 수 있을지 연구하고 있어요.{nl}그러기 위해선 실험할 게 많죠.				오위니아 딜벤
+QUEST_LV_0100_20220426_017851	Every single class started from the unknown, by failing countless times, over and over again.{nl}That is not very different between those who progressed by accepting the power of the Goddesses and the spirits, or by experimenting to collect results like us...	모든 클래스는 미지의 영역에서 하나하나 실패를 거듭하며 시작했죠.{nl}여신과 정령들의 힘을 빌어 그 힘에 순응하여 발전했건 우리처럼 유효한 결과를 모으기 위해 실험을..				오위니아 딜벤
+QUEST_LV_0100_20220426_017852	I talked too much.{nl}Long things short, I would like you to help me so that I can use the unstable Lightning power.	말이 길어졌네요.{nl}요약하면 불안정한 번개의 힘을 이용하기 위해 날 좀 도와줬으면 좋겠어요.				오위니아 딜벤
+QUEST_LV_0100_20220426_017853	If we divide and separate the power of the lightning that once relied solely on the spirits and magic, smaller and smaller..{nl}we will be able to control this power on our own.	정령과 주술에 의존하던 번개의 힘을 하나하나 분리하고 더 작게 나눈다면..{nl}우리는 이 힘을 통제할 수 있을 거에요.				오위니아 딜벤
+QUEST_LV_0100_20220426_017854	Thank you for being with me.{nl}Now I might handle this power safer.	함께 해줘서 고마워요.{nl}이정도면 좀 더 안전하게 이 힘을 다룰 수 있겠어요.				오위니아 딜벤
+QUEST_LV_0100_20220426_017855	What a trouble.{nl}My assistant, who was in charge of the experiment, blew up a fishing village while conducting an experiment on the south coast.{nl}The words did not spread for now since people there all fled to Klaipeda..{nl}But I can not leave my experiment at the hands of this loose-cannon assistant.	곤란하네요.{nl}실험을 맡겼던 조수가 남쪽 해안가에서 실험을 하다가 어촌 하나를 날려버렸다고 해요.{nl}지금은 사람들이 클라페다로 모두 피난와서 소문이 퍼지진 않았지만..{nl}이런 사고를 친 조수에게 연구를 더 맡길 수는 없어요.				오위니아 딜벤
+QUEST_LV_0100_20220426_017856	Now do you get why I am in trouble?	이제 제가 왜 곤란한지 아시겠죠?				오위니아 딜벤
+QUEST_LV_0100_20220426_017857	Please be sure to stay near the demon camp when doing the dangerous experiments.	위험한 실험을 할 때는 꼭 마족들 주둔지 근처에서 해주세요.				오위니아 딜벤
+QUEST_LV_0100_20220426_017858	{nl}Well..{nl}Still, even if the experiment fails, it'll be a help to the Kingdom.	{nl}뭐..{nl}실험이 실패해도 왕국에 도움은 조금 되겠죠.				오위니아 딜벤
+QUEST_LV_0100_20220426_017859	Thanks.{nl}It'll be enough.	고마워요.{nl}이정도면 충분해요.				오위니아 딜벤
+QUEST_LV_0100_20220426_017860	Visit Beauty Shop	뷰티샵 방문하기				
+QUEST_LV_0100_20220426_017861	[Keraunos] Static Electricity of Rationality and Providence	[케라우노스] 순리와 섭리의 박리대전				
+QUEST_LV_0100_20220426_017862	Thank you for giving me a chance to contribute to the research	연구에 기여할 기회를 줘서 고맙다고 한다				
+QUEST_LV_0100_20220426_017863	You'd better look for another assistant	다른 조수를 찾는 게 좋겠다고 한다				
+QUEST_LV_0100_20220426_017864	[Keraunos] Thunder Flower	[케라우노스] 번개꽃				
+QUEST_LV_0100_20220426_017865	Sorry, something else came up	급한 볼 일이 생겼다고 한다				
+QUEST_LV_0100_20220426_017866	Visit Beauty Shop in Klaipeda	클라페다의 뷰티샵에 방문하기				
+QUEST_LV_0100_20220426_017867	You can decorate your character in the Beauty Shop{nl}Visit the Beauty Shop	뷰티샵에서 캐릭터를 다양하게 꾸밀 수 있습니다{nl}뷰티샵에 방문해보세요				
+QUEST_LV_0100_20220426_017868	Go to Keraunos Master in Pyromancer Master's Lab	파이로맨서 마스터의 연구실의 케라우노스 마스터 찾아가기				
+QUEST_LV_0100_20220426_017869	Pyromancer Master's laboratory, located at Klaipeda, is recruiting researchers.{nl}According to the rumors, thunder is heard inside the lab and the Pyromancer Master often visits Rozalija with a nervous breakdown.{nl}They probably need someone to help with their research.{nl}Let's see if Pyromancer Master's Lab in Klaipeda needs any help.	클라페다 내부에 위치한 파이로맨서 마스터의 연구실에서 연구자를 모집하고 있다고 합니다.{nl}들리는 소문으로는 연구실 내부에서 간혹 천둥소리가 들리고 있고 파이로맨서 마스터가 신경쇄약으로 로잘리아에게 자주 찾아간다고 합니다.{nl}아무래도 연구를 도와줄 사람이 필요한 것 같습니다.{nl}클라페다 파이로맨서 마스터의 연구실에 도움이 필요한지 확인해 봅시다.				
+QUEST_LV_0100_20220426_017870	Complete the reseach suggested by the Keraunos Master	케라우노스 마스터가 제안한 연구들을 완수하기				
+QUEST_LV_0100_20220426_017871	Keraunos Master is desperately waiting for the results of your experience.{nl}Let's do your best until the results of the experiment are satisfactory.	케라우노스 마스터는 당신의 실험 결과를 간절히 기다리고 있습니다.{nl}실험 결과가 만족스러울 때까지 정진합시다.				
+QUEST_LV_0100_20220426_017872	Go back to Keraunos master	케라우노스 마스터에게 돌아가기				
+QUEST_LV_0100_20220426_017873	This would help Keraunos master enough.{nl}Go back to Pyromancer Master's Lab and talk to Keraunos Master.	이 정도면 케라우노스 마스터에게 충분한 도움을 줄 수 있을 것 같습니다.{nl}파이로맨서 마스터의 연구실로 돌아가 케라우노스 마스터와 대화하세요.				
+QUEST_LV_0100_20220603_017874	TOS Summer Campfire 2022	TOS 봄 캠핑 2022				
+QUEST_LV_0100_20220614_017875	[Lama Master] Astius	[라마 마스터] 아스티유스				
+QUEST_LV_0100_20220614_017876	The path of the Lama is only open to those who devote themselves to the weak. {nl} I'm well aware of your reputation, Revelator. {nl} Will you walk the path of the Lama?	라마는 약자들을 위해 헌신하는 자에게만 허락된 길입니다. {nl} 계시자님의 명성은 익히 들었습니다. {nl} 라마의 길을 걸어보시겠습니까?				[라마 마스터] 아스티유스
+QUEST_LV_0100_20220614_017877	Go and help those suffering.	돌아다니며 고통받는 이들을 도와주십시오.				[라마 마스터] 아스티유스
+QUEST_LV_0100_20220614_017878	Excellent. {nl} You, Revelator, are well qualified.	훌륭하십니다. {nl} 계시자님은 자격이 충분하십니다.				[라마 마스터] 아스티유스
+QUEST_LV_0100_20220614_017879	'Training ourselves and helping the weak' are things that never leave a Lama's mind. {nl} Isn't this the same for you, Revelator?	라마는 한순간도 수련과 약자돕기를 잊지 않습니다. {nl} 계시자님 또한 그러시지 않습니까? 				라마 마스터
+QUEST_LV_0100_20220614_017880	Please help those in need and focus in training yourself. {nl} I will give you a symbolic clothing of us, Lamas, when you overcome the trials I assign you. 	 계시자님 약자들을 돕고, 수련에 정진해주십시오. {nl} 제가 주는 시련을 이겨내신다면 라마임을 입증하는 옷을 드리겠습니다.				라마 마스터
+QUEST_LV_0100_20220614_017881	Hurry up and start your journey, helping the weak.	빨리 길을 떠나 약자들을 도와주십시오.				라마 마스터
+QUEST_LV_0100_20220614_017882	Excellent. {nl} Here is the clothing that proves you are a Lama.	훌륭하십니다. {nl} 계시자님 라마임을 나타내는 옷을 드리도록 하겠습니다.				라마 마스터
+QUEST_LV_0100_20220614_017883	Kedoran Merchant Support Shop_STM	케도란 상단 지원 상점_STM				
+QUEST_LV_0100_20220614_017884	Season Server Guild Event_STM	시즌 서버 길드 이벤트_STM				
+QUEST_LV_0100_20220614_017885	[Lama] Rescuer's Path	[라마] 구난의 길				
+QUEST_LV_0100_20220614_017886	I will dedicate myself to helping the weak.	약자들을 구원하는데 이바지하겠다.				
+QUEST_LV_0100_20220614_017887	I have more important things to do.	그런 건 귀찮은 일이야.				
+QUEST_LV_0100_20220614_017888	[Lama] The Clothing of the Rescuer	[라마] 구난하는 자의 옷				
+QUEST_LV_0100_20220614_017889	I am up to something else at the moment.	지금은 다른 일을 해야한다고 한다.				
+QUEST_LV_0100_20220614_017890	Go to the Lama Master at the Saalus Convent	살러스 수녀원의 라마 마스터 찾아가기				
+QUEST_LV_0100_20220614_017891	The Lama Master at the Saalus Convent seems to be interested in you. {nl} Go an start a conversation with him.	살러스 수녀원에 있는 라마 마스터가 당신에게 관심을 보이고 있다. {nl} 찾아가서 대화를 해보자.				
+QUEST_LV_0100_20220614_017892	Take care of the tasks the Lama master gave you	라마 마스터가 준 일들 처리하기				
+QUEST_LV_0100_20220614_017893	The Lama master says helping people in need is the way Lama works. {nl} Gain Lama Master's approval by completing the tasks from him.	라마 마스터는 어려운 사람들을 돕는 것이 라마의 길이라고 한다. {nl} 그가 준 일들을 처리해서 라마 마스터에게 인정을 받자.				
+QUEST_LV_0100_20220614_017894	You finished the tasks from the Lama Master. {nl} Return to him and gain the approval.	라마 마스터가 준 일을 모두 처리했다. {nl} 그에게 돌아가 자격을 인정받자.				
+QUEST_LV_0100_20220614_017895	Go find Astius at the Saalus Convent	살러스 수녀원의 아스티유스를 찾아가기				
+QUEST_LV_0100_20220614_017896	There is someone that helps the weak at the Saalus Convent. {nl} Go and find him.	살러스 수녀원에서 약자를 돕는 사람이 있습니다. {nl} 그를 찾아가세요.				
+QUEST_LV_0100_20220614_017897	Complete the tasks suggested by the Lama Master	라마 마스터가 제안한 일들을 완수하기				
+QUEST_LV_0100_20220614_017898	Lama Master wonders if you are qualified to be a Lama. {nl} Prove yourself by completing the tasks from the Lama Master.	라마 마스터는 당신에게 라마가 되기 위한 자격이 있는지 궁금해합니다. {nl} 라마 마스터가 준 일들을 처리해 자신을 증명하세요.				
+QUEST_LV_0100_20220614_017899	You finished the tasks from the Lama Master. {nl} Return to the Lama Master.	라마 마스터가 준 일들을 모두 처리했습니다. {nl} 라마 마스터에게 돌아가 보고하세요.				
+QUEST_LV_0100_20220706_017900	2022 Summer Festa	2022 썸머 페스타				
+QUEST_LV_0100_20220823_017901	2022 Harmony	2022 화합				
+QUEST_LV_0100_20221125_017902	[Jaguar Master] El Itsa	[재규어 마스터] 엘 이트샤				
+QUEST_LV_0100_20221125_017903	Jaguars should always have the strength and ruthlessness to beat their enemies.{nl}I've heard about you, Revelator. People have been talking.	재규어는 항상 적에게 이길 수 있는 강함과 무자비함을 지니고 있어야 한다.{nl}계시자 너의 이야기는 소문을 통해 들었다.				[재규어 마스터] 엘 이트샤
+QUEST_LV_0100_20221125_017904	You are indeed qualified to become a Jaguar.	너라면 재규어가 될 자격을 가지고 있지.				[재규어 마스터] 엘 이트샤
+QUEST_LV_0100_20221125_017905	But we will need to test out whether your power is the real thing.{nl}Are you ready to take the trial as a Jaguar?	하지만 너의 강함이 진짜인지 확인할 필요가 있다.{nl}재규어가 되어 시험을 받을 준비는 되었나?				[재규어 마스터] 엘 이트샤
+QUEST_LV_0100_20221125_017906	Now go and prove your power.	자, 가서 너의 힘을 증명해라.				[재규어 마스터] 엘 이트샤
+QUEST_LV_0100_20221125_017907	Excellent.{nl}You are now one of us.	훌륭하다.{nl}이것으로 너는 우리의 동료다.				[재규어 마스터] 엘 이트샤
+QUEST_LV_0100_20221125_017908	[Jaguar] Expert Hunter	[재규어] 사냥의 대가				
+QUEST_LV_0100_20221125_017909	I will prove myself.	자격을 증명하겠다고 한다.				
+QUEST_LV_0100_20221125_017910	I'm not interested at the moment.	아직은 관심이 없다고 한다.				
+QUEST_LV_0100_20221125_017911	Talk to the Jaguar Master at the Khamadon Forest	카마돈 숲의 재규어 마스터와 이야기하기				
+QUEST_LV_0100_20221125_017912	The Jaguar Master seems to be interested in your strength.{nl}Talk to the Jaguar Master at the Khamadon Forest if you want to know about Jaguar.	재규어 마스터는 당신의 실력에 관심이 있는 모양이다.{nl}재규어에 대해 알고 싶다면 카마돈 숲의 재규어 마스터와 이야기를 해보자.				
+QUEST_LV_0100_20221125_017913	Take care of the tasks the Jaguar Master gave you	재규어 마스터가 준 의뢰를 처리하기				
+QUEST_LV_0100_20221125_017914	The Jaguar Master gave you some tasks to check your strength.{nl}Clear the tasks Jaguar Mater gave you.	재규어 마스터는 당신의 실력을 확인하기 위해서 의뢰를 주었다.{nl}재규어 마스터가 준 의뢰를 처리해보자.				
+QUEST_LV_0100_20221125_017915	You finished the tasks from the Jaguar Master. {nl} Return to the Jaguar Master.	재규어 마스터가 준 의뢰를 모두 처리했다.{nl}재규어 마스터에게 돌아가서 보고하자.				
+QUEST_LV_0100_20230308_017916	Event System	이벤트 시스템				
+QUEST_LV_0100_20230424_017917	Oh, this seal is my small gift to you for saving me. {nl} It's a useful item that can enhance your equipment. {nl}	참, 이 인장은 절 구해 주신 작은 보답입니다.{nl}장비를 강화할 수 있는 요긴한 물건이지요. {nl}	QUEST_LV_0100_20150317_000582	Oh, this anvil is my small gift to you for saving me. {nl} It's a useful item that can upgrade your equipment. {nl}	참, 이 모루는 절 구해 주신 작은 보답입니다.{nl}장비를 강화할 수 있는 요긴한 물건이지요. {nl}	바이도타스
+QUEST_LV_0100_20230424_017918	Transmutation NPC	연성NPC				
+QUEST_LV_0100_20230424_017919	There is a person who is looking for you in Fedimian. Go to the Grita in Fedimian.	페디미안에서 당신을 찾는 사람이 있습니다. 페디미안의 그리타 앞으로 가 보세요.				
+QUEST_LV_0100_20230425_017920	Talk to the Battle Commander (1) : SIAUL_WEST_SOLDIER3	전투 조장에게(1) : SIAUL_WEST_SOLDIER3			
+QUEST_LV_0100_20230703_017921	Being an Engineer is just the beginning!	엔지니어가 되었다고 모든 게 끝난 건 아니야!				[엔지니어 마스터]마가렛 이네자
+QUEST_LV_0100_20230703_017922	Now, if you want to think like an Engineer, you need to wear the clothes we engineers make.{nl}Which isn't given for free either!{nl}Go and complete the tasks I give you.	이제 엔지니어로써 마음가짐을 다 잡으려면 우리 공학자들이 만든 옷을 입어야지.{nl}이것도 공짜로 줄 수 없지.{nl}내가 준 과제를 해결하고 돌아와.				[엔지니어 마스터]마가렛 이네자
+QUEST_LV_0100_20230703_017923	I knew it.	역시 내 안목은 틀리지 않았어.				[엔지니어 마스터]마가렛 이네자
+QUEST_LV_0100_20230703_017924	Well done!{nl}You can call yourself a skilled Engineer now.	고생했어.{nl}이제 넌 훌륭한 엔지니어야.				[엔지니어 마스터]마가렛 이네자
+QUEST_LV_0100_20230703_017925	[Engineer] Taking a Step Further	[엔지니어] 더 새롭고 창의적인				
+QUEST_LV_0100_20230703_017926	I will take the task.	과제를 해결한다고 한다.				
+QUEST_LV_0100_20230703_017927	I don't do boring stuff.	귀찮은 일은 하지 않는다고 한다.				
+QUEST_LV_0100_20230703_017928	The Engineer Master says that you should get the costume to prove you're an Engineer.{nl}Go and talk to the Engineer Master at Orsha.	엔지니어 마스터는 엔지니어의 자격을 증명하기 위한 옷을 받아야 한다고 하는 거 같다.{nl}오르샤의 엔지니어 마스터와 이야기하자.				
+QUEST_LV_0100_20230703_017929	The Engineer Master asks you to complete the tasks to prove your qualifications.{nl}Return to the Engineer Master after completing the tasks.	엔지니어 마스터는 자격을 증명하기 위해서는 과제를 완수하고 오라고 한다.{nl}과제를 완수한 뒤에 엔지니어 마스터에게 돌아가자.				
+QUEST_LV_0100_20230703_017930	You've completed Engineer Mater's tasks.{nl}Go back to the Engineer Master at Orsha.	엔지니어 마스터가 내준 과제를 모두 처리했다.{nl}오르샤의 엔지니어 마스터에게 돌아가자.				
+QUEST_LV_0100_20230904_017931	Goddess Roulette Over the Rainbow Helper	W 무지개 다리 이벤트 안내원				
+QUEST_LV_0100_20230925_017932	2023 Full Moon Event	2023 가을 달맞이 이벤트				
+QUEST_LV_0100_20231218_017933	8th Anniversary Event	8주년 이벤트				
+QUEST_LV_0100_20240108_017934	2024 New Year's Event	2024 신년 이벤트				
+QUEST_LV_0100_20240205_017935	{nl}To enter an Instanced Dungeon in the future, you can use the Contents Status Board.	{nl}앞으로 인스턴스 던전에 입장하시려면 콘텐츠 현황판을 이용하시면 되요.	QUEST_LV_0100_20171128_016983	{nl}You can come to me whenever you want to use an instanced dungeon.{nl}If you want to enter now, would you let me know again?	{nl}앞으로 인스턴스 던전에 입장하시려면 절 찾아오시면 돼요.{nl}지금 당장 인스턴스 던전에 입장하시려면 저에게 다시 말을 걸어 주시겠어요?	경비병 리엔
+QUEST_LV_0100_20240205_017936	  In the chat window to see the location and recommended level of all instanced dungeons.{nl}First, check the location of the Underground Chapel Dungeon in Klaipeda.{nl}{nl}Then, find Sentinel Rian.{nl}You can enter the instanced dungeon from the Contents Status Board.	 을 입력하면 인스턴스 던전들의 위치와 입장 레벨, 입장 횟수 등을 확인할 수 있습니다.{nl}먼저 성당 지하 던전의 위치인 클라페다로 이동하세요.{nl} {nl}클라페다에 도착했다면 경비병 리엔을 찾아 말을 걸어보세요.{nl}인스턴스 던전은 콘텐츠 현황판을 통해 입장할 수 있습니다.	QUEST_LV_0100_20171128_017248	 In the chat window to see the location and recommended level of all instanced dungeons.{nl}First, check the location of the Underground Chapel Dungeon in Klaipeda.{nl}{nl}Then, find Sentinel Rian.{nl}You can enter the instanced dungeon by interacting with the sentinel.	 을 입력하면 인스턴스 던전들의 위치와 입장 레벨, 입장 횟수 등을 확인할 수 있습니다.{nl}먼저 성당 지하 던전의 위치인 클라페다로 이동하세요.{nl} {nl}클라페다에 도착했다면 경비병 리엔을 찾아 말을 걸어보세요.{nl}인스턴스 던전은 경비병 리엔을 통해 입장할 수 있습니다.	
+QUEST_LV_0100_20240401_017937	Invite Your Friends Event	친구 초대 이벤트				
+QUEST_LV_0100_20240415_017938	W 1st Anniversary Event	W 통합 1주년 이벤트				
+QUEST_LV_0100_20240701_017939	Welcoming Kupole Event	W 큐폴 출시 기념 이벤트				
+QUEST_LV_0100_20240909_017940	2024 Full Moon Event	2024 가을 달맞이 이벤트				
+QUEST_LV_0100_20241205_017941	2024 Santa’s Secret Soiree	2024 산타 이벤트				
+QUEST_LV_0100_20250116_017942	2025 New Year Event	2025 신년 이벤트					
+QUEST_LV_0100_20250310_017943	2025 Cherry Blossom Festival Event	2025 봄 이벤트				
+QUEST_LV_0100_20250410_017944	W 2nd Anniversary	w 2주년				
+QUEST_LV_0100_20251209_017945	2025 Santa Event	2025 산타 이벤트				
+QUEST_LV_0100_20260330_017946	2604_Arbor Day	2604_식목일				

@@ -35,7 +35,7 @@ class Command(BaseCommand):
     map_npc_path            = 'map_npc_path.json'
     map_item_spawn_path     = 'map_item_spawn_path.json'
     jobs_path               = "jobs.json"
-    jobs_by_name_path       = "job_by_name.json"
+    jobs_by_name_path       = "jobs_by_name.json"
     attributes_by_name_path = "attributes_by_name.json"
     attributes_path         = "attributes.json"
     skills_path             = "skills.json"
@@ -102,14 +102,18 @@ class Command(BaseCommand):
         base_path = self.base_path
         json_prev = False
         json_now = False
+        file_path = join(base_path, path)
         changes = {'added' : [] ,'removed' : [], 'changed': []}
-        if (exists(join(base_path, 'prev', path))):
-            with open(join(base_path, 'prev', path)) as f:
-                json_prev = json.load(f)
-        if (exists(join(base_path, path))):
-            with open(join(base_path, path)) as f:
-                json_now = json.load(f)
-                
+
+        try:
+            if (exists(join(base_path, 'prev', path))):
+                with open(join(base_path, 'prev', path)) as f:
+                    json_prev = json.load(f)
+            if (exists(join(base_path, path))):
+                with open(join(base_path, path)) as f:
+                    json_now = json.load(f)
+        except Exception as e:
+            logging.error(f"Error loading JSON from {path}: {e}")
         if json_prev == False and json_now:
             pass
             if type(json_now) == type({}):
@@ -134,6 +138,10 @@ class Command(BaseCommand):
             json_now= list(json_now.values())
             json_prev= list(json_prev.values())
 
+        if not isinstance(json_now, (list, dict)):
+            error_message = f"Expected json_now to be a list or dict, but got {type(json_now)} in file {file_path}."
+            logging.error(error_message)
+            raise TypeError(error_message)
         
         dict_now = {}
         for i in json_now:
@@ -197,15 +205,11 @@ class Command(BaseCommand):
             update = 1
 
         ver_json = self.importJSON(join(self.base_path, self.version_path))
-        try:
-            ver = Version.object.latest('created')
-        except:
-            ver = Version()
-            ver.Version = '000000.ipf'
-            ver.save()
-        if ver.Version != ver_json['version']:
-            ver.version = ver_json['version']
-            ver.save()
+        # version.json이 있고 version 키가 있을 때만 버전 기록.
+        # get_or_create + Version.version unique 제약으로
+        # 같은 버전이면 no-op, 새 버전이면 row 1개 추가.
+        if ver_json and 'version' in ver_json:
+            Version.objects.get_or_create(version=ver_json['version'])
         
         item_type       = self.importJSON(join(self.base_path,self.item_type_path))
         #get old dir loc
@@ -267,7 +271,9 @@ class Command(BaseCommand):
                 logging.warning("failed to delete item {} ({})".format(i['Name'], i['$ID']))
         logging.debug("migrating items")
         item_type_db = list(Item_Type.objects.all())  
-        dolater = {'RECIPES': [],'COLLECTION': [], 'EQUIPMENT' : [], 'CARD' : [], 'BOOKS' :[] }
+        dolater = {'RECIPES': [],'COLLECTION': [], 'EQUIPMENT' : [], 'CARD' : []}
+        if 'BOOKS' in item_type:
+            dolater['BOOKS'] = []
         for i in items['added']:
             upd = False
             try:
@@ -293,6 +299,7 @@ class Command(BaseCommand):
                 item_type_db.append(i['Type'])
             handler.grade           = i['Grade']
             handler.icon            = i['Icon']
+            handler.package_contents = json.dumps(i['PackageContents'], ensure_ascii=False) if i.get('PackageContents') else None
             handler.save()
             if i['$ID_NAME'] in item_type['EQUIPMENT']:
                 dolater['EQUIPMENT'].append([handler,i.copy(), upd])
@@ -304,7 +311,7 @@ class Command(BaseCommand):
                 dolater['RECIPES'].append([handler,i.copy(), upd])
             elif i['$ID_NAME'] in item_type['COLLECTION']:
                 dolater['COLLECTION'].append([handler,i.copy(),  upd])
-            elif i['$ID_NAME'] in item_type['BOOKS']:
+            elif 'BOOKS' in item_type and i['$ID_NAME'] in item_type['BOOKS']:
                 dolater['BOOKS'].append([handler,i.copy(), upd])
                  #self.makeBook(handler,i,item_type_db, upd)
         
@@ -320,8 +327,9 @@ class Command(BaseCommand):
         for i in dolater['CARD']:
             self.makeCard(i[0], i[1], item_type_db,i[2])
 
-        for i in dolater['BOOKS']:
-            self.makeBook(i[0], i[1], item_type_db,i[2])
+        if 'BOOKS' in dolater:
+            for i in dolater['BOOKS']:
+                self.makeBook(i[0], i[1], item_type_db,i[2])
         
         for i in items['changed']:
             try:
@@ -348,6 +356,7 @@ class Command(BaseCommand):
             if i['Grade']          == "":
                 handler.grade = 1
             handler.icon            = i['Icon']
+            handler.package_contents = json.dumps(i['PackageContents'], ensure_ascii=False) if i.get('PackageContents') else None
             handler.save()
             if i['$ID_NAME'] in item_type['EQUIPMENT']:
                 self.makeEQ(handler,i,item_type_db, upd = True)
@@ -357,7 +366,7 @@ class Command(BaseCommand):
                 self.makeRecipe(handler,i,item_type_db, upd = True)
             elif i['$ID_NAME'] in item_type['COLLECTION']:
                 self.makeCollection(handler,i,item_type_db, upd = True)
-            elif i['$ID_NAME'] in item_type['BOOKS']:
+            elif 'BOOKS' in item_type and i['$ID_NAME'] in item_type['BOOKS']:
                 self.makeBook(handler,i,item_type_db, upd = True)
                 
         
@@ -816,22 +825,49 @@ class Command(BaseCommand):
                 handler.sfr             = i['sfr']
             if 'CaptionRatio' in i:
                 try:
+                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+                    normalized_ratio = []
                     for h in i['CaptionRatio']:
-                        h = int(h)
+                        try:
+                            h_float = float(h)
+                            if 0 < h_float < 1:
+                                h_float = h_float * 100
+                            normalized_ratio.append(int(h_float))
+                        except (ValueError, TypeError):
+                            normalized_ratio.append(int(h))
+                    i['CaptionRatio'] = normalized_ratio
                 except:
                     i['CaptionRatio'] = None
                 handler.captionratio1   = i['CaptionRatio']
             if 'CaptionRatio2' in i:
                 try:
+                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+                    normalized_ratio = []
                     for h in i['CaptionRatio2']:
-                        h = int(h)
+                        try:
+                            h_float = float(h)
+                            if 0 < h_float < 1:
+                                h_float = h_float * 100
+                            normalized_ratio.append(int(h_float))
+                        except (ValueError, TypeError):
+                            normalized_ratio.append(int(h))
+                    i['CaptionRatio2'] = normalized_ratio
                 except:
                     i['CaptionRatio2'] = None
                 handler.captionratio2   = i['CaptionRatio2']
             if 'CaptionRatio3' in i:
                 try:
+                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+                    normalized_ratio = []
                     for h in i['CaptionRatio3']:
-                        h = int(h)
+                        try:
+                            h_float = float(h)
+                            if 0 < h_float < 1:
+                                h_float = h_float * 100
+                            normalized_ratio.append(int(h_float))
+                        except (ValueError, TypeError):
+                            normalized_ratio.append(int(h))
+                    i['CaptionRatio3'] = normalized_ratio
                 except:
                     i['CaptionRatio3'] = None
                 handler.captionratio3   = i['CaptionRatio3']

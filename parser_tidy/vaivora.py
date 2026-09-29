@@ -6,6 +6,12 @@ Created on Thu Nov  4 15:29:39 2021
 
 import translation
 import logging
+import os
+import re
+import csv
+import io
+import xml.etree.ElementTree as ET
+from os.path import join, exists
 
 vv_dict={'Reinforced Bowstring' : 'Reinforce Bowstring', 
         'Lewa Advent': ' Lewa Advent ',
@@ -228,3 +234,113 @@ def parse_lv4(c):
             job = ''
         check = [i['Name'],job]
         vv_check.append(check)
+
+
+_TOOLTIP_KEY_PAT = re.compile(r"tooltip_([A-Za-z0-9_]+?)_Data_(\d+)$")
+_ADDOPT_COLS = ('AdditionalOption_1', 'AdditionalOption_2',
+                'AdditionalOption_3', 'AdditionalOption_4')
+
+
+def _load_dicid_translation(c):
+    """For non-Korean regions, load dicid -> translated text from .tsv files
+    in c.transaltion_path. Returns empty dict for ktos/ktest."""
+    if c.region in ('ktos', 'ktest'):
+        return {}
+    tr_path = c.transaltion_path
+    if not tr_path or not os.path.isdir(tr_path):
+        return {}
+    out = {}
+    for fname in os.listdir(tr_path):
+        if not fname.endswith('.tsv'):
+            continue
+        with io.open(os.path.join(tr_path, fname), 'r', encoding='utf-8') as f:
+            for row in csv.reader(f, delimiter='\t', quoting=csv.QUOTE_NONE):
+                if len(row) >= 2:
+                    out[row[0]] = row[1]
+    return out
+
+
+def _build_tooltip_index(c):
+    """tooltip_<X>_Data_<n> -> text. ktos/ktest: kr from DicIDTable.xml.
+    itos/jtos/twtos: dicid -> translated .tsv (fallback to kr if untranslated)."""
+    dicid_path = join(c.PATH_INPUT_DATA, 'language.ipf', 'DicIDTable.xml')
+    if not exists(dicid_path):
+        logging.warning('DicIDTable.xml not found at %s', dicid_path)
+        return {}
+    raw = {}  # name -> {idx: (dicid, kr)}
+    for el in ET.parse(dicid_path).getroot().iter('dic_data'):
+        m = _TOOLTIP_KEY_PAT.search(el.get('FilenameWithKey', '') or '')
+        if not m:
+            continue
+        raw.setdefault(m.group(1), {})[int(m.group(2))] = (
+            el.get('ID', ''), el.get('kr') or '')
+
+    if c.region in ('ktos', 'ktest'):
+        return {name: ''.join(parts[i][1] for i in sorted(parts))
+                for name, parts in raw.items()}
+
+    tl = _load_dicid_translation(c)
+    return {name: ''.join((tl.get(parts[i][0]) or parts[i][1])
+                          for i in sorted(parts))
+            for name, parts in raw.items()}
+
+
+def _scan_item_addopts(c):
+    item_files = list(c.ITEM_IES) + list(c.EQUIPMENT_IES)
+    out = {}
+    for fname in item_files:
+        entry = c.file_dict.get(fname.lower())
+        if not entry or not exists(entry['path']):
+            continue
+        with io.open(entry['path'], 'r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                cn = row.get('ClassName', '')
+                if not cn:
+                    continue
+                opts = [(col, row[col]) for col in _ADDOPT_COLS
+                        if row.get(col)]
+                if opts:
+                    out[cn] = opts
+    return out
+
+
+def parse_additional_options(c):
+    """Map AdditionalOption_1..4 columns on item rows to tooltip text from
+    DicIDTable.xml (key pattern: tooltip_<value>_Data_<n>). Adds matched text
+    to item['Bonus'] as ['lv4', text] for *_Lv4 keys, ['add_opt', text] otherwise.
+
+    Works for all regions:
+      ktos/ktest -> kr from DicIDTable.xml directly
+      itos/jtos/twtos -> dicid -> translated .tsv (kr fallback if untranslated)
+    """
+    logging.warning('parsing additional options (lv4 vaivora etc.)')
+
+    tooltip = _build_tooltip_index(c)
+    logging.info('  tooltip index: %d entries', len(tooltip))
+    if not tooltip:
+        return
+
+    item_addopts = _scan_item_addopts(c)
+    logging.info('  items with AdditionalOption_N: %d', len(item_addopts))
+
+    items_by_name = c.data.get('items_by_name', {})
+    applied, total_entries, unmatched_keys = 0, 0, set()
+    for cn, opts in item_addopts.items():
+        item = items_by_name.get(cn)
+        if not item:
+            continue
+        bonus = item.setdefault('Bonus', [])
+        added = False
+        for _col, key in opts:
+            text = tooltip.get(key)
+            if text is None:
+                unmatched_keys.add(key)
+                continue
+            tag = 'lv4' if 'lv4' in key.lower() else 'add_opt'
+            bonus.append([tag, text])
+            total_entries += 1
+            added = True
+        if added:
+            applied += 1
+    logging.info('  applied to %d items, %d option entries, %d unmatched keys',
+                 applied, total_entries, len(unmatched_keys))

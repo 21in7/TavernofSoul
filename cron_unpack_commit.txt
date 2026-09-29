@@ -1,0 +1,9 @@
+# Unpack 폴더 자동 커밋 Cron 설정
+# 매일 오전 2시에 실행
+0 2 * * * /home/ubuntu/TavernofSoul/auto_commit_unpack_versions.sh
+
+# 또는 매 6시간마다 실행하려면:
+# 0 */6 * * * /home/ubuntu/TavernofSoul/auto_commit_unpack_versions.sh
+
+# 또는 매시간 실행하려면:
+# 0 * * * * /home/ubuntu/TavernofSoul/auto_commit_unpack_versions.sh

@@ -4,6 +4,6 @@ from django.db import models
 
 
 class Version (models.Model):
-	version 	 	= models.CharField(max_length=50)
+	version 	 	= models.CharField(max_length=50, unique=True)
 	created 		= models.DateTimeField(auto_now_add=True)
 

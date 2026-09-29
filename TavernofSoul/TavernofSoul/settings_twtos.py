@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'Market.apps.MarketConfig',
     'Maps.apps.MapsConfig',
     'Planner.apps.PlannerConfig',
+    'Challenge.apps.ChallengeConfig',
     'django.contrib.humanize',
     'Other.apps.OtherConfig',
     'django.contrib.sitemaps',
@@ -92,9 +93,9 @@ WSGI_APPLICATION = 'TavernofSoul.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql', 
-        'NAME': 'tavernofsoul',
-        'USER': 'root',
-        'PASSWORD': '',
+        'NAME': 'twtos',
+        'USER': 'gihyeon',
+        'PASSWORD': '1234',
         'HOST': 'localhost',   # Or an IP Address that your DB is hosted on
         'PORT': '3306',
     }
@@ -133,7 +134,7 @@ CACHES = {
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Seoul'
 
 USE_I18N = True
 

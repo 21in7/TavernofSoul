@@ -1,0 +1,4 @@
+profile_out/
+export_redirect/
+*.prof
+*.speedscope.json

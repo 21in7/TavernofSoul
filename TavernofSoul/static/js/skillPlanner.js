@@ -355,8 +355,13 @@ function setDesc(skill,job, dataset, skillLV){
   if (dataset.captionratio1 != "None"){
     datasrc = JSON.parse(dataset.captionratio1)
     element = elementparent.find('#CaptionRatio')
+    var value = datasrc[skillLV]
+    // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+    if (value < 1 && value > 0) {
+      value = value * 100
+    }
     for (i in element){
-      element[i].innerText = datasrc[skillLV]
+      element[i].innerText = value
     }
     
   }
@@ -364,16 +369,26 @@ function setDesc(skill,job, dataset, skillLV){
   if (dataset.captionratio2 != "None"){
     datasrc = JSON.parse(dataset.captionratio2)
     element = elementparent.find('#CaptionRatio2')
+    var value = datasrc[skillLV]
+    // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+    if (value < 1 && value > 0) {
+      value = value * 100
+    }
     for (i in element){
-      element[i].innerText = datasrc[skillLV]
+      element[i].innerText = value
     }
   }
 
   if (dataset.captionratio3 != "None"){
     datasrc = JSON.parse(dataset.captionratio3)
     element = elementparent.find('#CaptionRatio3')
+    var value = datasrc[skillLV]
+    // 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
+    if (value < 1 && value > 0) {
+      value = value * 100
+    }
     for (i in element){
-      element[i].innerText = datasrc[skillLV]
+      element[i].innerText = value
     }
   }
 

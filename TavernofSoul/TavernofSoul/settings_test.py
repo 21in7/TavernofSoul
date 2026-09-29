@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'Market.apps.MarketConfig',
     'Maps.apps.MapsConfig',
     'Planner.apps.PlannerConfig',
+    'Challenge.apps.ChallengeConfig',
     'django.contrib.humanize',
     'Other.apps.OtherConfig',
     'django.contrib.sitemaps',

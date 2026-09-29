@@ -48,24 +48,21 @@ def getModelPrefixAdv(i):
     return "{}_{}".format(job, gender)
 
 def eq_model_name(item, c):
-    #item = c.data['items']['0511004019']
     xac = c.data['xac']
     if 'Icon' not in item:
         return ''
     model_name = item['FileName']
-    prefix = getModelNamePrefix(item['ModelType'])
-    if prefix:
-        name  = prefix+"_"+ model_name
-    else:
-        name = getModelPrefixAdv(item) + '_' +model_name
-        
-    if name.lower() in xac:
-        """
-        if (xac2dae(c, name.lower())):
-            return name
+    
+    if item.get('ModelType') is not None:
+        prefix = getModelNamePrefix(item['ModelType'])
+        if prefix:
+            name = prefix + "_" + model_name
         else:
-            return ''
-        """
+            name = getModelPrefixAdv(item) + '_' + model_name
+    else:
+        name = model_name
+        
+    if name is not None and name.lower() in xac:
         return name
     else:
         return ''

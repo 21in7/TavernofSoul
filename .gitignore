@@ -17,3 +17,10 @@ TavernofSoul/JSON_ktos/
 TavernofSoul/JSON_ktest/
 TavernofSoul/JSON_jtos/
 TavernofSoul/JSON_twtos/
+TavernofSoul/itos/3.8/*
+TavernofSoul/jtos/3.8/*
+TavernofSoul/ktos/3.8/*
+
+# local-only
+.claude/
+.env
