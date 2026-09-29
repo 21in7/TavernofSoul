@@ -22,5 +22,11 @@ fi
 cd ..
 cd TavernofSoul
 python manage_twtos.py importAll >> ../err.txt
+import_result=$?
+# DB 적재 실패를 성공한 업데이트로 기록하지 않는다.
+if [ "$import_result" -ne 0 ]; then
+    echo "DB import 실패(return code $import_result). 업데이트 중단." >&2
+    exit "$import_result"
+fi
 cd ..
 python closer.py twtos

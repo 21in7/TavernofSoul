@@ -11,6 +11,7 @@ import math
 import os
 from django.http import JsonResponse
 from django.db.models import Q
+from django.contrib.staticfiles import finders
 from ipfparser.utils import *
 
 def index(request):
@@ -29,8 +30,8 @@ def index(request):
 
     data['curpage']         = int(getFromGet(request, 'page',1))
 
-    data['item']            = Skills.objects.filter(query).order_by('ids')
-    data['item_len']        = len(data['item'])
+    data['item']            = Skills.objects.filter(query).select_related('job').order_by('ids')
+    data['item_len']        = data['item'].count()
     data['item']            = data['item'] [(data['curpage']-1)*20:data['curpage']*20]
     data['jobs']            = Jobs.objects.all()
 
@@ -73,4 +74,6 @@ def item_detail(request, id):
     data['item'].stance = " ".join(data['item'].stance.split(';'))
     if data['item'].stance == "":
         data['item'].stance = "All"
+    # motion_proto/batch_render 로 만든 스킬 모션 영상(static/skill_motion/<ClassName>.webm)이 있을 때만 보여준다
+    data['motion'] = finders.find('skill_motion/%s.webm' % item.id_name) is not None
     return render(request, join(APP_NAME,"index.html"),data)

@@ -5,13 +5,14 @@ PROFILING_REVIEW.md 8차 검증의 기준선 수치를 검증한다. 이 테스�
 현재 JSON_ktos 출력에 존재하는 버그 상태를 탐지하도록 의도됐다.
 
 - 패키지: 259개 잘못된 참조(item 이름에 '/' 포함)가 현재 출력에 있다.
-- 큐브: 1044개 중 Link_Items 가 비어 있지 않은 것이 0개.
+- 큐브: 현재 unpack 원본의 큐브와 보상 연결을 출력과 대조한다.
 - skill_mon: 모든 엔트리의 Monster 배열에 중복 ID가 있다.
 - EXP 역매핑: monsters.py 의 버그로 원본과 다른 값이 들어간다.
 
 수정 후 이 테스트 파일은 "현재 버그 상태" assertion 에서 "수정 후 기대 상태"
 assertion 으로 전환된다. 전환은 한 번에 하나씩, 대응하는 정확성 수정과 함께.
 """
+import csv
 import os
 import sys
 import json
@@ -62,29 +63,60 @@ class TestPackageBaseline:
 
 
 # ---------------------------------------------------------------------------
-# 큐브 기준선: 1044개 중 Link_Items 가 있는 것 0개
+# 큐브 회귀: 설치된 원본의 큐브와 보상 연결을 직접 대조
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope='module')
+def cube_source():
+    """Read expectations from the installed input revision, not an old count."""
+    from DB import ToS_DB
+    source = os.path.join(REPO_ROOT, 'ktos_unpack', 'ies.ipf')
+    if not os.path.isdir(source):
+        pytest.skip('ktos unpack source not available')
+    paths = {name.lower(): os.path.join(source, name) for name in os.listdir(source)}
+    cubes = {}
+    for name in ToS_DB.ITEM_IES:
+        path = paths.get(name.lower())
+        if path is None:
+            continue  # regional item tables are optional
+        with open(path, encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                item_type = (row.get('Category') or row.get('GroupName') or '').upper()
+                if item_type == 'CUBE':
+                    cubes[row['ClassName']] = row['StringArg']
+    if 'reward_indun.ies' not in paths:
+        pytest.skip('reward_indun source not available')
+    rewards = {}
+    with open(paths['reward_indun.ies'], encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            names = rewards.setdefault(row['Group'], [])
+            if row['ItemName'] not in names:
+                names.append(row['ItemName'])
+    assert cubes, 'source contains no cubes; check the input fixture'
+    assert rewards, 'source contains no rewards; check the input fixture'
+    return cubes, rewards
+
+
 class TestCubeBaseline:
-    def test_cube_count(self):
+    def test_source_cubes_are_preserved(self, cube_source):
+        source_cubes, rewards = cube_source
         items = _load('items.json')
-        cubes = [v for v in items.values() if v.get('Type') in ('CUBE', 'Cube')]
-        # 큐브 다중 매핑 수정 후: reward_indun 116 그룹이 117 큐브에 연결.
-        # Type 이 일관되게 CUBE 로 유지되어 이전 1044 에서 1045 로 1개 증가.
-        assert len(cubes) == 1045
+        cubes = {v['$ID_NAME'] for v in items.values() if v.get('Type') in ('CUBE', 'Cube')}
+        assert set(source_cubes) <= cubes
+        # Missing reward items may become minimal fallback CUBE entries.
+        reward_names = {name for names in rewards.values() for name in names}
+        assert cubes - set(source_cubes) <= reward_names
 
-    def test_current_output_cubes_have_no_links(self):
-        """수정 후: reward_indun 의 116 그룹이 117 큐브에 연결된다.
-
-        이전(버그): 1044개 큐브 모두 Link_Items 가 비어 있었다.
-        """
+    def test_cube_links_match_source_rewards(self, cube_source):
+        source_cubes, rewards = cube_source
         items = _load('items.json')
-        cubes = [v for v in items.values() if v.get('Type') in ('CUBE', 'Cube')]
-        with_links = [c for c in cubes if c.get('Link_Items') and len(c['Link_Items']) > 0]
-        # reward_indun 116 그룹 -> 공유 그룹 포함 117 큐브에 링크.
-        assert len(with_links) == 117, (
-            'expected 117 cubes linked to reward_indun, got %d' % len(with_links)
-        )
+        actual = {v['$ID_NAME']: v['Link_Items'] for v in items.values()
+                  if v.get('Type') in ('CUBE', 'Cube') and v.get('Link_Items')}
+        expected = {name: rewards[group] for name, group in source_cubes.items()
+                    if group in rewards}
+        assert expected, 'fixture must exercise reward links'
+        # Also checks shared groups, order, duplicate removal and absent links.
+        assert actual == expected
 
 
 # ---------------------------------------------------------------------------

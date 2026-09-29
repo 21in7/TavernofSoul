@@ -29,7 +29,7 @@ def index(request):
 
     data['curpage']         = int(getFromGet(request, 'page',1))
     data['item']            = Maps.objects.filter(query & Q(type__icontains = type_n)).order_by('{}{}'.format(srt, orders[0]))
-    data['item_len']        = len(data['item'])
+    data['item_len']        = data['item'].count()
     data['item']            = data['item'] [(data['curpage']-1)*20:data['curpage']*20]
     data['type_n']          = type_n
     data['cls']             = clsname
@@ -55,17 +55,17 @@ def item_detail(request, id):
     data = {}
     data['item'] = item
     try:
-        data['drop'] = list(Map_Item.objects.filter(map = item))
+        data['drop'] = list(Map_Item.objects.filter(map = item).select_related('item'))
     except:
         pass
 
     try:
-        data['npc'] = list(Map_NPC.objects.filter(map = item))
+        data['npc'] = list(Map_NPC.objects.filter(map = item).select_related('monster'))
     except:
         pass
 
     try:
-        data['itemSpawn'] = list(Map_Item_Spawn.objects.filter(map = item))
+        data['itemSpawn'] = list(Map_Item_Spawn.objects.filter(map = item).select_related('item'))
     except:
         pass
 

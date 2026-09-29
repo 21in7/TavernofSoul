@@ -75,7 +75,9 @@ class ToS_DB():
                 # 정적 등록은 유지하되, 현재 지역에 파일이 없으면(twtos/ktest)
                 # parse_goddess_EQ의 file_dict 게이트가 material 생성을 건너뛴다.
                 'item_goddess_reinforce_550.ies' : 550}
-    ITEM_IES = {
+    # Declared order defines deterministic precedence for duplicate raw IDs.
+    # Canonical recipe IDs are handled separately; this does not remove collisions.
+    ITEM_IES = (
         "item.ies",
         'item_colorspray.ies',
         'item_gem.ies',
@@ -95,7 +97,7 @@ class ToS_DB():
         'item_EP13.ies',
         'item_Equip_EP13.ies',
         'item_Reputation.ies',
-        }
+        )
 
     
     file_dict = {}
@@ -562,38 +564,42 @@ class ToS_DB():
             return self.data['npcs_by_name'][name], 'npc'
         else:
             return None
-    def getMonbySkill(self, skill):
-        # PROFILING_REVIEW P0: 이전 구현은 첫 루프에서 일치 몬스터를 추가한
-        # 뒤 같은 조건으로 두 번째 루프를 항상 다시 실행해, 모든 결과가
-        # 2배 중복됐다(skill_mon 6277개 전부). 이제 stable dedupe 로 한 번씩만
-        # 추가한다.
-        returned_mon_id = []
-        seen = set()
-        # 1차: 정확히 일치하는 SkillType.
-        for mon in self.data['monsters']:
-            mon = self.data['monsters'][mon]
+    def build_monster_skill_index(self):
+        """Snapshot completed monster parsing in insertion order.
+
+        Rebuild after editing SkillType or IDs in place. parse_skill_mon does this
+        at its boundary, including when parsing again on the same DB instance.
+        """
+        monsters = self.data['monsters']
+        index = {}
+        seen = {}
+        for mon in monsters.values():
             if 'SkillType' not in mon:
                 logging.warning("skill type not in mon {}".format(mon['$ID']))
                 continue
-            if mon['SkillType'].lower() == skill.lower():
-                mid = mon['$ID']
-                if mid not in seen:
-                    seen.add(mid)
-                    returned_mon_id.append(mid)
-        # 2차: 1차 결과가 비어 있을 때만 'mon_' 접두 fallback 시도.
-        if returned_mon_id == []:
-            skill = 'mon_' + skill
-            for mon in self.data['monsters']:
-                mon = self.data['monsters'][mon]
-                if 'SkillType' not in mon:
-                    logging.warning("skill type not in mon {}".format(mon['$ID']))
-                    continue
-                if mon['SkillType'].lower() == skill.lower():
-                    mid = mon['$ID']
-                    if mid not in seen:
-                        seen.add(mid)
-                        returned_mon_id.append(mid)
-        return returned_mon_id
+            key = mon['SkillType'].lower()
+            mid = mon['$ID']
+            ids = index.setdefault(key, [])
+            key_seen = seen.setdefault(key, set())
+            if mid not in key_seen:
+                key_seen.add(mid)
+                ids.append(mid)
+        self._monster_skill_source = monsters
+        self._monster_skill_source_size = len(monsters)
+        self._monster_skill_index = index
+
+    def getMonbySkill(self, skill):
+        monsters = self.data['monsters']
+        if (getattr(self, '_monster_skill_source', None) is not monsters or
+                getattr(self, '_monster_skill_source_size', None) != len(monsters)):
+            self.build_monster_skill_index()
+        key = skill.lower()
+        matches = self._monster_skill_index.get(key)
+        if not matches:
+            matches = self._monster_skill_index.get('mon_' + key, [])
+        # Callers receive their own list, as with the former linear scan.
+        return list(matches)
+
 """
 enums
 """

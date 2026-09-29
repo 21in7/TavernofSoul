@@ -21,34 +21,34 @@ def index(request):
 	if 'q' in request.GET:
 		query = request.GET['q']
 		data = {}
-		data['item'] = list(Items.objects.filter(name__icontains = query))
-		data['item_len'] = len(data['item'])
+		data['item'] = Items.objects.filter(name__icontains = query).select_related('equipments')
+		data['item_len'] = data['item'].count()
 		data['item'] = data['item'] [:5]
 
-		data['monster'] = list(Monsters.objects.filter(name__icontains = query))
-		data['monster_len'] = len(data['monster'])
+		data['monster'] = Monsters.objects.filter(name__icontains = query)
+		data['monster_len'] = data['monster'].count()
 		data['monster'] = data['monster'] [:5]
 		data['query'] = query
 
-		data['maps'] = list(Maps.objects.filter(name__icontains=query))
-		data['maps_len'] = len(data['maps'])
+		data['maps'] = Maps.objects.filter(name__icontains=query)
+		data['maps_len'] = data['maps'].count()
 		data['maps'] = data['maps'][:5]
 
-		data['jobs'] = list(Jobs.objects.filter(name__icontains=query))
-		data['jobs_len'] = len(data['jobs'])
+		data['jobs'] = Jobs.objects.filter(name__icontains=query)
+		data['jobs_len'] = data['jobs'].count()
 		data['jobs'] = data['jobs'][:5]
 
-		att = list(Attributes.objects.filter(name__icontains=query))
+		att = Attributes.objects.filter(name__icontains=query)
 
 		
-		data['attributes_len'] = len(att)
+		data['attributes_len'] = att.count()
 		data['attributes'] = []
 		for i in att[:5]:
 			i.descriptions = i.descriptions.split("{nl}")
 			data['attributes'].append(i)
 
-		data['skills'] = list(Skills.objects.filter(name__icontains=query))
-		data['skills_len'] = len(data['skills'])
+		data['skills'] = Skills.objects.filter(name__icontains=query).select_related('job')
+		data['skills_len'] = data['skills'].count()
 		data['skills'] = data['skills'][:5]
 
 		return render(request, join(APP_NAME,"search.html"), data)	

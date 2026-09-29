@@ -28,7 +28,7 @@ def index(request):
     data['curpage']         = int(getFromGet(request, 'page',1))
 
     data['item']            = Jobs.objects.filter(query).order_by('ids')
-    data['item_len']        = len(data['item'])
+    data['item_len']        = data['item'].count()
     data['item']            = data['item'] [(data['curpage']-1)*20:data['curpage']*20]
     data['jobs']            = Jobs.objects.filter(is_starter = True)
 

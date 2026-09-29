@@ -34,6 +34,11 @@
   {%endfor%}
 {%endif%}
 
+{%if motion%}
+<video class="mt-2" src="/static/skill_motion/{{item.id_name}}.webm" autoplay loop muted playsinline preload="metadata"
+       width="360" height="480" style="display: block; max-width: 100%; height: auto; background: #1d2026; border-radius: 4px;"></video>
+{%endif%}
+
 <br>
 
 <div class="form-inline mb-2" >

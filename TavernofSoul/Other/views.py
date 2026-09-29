@@ -23,7 +23,7 @@ def achieve(request):
 
     query                   = getFromGet(request, 'q','')
     data 					= {'item' : Achievements.objects.filter(name__icontains=query).all()}
-    data['item_len']        = len(data['item'])
+    data['item_len']        = data['item'].count()
     data['curpage']         = int(getFromGet(request, 'page',1))
     data['query']           = query
     data['item']            = data['item'] [(data['curpage']-1)*20:data['curpage']*20]

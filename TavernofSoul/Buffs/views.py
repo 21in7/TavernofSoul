@@ -32,7 +32,7 @@ def index(request):
     data['curpage']         = int(getFromGet(request, 'page',1))
 
     data['item']            = Buffs.objects.filter(query).order_by('ids')
-    data['item_len']        = len(data['item'])
+    data['item_len']        = data['item'].count()
     data['item']            = data['item'] [(data['curpage']-1)*20:data['curpage']*20]
 
     pages = list(range(math.ceil(data['item_len']/20) +1))
