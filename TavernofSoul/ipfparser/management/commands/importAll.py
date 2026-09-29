@@ -6,9 +6,11 @@ Created on Tue Sep 28 14:08:20 2021
 """
 
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.core.exceptions import ObjectDoesNotExist
 from django.conf import settings
+from django.db import transaction
+import tempfile
 import logging
 import json
 from os.path import join, exists
@@ -31,9 +33,9 @@ class Command(BaseCommand):
     maps_path               = 'maps.json'
     maps_by_name_path       = 'maps_by_name.json'
     maps_by_position_path   = 'maps_by_position.json'
-    map_item_path           = 'map_item_path.json'
-    map_npc_path            = 'map_npc_path.json'
-    map_item_spawn_path     = 'map_item_spawn_path.json'
+    map_item_path           = 'map_item.json'
+    map_npc_path            = 'map_npc.json'
+    map_item_spawn_path     = 'map_item_spawn.json'
     jobs_path               = "jobs.json"
     jobs_by_name_path       = "jobs_by_name.json"
     attributes_by_name_path = "attributes_by_name.json"
@@ -49,17 +51,15 @@ class Command(BaseCommand):
     version_path            = 'version.json'
     buff_path               = 'buff.json'
     achieve_path            = 'achievements.json'
-    def importJSON(self,file):
-        if not exists(file):
-            return {}
+    def importJSON(self, file):
         try:
-            with open(file, "r") as f:
+            with open(file, encoding="utf-8") as f:
                 data = json.load(f)
-        except:
-            logging.error("error in importing file {}".format(file))
-            return {}
+        except (OSError, ValueError) as exc:
+            raise CommandError("Cannot load JSON {}: {}".format(file, exc)) from exc
+        if not isinstance(data, (dict, list)):
+            raise CommandError("Expected an object or array in {}".format(file))
         return data
-    
 
     def add_arguments(self, parser):
         parser.add_argument('-u', '--update', type=int, help='Indicate wether ignore any \
@@ -94,127 +94,146 @@ class Command(BaseCommand):
                 item = table.objects.get(ids = ids)
                 icon= item.icon
                 item.delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warn(" delete error ids {}".format(ids))
 
 
-    def comparer(self,path, ids = ['$ID']):
+    # P0-8: recipe 의 $ID 를 'recipe-<n>' canonical ID 로 정규화한다.
+    # Item/Recipe 가 같은 숫자 ClassID 를 공유해 comparer 의 $ID re-key 에서
+    # 49건이 드롭되는 것을 막는다. RECIPES 집합(item_type.json)으로 recipe 를
+    # 식별하며, transform 으로 comparer 진입 전에 양쪽 JSON 에 일괄 적용한다.
+    RECIPE_ID_PREFIX = 'recipe-'
+
+    def _canonical_item_id(self, entry, recipe_id_names):
+        """entry 가 recipe 면 dict 복사 후 $ID 에 'recipe-' 접두를 붙인다.
+
+        원본 entry 를 훼손하지 않는다(items_by_name.json 의 원본 값을 보존).
+        """
+        if not isinstance(entry, dict):
+            return entry
+        if entry.get('$ID_NAME') in recipe_id_names:
+            e = dict(entry)
+            e['$ID'] = self.RECIPE_ID_PREFIX + str(e.get('$ID', ''))
+            return e
+        return entry
+
+    @staticmethod
+    def _apply_transform(data, transform):
+        """data(dict|list) 의 각 value 에 transform 을 일괄 적용한다.
+
+        comparer 의 모든 분기(early-return 포함) 이전에 호출되어야 한다.
+        transform 이 None 이거나 data 가 비어 있으면 그대로 반환한다.
+        """
+        if transform is None or not data:
+            return data
+        if isinstance(data, dict):
+            return {k: transform(v) for k, v in data.items()}
+        return [transform(v) for v in data]
+
+    def comparer(self,path, ids = ['$ID'], transform=None):
         base_path = self.base_path
         json_prev = False
         json_now = False
         file_path = join(base_path, path)
-        changes = {'added' : [] ,'removed' : [], 'changed': []}
+        changes = {'added' : [] ,'removed': [], 'changed': []}
 
-        try:
-            if (exists(join(base_path, 'prev', path))):
-                with open(join(base_path, 'prev', path)) as f:
-                    json_prev = json.load(f)
-            if (exists(join(base_path, path))):
-                with open(join(base_path, path)) as f:
-                    json_now = json.load(f)
-        except Exception as e:
-            logging.error(f"Error loading JSON from {path}: {e}")
-        if json_prev == False and json_now:
-            pass
-            if type(json_now) == type({}):
-                changes['added'] = list(json_now.values())
-            else:
-                changes['added'] = json_now
-                
-            logging.warning("Change at {} : {} added, {} deleted, {} modified row".format(
-                path, len(changes['added']), len(changes['removed']), len(changes['changed'])))
-            return changes
-            
-        elif json_now == json_prev == False:
-            logging.warning("file not found {}".format(path))
-            return changes
-        if (json_now == json_prev):
-            logging.warning("no change at {}".format(path))
-            
-            return changes
-        
-        
-        if type(json_now) == type({}):
-            json_now= list(json_now.values())
-            json_prev= list(json_prev.values())
+        prev_path = join(getattr(self, '_previous_path', join(base_path, 'prev')), path)
+        json_prev = self.importJSON(prev_path) if exists(prev_path) else {}
+        json_now = self.importJSON(file_path)
 
-        if not isinstance(json_now, (list, dict)):
-            error_message = f"Expected json_now to be a list or dict, but got {type(json_now)} in file {file_path}."
-            logging.error(error_message)
-            raise TypeError(error_message)
-        
-        dict_now = {}
-        for i in json_now:
-            if (len(ids)) == 1:
-                dict_now[i[ids[0]]] = i
-            else:
-                if i[ids[0]] not in dict_now:    
-                    dict_now[i[ids[0]]] = {i[ids[1]]:  i}
-                else :
-                    dict_now[i[ids[0]]][i[ids[1]]] = i
-        
-        dict_prev= {}
-        for i in json_prev:
-            if (len(ids)) == 1:
-                dict_prev[i[ids[0]]] = i
-            else:
-                if i[ids[0]] not in dict_prev:    
-                    dict_prev[i[ids[0]]] = {i[ids[1]]:  i}
-                else :
-                    dict_prev[i[ids[0]]][i[ids[1]]] = i
-                
-        if len(ids) == 1:
-            for item  in dict_now:
-                if item not in dict_prev:
-                    changes['added'].append(dict_now[item])
-                else:
-                    if (dict_now[item] != dict_prev[item]):
-                        changes['changed'].append(dict_now[item])
-            
-            for item in dict_prev:
-                if item not in dict_now:
-                    changes['removed'].append(dict_prev[item])
-        
-        else:
-            for item in dict_now:
-                for atom in dict_now[item]:
-                    if item not in dict_prev:
-                        changes['added'].append(dict_now[item][atom])
-                    elif atom not in dict_prev[item]:
-                        changes['added'].append(dict_now[item][atom])
-                    else:
-                        if (dict_now[item][atom] != dict_prev[item][atom]):
-                            changes['changed'].append(dict_now[item][atom])
-            for item in dict_prev:
-                for atom in dict_prev[item]:
-                    if item in dict_now and atom not in dict_now[item]:
-                        changes['removed'].append(dict_prev[item][atom])
-                    
+        # P0-8: transform 은 파일 로드 직후, 모든 분기 이전에 양쪽 JSON 에
+        # 일괄 적용한다. 분기 후(137행)에만 두면 early-return 경로(prev 없는
+        # 첫 임포트)가 transform 을 건너뛰어 recipe 가 숫자 $ID 로 임포트되고
+        # DB 충돌이 재발한다.
+        json_prev = self._apply_transform(json_prev, transform)
+        json_now = self._apply_transform(json_now, transform)
 
-                
+        def keyed(data):
+            rows = data.values() if isinstance(data, dict) else data
+            result = {}
+            for row in rows:
+                key = tuple(row[field] for field in ids)
+                result[key] = row
+            return result
+
+        dict_now = keyed(json_now)
+        dict_prev = keyed(json_prev)
+        changes['added'] = [row for key, row in dict_now.items() if key not in dict_prev]
+        changes['changed'] = [row for key, row in dict_now.items()
+                              if key in dict_prev and (row != dict_prev[key] or
+                                  (getattr(self, '_reconcile_map_relations', False) and
+                                   path in (self.map_item_path, self.map_npc_path, self.map_item_spawn_path))) ]
+        changes['removed'] = [row for key, row in dict_prev.items() if key not in dict_now]
+
         logging.warning("Change at {} : {} added, {} deleted, {} modified row".format(
             path, len(changes['added']), len(changes['removed']), len(changes['changed'])))
         return changes
         
 
 
-    def handle(self,  *args, **kwargs):
+    def handle(self, *args, **kwargs):
         logging.basicConfig(level=logging.WARNING)
-        update = kwargs['update']
-        if update == None:
+        update = kwargs.get('update')
+        if update is None:
             update = 1
+        # Stage the complete comparison baseline before touching the database.
+        # Restore the previous baseline if import, publication, or commit fails.
+        staged = tempfile.mkdtemp(prefix='.import-prev-', dir=self.base_path)
+        backup = staged + '-backup'
+        destination = join(self.base_path, 'prev')
+        original_base = self.base_path
+        published = False
+        moved_old = False
+        try:
+            for name in os.listdir(self.base_path):
+                if name.endswith('.json'):
+                    self.importJSON(join(self.base_path, name))
+                    shutil.copy2(join(self.base_path, name), join(staged, name))
+            ver_json = self.importJSON(join(staged, self.version_path))
+            if not isinstance(ver_json, dict) or not ver_json.get('version'):
+                raise CommandError('version.json must contain a nonempty version')
+            self.base_path = staged
+            self._previous_path = destination
+            self._reconcile_map_relations = not exists(join(destination, '.map-relations-v1'))
+            # Earlier importers copied these JSONs to prev without importing them.
+            # Reconcile their current rows once even when the JSON is unchanged.
+            with open(join(staged, '.map-relations-v1'), 'w') as marker:
+                marker.write('1\n')
+            with transaction.atomic():
+                self._import_data(update)
+                Version.objects.get_or_create(version=ver_json['version'])
+                if exists(destination):
+                    os.replace(destination, backup)
+                    moved_old = True
+                os.replace(staged, destination)
+                published = True
+        except BaseException:
+            if published:
+                shutil.rmtree(destination)
+            if moved_old:
+                os.replace(backup, destination)
+            raise
+        finally:
+            self.base_path = original_base
+            self.__dict__.pop('_previous_path', None)
+            self.__dict__.pop('_reconcile_map_relations', None)
+            if exists(staged):
+                shutil.rmtree(staged)
+        if moved_old:
+            shutil.rmtree(backup)
 
-        ver_json = self.importJSON(join(self.base_path, self.version_path))
-        # version.json이 있고 version 키가 있을 때만 버전 기록.
-        # get_or_create + Version.version unique 제약으로
-        # 같은 버전이면 no-op, 새 버전이면 row 1개 추가.
-        if ver_json and 'version' in ver_json:
-            Version.objects.get_or_create(version=ver_json['version'])
-        
+    def _import_data(self, update):
         item_type       = self.importJSON(join(self.base_path,self.item_type_path))
         #get old dir loc
         #to do compare item from old dir, delete same rows
-        items           = self.comparer(self.item_path)
+        # P0-8: recipe 의 $ID 를 'recipe-<n>' canonical ID 로 정규화해
+        # Item/Recipe 49건 ClassID 충돌로 인한 드롭을 방지한다. transform 은
+        # comparer 내에서 양쪽 JSON(now/prev)에 일괄 적용된다.
+        recipe_id_names = set(item_type.get('RECIPES', []))
+        items           = self.comparer(
+            self.item_path,
+            transform=lambda e: self._canonical_item_id(e, recipe_id_names),
+        )
         self.importItem(items,item_type, update)
         
         npc             = self.comparer(self.npc_path)
@@ -255,19 +274,11 @@ class Command(BaseCommand):
         achieve = self.comparer(self.achieve_path)
         self.importAchieve(achieve,update)
         
-        source = os.listdir(self.base_path)
-        destination = join(self.base_path,"prev")
-        for files in source:
-            if files.endswith(".json"):
-                shutil.copy(join(self.base_path,files),join(destination,files))
-
-            
-    
     def importItem(self,items, item_type, update ):
         for i in items['removed']:
             try:
                 Items.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete item {} ({})".format(i['Name'], i['$ID']))
         logging.debug("migrating items")
         item_type_db = list(Item_Type.objects.all())  
@@ -279,7 +290,7 @@ class Command(BaseCommand):
             try:
                 handler = Items.objects.get(ids = i['$ID'])
                 upd = True
-            except:
+            except ObjectDoesNotExist:
                 handler = Items()
             handler.ids             = i['$ID']
             handler.id_name         = i['$ID_NAME']
@@ -292,7 +303,7 @@ class Command(BaseCommand):
             if i['Type'] not in item_type_db:
                 try:
                     type_handler = Item_Type.objects.get(name = i['Type'])
-                except:
+                except ObjectDoesNotExist:
                     type_handler = Item_Type()
                 type_handler.name = i['Type']
                 type_handler.save()
@@ -334,7 +345,7 @@ class Command(BaseCommand):
         for i in items['changed']:
             try:
                 handler = Items.objects.get(ids = i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Items()
             handler.ids             = i['$ID']
             handler.id_name         = i['$ID_NAME']
@@ -347,7 +358,7 @@ class Command(BaseCommand):
             if i['Type'] not in item_type_db:
                 try:
                     type_handler = Item_Type.objects.get(name = i['Type'])
-                except:
+                except ObjectDoesNotExist:
                     type_handler = Item_Type()
                 type_handler.name = i['Type']
                 type_handler.save()
@@ -375,7 +386,7 @@ class Command(BaseCommand):
     def makeEQ(self, item, i, item_type_db,upd = False):
         try:
             handler = Equipments.objects.get(item = item)
-        except:
+        except ObjectDoesNotExist:
             handler = Equipments()
             handler.item = item
             
@@ -401,7 +412,7 @@ class Command(BaseCommand):
         if i['TypeEquipment'] not in item_type_db:
             try:
                 type_handler = Item_Type.objects.get(name = i['Type'])
-            except:
+            except ObjectDoesNotExist:
                 type_handler = Item_Type()
             type_handler.name = i['TypeEquipment']
             type_handler.is_equipment = True
@@ -418,7 +429,7 @@ class Command(BaseCommand):
                 #try:
                 #    bonus.bonus_val  = b[1].replace('{img green_up_arrow 16 16}', '▲')\
                 #                            .replace('{img green_down_arrow 16 16}', '▼')
-                #except:
+                #except ObjectDoesNotExist:
                 bonus.bonus_val  = b[1]
                 bonus.save()
         handler.save()
@@ -426,7 +437,7 @@ class Command(BaseCommand):
     def makeCard(self, item, i, item_type_db,upd = False):
         try:
             handler = Cards.objects.get(item = item)
-        except:
+        except ObjectDoesNotExist:
             handler = Cards()
             handler.item = item
         handler.icon = i['IconTooltip']
@@ -437,13 +448,11 @@ class Command(BaseCommand):
     def makeRecipe(self, item, i, item_type_db,upd = False):
         
         if ('Link_Materials' not in i):
-            logging.warning("invalid recipe {}".format(i['Name']))
-            logging.warning(i)
-            return
+            raise CommandError("invalid recipe {}".format(i['Name']))
         
         try:
             handler = Recipes.objects.get(item = item)
-        except:
+        except ObjectDoesNotExist:
             handler = Recipes()
             handler.item = item
             handler.save()
@@ -455,24 +464,26 @@ class Command(BaseCommand):
                 mat.material    = Items.objects.get(id_name = link['Item'])
                 mat.qty         = link['Quantity']
                 mat.save()
-            except:
-                logging.warn("[RCP] {} ({}) material not found ({})".format(i['Name'], i['$ID_NAME'], link['Item']))
+            except ObjectDoesNotExist:
+                raise CommandError("[RCP] {} ({}) material not found ({})".format(i['Name'], i['$ID_NAME'], link['Item']))
         
         Item_Recipe_Target.objects.filter(recipe = handler).delete()
+        # Some source recipes intentionally have no target (e.g. BlessedStone).
+        if i.get('Link_Target') is None:
+            return
         try:
             target = Item_Recipe_Target(recipe = handler)
             target.target = Items.objects.get(id_name = i['Link_Target'])
             target.save()
-        except:
-            logging.warn("[RCP] {} ({}) didnt have target".format(i['Name'], i['$ID_NAME']))
+        except ObjectDoesNotExist:
+            raise CommandError("[RCP] {} ({}) didnt have target".format(i['Name'], i['$ID_NAME']))
     
     def makeCollection(self, item, i, item_type_db,upd = False):
         if ('Link_Items' not in i):
-            logging.warning("invalid recipe {}".format(i['Name']))
-            return
+            raise CommandError("invalid collection {}".format(i['Name']))
         try:
             handler = Collections.objects.get(item = item)
-        except:
+        except ObjectDoesNotExist:
             handler = Collections()
             handler.item = item
         handler.save()
@@ -482,8 +493,8 @@ class Command(BaseCommand):
                 mat             = Item_Collection_Material(collection = handler)
                 mat.material    = Items.objects.get(id_name = link)
                 mat.save()
-            except:
-                logging.warn("[RCP] {} ({}) material not found ({})".format(i['Name'], i['$ID_NAME'], link))
+            except ObjectDoesNotExist:
+                raise CommandError("[RCP] {} ({}) material not found ({})".format(i['Name'], i['$ID_NAME'], link))
         
         Item_Collection_Bonus.objects.filter(collection = handler).delete()
         try:
@@ -493,13 +504,13 @@ class Command(BaseCommand):
                     bonus.bonus_stat = b[0]
                     bonus.bonus_val  = b[1]
                     bonus.save()
-        except:
-            logging.warn("[RCP] {} ({}) didnt have target".format(i['Name'], i['$ID_NAME']))
+        except ObjectDoesNotExist:
+            raise CommandError("[RCP] {} ({}) didnt have target".format(i['Name'], i['$ID_NAME']))
 
     def makeBook (self, item, i, item_type_db,upd = False):
         try:
             handler = Books.objects.get(item = item)
-        except:
+        except ObjectDoesNotExist:
             handler = Books()
             handler.item = item
         if 'Text' in i:
@@ -512,12 +523,12 @@ class Command(BaseCommand):
         for i in monster['removed']:
             try:
                 Monsters.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete monster {} ({})".format(i['Name'], i['$ID']))
         for i in monster['added'] + monster['changed']:
             try:
                 handler                 = Monsters.objects.get(ids= i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Monsters()
             handler.ids             = i['$ID']
             handler.id_name         = i['$ID_NAME']            
@@ -558,12 +569,12 @@ class Command(BaseCommand):
         for i in npc['removed']:
             try:
                 Monsters.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete monster {} ({})".format(i['Name'], i['$ID']))
         for i in npc['added']:
             try:
                 handler                 = Monsters.objects.get(ids= i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Monsters()
             
             handler.ids             = i['$ID']
@@ -589,13 +600,13 @@ class Command(BaseCommand):
     def importItemMonster(self,item_monster, update ):
         for i in item_monster['removed']:
             try:
-                Item_Monster(monster__ids = i['Monster'], item__ids = i['Item']).delete().delete()
-            except:
+                Item_Monster.objects.filter(monster__ids=i['Monster'], item__ids=i['Item']).delete()
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete item_monster {} ({})".format(i['Item'], i['Monster']))
         for i in item_monster['added'] + item_monster['changed']:
             try:
-                handler                     = Item_Monster(monster__ids = i['Monster'], item__ids = i['Item'])
-            except:
+                handler                     = Item_Monster.objects.get(monster__ids=i['Monster'], item__ids=i['Item'])
+            except ObjectDoesNotExist:
                 handler = Item_Monster()
             handler.monster             = Monsters.objects.get(ids = i['Monster'])
             handler.item                = Items.objects.get(ids = i['Item'])
@@ -611,13 +622,13 @@ class Command(BaseCommand):
     def importMap (self,map, update ):
         for i in map['removed']:
             try:
-                Maps(monster__ids = i['Monster'], item__ids = i['Item']).delete().delete()
-            except:
+                Maps.objects.filter(ids=i['$ID']).delete()
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete map {} ({})".format(i['Name'], i['$ID']))
         for i in map['added'] + map['changed'] :
             try:
                 handler = Maps.objects.get(ids= i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Maps()
             handler.ids            = i['$ID']
             handler.id_name        = i['$ID_NAME']            
@@ -641,21 +652,20 @@ class Command(BaseCommand):
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Items.objects.get(ids = i['Item'])
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("map {} or item {} not found".format(i['Map'], i['Item']))
                 continue
-            Map_Item.objects.get(map= m, item = it).delete()
+            Map_Item.objects.filter(map=m, item=it).delete()
         for i in map['added'] + map['changed']:
            
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Items.objects.get(ids = i['Item'])
-            except:
-                logging.warning("map {} or item {} not found".format(i['Map'], i['Item']))
-                continue
+            except ObjectDoesNotExist:
+                raise CommandError("map {} or item {} not found".format(i['Map'], i['Item']))
             try:
                 handler = Map_Item.objects.get(map= m, item = it)
-            except:
+            except ObjectDoesNotExist:
                 handler = Map_Item()
             handler.chance          = i['Chance']
             handler.item            = it
@@ -673,8 +683,8 @@ class Command(BaseCommand):
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Items.objects.get(ids = i['Item'])
-                Map_Item_Spawn.objects.get(map= m, item = it).delete()
-            except:
+                Map_Item_Spawn.objects.filter(map=m, item=it).delete()
+            except ObjectDoesNotExist:
                 logging.warning("map {} or item {} not found".format(i['Map'], i['Item']))
                 continue
         for i in map['added'] +  map['changed']:
@@ -682,12 +692,11 @@ class Command(BaseCommand):
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Items.objects.get(ids = i['Item'])
-            except:
-                logging.warning("map {} or item {} not found".format(i['Map'], i['Item']))
-                continue
+            except ObjectDoesNotExist:
+                raise CommandError("map {} or item {} not found".format(i['Map'], i['Item']))
             try:
                 handler = Map_Item_Spawn.objects.get(map= m, item = it)
-            except:
+            except ObjectDoesNotExist:
                 handler = Map_Item_Spawn()
             handler.population      = i['Population']
             handler.item            = it
@@ -711,8 +720,8 @@ class Command(BaseCommand):
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Monsters.objects.get(ids = i['NPC'])
-                Map_NPC.objects.get(map= m, item = it).delete()
-            except:
+                Map_NPC.objects.filter(map=m, monster=it).delete()
+            except ObjectDoesNotExist:
                 logging.warning("map {} or item {} not found".format(i['Map'], i['NPC']))
                 continue
         for i in map['added'] + map['changed']:
@@ -720,12 +729,11 @@ class Command(BaseCommand):
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Monsters.objects.get(ids = i['NPC'])
-            except:
-                logging.warning("map {} or item {} not found".format(i['Map'], i['NPC']))
-                continue
+            except ObjectDoesNotExist:
+                raise CommandError("map {} or NPC {} not found".format(i['Map'], i['NPC']))
             try:
                 handler = Map_NPC.objects.get(map= m, monster = it)
-            except:
+            except ObjectDoesNotExist:
                 handler = Map_NPC()
             handler.population      = i['Population']
             handler.monster         = it
@@ -736,11 +744,7 @@ class Command(BaseCommand):
                     pos.append(po)
             handler.time_respawn    = i['TimeRespawn']
             handler.positions        = pos
-            try:
-                handler.save()
-            except:
-                logging.warning(len(handler.positions))
-                logging.warning(handler.positions)
+            handler.save()
             
         
         
@@ -752,12 +756,12 @@ class Command(BaseCommand):
         for i in jobs['removed']:
             try:
                 Jobs.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete jon {} ({})".format(i['Name'], i['$ID']))
         for i in jobs['added'] + jobs['changed']:
             try:
                 handler = Jobs.objects.get(ids= i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Jobs()
             handler.ids             = i['$ID']
             handler.id_name         = i['$ID_NAME']            
@@ -775,6 +779,8 @@ class Command(BaseCommand):
         
     
     def importSkills(self,skills, update ):
+        self._available_skill_names = {row['$ID_NAME'] for row in skills.values()
+                                       if row.get('Link_Job') is not None}
         logging.debug("migrating monsters")
         count = 0
         count_all = len(skills)
@@ -791,7 +797,7 @@ class Command(BaseCommand):
                     
                 else:
                     logging.info("updating ({}/{})  {}".format(count,count_all,i['Name']))
-            except:
+            except ObjectDoesNotExist:
                 handler = Skills()
                 logging.info("inserting ({}/{})  {}".format(count,count_all,i['Name']))
             
@@ -848,42 +854,42 @@ class Command(BaseCommand):
                 try:
                     for h in i['CaptionTime']:
                         h = int(h)
-                except:
+                except (ValueError, TypeError):
                     i['CaptionTime'] = None
                 handler.captiontime     = i['CaptionTime']
             if 'SkillSR' in i:
                 try:
                     for h in i['SkillSR']:
                         h = int(h)
-                except:
+                except (ValueError, TypeError):
                     i['SkillSR'] = None
                 handler.skillsr     = i['SkillSR'] 
             if 'SpendItemCount' in i:
                 try:
                     for h in i['SpendItemCount']:
                         h = int(h)
-                except:
+                except (ValueError, TypeError):
                     i['SpendItemCount'] = None
                 handler.spenditemcount  = i['SpendItemCount'] 
             if 'SpendPoison' in i:
                 try:
                     for h in i['SpendPoison']:
                         h = int(h)
-                except:
+                except (ValueError, TypeError):
                     i['SpendPoison'] = None
                 handler.spendpoison     = i['SpendPoison'] 
             if 'SpendSP' in i:
                 try:
                     for h in i['SpendSP']:
                         h = int(h)
-                except:
+                except (ValueError, TypeError):
                     i['SpendSP'] = None
                 handler.spendsp     = i['SpendSP'] 
             if 'CoolDown' in i:
                 try:
                     for h in i['CoolDown']:
                         h = int(h)
-                except:
+                except (ValueError, TypeError):
                     i['CoolDown'] = None
                 handler.cooldown_lv     = i['CoolDown'] 
             handler.job = Jobs.objects.get(ids = i['Link_Job'])
@@ -898,7 +904,7 @@ class Command(BaseCommand):
         for i in attrib['removed']:
             try:
                 Attributes.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete attrib {} ({})".format(i['Name'], i['$ID']))
 
         for i in attrib['added'] + attrib['changed']:
@@ -908,7 +914,7 @@ class Command(BaseCommand):
                     attrib['removed'].append(i)
                     continue
                 
-            except:
+            except ObjectDoesNotExist:
                 handler = Attributes()
                 if (i['LevelMax']==-1):
                     continue
@@ -923,12 +929,18 @@ class Command(BaseCommand):
             handler.save()
             added_skill = []
             for h in i['Link_Skills']:
+                # Exported attributes retain references to retired/non-job skills.
+                # Only absence from the source is optional; a missing DB row for
+                # an importable skill must still abort the import.
+                if hasattr(self, '_available_skill_names') and h not in self._available_skill_names:
+                    logging.warning('Skipping non-exported attribute skill %s', h)
+                    continue
                 try:
                     skill = Skills.objects.get(id_name = h)
                     handler.skill.add(skill)
                     added_skill.append(skill.ids)
-                except:
-                    logging.warning("skill not found {}".format(h))
+                except ObjectDoesNotExist:
+                    raise CommandError("skill not found {}".format(h))
             for skill in handler.skill.all():
                 if skill.ids not in added_skill:
                     handler.skill.remove(skill)
@@ -938,8 +950,8 @@ class Command(BaseCommand):
                     job = Jobs.objects.get(ids = h)
                     handler.job.add(job)
                     added_jobs.append(job.ids)
-                except:
-                    logging.warning("skill not found {}".format(h))
+                except ObjectDoesNotExist:
+                    raise CommandError("skill not found {}".format(h))
             for job in handler.job.all():
                 if job.ids not in added_jobs:
                     handler.job.remove(job)
@@ -953,13 +965,13 @@ class Command(BaseCommand):
         for i in skillmon['removed']:
             try:
                 Skill_Monster.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete skillmon {} ({})".format(i['Name'], i['$ID']))
             
         for i in skillmon['added'] +skillmon['changed'] :
             try:
                 handler = Skill_Monster.objects.get(ids= i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Skill_Monster()
             link_mon = []
             handler.ids             = i['$ID']
@@ -967,7 +979,7 @@ class Command(BaseCommand):
             handler.name            = i['Name']
             try:
                 handler.sfr             = int(i['SFR'])
-            except:
+            except (ValueError, TypeError):
                 handler.sfr             = 0
             handler.element         = i['Attribute']
             handler.cooldown        = int(i['CD'])
@@ -976,8 +988,8 @@ class Command(BaseCommand):
             for monster in i['Monster']:
                 try:
                     link_mon.append(Monsters.objects.get(ids = monster))
-                except:
-                    logging.warning("monster(ids) {} not found (for skill)".format(monster))
+                except ObjectDoesNotExist:
+                    raise CommandError("monster(ids) {} not found (for skill)".format(monster))
             for mon in link_mon:
                 handler.monsters.add(mon)
             handler.save()
@@ -988,13 +1000,13 @@ class Command(BaseCommand):
         for i in buff['removed']:
             try:
                 Buffs.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete buff {} ({})".format(i['Name'], i['$ID']))
             
         for i in buff['added'] +buff['changed'] :
             try:
                 handler = Buffs.objects.get(ids= i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Buffs()
             link_mon = []
             handler.ids             = i['$ID']
@@ -1018,13 +1030,13 @@ class Command(BaseCommand):
         for i in achieve['removed']:
             try:
                 Achievements.objects.get(ids= i['$ID']).delete()
-            except:
+            except ObjectDoesNotExist:
                 logging.warning("failed to delete achievements {} ({})".format(i['Name'], i['$ID']))
             
         for i in achieve['added'] +achieve['changed'] :
             try:
                 handler = Achievements.objects.get(ids= i['$ID'])
-            except:
+            except ObjectDoesNotExist:
                 handler = Achievements()
             link_mon = []
             handler.ids             = i['$ID']

@@ -48,3 +48,21 @@ def test_cron_checks_parser_return_code(name):
     assert pos_parse < pos_abort < pos_import or pos_abort < pos_import, (
         '%s: import must come after parser failure guard' % name
     )
+
+
+@pytest.mark.parametrize('name', CRON_FILES)
+@pytest.mark.parametrize('return_code', [0, 7])
+def test_import_failure_stops_before_success_message(name, return_code):
+    """Execute the actual post-import shell block without running cron or webhooks."""
+    import subprocess
+
+    src = _read_cron(name)
+    start = src.index('import_result=$?')
+    end = src.index('\nfi', start) + len('\nfi')
+    block = src[start:end]
+    result = subprocess.run(
+        ['bash', '-c', '(exit %d)\n%s\nprintf reached_success' % (return_code, block)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == return_code
+    assert ('reached_success' in result.stdout) == (return_code == 0)

@@ -346,7 +346,7 @@
 					<img loading="lazy" alt="" src="/static/icons/{{i.target.icon}}.png") class="icon-32">
 				</td>
 				<td>
-					<a href="{{i.target.ids}}">{{i.target.name}}</a>
+					<a href="{% url 'Items:item' i.target.ids %}">{{i.target.name}}</a>
 				</td>
 			</tr>
 			{%endfor%}
@@ -362,7 +362,7 @@
 					<img loading="lazy" alt="" src="/static/icons/{{i.material.icon}}.png") class="icon-32">
 				</td>
 				<td>
-					<a href="{{i.material.ids}}">{{i.material.name}}</a>
+					<a href="{% url 'Items:item' i.material.ids %}">{{i.material.name}}</a>
 				</td>
 				<td style="text-align:right;">
 					x{{i.qty}}
@@ -395,7 +395,7 @@
 	    <tbody>
 	    	{%for material in collectionMaterial%}
 	    	 <tr>
-	    		<td><img loading="lazy" alt="" src="/static/icons/{{material.material.icon}}.png") class="icon-24"> 	<a href="{{material.material.ids}}">{{material.material.name}}</a></td>
+                <td><img loading="lazy" alt="" src="/static/icons/{{material.material.icon}}.png") class="icon-24"> 	<a href="{% url 'Items:item' material.material.ids %}">{{material.material.name}}</a></td>
 	      </tr>
 	      {%endfor%}
 	    </tbody>
@@ -414,7 +414,7 @@
 		      	<th>{{"Crafted From" | translate}}</th>
 		      	<td>
 		      		{%for i in targetRecipe%}
-		      			<a href="{{i.recipe.item.ids}}"> <p class="mb-0"> <img loading="lazy" alt="" src="/static/icons/{{i.recipe.item.icon}}.png") class="icon-24">{{i.recipe.item.name}}</p></a>
+                        <a href="{% url 'Items:item' i.recipe.item.ids %}"> <p class="mb-0"> <img loading="lazy" alt="" src="/static/icons/{{i.recipe.item.icon}}.png") class="icon-24">{{i.recipe.item.name}}</p></a>
 		      			
 		      		{%endfor%}
 		      	</td>
@@ -426,7 +426,7 @@
 		      	<th>{{"Collections" | translate}}</th>
 		      	<td>
 			      	{%for i in collectionMaterialFor%}
-		      			<a href="{{i.collection.item.ids}}"><p class="mb-0"><img loading="lazy" alt="" src="/static/icons/{{i.collection.item.icon}}.png") class="icon-24"> {{i.collection.item.name}}</p></a>
+                        <a href="{% url 'Items:item' i.collection.item.ids %}"><p class="mb-0"><img loading="lazy" alt="" src="/static/icons/{{i.collection.item.icon}}.png") class="icon-24"> {{i.collection.item.name}}</p></a>
 			      			
 		      		{%endfor%}
 	      		</td>

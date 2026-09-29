@@ -142,11 +142,11 @@ def index(request):
         srt = '' if orders[-1] == 'asc' else '-'
         data['curpage']     = int(getFromGet(request, 'page',1))
         if ('eq' in order):
-            data['item']            = list(Items.objects.filter(query).order_by('{}equipments__{}'.format(srt, orders[1])))
+            data['item']            = Items.objects.filter(query).order_by('{}equipments__{}'.format(srt, orders[1])).select_related('equipments')
         else:
-            data['item']            = list(Items.objects.filter(query).order_by('{}{}'.format(srt, orders[0])))
+            data['item']            = Items.objects.filter(query).order_by('{}{}'.format(srt, orders[0])).select_related('equipments')
 
-        data['item_len']    = len(data['item'])
+        data['item_len']    = data['item'].count()
         data['item']            = data['item'] [(data['curpage']-1)*10:data['curpage']*10]
         query                           = getFromGet(request, 'q','')
         data['query']       = query 
@@ -223,13 +223,13 @@ def item_detail(request, id):
 
     data['refference'] = 0
     try:
-        data['materialRecipe'] = list(Item_Recipe_Material.objects.filter(material = item))
+        data['materialRecipe'] = list(Item_Recipe_Material.objects.filter(material = item).prefetch_related('recipe__item'))
         if (len(data['materialRecipe']) != 0):
             data['refference'] = 1
     except:
         pass
     try:
-        data['targetRecipe'] = list(Item_Recipe_Target.objects.filter(target = item))
+        data['targetRecipe'] = list(Item_Recipe_Target.objects.filter(target = item).prefetch_related('recipe__item'))
         if (len(data['targetRecipe']) != 0):
             data['refference'] = 1
     except:
@@ -240,31 +240,31 @@ def item_detail(request, id):
         pass
 
     try:
-        data['materialRecipe'] = list(Item_Recipe_Material.objects.filter(recipe = item.recipes))
+        data['materialRecipe'] = list(Item_Recipe_Material.objects.filter(recipe = item.recipes).prefetch_related('material'))
     except:
         pass
 
     try:
-        data['target'] = Item_Recipe_Target.objects.filter(recipe = item.recipes)
+        data['target'] = Item_Recipe_Target.objects.filter(recipe = item.recipes).prefetch_related('target')
     except:
         pass
 
     try:
-        data['collectionMaterialFor'] = list(Item_Collection_Material.objects.filter(material = item))
+        data['collectionMaterialFor'] = list(Item_Collection_Material.objects.filter(material = item).prefetch_related('collection__item'))
         if (len(data['collectionMaterialFor']) != 0):
             data['refference'] = 1
     except:
         pass
 
     try:
-        data['mapDrop'] = list(Map_Item.objects.filter(item = item))
+        data['mapDrop'] = list(Map_Item.objects.filter(item = item).prefetch_related('map'))
         if (len(data['mapDrop']) != 0):
             data['refference'] = 1
     except:
         pass
 
     try:
-        data['foundAt'] = list(Map_Item_Spawn.objects.filter(item = item))
+        data['foundAt'] = list(Map_Item_Spawn.objects.filter(item = item).prefetch_related('map'))
         if (len(data['foundAt']) != 0):
             data['refference'] = 1
     except:
@@ -272,7 +272,7 @@ def item_detail(request, id):
 
 
     try:
-        data['collectionMaterial'] = list( Item_Collection_Material.objects.filter(collection = item.collections))
+        data['collectionMaterial'] = list( Item_Collection_Material.objects.filter(collection = item.collections).prefetch_related('material'))
     except:
         pass
 
@@ -300,7 +300,7 @@ def item_detail(request, id):
         pass
 
     try:
-        data['dropped'] = list(Item_Monster.objects.filter(item = item))
+        data['dropped'] = list(Item_Monster.objects.filter(item = item).prefetch_related('monster'))
         if (len(data['dropped']) != 0):
             data['refference'] = 1
     except:

@@ -9,7 +9,7 @@
 					<img loading="lazy" alt="" src="/static/icons/{{i.target.icon}}.png") class="icon-32">
 				</td>
 				<td>
-					<a href="{{i.target.ids}}">{{i.target.name}}</a>
+					<a href="{% url 'Items:item' i.target.ids %}">{{i.target.name}}</a>
 				</td>
 			</tr>
 			{%endfor%}
@@ -25,7 +25,7 @@
 					<img loading="lazy" alt="" src="/static/icons/{{i.material.icon}}.png") class="icon-32">
 				</td>
 				<td>
-					<a href="{{i.material.ids}}">{{i.material.name}}</a>
+					<a href="{% url 'Items:item' i.material.ids %}">{{i.material.name}}</a>
 				</td>
 				<td style="text-align:right;">
 					x{{i.qty}}

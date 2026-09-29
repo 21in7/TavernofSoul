@@ -321,6 +321,7 @@ def parse_links_items(constants):
 
 
 def parse_skill_mon(constants):
+    constants.build_monster_skill_index()
     xml_skills = constants.data['xml_skills']
     logging.debug('Parsing Monsters <> Skills...')
     ies_file = 'skill_mon.ies'

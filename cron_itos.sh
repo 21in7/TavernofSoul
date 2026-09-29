@@ -95,6 +95,12 @@ import_start_time=$(date +%s)
 cd ..
 cd TavernofSoul
 python manage_itos.py importAll
+import_result=$?
+# DB 적재 실패를 성공한 업데이트로 기록하지 않는다.
+if [ "$import_result" -ne 0 ]; then
+    echo "DB import 실패(return code $import_result). 업데이트 중단." >&2
+    exit "$import_result"
+fi
 
 import_elapsed=$(measure_time $import_start_time)
 echo "DB 가져오기 완료: $(date) (소요시간: $import_elapsed)" >> "$timing_file"

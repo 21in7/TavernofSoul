@@ -634,7 +634,7 @@ function getOneJob(ids, index_one_skill){
 			border-bottom-color: rgb(170, 170, 170);
 			border-bottom-style: solid;
 			border-bottom-width: 2px;" >
-			<h5 ><a href="/Jobs/`+job.ids+`" class="flavor">`+job.name+`</a></h5>
+			<h5 ><a href="/jobs/`+job.ids+`" class="flavor">`+job.name+`</a></h5>
 
 			<div style="position: absolute; right: 0; top: 2px;" class="row">
 			 <h5 class="mr-1"><span id ='spentPoint-`+job.ids+`'>0</span>/<span id ='spentPointMax-`+job.ids+`'>`+maxSkl  +`</span></h5>
@@ -711,7 +711,7 @@ function getOneJob(ids, index_one_skill){
 				 </div>
 				 <div class="col">
 					<div class="skillName row" style="text-overflow: ellipsis; font-size:12px" >
-					 <a href="`+ '/Skills/'+ skill.ids + `" target="_blank">`+skill.name+`</a>
+					 <a href="`+ '/skills/'+ skill.ids + `" target="_blank">`+skill.name+`</a>
 					</div>
 					<div class="point row"> <span id='lv-`+skill.counter+`-`+job.ids+`' class="lv-`+job.ids+`" >0</span>/ <span id='maxlv-`+skill.counter+`-`+job.ids+`'>`+skill.max_lv+`</span></div>
 					<div class="row">`
@@ -719,7 +719,7 @@ function getOneJob(ids, index_one_skill){
 					{
 						element+=`
 						<div class="skl form-inline">
-						<a href="`+'Attributes/'+i.ids +` " target="_blank"><img data-src="/static/icons/`+i.icon+`.png" class="icon-24 skill-icon"></a>
+						<a href="`+'/attributes/'+i.ids +`" target="_blank"><img data-src="/static/icons/`+i.icon+`.png" class="icon-24 skill-icon"></a>
 						<div id = descriptions class="container descriptions " style="margin-left:48px">
 						 <div id = 'desc-title' class="col" ><b>`+i.name+`</b></div>
 						 <div id = 'desc' class="col mb-1" >

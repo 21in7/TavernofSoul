@@ -107,7 +107,7 @@ def index(request):
 
 
     data['item']            = Monsters.objects.filter(query).order_by('ids').order_by('{}{}'.format(srt, orders[0]))
-    data['item_len']        = len(data['item'])
+    data['item_len']        = data['item'].count()
     data['item']            = data['item'] [(data['curpage']-1)*20:data['curpage']*20]
     data['cls']             = clsname
 
@@ -131,7 +131,7 @@ def item_detail(request, id):
     data['refference'] = 0
     
     try:
-        data['drop'] = list(Item_Monster.objects.filter(monster = item))
+        data['drop'] = list(Item_Monster.objects.filter(monster = item).select_related('item'))
         if (len(data['dropped']) != 0):
             data['refference'] = 1
     except:
@@ -145,7 +145,7 @@ def item_detail(request, id):
         pass
 
     try:
-        data['spotted']  = list(Map_NPC.objects.filter(monster = item))
+        data['spotted']  = list(Map_NPC.objects.filter(monster = item).select_related('map'))
     except:
         pass
 
