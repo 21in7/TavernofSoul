@@ -12,6 +12,12 @@ source /home/temperantia/TavernofSoul/py27/bin/activate
 python map_image.py ktest
 source /home/temperantia/TavernofSoul/TavernofSoul/itos/3.8/bin/activate
 python main.py ktest
+parse_result=$?
+# 안전장치: parser 가 실패하면 부분 결과를 DB 로 import 하지 않고 중단.
+if [ $parse_result -ne 0 ]; then
+    echo "KTEST 데이터 파싱 실패(return code $parse_result). import 중단." >> ../err.txt
+    exit 1
+fi
 # ========== importing changes to DB ========
 cd ..
 cd TavernofSoul

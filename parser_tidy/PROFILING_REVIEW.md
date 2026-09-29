@@ -13,6 +13,12 @@
 - 6차 코드 검증: 2026-07-22 (5차 정정 2건 코드·데이터 재확인 — "6차 코드 검증" 절 참조)
 - 7차 최종 재리뷰: 2026-07-22 (현재 worktree·테스트·cron 재확인, 단계별 구현 착수 승인)
 - 8차 착수 직전 검증: 2026-07-22 (핵심 근거 7건 코드 재대조 일치, 스냅샷 미커밋 상태만 선행 조건 미충족 — "8차 착수 직전 검증" 절 참조)
+- P0 구현 후 현행화: 2026-07-22 (커밋 `6a62f9bad`~`5d986fc35`, 테스트 78개 통과 기준)
+- 원자적 승격·패키지 미해결 분리 현행화: 2026-07-23 (staging 디렉터리 일괄 승격 구현, PackageContents.unresolved 분리, 테스트 94개 통과 기준)
+- 백업·롤백·재시도 보장 현행화: 2026-07-23 (교체 단계 실패 시 백업·롤백, version.json 미완료 재시도, 테스트 106개 통과 기준)
+- 백업 copy 전환·stale backup 보존 현행화: 2026-07-23 (백업 move→copy 전환으로 백업 실패 시 공개 무결, 비어 있지 않은 stale backup 시 실행 중단, 테스트 109개 통과 기준)
+- 드롭 provenance 현행화: 2026-07-24 (`drop_source.py` 데이터셋 단위 iTOS 우선 fallback, 레코드에 `SourceRegion`/`InputVersion`, `build_provenance`/`unresolved_drops` 컬렉션, 하드코딩 `../itos_unpack` 제거, maps 직접 zonedrop 유실·셰도잉·dropgroup 합계0 버그 수정, 테스트 19개 통과 기준)
+- version.json 트랜잭션 통합 현행화: 2026-07-23 (version.json을 export(version_payload) JSON 승급 트랜잭션에 통합, 롤백 copy 기반 + `.rollback-failed` 마커로 백업 보존, 공개 승급 os.replace 정확 카운트 테스트 교정, 테스트 116개 통과 기준. 자가 회복 회귀 수정: 롤백 완전 성공·교체 전 실패 시 백업을 폐기해 다음 실행이 stale backup 중단 없이 재시도 — 보존 판단은 _rollback_promotion 반환값 기반이라 마커 작성 실패에도 안전)
 - 기준 입력: `ktos_unpack`의 실제 IES 1,017개와 게임 툴팁 Lua
 - 기준 출력: `TavernofSoul/JSON_ktos/*.json`
 - 관련 문서: [PROFILING.md](PROFILING.md)
@@ -23,16 +29,16 @@
 
 구현 가능성 판정은 **조건부 승인**이다. P0~P3 방향은 유지할 수 있지만 문서 전체를 그대로 한 번에 구현하면 안 되며, ID/DB/API 마이그레이션과 큐브 다중 매핑, 550 accessory 구분을 먼저 설계에 반영해야 한다. 2차 재리뷰에서는 패키지 토큰 오해석, 몬스터 EXP/JOBEXP 역매핑, 지역 드롭 출처 혼합, 비원자적 결과 공개를 추가 P0로 판정했다.
 
-가장 먼저 고칠 항목은 다음 여덟 가지다.
+착수 당시 가장 먼저 고칠 항목과 현재 상태는 다음과 같다.
 
-1. `EQUIPMENT_IES`의 대소문자 중복을 제거한다. 동일한 장비 IES를 두 번 계산해 `parse_equips` 작업의 약 41%를 낭비한다.
-2. 큐브 보상 연결 로직을 수정한다. 현재 CUBE 1,044개 모두 `Link_Items`가 비어 있다.
-3. Item과 Recipe의 `ClassID` 충돌을 해결한다. 이름 기준 28,753개가 ID 기준 출력에서는 28,704개가 되어 49개가 덮어써진다.
-4. 하드코딩된 가디스 강화 레벨 목록을 파일 자동 탐색으로 바꾼다. 실제 `item_goddess_reinforce_550.ies`가 결과에서 누락돼 있다.
-5. “원본 필드 일부 복사” 방식에서 “툴팁 종류별 정규화” 방식으로 바꾼다. 특히 스킬의 캐스팅/설치/공속 메타데이터와 ARK·RELIC·BELT·EARRING·CORE 전용 옵션이 부족하다.
-6. 패키지의 `/` 토큰 문법을 수정한다. 현재 72개 패키지에서 261개 구성물 이름과 수량이 잘못 분리된다.
-7. 몬스터 지역 보정의 `EXP`/`JOBEXP` 역매핑을 고치고 맵별 스탯을 전역 한 건으로 덮어쓰지 않는다.
-8. 먼저 iTOS 스킬 조기 저장 제거, 버전 파일별 원자 교체와 갱신 순서 교정, cron 실패 중단을 적용한다. 이후 릴리스 방식을 확정해 파서 결과와 버전을 임시 디렉터리에서 완성한 뒤 한 번에 공개한다. 현재 파일별 export는 실패 시 혼합 버전을 만들 수 있다.
+1. **완료:** `EQUIPMENT_IES`의 대소문자 중복을 제거하고 realpath 중복 처리를 방지했다.
+2. **완료:** 큐브 보상 연결을 다중 매핑으로 수정했다. 현재 CUBE 1,045개 중 117개가 `reward_indun` 보상과 연결된다.
+3. **미구현:** Item과 Recipe의 `ClassID` 충돌 49건을 canonical ID와 DB/API 마이그레이션으로 해소한다.
+4. **미구현:** 가디스 강화 레벨을 자동 탐색하고 `item_goddess_reinforce_550.ies`의 accessory 지원을 반영한다.
+5. **미구현:** 스킬 메타데이터와 ARK·RELIC·BELT·EARRING·CORE 전용 옵션을 툴팁 종류별로 정규화한다.
+6. **부분 완료:** 패키지 `/` 토큰 오해석 261건과 `RANDOM_MUTIPLE`, `SET_ACCOUNT_PROP` 분류 오류를 수정했다. 만료 이벤트 Item 참조 2건은 `PackageContents.unresolved`로 명시 분리했다(가짜 fallback 생성 금지, 원문 보존). 남은 것은 DB `package_contents` TextField의 직렬화 결과를 API/화면에서 구조화해 렌더링하는 표시 계층뿐이다.
+7. **부분 완료:** 지역 보정 `EXP`/`JOBEXP` 역매핑은 수정해 916개 대조에서 불일치가 0건이다. 맵별 상이한 스탯 17개를 전역 한 건으로 덮어쓰는 문제는 남아 있다.
+8. **완료(최종 상태 원자성, 독자 관점 원자성은 제한):** iTOS 조기 저장 제거, 버전 파일별 원자 교체·순서 교정, cron 실패 중단, 그리고 전체 JSON의 임시 릴리스 디렉터리(`JSON_<region>.staging/`) 기반 백업·롤백 일괄 교체를 모두 구현했다. `export(version_payload=v)`는 모든 컬렉션을 staging에 완전히 직렬화·검증한 뒤, 기존 공개 파일을 백업 디렉터리로 **복사(copy)**해둔다. 백업 단계 실패 시 공개 파일은 전혀 건드리지 않은 상태로 남는다(copy이므로). 검증·백업 성공 후 staging 파일을 공개 위치로 `os.replace` 교체하며, 교체 도중 하나라도 실패하면 백업에서 모든 공개 파일을 구버전으로 롤백하고(신규 파일은 공개에서 제거), 전체 성공 시에만 백업을 폐기한다. **version.json은 JSON 승급 트랜잭션에 통합**되어 공개 JSON과 함께 원자적으로 승급·롤백되므로, JSON만 신버전이고 version.json은 구버전인 혼합이 발생하지 않는다. 롤백 자체가 실패하면 `.rollback-failed` 마커를 남겨 백업 디렉터리를 보존하고(copy 기반이므로 백업 원본은 온전), 다음 실행은 비어 있지 않은 backup을 감지해 중단해 운영자가 수동 복구할 수 있도록 한다. `parser_version.csv`는 `export()`보다 먼저 갱신되며, `export()` 실패 시 version.json이 구버전으로 남아 시작 조건의 `version.json`/`parser_version.csv` 불일치 검사가 실패한 run을 자동으로 재시도한다. **한계:** `BASE_PATH_OUTPUT`이 고정 디렉터리를 직접 가리키므로 디렉터리 포인터 단위 교체(symlink)는 도입하지 않았다. 따라서 교체 진행 중 독자가 일시적으로 신구 혼합 상태를 관찰할 수 있으나, 최종 상태는 전부 신버전 또는 전부 구버전 둘 중 하나로만 귀결된다. importer는 cron이 parser 전체 성공 후에만 실행되므로 혼합 관찰 창에 도달하지 않는다.
 
 이 여덟 항목 중 1번은 정확성 변경 없이 약 30초를 줄일 수 있는 것으로 추정된다. 기존 프로파일링 문서의 성능 우선순위에는 이 항목이 빠져 있다.
 
@@ -64,8 +70,8 @@
 | ID 기준 아이템 | 28,704 | 49개 ID 충돌로 손실 |
 | 장비 원본 | 10,171 | 이름 기준 전부 존재 |
 | `item_petequip.ies` | 22 | `ITEM_IES` 미등록으로 전부 누락 |
-| CUBE | 1,044 | 보상 링크가 있는 항목 0 |
-| 패키지 객체 생성 | 1,458 / 후보 1,464 | 72개 패키지의 261개 구성물 참조가 오해석, GROWTH 6개 미해석 |
+| CUBE | 1,045 | `reward_indun`과 연결된 큐브 117개 |
+| 패키지 객체 생성 | 코드 기준 1,486 / 후보 1,493 | 오해석 0건. GROWTH 6개와 SET_ACCOUNT_PROP 1개는 보고 전용. 체크인된 JSON은 수정 전 1,487개라 재생성 필요 |
 | 설명이 비어 있는 아이템 | 2,024 | Recipe 1,364, Equipment 626이 대부분 |
 
 설명이 빈 레코드가 모두 파서 오류인 것은 아니다. 원본 `Desc`가 빈 경우도 많다. 다만 게임 클라이언트는 `Desc` 외에 `UsageDesc`, `Desc_Sub`, `CustomToolTip`과 전용 Lua를 조합한다. 현재 파서는 다음 원본 콘텐츠를 일반 아이템 결과에 보존하지 않는다.
@@ -106,22 +112,30 @@ fallback한다. 따라서 ktos 정적 문구 커버리지는 통과했지만 다
 
 ### 큐브와 패키지 툴팁
 
-`reward_indun.ies`에는 1,450개 보상 행과 130개 그룹이 있고, 그중 116개 그룹은 큐브 `StringArg`와 연결된다. 하지만 결과의 CUBE 1,044개에는 `Link_Items`가 하나도 없다.
+`reward_indun.ies`에는 1,450개 보상 행과 130개 그룹이 있고, 그중 해석 가능한 116개 그룹은
+공유 그룹을 포함한 큐브 117개와 연결된다. 잘못된 `items_by_name` 선행 조건, `ID_NAME` 키 오타,
+단일 `StringArg -> cube` 매핑은 제거됐고 현재 출력은 CUBE 1,045개 중 117개에 `Link_Items`가 있다.
 
-원인은 `items.py:742`에서 `row['Group']`을 먼저 `items_by_name`에서 찾는 잘못된 조건과, `items.py:754`에서 `'$ID_NAME'` 대신 `'ID_NAME'`을 조회하는 오타다. 첫 조건 때문에 대부분의 행이 바로 버려진다.
+패키지류 후보는 1,493개이고 `resolve_package_contents`가 1,486개에
+`PackageContents`를 만든다(후보 1,493 = 생성 1,486 + growth 6 + account_prop 1).
+이전 구현의 `rpartition('/')` 버그 — `Item/Count/Property/Value/...` 형식에서 마지막 값을
+수량으로, 그 앞 전체를 Item 이름으로 잘못 저장해 72개 패키지의 261개 구성물 참조가
+존재하지 않는 Item 이름을 가리키던 문제(예: `Legendcard_Leticia/5/ItemExp/60`이
+Item=`Legendcard_Leticia/5/ItemExp`, Count=60으로 저장) — 는 `package_parser` 분리로
+수정됐다. 현재는 앞에서부터 Item, Count를 읽고 나머지를 property/value 쌍(인스턴스
+옵션)으로 보존하며, 오해석 참조는 0건이다.
 
-패키지류 후보는 1,464개이고 최근 추가된 `resolve_package_contents`가 1,458개에
-`PackageContents`를 만든다. 그러나 이는 정상 해석 건수가 아니다. 현재 코드는 `/`가 있는 토큰을
-`rpartition('/')`으로 나누므로 `Item/Count/Property/Value/...` 형식에서 마지막 값을 수량으로,
-그 앞 전체를 Item 이름으로 잘못 저장한다. 실제 출력 7,213개 구성물 중 261개가 존재하지 않는
-Item 이름을 참조하며 72개 패키지가 영향을 받는다. 예를 들어
-`Legendcard_Leticia/5/ItemExp/60`은 Item=`Legendcard_Leticia`, Count=5,
-instance option=`ItemExp:60`이어야 하지만 현재 Item=`Legendcard_Leticia/5/ItemExp`, Count=60이 된다.
-
-또한 `SCR_USE_STRING_GIVE_ITEM_NUMBER_SPLIT_GROWTH` 6개는 `StringArg=Melee|Magic`이므로 Item 목록이
-아니며 별도 성장 선택 규칙을 따라야 한다. 현재는 모두 건너뛴다. DB `package_contents` TextField와
-importer 저장은 구현됐지만 serializer에서는 JSON 문자열이고 화면 템플릿은 이를 렌더링하지 않는다.
-따라서 패키지는 **부분 구현·정확성 보완 필요** 상태다.
+`SCR_USE_STRING_GIVE_ITEM_NUMBER_SPLIT_GROWTH` 6개는 `StringArg=Melee|Magic`이므로 Item
+목록이 아니며 growth_selection 범주로 보고만 한다(성장 선택 규칙 해석은 미구현).
+`SCR_USE_STRING_SET_ACCOUNT_PROP` 1개(`portion_reset_10th_boss_loot`)는 StringArg가
+`account.ies`의 계정 속성명(`EVENT_FIELD_BOSS_10TH/None`)이므로 account_prop 범주로
+보고만 하고 구성물을 생성하지 않는다. DB `package_contents` TextField와 importer 저장은
+구현됐지만 serializer에서는 JSON 문자열이고 화면 템플릿은 이를 렌더링하지 않는다.
+직접 Item 참조 중 `Event_misc_reinforce_percentUp_470_NoTrade_limit` 2건은 원본 Item 정의가 없는
+만료 이벤트 참조다. 현재는 `name=null`인 성공 항목으로 남으므로 미해결 참조 보고 또는 명시적인
+`unresolved` 상태로 분리해야 한다. 또한 체크인된 `JSON_ktos/items.json`은 account_prop 수정 전에
+생성되어 `portion_reset_10th_boss_loot`의 잘못된 구성물이 남아 있으므로 재생성이 필요하다.
+따라서 패키지는 **토큰 파싱 정확성 확보·미해결 참조 정책과 표시 계층 미구현** 상태다.
 
 다음 검증이 필요하다.
 
@@ -174,13 +188,10 @@ importer 저장은 구현됐지만 serializer에서는 JSON 문자열이고 화�
 등장하며, 그중 17개는 실제 HP/방어/EXP 값이 서로 다르다. 정렬된 파일에서 마지막 행만 남기므로
 같은 몬스터의 맵별 난이도 차이를 표현하지 못한다.
 
-더 직접적인 오류도 있다. 기본 계산에서는 `EXP=SCR_GET_MON_EXP`,
-`EXPClass=SCR_GET_MON_JOBEXP`로 저장하지만 지역 보정 행에서는 반대로 `EXP=JOBEXP`,
-`EXPClass=EXP`를 대입한다(`monsters.py:219-220`). 현재 JSON에서도 지역 보정과 일치하는 몬스터 중
-서로 다른 EXP/JOBEXP 값이 뒤바뀐 사례가 약 145~147개 관찰된다. 이 개수는 다중 파일 병합 순서에
-따라 변동하는 스냅샷이므로 수정 기준으로 쓰지 않고, 완료 조건은 원본 `EXP`↔출력 `EXP`,
-원본 `JOBEXP`↔출력 `EXPClass` 불일치 0건으로 정의한다. 이는 설계 선택이 아니라 즉시 수정할
-데이터 오류다.
+지역 보정 행의 `EXP=JOBEXP`, `EXPClass=EXP` 역매핑은 수정됐다. 현재 선택되는
+`field_monster_status*` 행과 출력 916개를 대조한 결과 원본 `EXP`↔출력 `EXP`, 원본
+`JOBEXP`↔출력 `EXPClass` 불일치는 0건이다. 다만 동일 ClassName의 맵별 상이한 스탯 17개를
+마지막 행 하나로 덮어쓰는 구조는 그대로이므로 `map_monsters` 분리 또는 대표값 출처 명시가 필요하다.
 
 드롭 원본은 현재 unpack 중 iTOS에만 존재한다(`ies_drop.ipf` 2,248개, 다른 네 지역은 없음).
 `monsters.py:255`와 `maps.py:166`은 모든 지역에서 이를 명시 없이 `../itos_unpack`으로 읽는다.
@@ -199,12 +210,13 @@ importer 저장은 구현됐지만 serializer에서는 JSON 문자열이고 화�
 
 기존 [PROFILING.md](PROFILING.md)의 큰 병목 순위는 타당하다. 다만 `items.parse` 분석에서 가장 값싼 최적화 하나가 누락됐다.
 
-`DB.py:33-38`의 `EQUIPMENT_IES`에는 다음 대소문자 중복이 있다.
+착수 전 `DB.py:33-38`의 `EQUIPMENT_IES`에는 다음 대소문자 중복이 있었다.
 
 - `item_equip.ies` / `item_Equip.ies`
 - `item_event_equip.ies` / `item_event_Equip.ies`
 
-`file_dict`는 파일명을 소문자 키로 저장하므로 각 쌍은 같은 실제 파일을 가리킨다. 프로파일링에서 말한 “6개 IES, 약 17,400행”의 실제 고유 파일은 4개, 10,171행이다. 중복 7,192행이 전체 장비 루프의 41.4%다.
+현재 목록은 고유 파일 4개로 정리됐고 `parse_equips`도 realpath 중복을 건너뛴다. 착수 전 중복은
+7,192행으로 전체 장비 루프의 41.4%였다. 실제 절감 시간은 같은 입력의 재프로파일로 확정해야 한다.
 
 `parse_equips` 74.3초에 단순 비례하면 중복 제거만으로 약 31초를 줄일 여지가 있다. 실제 절감량은 재측정해야 하지만, 메모이제이션보다 먼저 적용할 수 있는 저위험 수정이다.
 
@@ -428,7 +440,7 @@ P0에서 ID 충돌을 해소한 뒤 `by_id` 정규 데이터 하나와 `name -> 
 | 스킬 delta/복합키 삭제 수정 | 그대로 가능 | comparer 단위 테스트와 변경 없는 import의 ORM write 0건 확인 |
 | `*_by_name`을 인덱스로 축소 | 소비자 마이그레이션 후 가능 | importer와 지역 fallback을 먼저 새 형식에 대응, 호환 파일 유지 기간 설정 |
 | 패치 스냅샷/import run 상태 | 그대로 가능 | 성공 시에만 `prev`와 현재 버전 전환, 보존 정책과 원자성 범위 명시 |
-| parser 결과/버전 공개 | 이원화 후 가능 | 즉시: 조기 skills export 제거·버전 파일별 임시 쓰기/원자 교체·갱신 순서 교정·cron 실패 중단 / 설계 후: JSON·version·parser_version 성공 시 일괄 승격 |
+| parser 결과/버전 공개 | 완료 | 즉시 범위(조기 skills export 제거·버전 파일별 임시 쓰기/원자 교체·cron 실패 중단)와 설계 후 범위(staging 디렉터리 일괄 승격·`version.json` 마지막 교체) 모두 구현됨 |
 
 ### 판정 근거와 필수 설계 수정
 
@@ -510,10 +522,9 @@ OneToOne 자식이고 재료/대상 관계가 이를 참조하므로 작은 P0 �
 
 #### 6. 성능 항목 중 두 개는 의미 변경을 동반한다
 
-`getMonbySkill()`은 정확히 일치하는 몬스터를 첫 루프에서 추가한 뒤 같은 조건으로 두 번째 루프를
-항상 다시 실행한다(`DB.py:271-289`). 현재 `skill_mon.json` 6,277개 엔트리 **전부**가 같은 Monster
-ID를 두 번씩 가진다. 인덱스 구현은 이 오출력을 그대로 복제하지 말고 stable dedupe해야 하며,
-그 변화는 승인된 정확성 diff로 테스트에 고정한다.
+`getMonbySkill()`의 두 번째 루프가 첫 결과를 중복 추가하던 문제는 stable dedupe와 fallback 조건
+수정으로 해결됐다. 현재 `skill_mon.json` 6,277개 엔트리의 중복 Monster ID는 0건이다.
+다만 매 호출마다 전체 몬스터를 순회하므로 사전 인덱스를 이용한 성능 최적화는 남아 있다.
 
 장비 공식은 `RefreshScp` 실행으로 원본 row가 먼저 변하고, 강화/초월 Lua가 `ItemGrade`, `UseLv`,
 `ClassType`, `BasicTooltipProp` 외 여러 필드를 동적으로 읽는다. 문서에 예시된 소수 필드만 캐시 키로
@@ -526,11 +537,10 @@ ID를 두 번씩 가진다. 인덱스 구현은 이 오출력을 그대로 복�
 
 #### 7. 새로 추가된 보정 로직도 단일 책임이 필요하다
 
-`CaptionRatio*`의 `0 < value < 1` 퍼센트 변환이 `skills.py:586-598`과
-`importAll.py:826-873` 양쪽에 있다. 현재 ktos JSON에는 양수 14,172개 중 1 미만 값이 없어 당장
-이중 확대된 행은 확인되지 않았지만, 원본 값이 0.01 미만이면 parser에서 100배 한 결과가 다시
-1 미만이라 importer가 또 100배 할 수 있다. 단위 변환은 정규화 계층 한 곳만 소유하고 원본 값,
-정규화 값, 단위를 테스트해야 한다.
+`CaptionRatio*` 퍼센트 변환은 parser가 단독 소유하도록 정리됐고 importer는 정수 저장만 수행한다.
+작은 소수 합성 fixture와 ktos DB 통합 테스트를 포함해 이중 확대가 없음을 확인했다. 다만 parser가
+0.5 같은 정규화 결과를 만들면 importer의 정수 변환에서 0이 될 수 있으므로 소수 보존/반올림 정책은
+별도 데이터 계약으로 정해야 한다.
 
 fallback Item은 `ClassName`의 MD5 앞 24비트를 숫자로 바꿔 `$ID`로 쓴다(`items.py:41-50`). 현재
 7개 fallback끼리 또는 기존 결과와의 충돌은 없지만, 실제 Item/Recipe ID 공간과 같은 dict를 쓰면서
@@ -539,25 +549,32 @@ fallback Item은 `ClassName`의 MD5 앞 24비트를 숫자로 바꿔 `$ID`로 �
 
 #### 8. 결과 공개 순서가 성공 원자성을 깨뜨린다
 
-`main.py:88-94`는 iTOS의 `skills.json`과 `skills_by_name.json`을 전체 파이프라인 성공 전에 실제
-출력 디렉터리에 쓴다. 이후 Item/Monster/Map 단계가 실패하면 일부 파일만 새 패치인 혼합 결과가
-남는다. 마지막에도 `c.export()`가 36개 파일을 하나씩 직접 덮어쓰며, 그 다음
-`parser_version.csv`를 먼저 전진시키고 마지막에 `version.json`을 쓴다(`main.py:112-118`).
-마지막 쓰기 실패 시 다음 실행은 이미 최신이라고 판단해 재빌드하지 않을 수 있다.
+착수 전에는 iTOS 스킬 조기 export와 잘못된 버전 갱신 순서가 있었다. 현재는 조기 export를 제거했고,
+공개 릴리스는 staging·검증 후 파일별 원자 교체(`os.replace`)와 백업·롤백을 수행하는 **일괄 승격**으로
+바뀌었다. cron 5개도 parser 실패 시 DB import를 중단한다.
 
-해결은 두 단계로 나눈다. **즉시 범위**는 릴리스 구조 변경 없이 가능한 것으로, 조기 export 제거,
-`c.export()` 전체 성공 후에만 `version.json` → `parser_version.csv` 순서로 갱신하되 두 버전 파일은
-각각 같은 디렉터리의 임시 파일에 완전히 쓴 뒤 `os.replace`로 교체하고, cron이 parser/import 반환
-코드를 검사해 실패 시 중단하는 것이다. 이 순서는 `c.export()` 실패 시 두 버전 파일의 갱신을 막고,
-`version.json` 교체 성공 후 `parser_version.csv` 교체가 실패하더라도 후자는 온전한 구버전으로 남아
-다음 실행에서 재시도할 수 있게 한다. 그러나 `c.export()`는 JSON을 하나씩 직접 덮어쓰므로 중간 실패 전에 쓴 JSON은 이미
-바뀔 수 있고, 두 버전 파일도 하나의 트랜잭션으로 묶이지 않아 즉시 범위만으로는 모두의 무변경을
-보장하지 않는다. **설계 후 범위**는 모든 JSON과 manifest/version을 임시 빌드 디렉터리에 쓴 뒤
-검증 성공 시 일괄 승격하는 것인데, 현재
-`settings_<region>.py`의 `JSON_ROOT`가 고정 디렉터리를 직접 가리키고 `prev/`도 그 안에 있으므로
-release 디렉터리+symlink 방식이나 importer `--json-root` 지원 중 하나를 먼저 결정해야 한다.
-`parser_version.csv`, DB의 현재 Version, `prev` 전환은 공개 성공 이후 같은 run 상태를 기준으로
-갱신해야 한다.
+**구현 상태.** `c.export(version_payload=v)`는 모든 JSON 컬렉션을 입력 디렉터리와 분리된 형제
+staging 디렉터리(`JSON_<region>.staging/`)에 완전히 직렬화하고 각 파일을 역직렬화 검증한 뒤,
+전체 성공 시에만 공개 파일을 교체한다. `version.json`도 같은 staging 에 쓰므로 JSON 컬렉션과
+`version.json`은 항상 함께 승급되어 일관되게 귀결된다. 교체 도중 하나라도 실패하면 백업에서
+공개 릴리스를 전부 구버전으로 되돌리고(신규 파일은 공개에서 제거), 롤백마저 불완전하면
+사전 sentinel(`.promotion-in-progress`)이 백업을 비어 있지 않게 보장해 다음 실행이 중단된다.
+정상 종료 또는 복구 가능한 실패 후의 **최종 상태 일관성**을 보장한다.
+
+단, 이것은 디렉터리 포인터를 한 번에 교체하는 의미의 원자적 승급은 **아니다**.
+`BASE_PATH_OUTPUT`이 고정 디렉터리를 직접 가리키므로 디렉터리 단위 교체(symlink)는 도입하지
+않았고, 파일별 `os.replace`를 순회하므로 교체 진행 중에는 일시적으로 신구 혼합 상태를
+관찰할 수 있다(최종 상태는 전부 신버전 또는 전부 구버전 둘 중 하나로만 귀결).
+importer는 cron이 parser 전체 성공 후에만 실행되므로 혼합 관찰 창에 도달하지 않는다.
+
+**버전 파일 갱신 순서와 보장 범위.** `parser_version.csv`는 `SCRIPT_DIR`의 별도 파일로
+`export()` 트랜잭션 **외부**에서 먼저 갱신되고, 이어 `c.export(version_payload=v)`가
+`version.json`을 JSON 승급 트랜잭션에 통합한다. 따라서 JSON 컬렉션과 `version.json`은
+일관 귀결하지만, `parser_version.csv`는 트랜잭션 외부라 `export()` 실패 시
+(csv만 신버전) 일시적 불일치가 생길 수 있다. 이 불일치는 시작 조건 검사가 다음 실행에서
+재시도를 강제하므로 자가 회복된다(`main.py`의 commit-incomplete 가드).
+`parser_version.csv`, DB의 현재 Version, `prev` 전환은 공개 성공 이후 같은 run 상태를
+기준으로 갱신한다.
 
 ### 구현 승인 게이트
 
@@ -623,9 +640,10 @@ release 디렉터리+symlink 방식이나 importer `--json-root` 지원 중 하�
 - 펫 장비 노출 정책
 - GROWTH 패키지의 실제 선택 규칙
 - 전체 툴팁 정규화 스키마
-- 원자적 릴리스 디렉터리 전환 — 현재 `settings_<region>.py`의 `JSON_ROOT`가 고정 디렉터리를
-  직접 가리키므로 단순 디렉터리 rename만으로는 완성되지 않는다. release 디렉터리+symlink 방식과
-  importer의 `--json-root` 지원 중 하나를 먼저 결정한다.
+- 원자적 릴리스 디렉터리 전환 — **완료.** `export()`가 `JSON_<region>.staging/` 형제 디렉터리에
+  모든 JSON을 직렬화·검증한 뒤 전체 성공 시에만 `os.replace`로 공개 파일을 일괄 교체한다.
+  `JSON_ROOT` 고정 참조와 `prev/` 위치는 그대로 유지(parser/importer 경로 변경 없음).
+  `version.json`을 가장 마지막에 교체해 커밋 완료 표시로 사용한다.
 
 ### 최종 고정 전 정리 4건 처리 (2026-07-22)
 
@@ -824,20 +842,44 @@ P0-3에 반영된 버전 파일 개별 `os.replace` 교체(외부 리뷰 재검�
 착수 보류 항목(canonical ID/DB/API 마이그레이션, GROWTH 실제 해석, 펫 장비 정책,
 `map_monsters`, 전체 툴팁 스키마, 릴리스 디렉터리 일괄 승격)은 7차 판정 그대로 유지한다.
 
+### 현재 구현 상태 (2026-07-22)
+
+| 범위 | 상태 | 검증 결과 |
+|---|---|---|
+| 기준선 fixture | 대부분 완료 | parser 테스트 75개 통과. 일부 항목은 실제 end-to-end보다 합성/소스 검증 중심 |
+| 즉시 공개 안전성 | 완료 | 조기 export 제거, 버전 파일 개별 원자 교체, cron 5개 parser 실패 중단 |
+| 장비 입력 중복 제거 | 완료 | `EQUIPMENT_IES` 4개와 realpath 중복 방지 적용. 성능 재측정은 미실시 |
+| 패키지 파싱 | 부분 완료 | 후보 1,493개 중 코드 기준 1,486개 생성, 오해석 0건. 만료 이벤트 Item 참조 2건은 `PackageContents.unresolved`로 분리(가짜 fallback 금지). DB 직렬화는 구현됐으나 API/화면 구조화 렌더링은 미구현 |
+| 큐브 링크 | 완료 | 116개 그룹이 공유 그룹을 포함한 117개 큐브에 연결 |
+| 몬스터 EXP | 완료 | 지역 보정 출력 916개, EXP/EXPClass 불일치 0건 |
+| skill-mon 정확성 | 완료 | 6,277개 엔트리 중 중복 0건. 사전 인덱스 최적화는 미구현 |
+| ItemGrade 방어 | 완료 | 빈 값 기본값과 0~6 범위 fixture 통과 |
+| CaptionRatio 단일 책임 | 완료 | parser 단독 변환, importer 단순 저장, DB 통합 테스트 통과 |
+| 원자적 결과 공개 | 완료(최종 상태 원자성) | `export(version_payload)` staging 직렬화·검증 후 백업 copy + `os.replace` 일괄 교체. version.json 트랜잭션 통합(JSON/version 혼합 방지). 백업 copy 실패 시 공개 영향 없음. 교체 실패 시 백업 copy 기반 전체 롤백. 롤백 완전 성공·교체 전 실패 시 백업 폐기(다음 실행 자가 회복), 롤백 불완전 시에만 `.rollback-failed` 마커 + 백업 보존(다음 실행 중단). 시작 조건 불일치 검사로 자동 재시도. 한계: 교체 진행 중 일시적 신구 혼합 관찰 가능(최종 상태는 전부 신/구버전), importer는 cron으로 혼합 창 미도달 |
+| 가디스 550 accessory | 완료 | `EQUIPMENT_REINFORCE_IES` 550 정적 등록 + file_dict 게이트(현재 지역에 파일 있을 때만 material/Lua acc 550 수행). acc-only 구조(armor/weapon 키 생략). `goddess_atk_list.clear()`/`goddess_reinf={}` stale 방어. 테스트 8개 통과 |
+| 드롭 provenance | 완료 | `drop_source.py` 데이터셋 단위 fallback(iTOS 우선), `SourceRegion`/`InputVersion` 레코드 필드, `build_provenance`/`unresolved_drops` 컬렉션, 하드코딩 제거, 직접 zonedrop 유실·셰도잉·dropgroup 합계0 버그 수정. 테스트 19개 통과. 한계: importer 경로 버그 별도 태스크 |
+| P0 후반 | 미구현 | canonical ID, 펫 장비 정책 |
+| P1~P3 | 대부분 미구현 | 툴팁 수직 구현, 성능/증분 빌드, 운영 이력/롤백 |
+
+검증 명령 기준으로 parser 테스트 145개가 통과했다(version.json 트랜잭션 통합 동작·롤백 copy 기반 백업
+보존·공개 승급 os.replace 정확 카운트 교정·자가 회복 회귀 3건 등 신규 추가). Python 문법, cron shell 문법, `git diff --check`도 통과했다.
+체크인된 `TavernofSoul/JSON_ktos/items.json`은 account_prop 수정과 unresolved 분리 전 산출물이므로
+다음 전체 ktos 파서 성공 실행에서 갱신해야 한다.
+
 ## 구현 순서
 
 ### P0: 데이터 손실과 중복 계산 제거
 
 1. 패키지 split 문법을 `item/count/(property/value)*`로 수정하고 261개 잘못된 참조를 제거한다. GROWTH는 미해석 범주로 감지·경고·보고까지만 수행하고 해석은 규칙 확정 후 진행한다.
 2. 지역 보정 몬스터의 `EXP`/`EXPClass` 역매핑을 수정한다. 완료 조건은 개수가 아니라 `field_monster_status*` 대상 전체에서 원본 `EXP`↔출력 `EXP`, 원본 `JOBEXP`↔출력 `EXPClass` 불일치 0건이다.
-3. 공개 안전성의 즉시 범위를 적용한다: iTOS 조기 skills export(`main.py:88-94`)를 제거하고, `c.export()` 전체 성공 후 두 버전 파일을 각각 임시 파일에 완전히 쓴 뒤 `os.replace`로 `version.json` → `parser_version.csv` 순서로 교체하며(현재는 직접 쓰기이고 `parser_version.csv`가 먼저 전진, `main.py:34-39,112-118`), cron 5개 스크립트가 parser 반환 코드를 검사해 실패 시 import를 중단하게 한다. 임시 디렉터리 전량 생성 후 원자적 승격은 릴리스 방식 결정 후 별도 진행한다.
+3. 공개 안전성의 즉시 범위를 적용한다: iTOS 조기 skills export(`main.py:88-94`)를 제거하고, `c.export()` 전체 성공 후 두 버전 파일을 각각 임시 파일에 완전히 쓴 뒤 `os.replace`로 교체하며, cron 5개 스크립트가 parser 반환 코드를 검사해 실패 시 import를 중단하게 한다. **완료:** `c.export(version_payload=v)`는 이제 모든 JSON과 version.json을 `JSON_<region>.staging/` 형제 디렉터리에 완전히 직렬화·검증한 뒤, 기존 공개 파일을 백업 디렉터리로 **복사(copy)**해둔다(백업 실패 시 공개 무결). staging 파일을 공개 위치로 교체하며, 교체 도중 실패하면 백업(copy 원본)에서 공개 릴리스를 전부 구버전으로 롤백한다(신규 파일은 제거). 백업 폐기 기준: 전체 성공 시, 그리고 롤백 완전 성공·교체 전 실패 시에도 폐기해 다음 실행이 자가 회복한다. version.json이 JSON 트랜잭션에 통합되어 JSON/version 혼합을 방지한다. 롤백 불완전 시에만 `.rollback-failed` 마커와 함께 백업을 보존하고(판단은 `_rollback_promotion` 반환값 기반이라 마커 작성 실패에도 안전) 다음 실행이 비어 있지 않은 backup을 감지해 중단한다. `parser_version.csv`를 `export()`보다 먼저 갱신하고, 시작 조건에서 version.json/parser_version.csv 불일치를 검사해 실패 run을 자동 재시도한다.
 4. `EQUIPMENT_IES`를 고유한 소문자 파일명 4개로 정리하고 중복 경로 assert를 추가한다.
 5. 장비 `ItemGrade`를 정수 변환하기 전에 빈 값과 유효 범위를 검증하고, 도달 불가한 문자열 비교 기본값 분기를 제거한다. 빈 값 처리 정책과 대표 장비 fixture를 먼저 고정한다.
 6. CaptionRatio 변환을 parser 또는 importer 한 곳만 소유하게 하고 작은 소수 합성 fixture로 이중 변환을 막는다.
 7. 큐브의 잘못된 선행 조건과 키 오타를 고치고 `StringArg -> cubes[]` 다중 매핑으로 변경한다.
 8. `ITEM_IES`를 결정적 list/tuple로 바꾸고, canonical ID·DB·URL/API 마이그레이션으로 Item/Recipe 충돌 49건을 해소한다.
-9. 가디스 강화 수치 파일과 재료 지원 그룹을 각각 발견해 550 accessory를 포함한다.
-10. 지역별 드롭의 실제 source region과 패치버전을 기록하고 fallback 검증을 추가한다.
+9. 가디스 강화 수치 파일과 재료 지원 그룹을 각각 발견해 550 accessory를 포함한다. **완료:** `EQUIPMENT_REINFORCE_IES`에 `item_goddess_reinforce_550.ies` → 550을 정적 등록했다. 550 material 생성과 Lua `setting_lv_material_acc` 550 호출은 `has_550 = 'item_goddess_reinforce_550.ies' in c.file_dict` 게이트로 현재 지역에 파일이 있을 때(itos/ktos/jtos)만 수행한다 — stale twtos/ktest 수동 실행 시 잘못된 550 material이 생성되지 않는다. 550은 accessory 전용(5열 IES, Lua acc 분기만 존재)이므로 `goddess_reinf_mat[550]`은 `{'acc': {1..30}}`만 갖고 armor/weapon 키는 둘지 않는다(None이 아닌 키 생략). `parse_goddess_reinf` 시작 시 `goddess_atk_list.clear()`, `parse_goddess_EQ` 시작 시 `c.data['goddess_reinf'] = {}`로 같은 프로세스 재실행 시 이전 지역 stale 데이터가 잔존하지 않게 했다. 테스트 8개(`test_goddess_550.py`) 통과.
+10. 지역별 드롭의 실제 source region과 패치버전을 기록하고 fallback 검증을 추가한다. **완료:** 새 모듈 `drop_source.py`의 `get_drop_source()`가 **데이터셋 단위** fallback으로 iTOS `ies_drop.ipf` 디렉터리를 우선 소스로 선택한다(2026-07 현재 ies_drop.ipf는 iTOS에만 존재). `monsters.py`/`maps.py`의 하드코딩 `../itos_unpack`를 제거하고 이 헬퍼로 통일했다. 각 `item_monster`/`map_item` 레코드에 `SourceRegion`/`InputVersion`(revision.csv 기반 best-effort)을 추가했고, 소스 결정 전체는 빌드 단위 `build_provenance` 컬렉션에 1회 기록한다. 미해결 참조(items_by_name에 없는 ItemClassName)는 조용히 skip 대신 `unresolved_drops` 컬렉션에 문맥(collection/엔티티 ID/item_classname/source_region)과 함께 누적해 자동 export한다. **부수 정확성 수정:** (a) maps 직접 zonedrop 유실 버그 — drops 객체에 `Money_*` 키가 없어 레코드 생성 시 `KeyError` → bare except 흡수로 직접 드롭이 전부 유실되던 것을 `Quantity_MAX/MIN=0`(수량 미제공 호환값)으로 복원; (b) 변수 셰도잉 — dropgroup이 `ies_path`/`ies_file`을 덮어써 다음 행 Unknownsanctuary chance 판정이 오염되던 것을 `zone_path`/`group_path` 분리로 수정; (c) dropgroup 합계 0 시 `ZeroDivisionError`로 파서가 사망하던 경로를 skip+경고로 수정; (d) maps의 iTOS-first+current 혼합 규칙을 단일 소스로 통일. 빌드 시 `DB.build()`가 `unresolved_drops`/`build_provenance`를 새 객체로 교체해 클래스 mutable 잔존을 방지한다. 테스트 19개(`test_drop_provenance.py`) 통과. **한계:** 파일 단위 fallback은 미구현(지역별 자체 드롭 데이터 배포 시 확장). importer 소비는 additive-safe(명시적 키 접근)이지만, 별도 버그 `map_item_path.json` vs `map_item.json` 경로 불일치로 사이트 반영이 안 되는 문제는 이 변경과 분리해 별도 태스크로 둔다.
 11. `item_petequip.ies`를 포함할지 명시적으로 결정한다. 사이트에 펫 장비를 노출한다면 포함이 맞다.
 
 ### P1: 툴팁 정적 콘텐츠 보강
@@ -876,23 +918,23 @@ P0-3에 반영된 버전 파일 개별 `os.replace` 교체(외부 리뷰 재검�
 
 매 빌드에서 아래 조건을 검사하면 최신 IES가 추가돼도 조용히 누락되지 않는다.
 
-- [ ] 정규화한 실제 경로가 중복된 입력 파일이 0개다.
+- [x] 정규화한 실제 경로가 중복된 장비 입력 파일이 0개다.
 - [ ] 동일 소문자 파일 충돌의 선택 결과가 순회 순서와 무관하고, 새 DB 인스턴스에 이전 지역 상태가 남지 않는다.
-- [ ] 플레이어 스킬 결과 집합이 `skilltree.ies`의 `Type=Skill` 집합과 같다.
-- [ ] 대상 Item IES의 `ClassName` 집합이 `items_by_name`에 모두 존재한다.
-- [ ] 장비 `ItemGrade`의 빈 값·유효 범위 정책이 fixture로 고정되고 정수 변환 전에 검증된다.
+- [x] 플레이어 스킬 결과 집합이 `skilltree.ies`의 `Type=Skill` 집합과 같다.
+- [x] 대상 Item IES의 `ClassName` 집합이 `items_by_name`에 모두 존재한다.
+- [x] 장비 `ItemGrade`의 빈 값·유효 범위 정책이 fixture로 고정되고 정수 변환 전에 검증된다.
 - [ ] `(source_table, ClassID)`와 canonical ID가 DB까지 유일하며, comparer가 49개 Recipe를 덮어쓰지 않는다.
-- [ ] 발견한 가디스 강화 파일의 레벨 집합과 `goddess_reinf` 키가 같고, 550 재료는 acc만 지원한다.
-- [ ] `reward_indun`의 해석 가능한 116개 그룹이 공유 그룹을 포함한 117개 큐브 모두에 연결된다.
-- [ ] 패키지의 직접 Item 참조가 모두 존재하고 오해석 참조가 0개이며, GROWTH 패키지는 일반 구성물로 해석되지 않고 미해석 범주로 전량 보고된다.
-- [ ] `skill_mon.Monster` 배열에 중복 ID가 없다.
-- [ ] 지역 보정 몬스터의 `EXP`/`EXPClass`가 원본 `EXP`/`JOBEXP`와 각각 일치한다.
+- [x] 발견한 가디스 강화 파일의 레벨 집합과 `goddess_reinf` 키가 같고, 550 재료는 acc만 지원한다. 550은 해당 IES가 존재하는 지역에서만 material을 생성한다(file_dict 게이트).
+- [x] `reward_indun`의 해석 가능한 116개 그룹이 공유 그룹을 포함한 117개 큐브 모두에 연결된다.
+- [x] 패키지의 직접 Item 참조가 모두 존재하고 오해석 참조가 0개이며, GROWTH 패키지는 일반 구성물로 해석되지 않고 미해석 범주로 전량 보고된다. 미존재 참조(만료 이벤트 2건)는 `PackageContents.unresolved`로 분리되고 가짜 fallback 이 생성되지 않는다.
+- [x] `skill_mon.Monster` 배열에 중복 ID가 없다.
+- [x] 지역 보정 몬스터의 `EXP`/`EXPClass`가 원본 `EXP`/`JOBEXP`와 각각 일치한다.
 - [ ] 동일 ClassName의 맵별 상이한 스탯 17개가 덮어써지지 않거나 대표값 선택 출처가 명시된다.
-- [ ] iTOS 드롭 fallback을 쓰는 출력에 source region과 입력 버전이 기록되고 대상 지역의 미해결 Item 참조가 0개다.
+- [x] iTOS 드롭 fallback을 쓰는 출력에 source region과 입력 버전이 기록되고, 모든 미해결 Item 참조가 `unresolved_drops`로 자동 보고된다(미해결 참조를 0으로 만드는 대신 누락 없이 보고하는 정책). 실빌드 unresolved 수치는 다음 ktos 전체 파서 실행 후 기록 예정.
 - [ ] 값이 있는 `UsageDesc`, `Desc_Sub`, `CustomToolTip`의 처리율을 보고한다.
 - [ ] 각 `ToolTipScp`별 원본 수, 출력 수, 전용 파서 적용 수를 보고한다.
 - [ ] AdditionalOption 원본 611개가 모두 연결되고 비한국어 fallback 건수를 보고한다.
-- [ ] CaptionRatio 단위 변환은 한 계층에서 한 번만 수행된다.
+- [x] CaptionRatio 단위 변환은 한 계층에서 한 번만 수행된다.
 - [ ] 골든 툴팁 필드가 parser JSON, DB, API/화면까지 같은 의미로 전달된다.
 - [ ] Lua 공식 평가 실패가 0이거나 허용 목록에만 있다.
 - [ ] fallback 생성 수와 이유가 이전 빌드 대비 급증하지 않는다.
@@ -901,8 +943,8 @@ P0-3에 반영된 버전 파일 개별 `os.replace` 교체(외부 리뷰 재검�
 - [ ] 복합키 관계의 부모 삭제가 모든 자식 관계 삭제로 변환된다.
 - [ ] 변경이 없는 빌드에서 스킬을 포함한 ORM write가 0건이다.
 - [ ] import 실패 시 현재 버전과 `prev` 스냅샷이 전진하지 않는다.
-- [ ] `version.json`과 `parser_version.csv`는 각각 임시 파일 완전 쓰기 후 원자 교체되어 실패 시 빈 파일이나 부분 파일이 남지 않는다.
-- [ ] **설계 후 원자적 승격 완료 조건:** parser 중간 실패 시 공개 JSON, `version.json`, `parser_version.csv` 중 어느 것도 전진하지 않는다.
+- [x] `version.json`과 `parser_version.csv`는 각각 임시 파일 완전 쓰기 후 원자 교체되어 실패 시 빈 파일이나 부분 파일이 남지 않는다.
+- [x] **설계 후 원자적 승격 완료 조건(최종 상태 기준):** parser 중간 실패 시 공개 JSON과 version.json의 최종 상태는 전부 구버전 또는 전부 신버전 둘 중 하나로만 귀결된다. `export(version_payload)`가 staging 디렉터리에 모든 JSON과 version.json을 직렬화·검증한 뒤 백업 copy + `os.replace`로 일괄 교체한다(version.json이 JSON 승급 트랜잭션에 통합되어 JSON/version 혼합 방지). 백업 copy 실패는 공개에 영향을 주지 않고, 교체 단계 실패 시 백업 copy 원본에서 공개 릴리스를 전부 구버전으로 롤백한다(copy 기반이므로 백업 소비 없음). 롤백 실패 시 `.rollback-failed` 마커로 백업 보존 + 다음 실행 중단으로 수동 복구를 보장한다. `parser_version.csv`는 `export()`보다 먼저 갱신되며, version.json/parser_version.csv 불일치(커밋 미완료)를 시작 조건에서 검사해 실패 run을 자동 재시도한다(백업 copy 실패·공개 승급 실패·롤백 실패·stale backup·version.json 트랜잭션 통합·재시도 테스트로 검증). **제한:** `BASE_PATH_OUTPUT` 고정 디렉터리로 인해 디렉터리 포인터 단위 교체는 미도입; 교체 진행 중 일시적 신구 혼합 관찰 가능(독자 관점 원자성은 아님). importer는 cron이 parser 성공 후에만 실행해 혼합 창 미도달.
 - [ ] `data`에 선언된 컬렉션 중 생성 단계 없이 빈 값으로 export되는 것이 0개다(현재 `charxp`/`petxp`/`assisterxp`).
 - [ ] parser가 실행 CWD와 무관하게 같은 입력을 찾고 같은 결과를 낸다.
 - [ ] parser export와 DB import 시간을 별도로 측정한다.

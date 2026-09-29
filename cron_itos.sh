@@ -72,8 +72,18 @@ parsing_start_time=$(date +%s)
 
 source /home/ubuntu/TavernofSoul/TavernofSoul/itos/3.8/bin/activate
 # 로깅 레벨을 INFO로 설정하여 시간 측정 정보가 출력되도록 함
-python -c "import logging; logging.basicConfig(level=logging.INFO)" 
+python -c "import logging; logging.basicConfig(level=logging.INFO)"
 python main.py itos
+parse_result=$?
+
+# 안전장치: parser 가 실패하면 부분 결과를 DB 로 import 하지 않고 중단.
+if [ $parse_result -ne 0 ]; then
+    echo "데이터 파싱 실패(return code $parse_result). DB import 중단." >> "$timing_file"
+    elapsed_total=$(measure_time $total_start_time)
+    echo "=== ITOS 업데이트 실패(파싱): $(date) (총 소요시간: $elapsed_total) ===" >> "$timing_file"
+    cat "$timing_file" >> "$output_file"
+    exit 1
+fi
 
 parsing_elapsed=$(measure_time $parsing_start_time)
 echo "데이터 파싱 완료: $(date) (소요시간: $parsing_elapsed)" >> "$timing_file"

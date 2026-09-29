@@ -823,52 +823,25 @@ class Command(BaseCommand):
             handler.job             = Jobs.objects.get(ids = i['Link_Job'])
             if 'sfr' in i:
                 handler.sfr             = i['sfr']
+            # CaptionRatio 단위 변환은 parser(skills.py)가 단일 소유한다.
+            # 이전에는 importer 양쪽에서 0<v<1 을 100배해 이중 확대 위험이 있었다.
+            # importer 늀 parser 출력을 int 로만 저장한다.
             if 'CaptionRatio' in i:
                 try:
-                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
-                    normalized_ratio = []
-                    for h in i['CaptionRatio']:
-                        try:
-                            h_float = float(h)
-                            if 0 < h_float < 1:
-                                h_float = h_float * 100
-                            normalized_ratio.append(int(h_float))
-                        except (ValueError, TypeError):
-                            normalized_ratio.append(int(h))
-                    i['CaptionRatio'] = normalized_ratio
-                except:
+                    i['CaptionRatio'] = [int(h) for h in i['CaptionRatio']]
+                except (ValueError, TypeError):
                     i['CaptionRatio'] = None
                 handler.captionratio1   = i['CaptionRatio']
             if 'CaptionRatio2' in i:
                 try:
-                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
-                    normalized_ratio = []
-                    for h in i['CaptionRatio2']:
-                        try:
-                            h_float = float(h)
-                            if 0 < h_float < 1:
-                                h_float = h_float * 100
-                            normalized_ratio.append(int(h_float))
-                        except (ValueError, TypeError):
-                            normalized_ratio.append(int(h))
-                    i['CaptionRatio2'] = normalized_ratio
-                except:
+                    i['CaptionRatio2'] = [int(h) for h in i['CaptionRatio2']]
+                except (ValueError, TypeError):
                     i['CaptionRatio2'] = None
                 handler.captionratio2   = i['CaptionRatio2']
             if 'CaptionRatio3' in i:
                 try:
-                    # 값이 1보다 작으면 퍼센트로 변환 (0.4 -> 40)
-                    normalized_ratio = []
-                    for h in i['CaptionRatio3']:
-                        try:
-                            h_float = float(h)
-                            if 0 < h_float < 1:
-                                h_float = h_float * 100
-                            normalized_ratio.append(int(h_float))
-                        except (ValueError, TypeError):
-                            normalized_ratio.append(int(h))
-                    i['CaptionRatio3'] = normalized_ratio
-                except:
+                    i['CaptionRatio3'] = [int(h) for h in i['CaptionRatio3']]
+                except (ValueError, TypeError):
                     i['CaptionRatio3'] = None
                 handler.captionratio3   = i['CaptionRatio3']
             if 'CaptionTime' in i:

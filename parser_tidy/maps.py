@@ -160,86 +160,116 @@ def parse_links(c = None):
 def parse_links_items(constants):
     logging.debug('Parsing Maps <> Items...')
 
+    # P0-10: 드롭 소스 결정과 provenance 기록을 데이터셋 단위로 한 번 수행한다.
+    # 기존 ../itos_unpack 하드코딩을 제거하고 zonedrop/dropgroup/f_ 변형 모두
+    # 동일 소스 drop_ipf 기준으로 통일했다.
+    import drop_source
+    src = drop_source.get_drop_source(constants)
+    constants.data['build_provenance']['map_item'] = {
+        'source_region'   : src['source_region'],
+        'input_version'   : src['input_version'],
+        'fallback_reason' : src['fallback_reason'],
+    }
+
+    if src['drop_ipf'] is None:
+        logging.warning('Maps <> Items: %s', src['fallback_reason'])
+        return
+
+    zonedrop = drop_source.list_drop_subdir(src['drop_ipf'], 'zonedrop')
+    dropgroup = drop_source.list_drop_subdir(src['drop_ipf'], 'dropgroup')
+
+    items_by_name = constants.data['items_by_name']
+    unresolved = constants.data['unresolved_drops']
+
     for map in constants.data['maps'].values():
-        if map == None:
+        if map is None:
             continue
-        ies_drop_p = os.path.join("..", 'itos_unpack', 'ies_drop.ipf')
-        ies_drop =  os.listdir(os.path.join(ies_drop_p,  'zonedrop'))
-        path_insensitive= {}
-        for item in ies_drop:
-            path_insensitive[item.lower()] = item
-            
-            
-        ies_file = 'ZoneDropItemList_' + map['$ID_NAME'] + '.ies'
-        try:
-            ies_file = path_insensitive[ies_file.lower()]
-        except:
-            logging.debug("maps not found {}".format(ies_file))
-            pass
-        
-        ies_path = os.path.join(ies_drop_p, 'zonedrop', ies_file)
-        
-        # For some reason IMC uses these 2 types of name formats...
-        if not os.path.isfile(ies_path):
-            ies_file = 'zonedropitemlist_f_' + map['$ID_NAME'] + '.ies'
-            ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies_drop.ipf', 'zonedrop', ies_file)
 
-        try:
-            drops = []
+        # ZoneDropItemList_<map>.ies (또는 zonedropitemlist_f_<map>.ies 변형)
+        zone_path = None
+        for pattern in ('ZoneDropItemList_', 'zonedropitemlist_f_'):
+            candidate = pattern + map['$ID_NAME'] + '.ies'
+            actual = zonedrop['ci'].get(candidate.lower())
+            if actual is not None:
+                zone_path = os.path.join(zonedrop['dir'], actual)
+                break
 
-            with open(ies_path, 'r', encoding = 'utf-8') as ies_file:
-                for zone_drop in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-                    chance = 100.0
-                    if 'id_Unknownsanctuary'.lower() in ies_path.lower():
-                        chance = 10000.0
+        if zone_path is None or not os.path.isfile(zone_path):
+            continue
+
+        drops = []
+        try:
+            with open(zone_path, 'r', encoding='utf-8') as zone_fh:
+                # Unknownsanctuary 계열은 chance 기준이 다르다. zone_path 기준으로
+                # 고정한다(과거엔 dropgroup 이 ies_path 를 덮어써 오염됐었다).
+                chance = 10000.0 if 'id_unknownsanctuary' in zone_path.lower() else 100.0
+                for zone_drop in csv.DictReader(zone_fh, delimiter=',', quotechar='"'):
                     if len(zone_drop['ItemClassName']) > 0:
                         drops.append({
                             'ItemClassName': zone_drop['ItemClassName'],
                             'DropRatio': int(zone_drop['DropRatio']) / chance,
-                            # 'Money_Max': int(zone_drop['Money_Max']), silver drop removed
-                            # 'Money_Min': int(zone_drop['Money_Min']),
                         })
 
-                    # Note: drop groups work like a loot table
-                    # Therefore we need to sum the DropRatio of the entire group before calculating the actual one
                     if len(zone_drop['DropGroup']) > 0:
-                        ies_file = zone_drop['DropGroup'] + '.ies'
-                        ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies_drop.ipf', 'dropgroup', ies_file)
+                        group_name = zone_drop['DropGroup'] + '.ies'
+                        actual_g = dropgroup['ci'].get(group_name.lower())
+                        if actual_g is None:
+                            logging.debug('dropgroup not found: %s', group_name)
+                            continue
+                        group_path = os.path.join(dropgroup['dir'], actual_g)
 
                         group_drop_ratio = 0
                         group_drops = []
+                        try:
+                            with open(group_path, 'r', encoding='utf-8') as group_fh:
+                                for group_drop in csv.DictReader(group_fh, delimiter=',', quotechar='"'):
+                                    group_drop_ratio += int(group_drop['DropRatio'])
+                                    group_drops.append({
+                                        'ItemClassName': group_drop['ItemClassName'],
+                                        'DropRatio': int(group_drop['DropRatio']),
+                                    })
+                        except (IOError, OSError):
+                            logging.debug('dropgroup unreadable: %s', group_path)
+                            continue
 
-                        with open(ies_path, 'r', encoding = 'utf-8') as ies_file:
-                            for group_drop in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-                                group_drop_ratio += int(group_drop['DropRatio'])
-                                group_drops.append({
-                                    'ItemClassName': group_drop['ItemClassName'],
-                                    'DropRatio': int(group_drop['DropRatio']),
-                                    'Money_Max': 0,
-                                    'Money_Min': 0,
-                                })
+                        if group_drop_ratio == 0:
+                            logging.debug('dropgroup sum 0, skipping: %s', group_name)
+                            continue
 
                         for group_drop in group_drops:
-                            group_drop['DropRatio'] = int(zone_drop['DropRatio']) / 100.0 * group_drop['DropRatio'] / group_drop_ratio
-
+                            group_drop['DropRatio'] = (
+                                int(zone_drop['DropRatio']) / 100.0
+                                * group_drop['DropRatio'] / group_drop_ratio
+                            )
                             drops.append(group_drop)
 
-                for drop in drops:
-                    try:
-                        map_item = {
-                            'Chance': drop['DropRatio'],
-                            'Item': constants.data['items_by_name'][drop['ItemClassName']]['$ID'],
-                            'Map': constants.data['maps_by_name'][map['$ID_NAME']]['$ID'],
-                            'Quantity_MAX': drop['Money_Max'],
-                            'Quantity_MIN': drop['Money_Min'],
-                        }
-                        constants.data['map_item'].append(map_item)                    
-                    except:
-                        logging.debug('Map {} or item {} not found'
-                                     .format(map['$ID_NAME'], drop['ItemClassName'],))
-
-        except IOError:
+        except (IOError, OSError):
             continue
+
+        for drop in drops:
+            item_classname = drop['ItemClassName']
+            ref = items_by_name.get(item_classname)
+            if ref is None:
+                unresolved.append({
+                    'collection'     : 'map_item',
+                    'map'            : map['$ID'],
+                    'map_name'       : map['$ID_NAME'],
+                    'item_classname' : item_classname,
+                    'source_region'  : src['source_region'],
+                })
+                continue
+            # Quantity_* = 0: 직접 zonedrop/dropgroup 모두 수량 정보를 원본에서
+            # 신뢰할 수 없다(실버 드롭은 삭제됨). 0은 수량 미제공 호환값이다.
+            # importer(Map_Item.qty_max/min 기본값 0)와 importMap.py 필수 키 접근에 안전.
+            constants.data['map_item'].append({
+                'Chance'        : drop['DropRatio'],
+                'Item'          : ref['$ID'],
+                'Map'           : map['$ID'],
+                'Quantity_MAX'  : 0,
+                'Quantity_MIN'  : 0,
+                'SourceRegion'  : src['source_region'],
+                'InputVersion'  : src['input_version'],
+            })
 
 
 def parse_links_items_rewards(constants):
