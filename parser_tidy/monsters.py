@@ -216,8 +216,13 @@ def parse_monsters(file_name, constants):
             obj['Stat_CriticalRate']        = int(row.get('CRTHR', '0'))
             obj['Stat_BlockRate']           = int(row.get('BLK', '0'))
             obj['Stat_BlockPenetration']    = int(row.get('BLK_BREAK', '0'))
-            obj['EXP']                      = int(row.get('JOBEXP', '0'))
-            obj['EXPClass']                 = int(row.get('EXP', '0'))
+            # EXP/EXPClass 매핑 수정(PROFILING_REVIEW P0).
+            # 이전에는 원본 EXP 와 JOBEXP 가 뒤바뀌어 들어갔다.
+            # 기본 계산(monsters.py 기본 경로)은 EXP=SCR_GET_MON_EXP,
+            # EXPClass=SCR_GET_MON_JOBEXP 이므로 지역 보정 행에서도 같은
+            # 의미를 유지해야 한다.
+            obj['EXP']                      = int(row.get('EXP', '0'))
+            obj['EXPClass']                 = int(row.get('JOBEXP', '0'))
             constants.data['monsters'][obj['$ID']] = obj
             constants.data['monsters_by_name'][obj['$ID_NAME']] = obj
         
@@ -250,42 +255,68 @@ def parse_links(c=None):
 def parse_links_items(constants):
     logging.debug('Parsing Monsters <> Items...')
 
+    # P0-10: 드롭 소스 결정과 provenance 기록을 데이터셋 단위로 한 번 수행한다.
+    # 기존에는 매 몬스터마다 ../itos_unpack 하드코딩 경로를 os.listdir 했다.
+    import drop_source
+    src = drop_source.get_drop_source(constants)
+    constants.data['build_provenance']['item_monster'] = {
+        'source_region'   : src['source_region'],
+        'input_version'   : src['input_version'],
+        'fallback_reason' : src['fallback_reason'],
+    }
+
+    if src['drop_ipf'] is None:
+        logging.warning('Monsters <> Items: %s', src['fallback_reason'])
+        return
+
+    drop_ipf = src['drop_ipf']
+    # 몬스터별 드롭 파일은 ies_drop.ipf 루트에 <ClassName>.ies 로 존재한다.
+    try:
+        all_files = os.listdir(drop_ipf)
+    except (IOError, OSError):
+        logging.warning('Monsters <> Items: cannot list %s', drop_ipf)
+        return
+    path_insensitive = {name.lower(): name for name in all_files}
+
+    items_by_name = constants.data['items_by_name']
+    unresolved = constants.data['unresolved_drops']
+
     for monster in constants.data['monsters'].values():
-        #mongen_dir = os.listdir(os.path.join(constants.PATH_INPUT_DATA, 'ies_drop.ipf'))
-        ies_drop = os.path.join("..", "itos_unpack", 'ies_drop.ipf')
-        mongen_dir = os.listdir(ies_drop)
-        path_insensitive= {}
-        for item in mongen_dir:
-            path_insensitive[item.lower()] = item
-            
-            
         ies_file = monster['$ID_NAME'] + '.ies'
-        try:
-            ies_file = path_insensitive[ies_file.lower()]
-        except:
-            #logging.warning("file not found {}".format(ies_file))
-            pass
-        
-        ies_path = os.path.join(ies_drop, ies_file)
+        actual = path_insensitive.get(ies_file.lower())
+        if actual is None:
+            continue
+        ies_path = os.path.join(drop_ipf, actual)
 
         try:
-            with open(ies_path, 'r', encoding="utf-8") as ies_file:
-                for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-                    if not row['ItemClassName'] or row['ItemClassName'] not in constants.data['items_by_name']:
+            with open(ies_path, 'r', encoding="utf-8") as ies_fh:
+                for row in csv.DictReader(ies_fh, delimiter=',', quotechar='"'):
+                    item_classname = row.get('ItemClassName', '') or ''
+                    if not item_classname:
+                        continue
+                    ref = items_by_name.get(item_classname)
+                    if ref is None:
+                        # 미해결 참조: 가짜 fallback 을 만들지 않고 문맥과 함께 보고한다.
+                        unresolved.append({
+                            'collection'     : 'item_monster',
+                            'monster'        : monster['$ID'],
+                            'monster_name'   : monster['$ID_NAME'],
+                            'item_classname' : item_classname,
+                            'source_region'  : src['source_region'],
+                        })
                         continue
 
-                    item = constants.data['items_by_name'][row['ItemClassName']]
-                    item_link = item['$ID']
-                    monster_link = monster['$ID']
                     constants.data['item_monster'].append({
                         'Chance'        : int(row['DropRatio']) / 100.0,
-                        'Item'          : item_link,
-                        'Monster'       : monster_link,
+                        'Item'          : ref['$ID'],
+                        'Monster'       : monster['$ID'],
                         'Quantity_MAX'  : int(row['Money_Max']),
                         'Quantity_MIN'  : int(row['Money_Min']),
+                        'SourceRegion'  : src['source_region'],
+                        'InputVersion'  : src['input_version'],
                     })
 
-        except IOError:
+        except (IOError, OSError):
             continue
 
 
