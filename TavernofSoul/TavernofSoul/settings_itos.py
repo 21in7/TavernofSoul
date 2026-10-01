@@ -80,8 +80,6 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'TavernofSoul.urls'
 
-PROMETHEUS_METRICS_EXPORT_PORT = 8001  # Itos용 포트
-PROMETHEUS_METRICS_EXPORT_ADDRESS = '0.0.0.0'  # 모든 인터페이스에서 수신
 
 TEMPLATES = [
     {
