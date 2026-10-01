@@ -2,6 +2,7 @@
 *.pyc
 *.ipf
 **/prev/
+# Independent unpack repositories; owned by their own Git indexes.
 itos_unpack/
 ktos_unpack/
 jtos_unpack/

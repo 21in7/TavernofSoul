@@ -9,6 +9,8 @@ import subprocess
 from os.path import join
 import os
 import csv
+from pathlib import Path
+from repository_guard import validate_repository
 def read_version(filename):
     rev = {}
     with open(filename, 'r') as f:
@@ -20,6 +22,9 @@ def read_version(filename):
     return rev
 
 if __name__ == "__main__":
+    repository = Path(__file__).resolve().parent
+    validate_repository(repository, "TavernofSoul")
+    os.chdir(repository)
     subprocess.run(['git', 'pull'])
     versions = read_version(join('downloader', 'revision.csv'))
     version = ""

@@ -50,6 +50,12 @@ commit_folder() {
         return 1
     fi
     
+    # Refuse ancestor Git fallback, wrong remotes, and application files.
+    if ! python3 /home/ubuntu/TavernofSoul/repository_guard.py "$folder_path" "${folder_name}_unpack" --unpack; then
+        log "ERROR: $folder_name repository verification failed"
+        return 1
+    fi
+
     # 해당 폴더로 이동
     cd "$folder_path" || {
         log "ERROR: $folder_path로 이동할 수 없습니다."
@@ -62,10 +68,6 @@ commit_folder() {
         cd /home/ubuntu/TavernofSoul
         return 0
     fi
-    
-    # Git 정리 (문제 해결)
-    git prune >/dev/null 2>&1
-    rm -f .git/gc.log >/dev/null 2>&1
     
     # 모든 변경사항 추가
     if ! git add -A >/dev/null 2>&1; then

@@ -4,6 +4,9 @@
 
 echo "=== Unpack 폴더 버전 커밋 스크립트 ==="
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+cd "$SCRIPT_DIR" || exit 1
+
 # parser_version.csv 파일 경로
 CSV_FILE="parser_tidy/parser_version.csv"
 
@@ -52,6 +55,9 @@ commit_folder() {
         return 1
     fi
     
+    # Refuse ancestor Git fallback, wrong remotes, and application files.
+    python3 "$SCRIPT_DIR/repository_guard.py" "$SCRIPT_DIR/$folder_path" "${folder_name}_unpack" --unpack || return 1
+
     # 해당 폴더로 이동
     cd "$folder_path" || return 1
     

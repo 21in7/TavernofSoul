@@ -8,6 +8,7 @@ import subprocess
 import csv
 import sys
 from pathlib import Path
+from repository_guard import validate_repository
 
 def run_command(cmd, cwd=None):
     """명령어 실행"""
@@ -39,7 +40,7 @@ def get_version_info(csv_file):
 
 def commit_unpack_folder(folder_name, version):
     """특정 unpack 폴더를 지정된 버전으로 커밋"""
-    folder_path = f"{folder_name}_unpack"
+    folder_path = Path(__file__).resolve().parent / f"{folder_name}_unpack"
     
     if not os.path.exists(folder_path):
         print(f"Warning: {folder_path} 폴더가 존재하지 않습니다.")
@@ -49,6 +50,12 @@ def commit_unpack_folder(folder_name, version):
     print(f"폴더: {folder_path}")
     print(f"버전: {version}")
     
+    try:
+        validate_repository(folder_path, f"{folder_name}_unpack", unpack=True)
+    except (ValueError, subprocess.CalledProcessError) as error:
+        print(f"  {folder_name}: repository verification failed: {error}")
+        return False
+
     # 해당 폴더로 이동
     os.chdir(folder_path)
     
