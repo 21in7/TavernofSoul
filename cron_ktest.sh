@@ -3,6 +3,11 @@ source /home/temperantia/TavernofSoul/TavernofSoul/itos/3.8/bin/activate
 # ========== downloading patch ipf ========
 cd downloader
 python downloader.py ktest
+download_result=$?
+if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 1 ]; then
+    echo "다운로드 실패(return code $download_result). 파싱과 DB import 중단." >&2
+    exit "$download_result"
+fi
 cd ..
 # ========== unpacking ipf ========
 # python unpackIPF.py ktest

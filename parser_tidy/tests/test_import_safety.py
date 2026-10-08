@@ -76,6 +76,9 @@ def test_transaction_and_baseline(importer, isolated_db, tmp_path, monkeypatch, 
         if failure == 'import':
             raise RuntimeError('import failed')
     monkeypatch.setattr(cmd, '_import_data', import_data)
+    # Arbitrary data.json isolates transaction/publication failure handling.
+    monkeypatch.setattr(cmd, '_validate_staged_release',
+                        lambda directory: cmd.importJSON(Path(directory) / 'version.json'))
     if failure == 'publish':
         real_replace = module.os.replace
         def replace(source, destination):

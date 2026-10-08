@@ -1,0 +1,14 @@
+{
+  "projects": ["desktop", "mobile"],
+  "scenarios": [
+    "search preserves filters and opens the detail page",
+    "search with no matches stays empty",
+    "560 sword steps reset and material links work",
+    "transcend input order and reset preserve base stats",
+    "560 armor updates both defenses",
+    "550 accessory uses its own reinforcement table",
+    "ordinary equipment keeps its existing calculator",
+    "gem levels include bonuses and penalties",
+    "skill gem opens the related skill"
+  ]
+}

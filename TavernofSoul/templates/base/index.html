@@ -5,10 +5,12 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    {% if not harness_offline %}
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2728591277096799" crossorigin="anonymous"></script>
     <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,500,600,700,800,900" rel="stylesheet">
-    <link rel="shortcut icon" type="image/png" href="{% static 'images/logo.png' %}"/>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
+    {% endif %}
+    <link rel="shortcut icon" type="image/png" href="{% static 'images/logo.png' %}"/>
     <link rel="stylesheet" href="{%static 'css/style.css'%}">
     <meta property="og:site_name" content="Gihyeon of Soul">
     <meta property="og:type" content="website">
@@ -32,6 +34,7 @@
         max-width: 32px;
       }
     </style>
+    {% if not harness_offline %}
     <script async src="https://fundingchoicesmessages.google.com/i/pub-2728591277096799?ers=1" nonce="2O6M2fuKTCsdLtMfwcnRGw"></script><script nonce="2O6M2fuKTCsdLtMfwcnRGw">(function() {function signalGooglefcPresent() {if (!window.frames['googlefcPresent']) {if (document.body) {const iframe = document.createElement('iframe'); iframe.style = 'width: 0; height: 0; border: none; z-index: -1000; left: -1000px; top: -1000px;'; iframe.style.display = 'none'; iframe.name = 'googlefcPresent'; document.body.appendChild(iframe);} else {setTimeout(signalGooglefcPresent, 0);}}}signalGooglefcPresent();})();</script>
     <script>(function(){/*
 
@@ -52,14 +55,15 @@
      
      window.__h82AlnkH6D91__("WyJwdWItMjcyODU5MTI3NzA5Njc5OSIsW251bGwsbnVsbCxudWxsLCJodHRwczovL2Z1bmRpbmdjaG9pY2VzbWVzc2FnZXMuZ29vZ2xlLmNvbS9iL3B1Yi0yNzI4NTkxMjc3MDk2Nzk5Il0sbnVsbCxudWxsLCJodHRwczovL2Z1bmRpbmdjaG9pY2VzbWVzc2FnZXMuZ29vZ2xlLmNvbS9lbC9BR1NLV3hVRW5PZVpVYXozYWdXZ2w0anJrcW1nRlZmelNBRmhCUVlaVTdKN19vRUNQX3QzN2JoTU56OFFkZVVXamFWMFVWTTJqdFFyQ0VWdjZzcTA2dFBxVVdTVVB3XHUwMDNkXHUwMDNkP3RlXHUwMDNkVE9LRU5fRVhQT1NFRCIsImh0dHBzOi8vZnVuZGluZ2Nob2ljZXNtZXNzYWdlcy5nb29nbGUuY29tL2VsL0FHU0tXeFhFMmZENnQ1bEZMTUpMSC05VHNNSy0zeVViYVVyQVpZSnNIUzF5dU5zcmdySDFnQ1FWY2pmbHNqMTdwNW1rUTJSNW9NLTRSXzVlUEp1eUNmUmFmamM2U0FcdTAwM2RcdTAwM2Q/YWJcdTAwM2QxXHUwMDI2c2JmXHUwMDNkMSIsImh0dHBzOi8vZnVuZGluZ2Nob2ljZXNtZXNzYWdlcy5nb29nbGUuY29tL2VsL0FHU0tXeFUzTzZ6bUFHX1ZtQnBDZjZpczF0bnRKOXdTRkZVb1h2VkU3aEQ2MS0tWVlVR0tMVEZuQkhIUHB1ZDNTQnFXdG9lajBlUDZQd2RoTnJqMUJsVmhES2h2MFFcdTAwM2RcdTAwM2Q/YWJcdTAwM2QyXHUwMDI2c2JmXHUwMDNkMSIsImh0dHBzOi8vZnVuZGluZ2Nob2ljZXNtZXNzYWdlcy5nb29nbGUuY29tL2VsL0FHU0tXeFcyVVJiQWtBdUFIdXZIVVJvd3BKS0kyc3RnTjB5eHN4UlFneVZXWlZtaGVMRl92X3NvN3QxVjRhT1BTclJMd3hZczYzMExlRTFDc2E2cVc5UWx2SHpYYkFcdTAwM2RcdTAwM2Q/c2JmXHUwMDNkMiIsImRpdi1ncHQtYWQiLDIwLDEwMCwiY0hWaUxUSTNNamcxT1RFeU56Y3dPVFkzT1RrXHUwMDNkIixbbnVsbCxudWxsLG51bGwsImh0dHBzOi8vd3d3LmdzdGF0aWMuY29tLzBlbW4vZi9wL3B1Yi0yNzI4NTkxMjc3MDk2Nzk5LmpzP3VzcXBcdTAwM2RDQWMiXSwiaHR0cHM6Ly9mdW5kaW5nY2hvaWNlc21lc3NhZ2VzLmdvb2dsZS5jb20vZWwvQUdTS1d4WEtDdnFyelRNdGFMSkdCNHlkbFRoM2N5eTFOTTZqTFVuUmUwQVY3Tkl1d3dLb3pOZ0llR2hFY056RF9RY2FRRzBTaDBvZk1GMFpiQ2dkUHdSYWlreUswQVx1MDAzZFx1MDAzZCJd");</script>
     <!-- Google tag (gtag.js) -->
-	<script async src="https://www.googletagmanager.com/gtag/js?id=G-JJJ30JJCJ1"></script>
+	<script async src="https://www.googletagmanager.com/gtag/js?id=G-3F939HQVWS"></script>
 	<script>
 	  window.dataLayer = window.dataLayer || [];
 	  function gtag(){dataLayer.push(arguments);}
 	  gtag('js', new Date());
 
-	  gtag('config', 'G-JJJ30JJCJ1');
+	  gtag('config', 'G-3F939HQVWS');
 	</script>
+    {% endif %}
 
   </head>
   <body>
@@ -169,9 +173,11 @@
     <script src="{% static 'js/popper.js'%}"></script>
     <script src="{% static 'js/bootstrap.min.js'%}"></script>
     <script src="{% static 'js/main.js'%}"></script>
+    {% if not harness_offline %}
     <!-- Cloudflare Web Analytics -->
     <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1a608aa419984cb79e9eb1275fcaeaaf"}'></script>
     <!-- End Cloudflare Web Analytics -->
+    {% endif %}
 
     {% block script%}
     {%endblock%}

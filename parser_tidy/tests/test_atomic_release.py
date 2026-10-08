@@ -26,7 +26,14 @@ if PARENT not in sys.path:
 def _make_constants(release_dir, data):
     """export() 에 필요한 최소 ToS_DB 표면을 가짜로 만든다."""
     from DB import ToS_DB
-    c = ToS_DB.__new__(ToS_DB)  # __init__ 건너뛰기(클래스 가변 상태 오염 방지)
+    class StorageDB(ToS_DB):
+        # This suite isolates file promotion using intentionally arbitrary data.
+        # Real domain validation is exercised by test_release_contract.py.
+        def _validate_release(self, version_payload):
+            pass
+        def _validate_staged_release(self, directory, version_payload):
+            pass
+    c = StorageDB()
     c.BASE_PATH_OUTPUT = release_dir
     c.data = data
     return c

@@ -1,0 +1,8 @@
+ClassID,ClassName,Name,Desc,Icon,ItemGrade,SellPrice,ItemCoolDown,LifeTime,MarketTrade,UserTrade,ShopTrade,TeamTrade,GroupName,Weight,Script,StringArg,NumberArg1,TooltipImage,CardGroupName
+100,harness_ore,원석,원석 설명,ICON_HARNESS_ORE,,12,2000,0,YES,NO,NO,YES,Material,0.25,,,,,
+101,harness_dust,Fixture Dust,"Dust, used for crafting",ICON_HARNESS_DUST,2,7,0,0,YES,YES,YES,YES,Material,2.5,,,,,
+200,harness_package,Fixture Package,Package with an instance option,ICON_HARNESS_PACKAGE,1,0,2000,0,YES,YES,YES,YES,Package,1,SCR_USE_STRING_GIVE_ITEM_NUMBER_SPLIT,harness_ore/5/ItemExp/60;,,,
+201,harness_mixed,Fixture Mixed Package,Known and expired references,ICON_HARNESS_MIXED,1,0,0,0,YES,YES,YES,YES,Package,1,SCR_USE_STRING_GIVE_ITEM_NUMBER_SPLIT,harness_ore/3;expired_material/2/ItemExp/7;,,,
+202,harness_random,Fixture Random Package,Random alternatives,ICON_HARNESS_RANDOM,1,0,0,0,YES,YES,YES,YES,Package,1,SCR_USE_STRING_GIVE_RANDOM_MUTIPLE_ITEM_NUMBER_SPLIT,harness_ore/1*harness_dust/2,,,
+210,harness_card,하네스 카드,지역별 추가 아이템,ICON_HARNESS_CARD,2,7,0,0,YES,YES,YES,YES,Card,2.5,,,,ICON_HARNESS_CARD_TOOLTIP,ATK
+220,harness_collection,하네스 수집,지역별 추가 아이템,ICON_HARNESS_COLLECTION,2,7,0,0,YES,YES,YES,YES,Collection,2.5,,,,,

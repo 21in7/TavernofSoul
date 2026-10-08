@@ -1,0 +1,2 @@
+ClassID,ClassName,Name,Desc,Icon,GroupName,SkillType,Level,MinimapIcon
+800,harness_guide,Fixture Guide,A fixture NPC,ui_CreateMonster,NPC,HarnessGuide,1,

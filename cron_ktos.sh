@@ -37,6 +37,10 @@ download_start_time=$(date +%s)
 cd downloader
 python downloader.py ktos
 download_result=$?
+if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 1 ]; then
+    echo "다운로드 실패(return code $download_result). 파싱과 DB import 중단." >&2
+    exit "$download_result"
+fi
 cd ..
 
 download_elapsed=$(measure_time $download_start_time)

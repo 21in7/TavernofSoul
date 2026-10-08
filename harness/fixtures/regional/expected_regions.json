@@ -1,0 +1,42 @@
+{
+  "itos": {
+    "translation_directory": "English",
+    "names": {"ore": "Regional Ore", "sword": "Regional Sword", "staff": "Regional Staff", "armor": "Regional Armor", "card": "Regional Card", "collection": "Regional Collection", "fire": "Regional Fire", "support": "Regional Support", "job": "Regional Mage", "map": "Regional Field", "buff": "Regional Shield Buff", "attribute": "Regional Fire Boost"},
+    "ore_description": "Regional ore description", "fire_description": "Regional fire description",
+    "fallback_description": "", "fallback_effect": "",
+    "sword_min": 140, "sword_max": 147, "staff_matk": 350,
+    "armor_def": 120, "armor_mdef": 60, "atk_step": 7, "def_step": 8, "price_step": 100
+  },
+  "ktos": {
+    "translation_directory": null,
+    "names": {"ore": "원석", "sword": "하네스 검", "staff": "하네스 지팡이", "armor": "하네스 갑옷", "card": "하네스 카드", "collection": "하네스 수집", "fire": "하네스 화염", "support": "하네스 보충술", "job": "하네스 마법사", "map": "하네스 들판", "buff": "하네스 방패 버프", "attribute": "하네스 화염 특성"},
+    "ore_description": "원석 설명", "fire_description": "하네스 화염 설명",
+    "fallback_description": "KToS 보충 설명", "fallback_effect": "KToS 보충 효과",
+    "sword_min": 180, "sword_max": 189, "staff_matk": 450,
+    "armor_def": 150, "armor_mdef": 75, "atk_step": 9, "def_step": 10, "price_step": 120
+  },
+  "ktest": {
+    "translation_directory": null,
+    "names": {"ore": "원석", "sword": "하네스 검", "staff": "하네스 지팡이", "armor": "하네스 갑옷", "card": "하네스 카드", "collection": "하네스 수집", "fire": "하네스 화염", "support": "하네스 보충술", "job": "하네스 마법사", "map": "하네스 들판", "buff": "하네스 방패 버프", "attribute": "하네스 화염 특성"},
+    "ore_description": "원석 설명", "fire_description": "하네스 화염 설명",
+    "fallback_description": "KToS 보충 설명", "fallback_effect": "KToS 보충 효과",
+    "sword_min": 220, "sword_max": 231, "staff_matk": 550,
+    "armor_def": 180, "armor_mdef": 90, "atk_step": 11, "def_step": 12, "price_step": 140
+  },
+  "jtos": {
+    "translation_directory": "Japanese",
+    "names": {"ore": "ハーネス原石", "sword": "ハーネス剣", "staff": "ハーネス杖", "armor": "ハーネス鎧", "card": "ハーネスカード", "collection": "ハーネス収集", "fire": "ハーネス炎", "support": "ハーネス補助術", "job": "ハーネス魔法使い", "map": "ハーネス平原", "buff": "ハーネス盾バフ", "attribute": "ハーネス炎強化"},
+    "ore_description": "原石の説明", "fire_description": "炎の説明",
+    "fallback_description": "KToS 보충 설명", "fallback_effect": "KToS 보충 효과",
+    "sword_min": 260, "sword_max": 273, "staff_matk": 650,
+    "armor_def": 210, "armor_mdef": 105, "atk_step": 13, "def_step": 14, "price_step": 160
+  },
+  "twtos": {
+    "translation_directory": "Taiwanese",
+    "names": {"ore": "測試原石", "sword": "測試長劍", "staff": "測試法杖", "armor": "測試鎧甲", "card": "測試卡片", "collection": "測試收藏", "fire": "測試火焰", "support": "測試輔助術", "job": "測試魔法師", "map": "測試原野", "buff": "測試護盾效果", "attribute": "測試火焰強化"},
+    "ore_description": "原石說明", "fire_description": "火焰說明",
+    "fallback_description": "KToS 보충 설명", "fallback_effect": "KToS 보충 효과",
+    "sword_min": 300, "sword_max": 315, "staff_matk": 750,
+    "armor_def": 240, "armor_mdef": 120, "atk_step": 15, "def_step": 16, "price_step": 180
+  }
+}

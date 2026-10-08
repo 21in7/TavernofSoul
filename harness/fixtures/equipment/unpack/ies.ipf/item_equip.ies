@@ -1,0 +1,5 @@
+ClassID,ClassName,Name,Desc,Icon,ItemGrade,SellPrice,ItemCoolDown,LifeTime,MarketTrade,UserTrade,ShopTrade,TeamTrade,GroupName,Weight,ClassType,RefreshScp,MaxDur,ItemLv,UseLv,Material,MaxPR,UseJob,BaseSocket,MaxSocket_COUNT,ItemStar,MATK,MINATK,MAXATK,MDEF,DEF,AttackType,NeedAppraisal,NeedRandomOption,BasicTooltipProp,FileName,OptDesc
+110,harness_sword,Fixture Dawn Sword,Lua calculated sword,ICON_HARNESS_SWORD,6,20,0,0,YES,YES,YES,YES,Weapon,3.5,Sword,SCR_HARNESS_REFRESH_DAWN_SWORD,2500,0,560,Iron,5,All,1,3,2,0,0,0,0,0,Slash,0,0,ATK,,
+111,harness_staff,하네스 지팡이,Lua calculated sword,ICON_HARNESS_STAFF,1,20,0,0,YES,YES,YES,YES,Weapon,3.5,Staff,SCR_HARNESS_REFRESH_STAFF,2500,0,25,Iron,5,Char2,1,3,2,0,0,0,0,0,Magic,0,0,MATK,,
+112,harness_armor,Fixture Dawn Armor,Lua calculated sword,ICON_HARNESS_ARMOR,6,20,0,0,YES,YES,YES,YES,Armor,3.5,Shirt,SCR_HARNESS_REFRESH_DAWN_ARMOR,0,0,560,Iron,5,Char1;Char4,1,3,2,0,0,0,0,0,None,0,0,"DEF,MDEF",,
+113,harness_accessory,Fixture Goddess Necklace,Lua calculated sword,ICON_HARNESS_SWORD,6,20,0,0,YES,YES,YES,YES,Accessory,3.5,Neck,SCR_REFRESH_ACC,2500,0,550,Iron,5,All,1,3,2,0,0,0,0,0,Slash,0,0,"ATK,MATK",,

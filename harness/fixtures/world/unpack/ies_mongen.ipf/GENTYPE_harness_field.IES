@@ -1,0 +1,5 @@
+GenType,ClassType,ArgStr2,MaxPop,RespawnTime
+wolf_a,harness_wolf,,2,2500
+wolf_b,harness_wolf,,1,2500
+guide,harness_guide,,1,10000
+dust,harness_guide,SCR:harness_dust:FIXED,1,3000

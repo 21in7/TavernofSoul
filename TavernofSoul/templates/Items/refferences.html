@@ -8,7 +8,7 @@
 		      	<th>{{"Crafted From" | translate}}</th>
 		      	<td>
 		      		{%for i in targetRecipe%}
-                            <a href="{% url 'Items:item' i.recipe.item.ids %}"> <p class="mb-0"> <img loading="lazy" alt="" src="/static/icons/{{i.recipe.item.icon}}.png") class="icon-24">{{i.recipe.item.name}}</p></a>
+			      			<a href="{% url 'Items:item' i.recipe.item.ids %}"> <p class="mb-0"> <img loading="lazy" alt="" src="/static/icons/{{i.recipe.item.icon}}.png") class="icon-24">{{i.recipe.item.name}}</p></a>
 		      			
 		      		{%endfor%}
 		      	</td>
@@ -20,7 +20,7 @@
 		      	<th>{{"Collections" | translate}}</th>
 		      	<td>
 			      	{%for i in collectionMaterialFor%}
-                            <a href="{% url 'Items:item' i.collection.item.ids %}"><p class="mb-0"><img loading="lazy" alt="" src="/static/icons/{{i.collection.item.icon}}.png") class="icon-24"> {{i.collection.item.name}}</p></a>
+			      			<a href="{% url 'Items:item' i.collection.item.ids %}"><p class="mb-0"><img loading="lazy" alt="" src="/static/icons/{{i.collection.item.icon}}.png") class="icon-24"> {{i.collection.item.name}}</p></a>
 			      			
 		      		{%endfor%}
 	      		</td>

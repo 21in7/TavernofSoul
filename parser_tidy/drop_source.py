@@ -60,8 +60,8 @@ def get_drop_source(constants):
 
     - iTOS 우선 → 현재 지역 PATH_INPUT_DATA/ies_drop.ipf → 둘 다 없으면 drop_ipf=None
     - input_version 은 revision.csv 기반 best-effort 값이다. revision.csv 는
-      patch_process() 후 갱신되지만 unpack subprocess 는 check 없이 실행되므로
-      언팩 성공이 검증된 매니페스트가 아니다.
+      patch_process()의 도구 실행·복사가 성공한 후 갱신된다. 데이터셋 전체의
+      파일 무결성까지 검증한 매니페스트는 아니다.
     """
     project_root = _project_root(constants)
     revision = _read_revision(project_root)
@@ -75,8 +75,12 @@ def get_drop_source(constants):
         src_region = DROP_SOURCE_REGION
         drop_ipf = itos_ipf
         if constants.region.lower() != DROP_SOURCE_REGION:
-            reason = ('ies_drop.ipf absent for region {!r}; falling back to {}'
-                      .format(constants.region, DROP_SOURCE_REGION))
+            if os.path.isdir(current_ipf):
+                reason = ('preferred {} ies_drop.ipf dataset selected over region {!r}'
+                          .format(DROP_SOURCE_REGION, constants.region))
+            else:
+                reason = ('ies_drop.ipf absent for region {!r}; falling back to {}'
+                          .format(constants.region, DROP_SOURCE_REGION))
         else:
             reason = None
     elif os.path.isdir(current_ipf):

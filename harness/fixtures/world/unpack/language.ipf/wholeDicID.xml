@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<dictionary>
+  <file name="xml\item.xml">
+    <data original="원석" dicid="@dicID_^*$HARNESS_ORE_NAME$*^" />
+    <data original="원석 설명" dicid="@dicID_^*$HARNESS_ORE_DESC$*^" />
+  </file>
+  <file name="xml\world.xml">
+    <data original="하네스 들판" dicid="@dicID_^*$HARNESS_FIELD_NAME$*^" />
+    <data original="하네스 화염 특성" dicid="@dicID_^*$HARNESS_ATTR_NAME$*^" />
+    <data original="하네스 화염 설명" dicid="@dicID_^*$HARNESS_ATTR_DESC$*^" />
+    <data original="하네스 방패 버프" dicid="@dicID_^*$HARNESS_BUFF_NAME$*^" />
+    <data original="하네스 방패 설명" dicid="@dicID_^*$HARNESS_BUFF_DESC$*^" />
+  </file>
+</dictionary>

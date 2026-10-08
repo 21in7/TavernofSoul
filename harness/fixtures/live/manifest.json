@@ -1,0 +1,376 @@
+{
+  "schema": 1,
+  "regions": {
+    "itos": {
+      "unpack_commit": "212ceede4fb0ff88c3f413dcea60f115ab69eaf2",
+      "selected_ids": [
+        "11100079",
+        "11100080",
+        "11107087",
+        "11107094",
+        "11107103",
+        "11107104",
+        "11202075",
+        "11202082",
+        "11202084",
+        "643501",
+        "643580",
+        "647053",
+        "649039",
+        "649040"
+      ]
+    },
+    "ktos": {
+      "unpack_commit": "44eb85d403c11f326e8fd10f2fb6e0e7b30a0c11",
+      "selected_ids": [
+        "11100079",
+        "11100080",
+        "11107087",
+        "11107094",
+        "11107103",
+        "11107104",
+        "11202075",
+        "11202082",
+        "11202084",
+        "643501",
+        "643580",
+        "647053",
+        "649039",
+        "649040"
+      ]
+    }
+  },
+  "files": {
+    "itos/unpack/ies.ipf/item.ies": {
+      "source": "itos_unpack/ies.ipf/item.ies",
+      "source_sha256": "50c13fa3cd1de570e72c89bb88cf16ba7b886df9912512c1f5fa871dda2606f9",
+      "sha256": "258caa2baf9a490711d707fa94dc5615d32668ebd9bac4f058d5cd85a6a24423",
+      "class_ids": [
+        "647053",
+        "649039",
+        "649040"
+      ]
+    },
+    "itos/unpack/ies.ipf/item_gem.ies": {
+      "source": "itos_unpack/ies.ipf/item_gem.ies",
+      "source_sha256": "7f3dd397e1c86a77dd9a5ab57595f1fa1d27b5b8682e7d6d86e210a215d7aad6",
+      "sha256": "797c1c6a29f6b533fbe871bc0a3127a7e7a46517c207e204769d829a205affc2",
+      "class_ids": [
+        "643501",
+        "643580"
+      ]
+    },
+    "itos/unpack/ies.ipf/item_EP13.ies": {
+      "source": "itos_unpack/ies.ipf/item_EP13.ies",
+      "source_sha256": "e8212bb54e94760c0f7e8d25135fe8db805db53bdbfff2f3c52d0b548aae8497",
+      "sha256": "6b90b666a09730e50840dec3c0688bef298ca78a50f9ca1ec8b1982bfafe2827",
+      "class_ids": [
+        "11202075",
+        "11202082",
+        "11202084"
+      ]
+    },
+    "itos/unpack/ies.ipf/item_Equip_EP13.ies": {
+      "source": "itos_unpack/ies.ipf/item_Equip_EP13.ies",
+      "source_sha256": "54bf5a49dcec8ac342d03964b7a77cf1480da38a86a57f59d8acbbb388165408",
+      "sha256": "acee4f4fef51ea5268e104c519f524faac7bd7658a9bcd4d23b2889150850b99",
+      "class_ids": [
+        "11100079",
+        "11100080",
+        "11107087",
+        "11107094",
+        "11107103",
+        "11107104"
+      ]
+    },
+    "itos/unpack/ies_client.ipf/xac.ies": {
+      "source": "itos_unpack/ies_client.ipf/xac.ies",
+      "source_sha256": "7f9fe3af1279131d6c5ca46c87280caeed726d16e04d0c0d1ad315ed365724bb",
+      "sha256": "451a5b95c62cb4a3558625b0c9c5ec5afd93409fdc33891770c481c404d4d69a",
+      "class_ids": []
+    },
+    "itos/unpack/ies.ipf/item_grade.ies": {
+      "source": "itos_unpack/ies.ipf/item_grade.ies",
+      "source_sha256": "1b3d5d395595d5ccafd9b5118d0753be41fdbe5abc81d0ab63936335ca152ae7",
+      "sha256": "1b3d5d395595d5ccafd9b5118d0753be41fdbe5abc81d0ab63936335ca152ae7"
+    },
+    "itos/unpack/ies.ipf/sharedconst.ies": {
+      "source": "itos_unpack/ies.ipf/sharedconst.ies",
+      "source_sha256": "7a7e6383de81d2a986fa235c8f3afb4fae2e85179126026f3ec211758c13dd83",
+      "sha256": "7a7e6383de81d2a986fa235c8f3afb4fae2e85179126026f3ec211758c13dd83"
+    },
+    "itos/unpack/ies.ipf/sharedconst_system.ies": {
+      "source": "itos_unpack/ies.ipf/sharedconst_system.ies",
+      "source_sha256": "47de0a4cf69670714507cc4b8c955e7dd71d4ca1c342fcf82d8434854913e14f",
+      "sha256": "47de0a4cf69670714507cc4b8c955e7dd71d4ca1c342fcf82d8434854913e14f"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce.ies",
+      "source_sha256": "9fd838177cc57b2d20ff89682c24d95e0d4d91cf11e4ba3d729f38b7cd787fa4",
+      "sha256": "9fd838177cc57b2d20ff89682c24d95e0d4d91cf11e4ba3d729f38b7cd787fa4"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_470.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_470.ies",
+      "source_sha256": "c9fd50f6361c6ef55f42d48a844215e40a32dfd5cb3efc02fee462bc17838173",
+      "sha256": "c9fd50f6361c6ef55f42d48a844215e40a32dfd5cb3efc02fee462bc17838173"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_480.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_480.ies",
+      "source_sha256": "2153d27b87fb47afbd9404f6e1529585833bde31e543533d4cfbcf87049dea27",
+      "sha256": "2153d27b87fb47afbd9404f6e1529585833bde31e543533d4cfbcf87049dea27"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_490.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_490.ies",
+      "source_sha256": "7db1070281e31d06fac2b03a6fb326c252f77a8491e7908ea97c09deaae49e5a",
+      "sha256": "7db1070281e31d06fac2b03a6fb326c252f77a8491e7908ea97c09deaae49e5a"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_500.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_500.ies",
+      "source_sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca",
+      "sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_510.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_510.ies",
+      "source_sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca",
+      "sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_520.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_520.ies",
+      "source_sha256": "77d7e1941fe4e51abf18094a4340af7e8314dbdc659b2338c07956187fbdd8c5",
+      "sha256": "77d7e1941fe4e51abf18094a4340af7e8314dbdc659b2338c07956187fbdd8c5"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_530.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_530.ies",
+      "source_sha256": "92ae17afc689a76288d99f45872a03e39b1402ae6e0788a51f9595c2b152c9b6",
+      "sha256": "92ae17afc689a76288d99f45872a03e39b1402ae6e0788a51f9595c2b152c9b6"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_540.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_540.ies",
+      "source_sha256": "9fc40843d60e3997caba44ff258241673f93d8d7e38fb3726fe5062cbaea4beb",
+      "sha256": "9fc40843d60e3997caba44ff258241673f93d8d7e38fb3726fe5062cbaea4beb"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_550.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_550.ies",
+      "source_sha256": "147bba3770f4e1b03ee11a83441269547a8ca225efd605d054d425fa5a08b429",
+      "sha256": "147bba3770f4e1b03ee11a83441269547a8ca225efd605d054d425fa5a08b429"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_560.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_560.ies",
+      "source_sha256": "f6bcfb31ce1b8fc3a5f1036670058493ca5a72ec487ac641633cdcdbedc36702",
+      "sha256": "f6bcfb31ce1b8fc3a5f1036670058493ca5a72ec487ac641633cdcdbedc36702"
+    },
+    "itos/unpack/ies.ipf/item_goddess_reinforce_580.ies": {
+      "source": "itos_unpack/ies.ipf/item_goddess_reinforce_580.ies",
+      "source_sha256": "886a5f094e71ebde5738159a983a09886cf2795ce80664d3530e3481a9b61f08",
+      "sha256": "886a5f094e71ebde5738159a983a09886cf2795ce80664d3530e3481a9b61f08"
+    },
+    "itos/unpack/shared.ipf/item_calculate.lua": {
+      "source": "itos_unpack/shared.ipf/script/item_calculate.lua",
+      "source_sha256": "d8293a56045f31ab8afe627ab414ae7c705affa98a0787f3b7e86ce57fad7df4",
+      "sha256": "d8293a56045f31ab8afe627ab414ae7c705affa98a0787f3b7e86ce57fad7df4"
+    },
+    "itos/unpack/shared.ipf/item_legend_shared.lua": {
+      "source": "itos_unpack/shared.ipf/script/item_legend_shared.lua",
+      "source_sha256": "6e3efcda4ba2d9e15e50a58a3d2a241f14b62c17ca90771b997de424ca053078",
+      "sha256": "6e3efcda4ba2d9e15e50a58a3d2a241f14b62c17ca90771b997de424ca053078"
+    },
+    "itos/unpack/shared.ipf/shared_item_goddess_reinforce.lua": {
+      "source": "itos_unpack/shared.ipf/script/shared_item_goddess_reinforce.lua",
+      "source_sha256": "53f3d092f089811117c7feb6131a75631deeefddb802a3b5560e84cd7f26dc32",
+      "sha256": "53f3d092f089811117c7feb6131a75631deeefddb802a3b5560e84cd7f26dc32"
+    },
+    "itos/unpack/shared.ipf/item_transcend_shared.lua": {
+      "source": "itos_unpack/shared.ipf/script/item_transcend_shared.lua",
+      "source_sha256": "b383d939ee3b683e0ec377848a139e4a3fcd94470af996af2a06039d4b9c6c6b",
+      "sha256": "b383d939ee3b683e0ec377848a139e4a3fcd94470af996af2a06039d4b9c6c6b"
+    },
+    "itos/unpack/shared.ipf/pcbang_shared.lua": {
+      "source": "itos_unpack/shared.ipf/script/pcbang_shared.lua",
+      "source_sha256": "0fd7c3f067ca6f0b039918671df8017df4eb9c3a13de16fe7504d7b8c71890cd",
+      "sha256": "0fd7c3f067ca6f0b039918671df8017df4eb9c3a13de16fe7504d7b8c71890cd"
+    },
+    "itos/unpack/xml.ipf/socket_property.xml": {
+      "source": "itos_unpack/xml.ipf/socket_property.xml",
+      "source_sha256": "09a557617492cb79dcf3f540f1aef4d18d2f483fca6fd146de4473588cd40bd2",
+      "sha256": "a484cd90c1e90b433b4b93afe76bec6fde58e9c20e73ae3db81731e4154596e7"
+    },
+    "itos/unpack/language.ipf/wholeDicID.xml": {
+      "source": "itos_unpack/language.ipf/wholeDicID.xml",
+      "source_sha256": "f3d393e555d0c849230cdcd0ff2e71d93576f91b7cc5cd9ab8053f8f14f74225",
+      "sha256": "aef4582e1cc893b512db3f6f8191371e38d476c78453b13abdfc58da15c66fb4"
+    },
+    "itos/translation/ETC.tsv": {
+      "source": "Translation/English/ETC.tsv",
+      "source_sha256": "4c902214ff41ec3fbfb34e1053ea77326f74684d0b9f32c078692adddb92fe11",
+      "sha256": "04afc33a5272d4b373778e2a660bacb02dfcbfdb9b40e70d7ff4f67d513378a2"
+    },
+    "itos/translation/ITEM.tsv": {
+      "source": "Translation/English/ITEM.tsv",
+      "source_sha256": "59f7978d50b7146617d5b628b6c1d96b8ae675dc16bfac4d2e71b212902aac6a",
+      "sha256": "452bea6217f034b523b37ba60bfb6fb017f7621cf57a4dc472dbd56022180085"
+    },
+    "ktos/unpack/ies.ipf/item.ies": {
+      "source": "ktos_unpack/ies.ipf/item.ies",
+      "source_sha256": "50c13fa3cd1de570e72c89bb88cf16ba7b886df9912512c1f5fa871dda2606f9",
+      "sha256": "258caa2baf9a490711d707fa94dc5615d32668ebd9bac4f058d5cd85a6a24423",
+      "class_ids": [
+        "647053",
+        "649039",
+        "649040"
+      ]
+    },
+    "ktos/unpack/ies.ipf/item_gem.ies": {
+      "source": "ktos_unpack/ies.ipf/item_gem.ies",
+      "source_sha256": "7f3dd397e1c86a77dd9a5ab57595f1fa1d27b5b8682e7d6d86e210a215d7aad6",
+      "sha256": "797c1c6a29f6b533fbe871bc0a3127a7e7a46517c207e204769d829a205affc2",
+      "class_ids": [
+        "643501",
+        "643580"
+      ]
+    },
+    "ktos/unpack/ies.ipf/item_EP13.ies": {
+      "source": "ktos_unpack/ies.ipf/item_EP13.ies",
+      "source_sha256": "e8212bb54e94760c0f7e8d25135fe8db805db53bdbfff2f3c52d0b548aae8497",
+      "sha256": "6b90b666a09730e50840dec3c0688bef298ca78a50f9ca1ec8b1982bfafe2827",
+      "class_ids": [
+        "11202075",
+        "11202082",
+        "11202084"
+      ]
+    },
+    "ktos/unpack/ies.ipf/item_Equip_EP13.ies": {
+      "source": "ktos_unpack/ies.ipf/item_Equip_EP13.ies",
+      "source_sha256": "54bf5a49dcec8ac342d03964b7a77cf1480da38a86a57f59d8acbbb388165408",
+      "sha256": "acee4f4fef51ea5268e104c519f524faac7bd7658a9bcd4d23b2889150850b99",
+      "class_ids": [
+        "11100079",
+        "11100080",
+        "11107087",
+        "11107094",
+        "11107103",
+        "11107104"
+      ]
+    },
+    "ktos/unpack/ies_client.ipf/xac.ies": {
+      "source": "ktos_unpack/ies_client.ipf/xac.ies",
+      "source_sha256": "7f9fe3af1279131d6c5ca46c87280caeed726d16e04d0c0d1ad315ed365724bb",
+      "sha256": "451a5b95c62cb4a3558625b0c9c5ec5afd93409fdc33891770c481c404d4d69a",
+      "class_ids": []
+    },
+    "ktos/unpack/ies.ipf/item_grade.ies": {
+      "source": "ktos_unpack/ies.ipf/item_grade.ies",
+      "source_sha256": "1b3d5d395595d5ccafd9b5118d0753be41fdbe5abc81d0ab63936335ca152ae7",
+      "sha256": "1b3d5d395595d5ccafd9b5118d0753be41fdbe5abc81d0ab63936335ca152ae7"
+    },
+    "ktos/unpack/ies.ipf/sharedconst.ies": {
+      "source": "ktos_unpack/ies.ipf/sharedconst.ies",
+      "source_sha256": "7a7e6383de81d2a986fa235c8f3afb4fae2e85179126026f3ec211758c13dd83",
+      "sha256": "7a7e6383de81d2a986fa235c8f3afb4fae2e85179126026f3ec211758c13dd83"
+    },
+    "ktos/unpack/ies.ipf/sharedconst_system.ies": {
+      "source": "ktos_unpack/ies.ipf/sharedconst_system.ies",
+      "source_sha256": "47de0a4cf69670714507cc4b8c955e7dd71d4ca1c342fcf82d8434854913e14f",
+      "sha256": "47de0a4cf69670714507cc4b8c955e7dd71d4ca1c342fcf82d8434854913e14f"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce.ies",
+      "source_sha256": "9fd838177cc57b2d20ff89682c24d95e0d4d91cf11e4ba3d729f38b7cd787fa4",
+      "sha256": "9fd838177cc57b2d20ff89682c24d95e0d4d91cf11e4ba3d729f38b7cd787fa4"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_470.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_470.ies",
+      "source_sha256": "c9fd50f6361c6ef55f42d48a844215e40a32dfd5cb3efc02fee462bc17838173",
+      "sha256": "c9fd50f6361c6ef55f42d48a844215e40a32dfd5cb3efc02fee462bc17838173"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_480.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_480.ies",
+      "source_sha256": "2153d27b87fb47afbd9404f6e1529585833bde31e543533d4cfbcf87049dea27",
+      "sha256": "2153d27b87fb47afbd9404f6e1529585833bde31e543533d4cfbcf87049dea27"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_490.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_490.ies",
+      "source_sha256": "7db1070281e31d06fac2b03a6fb326c252f77a8491e7908ea97c09deaae49e5a",
+      "sha256": "7db1070281e31d06fac2b03a6fb326c252f77a8491e7908ea97c09deaae49e5a"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_500.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_500.ies",
+      "source_sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca",
+      "sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_510.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_510.ies",
+      "source_sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca",
+      "sha256": "c2f9cb92f3e18af32f51ee08114eca1806d14305f9990cc37a5a03e9db564fca"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_520.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_520.ies",
+      "source_sha256": "77d7e1941fe4e51abf18094a4340af7e8314dbdc659b2338c07956187fbdd8c5",
+      "sha256": "77d7e1941fe4e51abf18094a4340af7e8314dbdc659b2338c07956187fbdd8c5"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_530.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_530.ies",
+      "source_sha256": "92ae17afc689a76288d99f45872a03e39b1402ae6e0788a51f9595c2b152c9b6",
+      "sha256": "92ae17afc689a76288d99f45872a03e39b1402ae6e0788a51f9595c2b152c9b6"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_540.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_540.ies",
+      "source_sha256": "9fc40843d60e3997caba44ff258241673f93d8d7e38fb3726fe5062cbaea4beb",
+      "sha256": "9fc40843d60e3997caba44ff258241673f93d8d7e38fb3726fe5062cbaea4beb"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_550.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_550.ies",
+      "source_sha256": "147bba3770f4e1b03ee11a83441269547a8ca225efd605d054d425fa5a08b429",
+      "sha256": "147bba3770f4e1b03ee11a83441269547a8ca225efd605d054d425fa5a08b429"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_560.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_560.ies",
+      "source_sha256": "f6bcfb31ce1b8fc3a5f1036670058493ca5a72ec487ac641633cdcdbedc36702",
+      "sha256": "f6bcfb31ce1b8fc3a5f1036670058493ca5a72ec487ac641633cdcdbedc36702"
+    },
+    "ktos/unpack/ies.ipf/item_goddess_reinforce_580.ies": {
+      "source": "ktos_unpack/ies.ipf/item_goddess_reinforce_580.ies",
+      "source_sha256": "886a5f094e71ebde5738159a983a09886cf2795ce80664d3530e3481a9b61f08",
+      "sha256": "886a5f094e71ebde5738159a983a09886cf2795ce80664d3530e3481a9b61f08"
+    },
+    "ktos/unpack/shared.ipf/item_calculate.lua": {
+      "source": "ktos_unpack/shared.ipf/script/item_calculate.lua",
+      "source_sha256": "d8293a56045f31ab8afe627ab414ae7c705affa98a0787f3b7e86ce57fad7df4",
+      "sha256": "d8293a56045f31ab8afe627ab414ae7c705affa98a0787f3b7e86ce57fad7df4"
+    },
+    "ktos/unpack/shared.ipf/item_legend_shared.lua": {
+      "source": "ktos_unpack/shared.ipf/script/item_legend_shared.lua",
+      "source_sha256": "6e3efcda4ba2d9e15e50a58a3d2a241f14b62c17ca90771b997de424ca053078",
+      "sha256": "6e3efcda4ba2d9e15e50a58a3d2a241f14b62c17ca90771b997de424ca053078"
+    },
+    "ktos/unpack/shared.ipf/shared_item_goddess_reinforce.lua": {
+      "source": "ktos_unpack/shared.ipf/script/shared_item_goddess_reinforce.lua",
+      "source_sha256": "53f3d092f089811117c7feb6131a75631deeefddb802a3b5560e84cd7f26dc32",
+      "sha256": "53f3d092f089811117c7feb6131a75631deeefddb802a3b5560e84cd7f26dc32"
+    },
+    "ktos/unpack/shared.ipf/item_transcend_shared.lua": {
+      "source": "ktos_unpack/shared.ipf/script/item_transcend_shared.lua",
+      "source_sha256": "b383d939ee3b683e0ec377848a139e4a3fcd94470af996af2a06039d4b9c6c6b",
+      "sha256": "b383d939ee3b683e0ec377848a139e4a3fcd94470af996af2a06039d4b9c6c6b"
+    },
+    "ktos/unpack/shared.ipf/pcbang_shared.lua": {
+      "source": "ktos_unpack/shared.ipf/script/pcbang_shared.lua",
+      "source_sha256": "0fd7c3f067ca6f0b039918671df8017df4eb9c3a13de16fe7504d7b8c71890cd",
+      "sha256": "0fd7c3f067ca6f0b039918671df8017df4eb9c3a13de16fe7504d7b8c71890cd"
+    },
+    "ktos/unpack/xml.ipf/socket_property.xml": {
+      "source": "ktos_unpack/xml.ipf/socket_property.xml",
+      "source_sha256": "09a557617492cb79dcf3f540f1aef4d18d2f483fca6fd146de4473588cd40bd2",
+      "sha256": "a484cd90c1e90b433b4b93afe76bec6fde58e9c20e73ae3db81731e4154596e7"
+    },
+    "itos/unpack/shared.ipf/lib_math.lua": {
+      "source": "itos_unpack/shared.ipf/script/lib_math.lua",
+      "source_sha256": "5fd1048e3cb138814e842f7096b01eebffee1e39e79fba89189c959190292243",
+      "sha256": "5fd1048e3cb138814e842f7096b01eebffee1e39e79fba89189c959190292243"
+    },
+    "ktos/unpack/shared.ipf/lib_math.lua": {
+      "source": "ktos_unpack/shared.ipf/script/lib_math.lua",
+      "source_sha256": "5fd1048e3cb138814e842f7096b01eebffee1e39e79fba89189c959190292243",
+      "sha256": "5fd1048e3cb138814e842f7096b01eebffee1e39e79fba89189c959190292243"
+    }
+  }
+}
