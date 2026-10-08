@@ -9,7 +9,7 @@
 `expected.json`은 파서 출력에서 생성하지 않고 원본 숫자와 계산식을 직접 확인한 기준이다.
 560 `BasicAtk=332509`, 소드의 범위는 0.97/1.03으로 각각 SyncFloor한다. 원본 lib_math.lua처럼 floor(x+0.5)로 반올림한다.
 트링킷 기본값은 SyncFloor(BasicAtk×0.15), 강화는 floor(누적 AddAtk×0.3)이다.
-천 상의는 SyncFloor(1836595×0.25), 마법 방어는 그 값의 계산 전 수치×2를 SyncFloor한다.
+천 상의는 floor(1836595×0.25), 마법 방어는 그 값의 계산 전 수치×2를 floor한다. 방어구는 원본 Lua의 math.floor를 따르며 무기의 SyncFloor와 다르다.
 실드는 BasicAtk를 양쪽 방어력에 쓰고 무기 AddAtk를 누적한다.
 무기 AddAtk의 +6/+30 누적값은 38856/142500, 방어구 AddDef는 50802/196750이다.
 550 액세서리는 BasicAccAtk=5855, 누적 AddAccAtk=4818/24090이다.
