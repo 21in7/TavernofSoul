@@ -72,7 +72,8 @@ def to_pr(ledger):
     to_tree(ledger)
     delivery.accept(ledger, {'sha': NEW_TREE})
     delivery.accept(ledger, {'sha': HEAD})
-    delivery.accept(ledger, {'ref': 'refs/heads/' + ledger['branch'], 'object': {'sha': HEAD}})
+    delivery.accept(ledger, {'ref': 'refs/heads/' + ledger['branch'],
+                            'object': {'type': 'commit', 'sha': HEAD}})
     delivery.accept(ledger, {'structuredContent': {'pull_request': {'number': 11, 'url': 'unused'}}})
 
 
@@ -129,6 +130,135 @@ def test_full_connector_flow_requires_ci_and_pins_merge_head(prepared):
     delivery.save(prepared['directory'], ledger)
     assert delivery.request(ledger) is None
     assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'passed'
+
+
+def test_native_branch_snapshot_requires_a_pinned_ref_read_before_pr(prepared):
+    ledger = prepared['ledger']
+    to_tree(ledger)
+    delivery.accept(ledger, {'sha': NEW_TREE})
+    delivery.accept(ledger, {'sha': HEAD})
+    delivery.request(ledger)
+    delivery.accept(ledger, {'structuredContent': {'branch': ledger['branch']}})
+    assert ledger['step'] == 'branch_ref' and not ledger.get('pending_write')
+    job = delivery.request(ledger)
+    assert job['tool'] == delivery.TOOLS['fetch']
+    assert job['arguments']['url'].endswith('/git/ref/heads/' + ledger['branch'])
+    assert ledger['pending_write'] is False
+    delivery.accept(ledger, {'ref': 'refs/heads/' + ledger['branch'],
+                            'object': {'type': 'commit', 'sha': HEAD}})
+    assert delivery.request(ledger)['tool'] == delivery.TOOLS['create_pull_request']
+
+
+@pytest.mark.parametrize('change', [
+    {'ref': 'refs/heads/wrong'}, {'object': {'sha': BASE}}, {'object': None},
+    {'branch': 'codex/other'},
+])
+def test_native_branch_confirmation_rejects_moved_or_missing_head(prepared, change):
+    ledger = prepared['ledger']
+    to_tree(ledger)
+    delivery.accept(ledger, {'sha': NEW_TREE})
+    delivery.accept(ledger, {'sha': HEAD})
+    delivery.accept(ledger, {'branch': ledger['branch']})
+    response = {'ref': 'refs/heads/' + ledger['branch'],
+                'object': {'type': 'commit', 'sha': HEAD}}
+    if 'branch' in change:
+        response = change
+    else:
+        response.update(change)
+    with pytest.raises(ValueError):
+        delivery.accept(ledger, response)
+    assert ledger['step'] == 'branch_ref'
+
+
+def native_branch_cli(prepared, capsys):
+    ledger = prepared['ledger']
+    to_tree(ledger)
+    delivery.accept(ledger, {'sha': NEW_TREE})
+    delivery.accept(ledger, {'sha': HEAD})
+    agent_models.private_json(prepared['directory'] / 'github.json', ledger)
+    assert delivery.main(['request', '--run-id', ledger['run_id']]) == 0
+    return json.loads(capsys.readouterr().out)['request']
+
+
+def native_branch_reply(prepared, capsys, job, data, code=0):
+    assert delivery.main(['accept', '--run-id', prepared['ledger']['run_id'],
+                          '--request-id', job['request_id'], '--response-json', json.dumps(data)]) == code
+    return json.loads(capsys.readouterr().out)
+
+
+def test_native_branch_cli_confirms_head_before_requesting_pr(prepared, capsys):
+    ledger = prepared['ledger']
+    write = native_branch_cli(prepared, capsys)
+    output = native_branch_reply(prepared, capsys, write, {'branch': ledger['branch']})
+    query = output['request']
+    assert query['tool'] == delivery.TOOLS['fetch']
+    assert query['request_id'] != write['request_id']
+    saved = json.loads((prepared['directory'] / 'github.json').read_text())
+    assert saved['step'] == 'branch_ref' and saved['pending_write'] is False
+    assert saved['pending_request_id'] == query['request_id']
+    assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'awaiting_github'
+    output = native_branch_reply(prepared, capsys, query,
+                                 {'ref': 'refs/heads/' + ledger['branch'],
+                                  'object': {'type': 'commit', 'sha': HEAD}})
+    assert output['request']['tool'] == delivery.TOOLS['create_pull_request']
+    saved = json.loads((prepared['directory'] / 'github.json').read_text())
+    assert saved['step'] == 'create_pr' and saved['pending_write'] is True
+
+
+@pytest.mark.parametrize('response', [{'branch': 'wrong'}, {'branch': None}, {}])
+def test_native_branch_cli_keeps_ambiguous_write_nonce_for_late_confirmation(prepared, capsys, response):
+    ledger = prepared['ledger']
+    write = native_branch_cli(prepared, capsys)
+    output = native_branch_reply(prepared, capsys, write, response, code=1)
+    assert output['github']['status'] == 'needs_reconciliation' and output['request'] is None
+    saved = json.loads((prepared['directory'] / 'github.json').read_text())
+    assert saved['step'] == 'branch' and saved['pending_write'] is True
+    assert saved['status'] == 'needs_reconciliation'
+    assert saved['pending_request_id'] == write['request_id']
+    assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'needs_reconciliation'
+    output = native_branch_reply(prepared, capsys, write, {'branch': ledger['branch']})
+    assert output['github']['step'] == 'branch_ref'
+    assert output['request']['tool'] == delivery.TOOLS['fetch']
+
+
+@pytest.mark.parametrize('change', [
+    {'ref': 'refs/heads/wrong'}, {'object': {'type': 'commit', 'sha': BASE}},
+    {'omit_ref': True}, {'object': {'type': 'commit'}},
+    {'object': {'type': 'tree', 'sha': HEAD}}, {'object': {'type': 'tag', 'sha': HEAD}},
+    {'object': {'type': 'blob', 'sha': HEAD}}, {'object': {'sha': HEAD}}, {'object': None},
+])
+def test_native_branch_cli_journals_unverified_refs_without_reissuing_write(prepared, capsys, change):
+    ledger = prepared['ledger']
+    write = native_branch_cli(prepared, capsys)
+    output = native_branch_reply(prepared, capsys, write, {'branch': ledger['branch']})
+    query = output['request']
+    response = {'ref': 'refs/heads/' + ledger['branch'], 'object': {'type': 'commit', 'sha': HEAD}}
+    if change.get('omit_ref'):
+        response.pop('ref')
+    else:
+        response.update(change)
+    output = native_branch_reply(prepared, capsys, query, response, code=1)
+    assert output['github']['status'] == 'failed' and output['request'] is None
+    saved = json.loads((prepared['directory'] / 'github.json').read_text())
+    assert saved['step'] == 'branch_ref' and saved['pending_write'] is False
+    assert saved['status'] == 'failed'
+    assert saved['pending_request_id'] == query['request_id']
+    assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'failed'
+
+
+def test_native_branch_cli_rejects_old_read_nonce_and_accepts_current_ref(prepared, capsys):
+    ledger = prepared['ledger']
+    write = native_branch_cli(prepared, capsys)
+    first = native_branch_reply(prepared, capsys, write, {'branch': ledger['branch']})['request']
+    assert delivery.main(['request', '--run-id', ledger['run_id']]) == 0
+    current = json.loads(capsys.readouterr().out)['request']
+    assert current['request_id'] != first['request_id']
+    ref = {'ref': 'refs/heads/' + ledger['branch'], 'object': {'type': 'commit', 'sha': HEAD}}
+    native_branch_reply(prepared, capsys, first, ref, code=1)
+    saved = json.loads((prepared['directory'] / 'github.json').read_text())
+    assert saved['pending_request_id'] == current['request_id'] and saved['pending_write'] is False
+    output = native_branch_reply(prepared, capsys, current, ref)
+    assert output['request']['tool'] == delivery.TOOLS['create_pull_request']
 
 
 @pytest.mark.parametrize('corruption', ['sha', 'mode', 'missing', 'new_exists'])

@@ -150,6 +150,7 @@ def next_request(ledger):
     repo = cfg['repository']
     prefix = 'https://api.github.com/repos/' + repo
     paths = {'repository': '', 'base_ref': '/git/ref/heads/' + cfg['base'],
+             'branch_ref': '/git/ref/heads/' + ledger['branch'],
              'base_commit': '/git/commits/' + ledger.get('base_sha', ''),
              'base_tree': '/git/trees/' + (ledger.get('tree_queue') or [{}])[0].get('sha', ''),
              'pr': '/pulls/' + str(ledger.get('pr_number', '')),
@@ -316,11 +317,17 @@ def accept(ledger, result):
     elif step == 'commit':
         ledger['head_sha'] = valid_sha(data['sha'])
         ledger['step'] = 'branch'
-    elif step == 'branch':
-        if data.get('ref') != 'refs/heads/' + ledger['branch'] or \
-                object_data(data.get('object')).get('sha') != ledger['head_sha']:
-            raise ValueError('Connector did not confirm the expected published branch.')
-        ledger['step'] = 'create_pr'
+    elif step in ('branch', 'branch_ref'):
+        if step == 'branch' and set(data) == {'branch'} and data['branch'] == ledger['branch']:
+            # The native connector returns only the created branch name. Read
+            # its actual ref before accepting the pinned head or opening a PR.
+            ledger['step'] = 'branch_ref'
+        else:
+            ref = object_data(data.get('object'))
+            if data.get('ref') != 'refs/heads/' + ledger['branch'] or \
+                    ref.get('type') != 'commit' or ref.get('sha') != ledger['head_sha']:
+                raise ValueError('Connector did not confirm the expected published branch.')
+            ledger['step'] = 'create_pr'
     elif step == 'create_pr':
         number = data.get('number', data.get('pr_number'))
         if type(number) is not int or number <= 0:
