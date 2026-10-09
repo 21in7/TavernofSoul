@@ -452,6 +452,321 @@ end
     return obj
 
 
+@pytest.fixture
+def anvil_equipment(tmp_path, monkeypatch):
+    # Explicit callbacks receive the actual DictReader row used by parse_equips.
+    # Fractional, positive results also exercise its existing integer conversion.
+    with isolated_parser_state():
+        def prepare(props='DEF', refresh=None):
+            c = special_input(tmp_path / 'anvil', module=False)
+            obj = raw_armor_input(c, monkeypatch,
+                                  'function SCR_REFRESH_ARMOR(item) end\n',
+                                  ItemGrade='1', BasicTooltipProp=props)
+            items.equipment_grade_ratios = {1: {'BasicRatio': '100'}}
+            items.EQUIPMENT_STAT_COLUMNS = []
+            luautil.init(c)
+            calls, rows = [], []
+
+            def refresh_row(row):
+                rows.append(row)
+                if refresh is not None:
+                    refresh(row)
+
+            def defense(pc, row, zero, one):
+                assert (pc, zero, one) == (None, 0, 1)
+                assert row is rows[0]
+                calls.append(('DEF', row['Reinforce_2']))
+                return 200 + row['Reinforce_2'] * 3 + 0.75
+
+            def attack(row, zero, one, pc):
+                assert (zero, one, pc) == (0, 1, None)
+                assert row is rows[0]
+                calls.append(('ATK', row['Reinforce_2']))
+                return 100 + row['Reinforce_2'] * 2 + 0.5
+
+            def price(row, materials, pc):
+                assert materials == {} and pc is None and row is rows[0]
+                calls.append(('price', row['Reinforce_2']))
+                return 1000 + row['Reinforce_2'] * 5 + 0.25
+
+            luautil.LUA_RUNTIME.update(SCR_REFRESH_ARMOR=refresh_row,
+                                      GET_REINFORCE_ADD_VALUE=defense,
+                                      GET_REINFORCE_ADD_VALUE_ATK=attack,
+                                      GET_REINFORCE_PRICE=price)
+            return SimpleNamespace(c=c, obj=obj, calls=calls, rows=rows)
+
+        yield prepare
+
+
+@pytest.mark.parametrize('props,branches', (
+    ('ATK', ('ATK',)), ('MATK', ('ATK',)),
+    ('DEF', ('DEF',)), ('MDEF', ('DEF',)),
+    ('ATK,DEF,MATK,MDEF', ('DEF', 'ATK')),
+    ('MATK,MDEF', ('DEF', 'ATK')),
+    ('prefixMATKsuffix/prefixMDEFsuffix', ('DEF', 'ATK')),
+    ('DEFENSE', ('DEF',)), ('xATKy', ('ATK',)),
+    ('', ()), ('AT', ()), ('DE', ()), ('atk,def,matk,mdef', ()),
+    ('Atk,Def,MAtk,MDef', ()), ('atk,MDEF', ('DEF',)),
+))
+def test_anvil_tooltip_strings_keep_all_40_values_and_call_order(anvil_equipment, props, branches):
+    case = anvil_equipment(props)
+    items.parse_equips(case.c, 'item_equip.ies')
+    assert case.calls == [(name, lv) for lv in range(40)
+                          for branch in branches for name in (branch, 'price')]
+    assert case.obj['AnvilATK'] == (list(range(100, 179, 2)) if 'ATK' in branches
+                                    else [] if branches else None)
+    assert case.obj['AnvilDEF'] == (list(range(200, 318, 3)) if 'DEF' in branches
+                                    else [] if branches else None)
+    assert case.obj['AnvilPrice'] == [1000 + 5 * lv for lv in range(40) for _ in branches]
+    assert case.rows[0]['Reinforce_2'] == (39 if branches else '2')
+    assert case.obj['TranscendPrice'] == list(range(1, 11))
+
+
+@pytest.mark.parametrize('price_key', ('GET_REINFORCE_PRICE', 'GET_REINFORCE_131014_PRICE'))
+def test_anvil_keeps_runtime_lookup_order(anvil_equipment, price_key):
+    case = anvil_equipment('MATK,MDEF')
+    lookups = []
+
+    class Runtime(dict):
+        def __getitem__(self, name):
+            lookups.append(name)
+            return super().__getitem__(name)
+
+    runtime = Runtime(luautil.LUA_RUNTIME)
+    price = runtime.pop('GET_REINFORCE_PRICE')
+    runtime[price_key] = price
+    luautil.LUA_RUNTIME = runtime
+    items.parse_equips(case.c, 'item_equip.ies')
+    assert lookups == ['SCR_REFRESH_ARMOR'] + [
+        name for _ in range(40) for name in
+        ('GET_REINFORCE_ADD_VALUE', price_key, 'GET_REINFORCE_ADD_VALUE_ATK', price_key)
+    ] + ['GET_TRANSCEND_MATERIAL_COUNT'] * 10
+    assert case.calls == [(name, lv) for lv in range(40)
+                          for name in ('DEF', 'price', 'ATK', 'price')]
+
+
+def test_anvil_keeps_positive_filter_before_integer_conversion(anvil_equipment):
+    case = anvil_equipment('DEF,ATK')
+    luautil.LUA_RUNTIME.update(
+        GET_REINFORCE_ADD_VALUE=lambda pc, row, zero, one: row['Reinforce_2'] - 2.5,
+        GET_REINFORCE_ADD_VALUE_ATK=lambda row, zero, one, pc: 2 * row['Reinforce_2'] - 0.5,
+        GET_REINFORCE_PRICE=lambda row, materials, pc: row['Reinforce_2'] - 1.5)
+    items.parse_equips(case.c, 'item_equip.ies')
+    assert case.obj['AnvilDEF'] == list(range(37))
+    assert case.obj['AnvilATK'] == list(range(1, 78, 2))
+    assert case.obj['AnvilPrice'] == [value for value in range(38) for _ in range(2)]
+
+
+@pytest.mark.parametrize('initial,refreshed,branches', (
+    ('', 'MATK,MDEF', ('DEF', 'ATK')),
+    ('ATK,DEF', '', ()),
+))
+def test_anvil_reads_refresh_tooltip_mutation(anvil_equipment, initial, refreshed, branches):
+    case = anvil_equipment(initial, lambda row: row.update(BasicTooltipProp=refreshed))
+    items.parse_equips(case.c, 'item_equip.ies')
+    assert case.calls == [(name, lv) for lv in range(40)
+                          for branch in branches for name in (branch, 'price')]
+    assert case.obj['AnvilDEF'] == (list(range(200, 318, 3)) if branches else None)
+    assert case.obj['AnvilATK'] == (list(range(100, 179, 2)) if branches else None)
+    assert case.obj['AnvilPrice'] == [1000 + 5 * lv for lv in range(40) for _ in branches]
+
+
+@pytest.mark.parametrize('site,initial,replacement,pattern', (
+    ('DEF', 'DEF', 'ATK', 'first_def_then_atk'),
+    ('price_after_def', 'DEF', 'ATK', 'first_def_then_atk'),
+    ('DEF', 'DEF,ATK', 'DEF', 'def_only'),
+    ('price_after_def', 'DEF,ATK', 'DEF', 'def_only'),
+    ('ATK', 'ATK', 'DEF', 'first_atk_then_def'),
+    ('price_after_atk', 'ATK', 'DEF', 'first_atk_then_def'),
+    ('price_after_def', 'DEF,ATK', '', 'first_def_only'),
+))
+def test_anvil_rereads_tooltip_after_formula_and_price(anvil_equipment, site, initial,
+                                                      replacement, pattern):
+    case = anvil_equipment(initial)
+    runtime = luautil.LUA_RUNTIME
+    key = {'DEF': 'GET_REINFORCE_ADD_VALUE', 'ATK': 'GET_REINFORCE_ADD_VALUE_ATK',
+           'price_after_def': 'GET_REINFORCE_PRICE',
+           'price_after_atk': 'GET_REINFORCE_PRICE'}[site]
+    original = runtime[key]
+
+    def mutate(*args):
+        result = original(*args)
+        row = args[1] if site == 'DEF' else args[0]
+        if row['Reinforce_2'] == 0:
+            row['BasicTooltipProp'] = replacement
+        return result
+
+    runtime[key] = mutate
+    items.parse_equips(case.c, 'item_equip.ies')
+    if pattern == 'first_def_then_atk':
+        expected = [('DEF', 0), ('price', 0)] + [
+            (name, lv) for lv in range(40) for name in ('ATK', 'price')]
+        defense, attack = [200], list(range(100, 179, 2))
+    elif pattern == 'def_only':
+        expected = [(name, lv) for lv in range(40) for name in ('DEF', 'price')]
+        defense, attack = list(range(200, 318, 3)), []
+    elif pattern == 'first_atk_then_def':
+        expected = [('ATK', 0), ('price', 0)] + [
+            (name, lv) for lv in range(1, 40) for name in ('DEF', 'price')]
+        defense, attack = list(range(203, 318, 3)), [100]
+    else:
+        expected = [('DEF', 0), ('price', 0)]
+        defense, attack = [200], []
+    assert case.calls == expected
+    assert case.obj['AnvilDEF'] == defense
+    assert case.obj['AnvilATK'] == attack
+    assert case.obj['AnvilPrice'] == [1000 + 5 * lv for name, lv in expected if name == 'price']
+    assert case.rows[0]['Reinforce_2'] == 39
+
+
+def test_anvil_price_can_toggle_tooltip_twice_in_every_level(anvil_equipment):
+    case = anvil_equipment('DEF')
+    original = luautil.LUA_RUNTIME['GET_REINFORCE_PRICE']
+
+    def price(row, materials, pc):
+        branch = case.calls[-1][0]
+        result = original(row, materials, pc)
+        row['BasicTooltipProp'] = 'ATK' if branch == 'DEF' else 'DEF'
+        return result
+
+    luautil.LUA_RUNTIME['GET_REINFORCE_PRICE'] = price
+    items.parse_equips(case.c, 'item_equip.ies')
+    assert case.calls == [(name, lv) for lv in range(40)
+                          for name in ('DEF', 'price', 'ATK', 'price')]
+    assert case.obj['AnvilDEF'] == list(range(200, 318, 3))
+    assert case.obj['AnvilATK'] == list(range(100, 179, 2))
+    assert case.obj['AnvilPrice'] == [1000 + 5 * lv for lv in range(40) for _ in range(2)]
+
+
+@pytest.mark.parametrize('props,branches', (
+    (['MATK'], ('ATK',)), (['MDEF'], ('DEF',)),
+    (['ATK', 'DEF'], ('DEF', 'ATK')), (['MATK', 'MDEF'], ('DEF', 'ATK')),
+    (['prefixMATK', 'prefixMDEF'], ()), ([], ()),
+))
+def test_anvil_list_from_price_keeps_element_membership(anvil_equipment, props, branches):
+    # A CSV list cannot pass the earlier ADD_FIRE .split(); introduce it from
+    # price, where formulas are allowed to mutate the live row.
+    case = anvil_equipment('DEF')
+    original = luautil.LUA_RUNTIME['GET_REINFORCE_PRICE']
+
+    def price(row, materials, pc):
+        result = original(row, materials, pc)
+        row['BasicTooltipProp'] = props
+        return result
+
+    luautil.LUA_RUNTIME['GET_REINFORCE_PRICE'] = price
+    items.parse_equips(case.c, 'item_equip.ies')
+    expected = [('DEF', 0), ('price', 0)]
+    if 'ATK' in branches:
+        expected += [('ATK', 0), ('price', 0)]
+    expected += [(name, lv) for lv in range(1, 40)
+                 for branch in branches for name in (branch, 'price')]
+    assert case.calls == expected
+    assert case.obj['AnvilDEF'] == ([200] + list(range(203, 318, 3))
+                                    if 'DEF' in branches else [200])
+    assert case.obj['AnvilATK'] == (list(range(100, 179, 2)) if 'ATK' in branches else [])
+    assert case.obj['AnvilPrice'] == [1000 + 5 * lv for name, lv in expected if name == 'price']
+    assert case.rows[0]['BasicTooltipProp'] is props
+    assert case.rows[0]['Reinforce_2'] == 39
+
+
+def test_anvil_str_subclass_retains_custom_membership_order_and_short_circuit(anvil_equipment):
+    probes = []
+
+    class Tooltip(str):
+        def __contains__(self, prop):
+            probes.append(prop)
+            return prop in ('MATK', 'MDEF')
+
+    props = Tooltip('')
+    case = anvil_equipment('', lambda row: row.update(BasicTooltipProp=props))
+    items.parse_equips(case.c, 'item_equip.ies')
+    assert probes == ['ATK', 'DEF', 'MATK'] + ['DEF', 'MDEF', 'ATK', 'MATK'] * 40
+    assert case.calls == [(name, lv) for lv in range(40)
+                          for name in ('DEF', 'price', 'ATK', 'price')]
+    assert case.obj['AnvilDEF'] == list(range(200, 318, 3))
+    assert case.obj['AnvilATK'] == list(range(100, 179, 2))
+
+
+def test_anvil_fallback_reads_row_again_between_membership_probes(anvil_equipment):
+    probes = []
+    rows = []
+
+    class Tooltip(str):
+        def __contains__(self, prop):
+            probes.append(prop)
+            rows[0]['BasicTooltipProp'] = 'DEF'
+            return False
+
+    def refresh(row):
+        rows.append(row)
+        row['BasicTooltipProp'] = Tooltip('')
+
+    case = anvil_equipment('', refresh)
+    items.parse_equips(case.c, 'item_equip.ies')
+    assert probes == ['ATK']
+    assert case.calls == [(name, lv) for lv in range(40) for name in ('DEF', 'price')]
+    assert case.obj['AnvilDEF'] == list(range(200, 318, 3))
+    assert case.obj['AnvilATK'] == []
+
+
+@pytest.mark.parametrize('site,probes_expected,calls_expected', (
+    ('outer', ['ATK', 'DEF', 'MATK', 'MDEF'], []),
+    ('defense', ['ATK', 'DEF', 'MDEF'], []),
+    ('attack', ['ATK', 'MATK'], [('DEF', 0), ('price', 0)]),
+))
+def test_anvil_membership_exception_propagates_unchanged(anvil_equipment, site,
+                                                        probes_expected, calls_expected):
+    probes = []
+    error = RuntimeError('fixture membership failure')
+
+    class Tooltip(str):
+        def __contains__(self, prop):
+            probes.append(prop)
+            if prop == ('MATK' if site == 'attack' else 'MDEF'):
+                raise error
+            return site == 'defense' and prop == 'ATK'
+
+    props = Tooltip('')
+    case = anvil_equipment('DEF' if site == 'attack' else '',
+                           None if site == 'attack' else
+                           lambda row: row.update(BasicTooltipProp=props))
+    if site == 'attack':
+        original = luautil.LUA_RUNTIME['GET_REINFORCE_PRICE']
+
+        def price(row, materials, pc):
+            result = original(row, materials, pc)
+            row['BasicTooltipProp'] = props
+            return result
+
+        luautil.LUA_RUNTIME['GET_REINFORCE_PRICE'] = price
+    with pytest.raises(RuntimeError) as failure:
+        items.parse_equips(case.c, 'item_equip.ies')
+    assert failure.value is error
+    assert probes == probes_expected
+    assert case.calls == calls_expected
+    assert 'TranscendPrice' not in case.obj
+
+
+@pytest.mark.parametrize('props', (None, 7))
+def test_anvil_non_container_from_price_keeps_type_error(anvil_equipment, props):
+    case = anvil_equipment('DEF')
+    original = luautil.LUA_RUNTIME['GET_REINFORCE_PRICE']
+
+    def price(row, materials, pc):
+        result = original(row, materials, pc)
+        row['BasicTooltipProp'] = props
+        return result
+
+    luautil.LUA_RUNTIME['GET_REINFORCE_PRICE'] = price
+    with pytest.raises(TypeError, match='not iterable'):
+        items.parse_equips(case.c, 'item_equip.ies')
+    assert case.calls == [('DEF', 0), ('price', 0)]
+    assert case.obj['AnvilDEF'] == [200.75]
+    assert case.obj['AnvilPrice'] == [1000.25]
+    assert case.obj['AnvilATK'] == []
+
+
 def test_legacy_460_csv_reaches_suffixed_armor_calculation(tmp_path, monkeypatch):
     c = lookup_input(tmp_path / 'current')
     obj = raw_armor_input(c, monkeypatch, '''

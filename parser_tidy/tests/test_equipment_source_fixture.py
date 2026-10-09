@@ -206,3 +206,65 @@ def test_calculation_or_source_failure_preserves_release_and_retries(tmp_path, f
     source.write_bytes(original)
     parse(root, version='equipment-v2')
     assert json.loads((release / 'version.json').read_text())['version'] == 'equipment-v2'
+
+
+@pytest.mark.parametrize('phase', ('DEF', 'ATK', 'price'))
+def test_legacy_anvil_error_mid_loop_preserves_release_and_retries(tmp_path, monkeypatch, phase):
+    root = prepare_equipment_workspace(tmp_path)
+    equipment = root / 'itos_unpack/ies.ipf/item_equip.ies'
+    change_ies_column(equipment, 'ItemGrade', '1')
+    change_ies_column(equipment, 'BasicTooltipProp', 'ATK,DEF')
+    # Install independent formulas after every init, so fixture globals loaded
+    # under the same names cannot replace the functions used by this test.
+    original_init = luautil.init
+    active_phase = 'none'
+    formulas = '''
+function GET_REINFORCE_ADD_VALUE(pc, item, zero, one)
+    if item.Reinforce_2 == 7 and 'FAIL_PHASE' == 'DEF' then
+        error('fixture legacy anvil failure at DEF level 7')
+    end
+    return 200 + item.Reinforce_2 * 3
+end
+function GET_REINFORCE_ADD_VALUE_ATK(item, zero, one, pc)
+    if item.Reinforce_2 == 7 and 'FAIL_PHASE' == 'ATK' then
+        error('fixture legacy anvil failure at ATK level 7')
+    end
+    return 100 + item.Reinforce_2 * 2
+end
+function GET_REINFORCE_PRICE(item, materials, pc)
+    if item.Reinforce_2 == 7 and 'FAIL_PHASE' == 'price' then
+        error('fixture legacy anvil failure at price level 7')
+    end
+    return 1000 + item.Reinforce_2 * 5
+end
+'''
+
+    def init_with_formulas(c):
+        original_init(c)
+        luautil.lua.execute(formulas.replace('FAIL_PHASE', active_phase))
+        for name in ('GET_REINFORCE_ADD_VALUE', 'GET_REINFORCE_ADD_VALUE_ATK',
+                     'GET_REINFORCE_PRICE'):
+            luautil.LUA_RUNTIME[name] = luautil.lua.globals()[name]
+
+    monkeypatch.setattr(luautil, 'init', init_with_formulas)
+    db = parse(root)
+    sword = db.data['items_by_name']['harness_sword']
+    assert sword['AnvilDEF'] == list(range(200, 318, 3))
+    assert sword['AnvilATK'] == list(range(100, 179, 2))
+    assert sword['AnvilPrice'] == [1000 + 5 * lv for lv in range(40) for _ in range(2)]
+    release = Path(db.BASE_PATH_OUTPUT)
+    before = snapshot(release)
+    assert json.loads(before['version.json']) == {'version': 'equipment-v1'}
+
+    active_phase = phase
+    with pytest.raises(LuaError, match='fixture legacy anvil failure at ' + phase + ' level 7'):
+        parse(root, version='equipment-v2')
+    assert snapshot(release) == before
+
+    active_phase = 'none'
+    parse(root, version='equipment-v2')
+    after = snapshot(release)
+    assert json.loads(after['version.json']) == {'version': 'equipment-v2'}
+    assert {name: data for name, data in after.items() if name != 'version.json'} == {
+        name: data for name, data in before.items() if name != 'version.json'}
+

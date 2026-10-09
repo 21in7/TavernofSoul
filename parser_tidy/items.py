@@ -577,13 +577,19 @@ def parse_equips(constants, filename, _seen_paths=None):
         if ('GET_REINFORCE_PRICE' not in LUA_RUNTIME) and 'GET_REINFORCE_131014_PRICE' in LUA_RUNTIME:
             reinf = 'GET_REINFORCE_131014_PRICE'
         if (obj['Grade'] != 6) and reinf!= None: #goddess!
-            if any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'DEF', 'MATK', 'MDEF']):
+            props = row['BasicTooltipProp']
+            if (('ATK' in props or 'DEF' in props) if type(props) is str else
+                    any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'DEF', 'MATK', 'MDEF'])):
                 for lv in range(40):
                     row['Reinforce_2'] = lv
-                    if any(prop in row['BasicTooltipProp'] for prop in ['DEF', 'MDEF']):
+                    props = row['BasicTooltipProp']
+                    if ('DEF' in props if type(props) is str else
+                            any(prop in row['BasicTooltipProp'] for prop in ['DEF', 'MDEF'])):
                         obj['AnvilDEF'].append(LUA_RUNTIME['GET_REINFORCE_ADD_VALUE'](None, row, 0, 1))
                         obj['AnvilPrice'].append(LUA_RUNTIME[reinf](row, {}, None))
-                    if any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'MATK']):
+                    props = row['BasicTooltipProp']
+                    if ('ATK' in props if type(props) is str else
+                            any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'MATK'])):
                         obj['AnvilATK'].append(LUA_RUNTIME['GET_REINFORCE_ADD_VALUE_ATK'](row, 0, 1, None))
                         obj['AnvilPrice'].append(LUA_RUNTIME[reinf](row, {}, None))
                
