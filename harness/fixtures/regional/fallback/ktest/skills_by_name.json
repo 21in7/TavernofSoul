@@ -1,0 +1,7 @@
+{
+  "Harness_RegionalFallback": {
+    "$ID": "8403", "Name": "Lower priority name must not replace the source",
+    "Description": "KTest 보충 설명", "Effect": "KTest 보충 효과",
+    "Icon": "icon_regional_ktest"
+  }
+}

@@ -14,6 +14,11 @@ from lupa import LuaRuntime, LuaError
 import iesutil
 
 
+_QUOTED_INDEX_RE = re.compile(r'\[\"(\w*?)\"\]')
+_REQUIRE_RE = re.compile(r'local \w+ = require[ (]["\']\w+["\'][ )]*')
+_METHOD_RE = re.compile(r'function (\w+):(\w+)\((.*)\)')
+
+
 # HotFix: don't throw errors when LUA is getting an unknown key
 def attr_getter(obj, name):
     if name in obj:
@@ -37,7 +42,9 @@ LUA_OVERRIDE = [
     'function GetExProp(entity, name) return entity[name] end',
     'function GetExProp_Str(entity, name) return tostring(entity[name]) end',
     'function GetIESID(item) end',
-    'function GetItemOwner(item) return {} end',
+    'function GET_INV_ITEM_BY_ITEM_OBJ(item) return nil end',
+    # Offline static items have no player/wearer or owner-dependent map effects.
+    'function GetItemOwner(item) return nil end',
     'function GetOwner(monster) end',
     'function GetServerNation() end',
     'function GetServerGroupID() end',
@@ -54,24 +61,6 @@ LUA_OVERRIDE = [
     'function SCR_PVP_ITEM_TRANSCEND_SET(item, transcend)\
         return transcend;\
     end',
-    '''
-    function IS_WEAPON_TYPE(type)  
-        if (type ~= "Boots") then       
-            return false                    
-        end                             
-        if (type ~= "Gloves") then 
-            return false                    
-        end                             
-        if (type ~= "Pants") then  
-            return false                    
-        end                             
-        if (type ~= "Shirt") then  
-            return false                    
-        end                                         
-        return true                                            
-    end
-    
-    ''',
     'function GetZoneName() return nil end',
     'function GetSkillOwner(skill) return skill end',
     'function GetSkill(pc, skillname) return pc end',
@@ -115,25 +104,10 @@ LUA_OVERRIDE = [
         return t
     end
     ''',
-    # 게임 원본(shared.ipf/script/lib_math.lua:31)의 SyncFloor 는 항등함수가 아니라
-    # 반올림이다: value = math.floor((value*1.0)+0.5) / 1.0
-    # 항등 스텁이면 SCR_Get_SkillFactor 계열의 0.1 자리 반올림이 빠져
-    # 레벨별 스킬계수(sfr)가 누적 오차로 1 낮게 나온다.
-    #
-    # tonumber 가드: 게임에서는 산술 오류가 될 비(非)숫자 입력이 이 스텁 환경에는
-    # 실제로 들어온다. GET_TRANSCEND_MATERIAL_COUNT(item_transcend_shared.lua:275)는
-    # 가디스(Grade 6) 장비에서 재료 '목록 테이블'을 SyncFloor 에 넘기고,
-    # items.py:597~608 은 그 테이블이 그대로 반환되는 것에 의존해
-    # Premium_item_transcendence_Stone 개수를 꺼낸다. 숫자만 반올림하고
-    # 그 외 값은 예전 항등 스텁과 동일하게 통과시켜 그 경로를 보존한다.
-    # (tonumber 를 쓰므로 lua 산술이 자동 변환하던 숫자 문자열도 그대로 반올림된다.)
     '''function SyncFloor(value)
         local n = tonumber(value)
-        if n == nil then
-            return value
-        end
-        -- ROUND -- lib_math.lua:31 원본과 동일
-        return math.floor((n * 1.0) + 0.5) / 1.0
+        if n == nil then return value end
+        return math.floor(n + 0.5) / 1.0
     end''',
     '''
     function SCR_Get_DEFAULT_MAXPATK(pc, value)
@@ -174,8 +148,39 @@ LUA_OVERRIDE = [
 LUA_RUNTIME = None
 LUA_SOURCE = None
 
+SPECIAL_OPTION_MODULE = 'shared_enchant_special_option.lua'
+SPECIAL_OPTION_IES = (
+    'enchant_special_option_ratio_low.ies',
+    'enchant_special_option_ratio.ies',
+    'job.ies',
+    'enchant_special_option.ies',
+    'enchant_rank_up_ratio.ies',
+)
+
+
+def _current_input_path(c, path):
+    root = os.path.realpath(c.PATH_INPUT_DATA)
+    return os.path.commonpath((root, os.path.realpath(path))) == root
+
+
+def _special_option_module_path(c):
+    entry = getattr(c, 'file_dict', {}).get(SPECIAL_OPTION_MODULE)
+    # DB file discovery can retain entries from a previous region. Such a
+    # module is not part of this input and must not enable its dependencies.
+    if entry is None or not _current_input_path(c, entry['path']):
+        return None
+    if not os.path.isfile(entry['path']):
+        raise ValueError('Missing special-option Lua module: ' + entry['path'])
+    return entry['path']
+
 
 def init(c):
+    global lua, LUA_RUNTIME, LUA_SOURCE
+
+    # Both Lua globals and Python registries belong to one input build. Reset
+    # before any fallible initialization, including a retry after a bad chunk.
+    lua = LuaRuntime(attribute_handlers=(attr_getter, attr_setter), unpack_returned_tuples=True)
+    LUA_RUNTIME, LUA_SOURCE = {}, {}
     init_global_constants('sharedconst.ies',c)
     init_global_constants('sharedconst_system.ies',c)
     init_global_data(c)
@@ -202,33 +207,46 @@ def init_global_data(c):
     ies_ADD = lua.execute('''
         ies_by_ClassID = {}
         ies_by_ClassName = {}
+        ies_list_order = {}
         
         item_goddess_transcend = {}
         item_goddess_transcend.get_material_list = function(use_lv, class_type, cur_lv, goal_lv)
                 return nil
         end
         function ies_ADD(key, data)
-            _by_ClassID = {}
-            _by_ClassName = {}
-            
-            if ies_by_ClassID[key] ~= nil then
-                _by_ClassID = ies_by_ClassID[key]
-            end
-            if ies_by_ClassName[key] ~= nil then
-                _by_ClassName = ies_by_ClassName[key]
-            end
+            key = string.lower(key)
+            local _by_ClassID = ies_by_ClassID[key] or {}
+            local _by_ClassName = ies_by_ClassName[key] or {}
+            local order = ies_list_order[_by_ClassID] or {}
             
             for i, row in python.enumerate(data) do
-                _by_ClassID[math.floor(row["ClassID"])] = row
+                local id = math.floor(row["ClassID"])
+                -- Retain first registration order; duplicate IDs replace the
+                -- row at that position rather than increasing the count.
+                if _by_ClassID[id] == nil then
+                    order[#order + 1] = id
+                end
+                _by_ClassID[id] = row
                 _by_ClassName[row["ClassName"]] = row
             end
             
             ies_by_ClassID[key] = _by_ClassID
             ies_by_ClassName[key] = _by_ClassName
+            ies_list_order[_by_ClassID] = order
         end
         
         return ies_ADD
     ''')
+
+    module_path = _special_option_module_path(c)
+    if module_path is not None:
+        for filename in SPECIAL_OPTION_IES:
+            entry = c.file_dict.get(filename)
+            if (entry is None or not _current_input_path(c, entry['path'])
+                    or not os.path.isfile(entry['path'])):
+                raise ValueError('Missing current-build IES dependency ' + filename
+                                 + ' for Lua module: ' + module_path)
+            ies_ADD(filename[:-4], iesutil.load(filename, c))
 
     ies_ADD('ancient', iesutil.load('Ancient_Info.ies',c))
     ies_ADD('ancient_info', iesutil.load('Ancient_Info.ies',c))
@@ -238,6 +256,26 @@ def init_global_data(c):
         except:
             continue
         ies_ADD('item', iesutil.load(i,c))
+    # Goddess Lua looks these up by table name, independently of Item rows.
+    for filename in c.EQUIPMENT_REINFORCE_IES:
+        key = filename.lower()
+        entry = c.file_dict.get(key)
+        if (entry is None or not _current_input_path(c, entry['path'])
+                or not os.path.isfile(entry['path'])):
+            continue
+        ies_ADD(key[:-4], iesutil.load(filename, c))
+        if key == 'item_goddess_reinforce.ies' and c.EQUIPMENT_REINFORCE_IES[filename] == 460:
+            # One load/registration; both spellings share indexes and the order
+            # keyed by the ID table. This is only the registered legacy 460 file.
+            globals_ = lua.globals()
+            globals_.ies_by_ClassID['item_goddess_reinforce_460'] = (
+                globals_.ies_by_ClassID['item_goddess_reinforce'])
+            globals_.ies_by_ClassName['item_goddess_reinforce_460'] = (
+                globals_.ies_by_ClassName['item_goddess_reinforce'])
+    growth = c.file_dict.get('growth_by_reinforce.ies')
+    if (growth is not None and _current_input_path(c, growth['path'])
+            and os.path.isfile(growth['path'])):
+        ies_ADD('growth_by_reinforce', iesutil.load('growth_by_reinforce.ies', c))
     #ies_ADD('item', iesutil.load('item_Equip_EP12.ies',c))
     ies_ADD('increasecost', iesutil.load('item_IncreaseCost.ies',c))
     ies_ADD('item_grade', iesutil.load('item_grade.ies',c))
@@ -329,11 +367,23 @@ def init_global_functions(c):
         end
         function GetClassByType(ies_key, id)
             local data = ies_by_ClassID[string.lower(ies_key)]
-            return data[math.floor(id)]
+            local class_id = math.floor(id)
+            if data == nil then return nil end
+            return data[class_id]
         end
         
         function GetClassList(ies_key)
-            return ies_by_ClassID[string.lower(ies_key)]
+            local data = ies_by_ClassID[string.lower(ies_key)]
+            local order = ies_list_order[data]
+            return data, order and #order or 0
+        end
+        function GetClassByIndexFromList(data, index)
+            local order = ies_list_order[data]
+            if order == nil or type(index) ~= 'number' or index < 0
+                    or index >= #order or index ~= math.floor(index) then
+                return nil
+            end
+            return data[order[index + 1]]
         end
         function GetClassByNameFromList(data, key)
             for id, row in pairs(data) do
@@ -410,14 +460,10 @@ def init_global_functions(c):
             end
         end
         
-        -- lib_math.lua:31 원본과 동일한 반올림. 아래 LUA_OVERRIDE 의 정의가
-        -- 이 정의를 덮어쓰지만, 두 곳이 갈라지지 않도록 같이 맞춰 둔다.
         function SyncFloor(value)
             local n = tonumber(value)
-            if n == nil then
-                return value
-            end
-            return math.floor((n * 1.0) + 0.5) / 1.0
+            if n == nil then return value end
+            return math.floor(n + 0.5) / 1.0
         end
         
         function get_TC_goddess(itemLv, classType, curCount, transcendCount)
@@ -434,11 +480,66 @@ def init_global_functions(c):
     ''' + '\n'.join(LUA_OVERRIDE))
 
 
+def _load_whole_module(file_path, label, required=()):
+    with open(file_path, encoding='utf-8-sig') as file:
+        source = file.read()
+
+    # Execute a single chunk so local helpers and initializer state survive.
+    # Writes still reach the real globals, except for existing engine overrides.
+    protected = lua.table_from({name: True for override in LUA_OVERRIDE
+                                for name in re.findall(r'\bfunction\s+(\w+)\s*\(', override)})
+    execute = lua.eval('''function(source, filename, protected)
+        local environment = setmetatable({}, {
+            __index = _G,
+            __newindex = function(_, key, value)
+                if not protected[key] then rawset(_G, key, value) end
+            end
+        })
+        local chunk, message = load(source, '@' .. filename, 't', environment)
+        if chunk == nil then error(message) end
+        chunk()
+    end''')
+    try:
+        execute(source, file_path, protected)
+    except LuaError as error:
+        raise ValueError('Failed to load ' + label + ' Lua module: ' + file_path) from error
+
+    # Keep the existing source registry contract for global declarations and
+    # also expose table.field = function(...) closures to Python callers.
+    # Mask multiline comments without changing source offsets for LUA_SOURCE.
+    declaration_source = re.sub(
+        r'--\[(=*)\[.*?\]\1\]',
+        lambda match: re.sub(r'[^\n]', ' ', match.group()), source, flags=re.DOTALL)
+    declarations = list(re.finditer(
+        r'^[ \t]*(?:function[ \t]+([\w.]+)[ \t]*\('
+        r'|([\w.]+)[ \t]*=[ \t]*function[ \t]*\()', declaration_source, re.MULTILINE))
+    runtime, sources = {}, {}
+    for index, declaration in enumerate(declarations):
+        name = declaration.group(1) or declaration.group(2)
+        if any(name in override for override in LUA_OVERRIDE):
+            continue
+        end = declarations[index + 1].start() if index + 1 < len(declarations) else len(source)
+        try:
+            reference = lua_function_reference(name)
+        except LuaError as error:
+            raise ValueError('Failed to register ' + name + ' in Lua module: ' + file_path) from error
+        if lua.eval('type')(reference) == 'function':
+            runtime[name] = reference
+            sources[name] = source[declaration.start():end]
+    for name in required:
+        if name not in runtime:
+            raise ValueError('Missing callable ' + name + ' in Lua module: ' + file_path)
+    LUA_RUNTIME.update(runtime)
+    LUA_SOURCE.update(sources)
+
+
 def init_runtime(c):
     global LUA_RUNTIME, LUA_SOURCE
 
     LUA_RUNTIME = {}
     LUA_SOURCE = {}
+    lua.globals()['shared_enchant_special_option'] = None
+    special_option_path = _special_option_module_path(c)
     err = []
     for root, dirs, file_list in os.walk(c.PATH_INPUT_DATA):
         i = 1
@@ -448,6 +549,20 @@ def init_runtime(c):
         
                 file_path = os.path.join(root, file_name)
                 lua_function = []
+
+                # Use only the current build's lowercase file_dict entry. Other
+                # modules retain function splitting and engine-error isolation.
+                if file_name.lower() == SPECIAL_OPTION_MODULE:
+                    if special_option_path is None:
+                        raise ValueError('Missing current-build file_dict entry for Lua module: ' + file_path)
+                    continue
+
+                # This game module closes over local level/material tables and calls
+                # its initializer at file scope. Separate lua.execute calls lose
+                # those locals and previously discarded all subsequent functions.
+                if file_name.lower() == 'shared_item_goddess_reinforce.lua':
+                    _load_whole_module(file_path, 'goddess')
+                    continue
 
                 with open(file_path, 'r',errors='ignore', encoding = 'utf-8') as file:
                     try:
@@ -465,9 +580,12 @@ def init_runtime(c):
                             line = line.replace('\xef\xbb\xbf', '')  # Remove UTF8-BOM
                             line = line.replace('\{', '\\\\{')  # Fix regex escaping
                             line = line.replace('\}', '\\\\}')  # Fix regex escaping
-                            line = re.sub(r'\[\"(\w*?)\"\]', r"['\1']", line)  # Replace double quote with single quote
-                            line = re.sub(r'local \w+ = require[ (]["\']\w+["\'][ )]*', '', line)  # Remove require statements
-                            line = re.sub(r'function (\w+):(\w+)\((.*)\)', r'function \1.\2(\3)', line)  # Replace function a:b with function a.b
+                            if '["' in line:
+                                line = _QUOTED_INDEX_RE.sub(r"['\1']", line)  # Replace double quote with single quote
+                            if 'require' in line:
+                                line = _REQUIRE_RE.sub('', line)  # Remove require statements
+                            if 'function ' in line:
+                                line = _METHOD_RE.sub(r'function \1.\2(\3)', line)  # Replace function a:b with function a.b
                             
                             if len(line) == 0:
                                 continue
@@ -478,7 +596,6 @@ def init_runtime(c):
                                 except LuaError as error:
                                     #logging.warn('funct error : %s...', error)
                                     err.append(lua_function)
-                                    continue
                                 lua_function = []
                             #logging.warn(line)
                             #line  =re.sub(r'\-\-(.*?)\-\-', '',line)
@@ -492,6 +609,14 @@ def init_runtime(c):
                         logging.debug('Failed to load %s, error: %s...', file_path, error)
                         err.append(lua_function)
                         continue
+
+    if special_option_path is not None:
+        try:
+            _load_whole_module(special_option_path, 'special-option',
+                               required=('shared_enchant_special_option.is_special_option',))
+        except ValueError:
+            lua.globals()['shared_enchant_special_option'] = None
+            raise
 
 
 def destroy():

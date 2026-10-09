@@ -1,0 +1,2 @@
+ClassID,ClassName,Name,ToolTip,Icon,Keyword,ApplyTime,OverBuff,UserRemove,GroupIndex
+913,Harness_MonsterBuff,Fixture Monster Buff,A monster buff,ICON_HARNESS_BUFF,ARMOR,5000,1,NO,3

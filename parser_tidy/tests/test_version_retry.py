@@ -145,7 +145,13 @@ class TestVersionJsonInExportTransaction:
 
     def _make_db(self, release_dir, data):
         from DB import ToS_DB
-        c = ToS_DB.__new__(ToS_DB)
+        class StorageDB(ToS_DB):
+            # Test version/file transactions independently of domain schemas.
+            def _validate_release(self, version_payload):
+                pass
+            def _validate_staged_release(self, directory, version_payload):
+                pass
+        c = StorageDB()
         c.BASE_PATH_OUTPUT = release_dir
         c.data = data
         return c

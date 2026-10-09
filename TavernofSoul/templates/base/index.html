@@ -5,10 +5,12 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    {% if not harness_offline %}
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2728591277096799" crossorigin="anonymous"></script>
     <link href="https://fonts.googleapis.com/css?family=Poppins:300,400,500,600,700,800,900" rel="stylesheet">
-    <link rel="shortcut icon" type="image/png" href="{% static 'images/logo.png' %}"/>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
+    {% endif %}
+    <link rel="shortcut icon" type="image/png" href="{% static 'images/logo.png' %}"/>
     <link rel="stylesheet" href="{%static 'css/style.css'%}">
     <meta property="og:site_name" content="Gihyeon of Soul">
     <meta property="og:type" content="website">
@@ -32,6 +34,7 @@
         max-width: 32px;
       }
     </style>
+    {% if not harness_offline %}
     <script async src="https://fundingchoicesmessages.google.com/i/pub-2728591277096799?ers=1" nonce="2O6M2fuKTCsdLtMfwcnRGw"></script><script nonce="2O6M2fuKTCsdLtMfwcnRGw">(function() {function signalGooglefcPresent() {if (!window.frames['googlefcPresent']) {if (document.body) {const iframe = document.createElement('iframe'); iframe.style = 'width: 0; height: 0; border: none; z-index: -1000; left: -1000px; top: -1000px;'; iframe.style.display = 'none'; iframe.name = 'googlefcPresent'; document.body.appendChild(iframe);} else {setTimeout(signalGooglefcPresent, 0);}}}signalGooglefcPresent();})();</script>
     <script>(function(){/*
 
@@ -60,6 +63,7 @@
 
 	  gtag('config', 'G-JJJ30JJCJ1');
 	</script>
+    {% endif %}
 
   </head>
   <body>
@@ -169,9 +173,11 @@
     <script src="{% static 'js/popper.js'%}"></script>
     <script src="{% static 'js/bootstrap.min.js'%}"></script>
     <script src="{% static 'js/main.js'%}"></script>
+    {% if not harness_offline %}
     <!-- Cloudflare Web Analytics -->
     <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "1a608aa419984cb79e9eb1275fcaeaaf"}'></script>
     <!-- End Cloudflare Web Analytics -->
+    {% endif %}
 
     {% block script%}
     {%endblock%}

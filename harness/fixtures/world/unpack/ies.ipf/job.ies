@@ -1,0 +1,2 @@
+ClassID,ClassName,Name,Caption1,Icon,CtrlType,HiddenJob,Rank,CON,DEX,INT,MNA,STR,EngName
+300,Harness_Mage,Fixture Mage,A fixture job,ICON_HARNESS_MAGE,Wizard,NO,1,5,4,8,7,3,HarnessMage

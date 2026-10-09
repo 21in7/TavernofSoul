@@ -4,16 +4,24 @@ import urllib.request, urllib.error, urllib.parse
 import os
 import json
 import struct
-import blowfish
+if __package__:
+    from . import blowfish, unpacker_pak
+else:
+    import blowfish
+    import unpacker_pak
 import shutil
 from shutil import copyfile, move, rmtree
 import subprocess 
-import unpacker_pak
 from os.path import join
 import csv
+import tempfile
+import stat
 IPF_BLACKLIST = []
 region = ""
 error_ipf = [] #the somehow error patch
+EXIT_CHANGED = 0
+EXIT_UNCHANGED = 1
+EXIT_FAILED = 2
 
 
 def git_sync(patch_name):
@@ -27,7 +35,7 @@ def git_sync(patch_name):
 
 def copyfiles(output):
     if not os.path.exists(output):
-        os.mkdir(output)
+        os.makedirs(output, exist_ok=True)
     files = ['shared.ipf', 
              'ies_ability.ipf',
              'ies_client.ipf',
@@ -46,7 +54,7 @@ def copyfiles(output):
              'addon.ipf']
     for i in files:
         if os.path.exists (join('extract',i)):
-            subprocess.run(['cp', '-r', join('extract',i), output])
+            subprocess.run(['cp', '-r', join('extract',i), output], check=True)
             logging.warning("copying to {}".format(join(output,i)))
 
 
@@ -54,22 +62,26 @@ def unpack(f):
     IPF_PATH    = join("..", "{}_patch".format(region))
     OUTPUT_PATH = join("..", "{}_unpack".format(region))
     unpacker    = join("..", 'IPFUnpacker', 'ipf_unpack')
-    cwd = os.getcwd()
-    search_dir = IPF_PATH
-    files = filter(os.path.isfile, os.listdir())
-    files = [ f for f in files] # add path to each file
-    files.sort(key=lambda x: os.path.getmtime(x))
-    
     extension_needed = ['ies', 'xml', 'lua','png', 'jpg', 'tga', 'json' ]
     logging.warning("patching {}".format(f))
     cur_file = join(IPF_PATH, f)
     copyfile(cur_file, f)
-    subprocess.run ([unpacker, f, 'decrypt'])
-    subprocess.run([unpacker, f, 'extract']+ extension_needed)
-    os.remove(f) 
-    os.remove(cur_file) 
-    copyfiles(join("..","{}_unpack").format(region))
-    rmtree('extract'.format(region))
+    # Never reuse files from a previous failed extraction.
+    if os.path.exists('extract'):
+        rmtree('extract')
+    try:
+        subprocess.run([unpacker, f, 'decrypt'], check=True)
+        subprocess.run([unpacker, f, 'extract'] + extension_needed, check=True)
+        if not os.path.isdir('extract'):
+            raise RuntimeError('IPF extraction produced no output directory')
+        copyfiles(OUTPUT_PATH)
+        # Keep the original downloaded archive until every copy has succeeded.
+        os.remove(cur_file)
+    finally:
+        if os.path.exists(f):
+            os.remove(f)
+        if os.path.exists('extract'):
+            rmtree('extract')
     git_sync(f)
     
             
@@ -78,8 +90,12 @@ def unpack(f):
 
 def revision_decrypt(revision):
     # Thanks to https://github.com/celophi/Arboretum/blob/master/Arboretum.Lib/Decryptor.cs
+    if len(revision) < 8:
+        raise ValueError('Truncated revision header')
     size_unencrypted = struct.unpack_from('@i', revision, 0)[0]
     size_encrypted = struct.unpack_from('@i', revision, 4)[0]
+    if size_encrypted < 0 or size_encrypted % 8 or 8 + size_encrypted > len(revision):
+        raise ValueError('Invalid encrypted revision length')
 
     revision = [ord(chr(c)) for c in revision]               # Convert to binary
     blowfish.Decipher(revision, 8, size_encrypted)      # Decrypt with blowfish
@@ -97,17 +113,12 @@ def revision_decrypt(revision):
 
 
 def getRegion(reg):
-    try:
-        region = reg[1]
-        region = region.lower()
-        accepted = ['itos','ktos','ktest', 'jtos', 'twtos']
-        if region not in accepted:
-            logging.warning("region unsupported")
-            quit()
-    except:
-        logging.warning("need 1 positional argument; region")
-        quit()
-    return region
+    if len(reg) < 2:
+        raise ValueError('need 1 positional argument; region')
+    selected = reg[1].lower()
+    if selected not in ['itos', 'ktos', 'ktest', 'jtos', 'twtos']:
+        raise ValueError('region unsupported: {}'.format(selected))
+    return selected
     
 def write(l,file):
     with open(file, 'w', encoding= 'utf-8') as f:
@@ -120,7 +131,8 @@ def read(file):
   
 def patch_full(patch_path, patch_url, patch_ext, patch_unpack, revision_url,repatch):
     logging.warning('Patching %s...', revision_url)
-    revision_list = urllib.request.urlopen(revision_url).read()
+    with urllib.request.urlopen(revision_url, timeout=60) as response:
+        revision_list = response.read()
     revision_list = revision_decrypt(revision_list)
 
     for revision in revision_list:
@@ -135,7 +147,7 @@ def patch_full(patch_path, patch_url, patch_ext, patch_unpack, revision_url,repa
 
 def patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_destination = ""):
     if patch_name in error_ipf:
-        return
+        raise RuntimeError('Patch is blocked: {}'.format(patch_name))
     # Ensure patch_file destination exists
     if not os.path.exists(os.path.dirname(patch_file)):
         os.makedirs(os.path.dirname(patch_file))
@@ -149,11 +161,28 @@ def patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_destina
 
     if not os.path.isfile(patch_file) or filesize==0:
         # Download patch
-        print('Downloading %s ...', patch_url + patch_name)
-        patch_response = urllib.request.urlopen(request_as_fox(patch_url + patch_name))
-
-        with open(patch_file, 'wb') as file:
-            file.write(patch_response.read())
+        logging.warning('Downloading %s ...', patch_url + patch_name)
+        # A failed transfer must not become a nonempty, reusable cache entry.
+        partial = patch_file + '.part'
+        try:
+            with urllib.request.urlopen(request_as_fox(patch_url + patch_name), timeout=60) as response:
+                expected = response.headers.get('Content-Length')
+                total = 0
+                with open(partial, 'wb') as file:
+                    while True:
+                        chunk = response.read(256 * 1024)
+                        if not chunk:
+                            break
+                        file.write(chunk)
+                        total += len(chunk)
+                    file.flush()
+                    os.fsync(file.fileno())
+                if not total or (expected is not None and total != int(expected)):
+                    raise ValueError('Empty or incomplete patch: {}'.format(patch_name))
+            os.replace(partial, patch_file)
+        finally:
+            if os.path.exists(partial):
+                os.remove(partial)
     else:
         logging.debug("Reusing cache %s...",patch_name)
 
@@ -161,12 +190,18 @@ def patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_destina
         filesize = os.path.getsize(patch_file)
 
     if filesize == 0:
-        logging.warning('Filesize is ZERO %s...', patch_file)
+        raise ValueError('Filesize is ZERO: {}'.format(patch_file))
     else:
         pass
     # Extract patch
     if(patch_unpack):
-        unpacker_pak.unpack(patch_name,patch_destination)
+        try:
+            unpacker_pak.unpack(patch_name,patch_destination)
+        except (ValueError, struct.error, unpacker_pak.zlib.error):
+            # Discard malformed archive bytes so a retry downloads a fresh copy.
+            if os.path.exists(patch_file):
+                os.remove(patch_file)
+            raise
     else:
         unpack(patch_name)
     # Delete patch
@@ -176,9 +211,19 @@ def patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_destina
 
 def print_version(filename, data):
     out = [ [key, data[key]] for key in data]
-    with open(filename, 'w') as f:  # You will need 'wb' mode in Python 2.x
-        w = csv.writer(f)
-        w.writerows(out)
+    descriptor, temporary = tempfile.mkstemp(prefix='.download-version-',
+                                           dir=os.path.dirname(os.path.abspath(filename)))
+    try:
+        with os.fdopen(descriptor, 'w', newline='') as f:
+            csv.writer(f).writerows(out)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(filename):
+            os.chmod(temporary, stat.S_IMODE(os.stat(filename).st_mode))
+        os.replace(temporary, filename)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 def read_version(filename):
     rev = {}
@@ -192,17 +237,17 @@ def read_version(filename):
 
 def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path, revision_url,repatch):
     logging.debug('Patching %s...', revision_url)
-    revision_list = urllib.request.urlopen(revision_url).read()
+    with urllib.request.urlopen(revision_url, timeout=60) as response:
+        revision_list = response.read()
     revision_list = revision_decrypt(revision_list)
     revision_old = read_version(revision_path)
-    revision_new = revision_old
+    revision_new = revision_old.copy()
     has_changes = False
-
-    for revision in revision_list:
-        revision = revision.split(' ')[0]
+    # Apply older patches before newer ones regardless of server list order.
+    revisions = sorted(set(line.split(' ')[0] for line in revision_list), key=int)
+    for revision in revisions:
      
-        if (int(revision) > int(revision_old[region]) or repatch==1) and revision not in ['147674']:
-            has_changes = True
+        if (int(revision) > int(revision_new[region]) or repatch==1) and revision not in ['147674']:
             # Process patch
             patch_name = revision + '_001001' + patch_ext
             patch_file = os.path.join(patch_path, patch_name)
@@ -212,9 +257,14 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
             
             patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_path)
 
+            if patch_unpack:
+                # Translation publication is part of a completed release patch.
+                # Keep its cursor behind if copying fails so the next run retries.
+                move_language(region)
             # Update revision
             revision_new[region] = revision
             print_version(revision_path, revision_new)
+            has_changes = True
 
     return revision_old, revision_new, has_changes
 
@@ -240,15 +290,27 @@ def move_language(region):
     if os.path.exists(input_path):
         #try:
         #    #shutil.move(input_path, output_path)
-        subprocess.run(['cp', '-r', input_path, output_path])
+        os.makedirs(output_path, exist_ok=True)
+        subprocess.run(['cp', '-r', input_path, output_path], check=True)
         #except:
         #    pass
 
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    global region
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        return _run(argv)
+    except Exception:
+        logging.exception('Download failed; parsing and DB import must stop')
+        return EXIT_FAILED
+
+
+def _run(argv):
+    global region
     logging.warning('Patching...')
-    region = getRegion(sys.argv)
+    region = getRegion(['downloader.py'] + argv)
     #region = "itos"
     url_patch = {'itos' : 'http://drygkhncipyq8.cloudfront.net/toslive/patch/',
                  'jtos' : 'http://d3bbj7hlpo9jjy.cloudfront.net/live/patch/',
@@ -261,9 +323,9 @@ if __name__ == "__main__":
     url_patch = url_patch[region]
     output = os.path.join("..", "{}_patch".format(region))
     
-    if ('full' in sys.argv ):
+    if ('full' in argv ):
         do_patch_full(output, url_patch)
-        sys.exit(0)
+        return EXIT_CHANGED
     else:
         version_data, version_data_new, has_data_chages = patch_partial(
             output , url_patch + 'partial/data/', '.ipf', False,
@@ -278,7 +340,10 @@ if __name__ == "__main__":
 
         # 변경 사항이 있으면 0, 없으면 1을 반환
         if has_data_chages or has_release_chages:
-            sys.exit(0)
+            return EXIT_CHANGED
         else:
-            sys.exit(1)
-    
+            return EXIT_UNCHANGED
+
+
+if __name__ == "__main__":
+    sys.exit(main())

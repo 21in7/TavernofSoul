@@ -1,5 +1,5 @@
 # Discord Web Hook URL
-WEBHOOK_URL="https://discord.com/api/webhooks/1283619152950460416/zRLviXMTMQL-BpbphYqIgIThLCsBrLM-EVbeRBaLKSn8wwk1pe4LH-DJ_Glk2j3sX2Am"
+WEBHOOK_URL="${TAVERN_DISCORD_WEBHOOK_URL:-}"
 
 # Save run results to a file
 output_file="/tmp/cron_ktos_output.txt"
@@ -37,6 +37,10 @@ download_start_time=$(date +%s)
 cd downloader
 python downloader.py ktos
 download_result=$?
+if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 1 ]; then
+    echo "다운로드 실패(return code $download_result). 파싱과 DB import 중단." >&2
+    exit "$download_result"
+fi
 cd ..
 
 download_elapsed=$(measure_time $download_start_time)

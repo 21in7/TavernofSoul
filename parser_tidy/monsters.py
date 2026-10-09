@@ -10,6 +10,7 @@ import os
 import glob
 from os.path import exists
 from DB import ToS_DB as constants
+from ipfparser.contracts import canonical_item_id, validate_drop_values
 import luautil
 
 
@@ -308,7 +309,7 @@ def parse_links_items(constants):
 
                     constants.data['item_monster'].append({
                         'Chance'        : int(row['DropRatio']) / 100.0,
-                        'Item'          : ref['$ID'],
+                        'Item'          : canonical_item_id(ref, constants.data['item_type']['RECIPES']),
                         'Monster'       : monster['$ID'],
                         'Quantity_MAX'  : int(row['Money_Max']),
                         'Quantity_MIN'  : int(row['Money_Min']),
@@ -318,6 +319,15 @@ def parse_links_items(constants):
 
         except (IOError, OSError):
             continue
+
+    # The importer has always indexed drops by (Monster, Item), with the last
+    # source row winning. Publish the same values once, rather than variants
+    # that the single-relation ORM cannot represent. Do not add probabilities.
+    for index, row in enumerate(constants.data['item_monster']):
+        validate_drop_values(row, 'item_monster[{}]'.format(index))
+    drops = {(str(row['Monster']), str(row['Item'])): row
+             for row in constants.data['item_monster']}
+    constants.data['item_monster'] = list(drops.values())
 
 
 def parse_skill_mon(constants):

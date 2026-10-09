@@ -9,8 +9,9 @@ import logging
 from DB import ToS_DB as constants
 import csv
 import io
+import re
 import luautil
-from math import floor
+from math import floor, isfinite
 import xml.etree.ElementTree as ET
 import parse_xac
 import package_parser
@@ -278,7 +279,7 @@ def parse(c = None, from_scratch = True):
     
     parse_goddess_reinf(c)
     
-    # Parse goddess equipment materials for all levels including 530, 540
+    # Registered goddess tables and their supported material groups.
     parse_goddess_EQ(c)
     
     for i in equipment_ies:
@@ -474,8 +475,9 @@ def parse_equips(constants, filename, _seen_paths=None):
         if tooltip_script:
             try:
                 LUA_RUNTIME[tooltip_script](row)
-            except :
-                pass
+            except Exception as exc:
+                raise ValueError('Equipment refresh failed for {} using {}'.format(
+                    row['ClassName'], tooltip_script)) from exc
 
         # Add additional fields
         obj['AnvilATK'] = []
@@ -529,7 +531,7 @@ def parse_equips(constants, filename, _seen_paths=None):
             if int(row['UseLv']) in goddess_atk_list:
                 
                 if tooltip_script == 'SCR_REFRESH_ACC' :
-                    atk = goddess_atk_list[int(row['UseLv'])]['BasicAccAtk']
+                    atk = int(goddess_atk_list[int(row['UseLv'])]['BasicAccAtk'])
                     obj['Stat_ATTACK_MAGICAL']      = atk
                     obj['Stat_ATTACK_PHYSICAL_MIN'] = atk
                     obj['Stat_ATTACK_PHYSICAL_MAX'] = atk
@@ -575,13 +577,19 @@ def parse_equips(constants, filename, _seen_paths=None):
         if ('GET_REINFORCE_PRICE' not in LUA_RUNTIME) and 'GET_REINFORCE_131014_PRICE' in LUA_RUNTIME:
             reinf = 'GET_REINFORCE_131014_PRICE'
         if (obj['Grade'] != 6) and reinf!= None: #goddess!
-            if any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'DEF', 'MATK', 'MDEF']):
+            props = row['BasicTooltipProp']
+            if (('ATK' in props or 'DEF' in props) if type(props) is str else
+                    any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'DEF', 'MATK', 'MDEF'])):
                 for lv in range(40):
                     row['Reinforce_2'] = lv
-                    if any(prop in row['BasicTooltipProp'] for prop in ['DEF', 'MDEF']):
+                    props = row['BasicTooltipProp']
+                    if ('DEF' in props if type(props) is str else
+                            any(prop in row['BasicTooltipProp'] for prop in ['DEF', 'MDEF'])):
                         obj['AnvilDEF'].append(LUA_RUNTIME['GET_REINFORCE_ADD_VALUE'](None, row, 0, 1))
                         obj['AnvilPrice'].append(LUA_RUNTIME[reinf](row, {}, None))
-                    if any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'MATK']):
+                    props = row['BasicTooltipProp']
+                    if ('ATK' in props if type(props) is str else
+                            any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'MATK'])):
                         obj['AnvilATK'].append(LUA_RUNTIME['GET_REINFORCE_ADD_VALUE_ATK'](row, 0, 1, None))
                         obj['AnvilPrice'].append(LUA_RUNTIME[reinf](row, {}, None))
                
@@ -589,6 +597,8 @@ def parse_equips(constants, filename, _seen_paths=None):
             obj['AnvilPrice'] = [int(value) for value in obj['AnvilPrice'] if value > 0]
             obj['AnvilATK'] = [int(value) for value in obj['AnvilATK'] if value > 0] if len(obj['AnvilPrice']) > 0 else None
             obj['AnvilDEF'] = [int(value) for value in obj['AnvilDEF'] if value > 0] if len(obj['AnvilPrice']) > 0 else None
+        elif obj['Grade'] == 6:
+            parse_goddess_equipment_calculation(constants, obj, row)
         # try:
         lua = luautil.lua
         obj['TranscendPrice'] = []
@@ -649,6 +659,41 @@ def parse_equips(constants, filename, _seen_paths=None):
     return constants
 
 
+def parse_goddess_equipment_calculation(constants, obj, row):
+    level = int(row['UseLv'])
+    table = constants.data['goddess_reinf'].get(level)
+    # Growth equipment has a separate Lua formula and material system.
+    if not table or '/' in row.get('StringArg', ''):
+        return
+    runtime = luautil.LUA_RUNTIME
+    function = 'SCR_GET_GODDESS_REINFORCE'
+    for required in (function, 'IS_WEAPON_TYPE'):
+        if required not in runtime:
+            raise ValueError('Missing goddess reinforcement function: ' + required)
+    previous = row.get('Reinforce_2', 0)
+    try:
+        weapon = runtime['IS_WEAPON_TYPE'](row['ClassType'])
+        if type(weapon) is not bool:
+            raise ValueError('Invalid goddess equipment type: ' + row['ClassName'])
+        group = 'acc' if row['ClassType'] in ('Neck', 'Ring') else 'weapon' if weapon else 'armor'
+        obj['GoddessReinforceLevel'] = level
+        obj['GoddessReinforceGroup'] = group
+        for step in range(1, len(table) + 1):
+            row['Reinforce_2'] = step
+            value = runtime[function](row)
+            if type(value) not in (int, float) or not isfinite(value) or value < 0:
+                raise ValueError('Invalid goddess reinforcement result: ' + row['ClassName'])
+            attack = floor(value * 0.3) if row['ClassType'] == 'Trinket' else floor(value)
+            if obj['Stat_ATTACK_PHYSICAL_MIN'] or obj['Stat_ATTACK_MAGICAL']:
+                obj['AnvilATK'].append(attack)
+            if obj['Stat_DEFENSE_PHYSICAL'] or obj['Stat_DEFENSE_MAGICAL']:
+                obj['AnvilDEF'].append(floor(value))
+    except Exception as exc:
+        raise ValueError('Goddess reinforcement failed for ' + row['ClassName']) from exc
+    finally:
+        row['Reinforce_2'] = previous
+
+
 def parse_goddess_reinf(constants):
     files = constants.EQUIPMENT_REINFORCE_IES
     global goddess_atk_list
@@ -660,14 +705,30 @@ def parse_goddess_reinf(constants):
         
         if i not in constants.file_dict:
             continue
-        ies_path = constants.file_dict[i]['path']
-        ies_file = io.open(ies_path, 'r', encoding = 'utf-8')
-        ies_reader = csv.DictReader(ies_file, delimiter=',', quotechar='"')
-        rows = []
-        for row in ies_reader:
-            rows.append(row)
-        row = rows[0]
-        goddess_atk_list[files[i]] = row
+        goddess_atk_list[files[i]] = read_goddess_reinforce_rows(constants, i)[0]
+
+
+def read_goddess_reinforce_rows(constants, filename):
+    with io.open(constants.file_dict[filename]['path'], 'r', encoding='utf-8') as stream:
+        reader = csv.DictReader(stream)
+        rows = list(reader)
+    if not rows:
+        raise ValueError('Empty goddess reinforcement table: ' + filename)
+    # The 560 weapon/armor format differs from the accessory-only 550 format.
+    # Keep CSV strings in the public table, but reject malformed new inputs.
+    if filename == 'item_goddess_reinforce_560.ies':
+        fields = ('ClassID', 'BasicProp', 'AddAtk', 'AddDef', 'BasicAtk', 'BasicDef', 'EvolveAtk')
+        seen = set()
+        for row in rows:
+            try:
+                values = {field: int(row[field]) for field in fields}
+                if (not row['ClassName'] or values['ClassID'] < 1 or values['ClassID'] in seen
+                        or any(value < 0 for value in values.values()) or values['BasicProp'] > 100000):
+                    raise ValueError('invalid row')
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError('Invalid goddess reinforcement table: ' + filename) from exc
+            seen.add(values['ClassID'])
+    return rows
         
         
 
@@ -1114,6 +1175,7 @@ def parse_gems_bonus(constants):
                         if prop is not None and prop != 'None':
                             if gem['TypeGem'] == 'Gem_Skill':
                                 gem['Bonus' + parse_gems_slot(slot)].append({
+                                    'Level': int(level.get('Level')),
                                     'Stat': constants.translate(prop).replace('OptDesc/', '')
                                 })
                             elif gem['TypeGem'] == "Gem":
@@ -1128,6 +1190,7 @@ def parse_gems_bonus(constants):
                                     # 한글 텍스트나 다른 형식의 값은 그대로 저장
                                     value = prop_slot[1]
                                 gem['Bonus' + parse_gems_slot(slot)].append({
+                                    'Level': int(level.get('Level')),
                                     'Stat': stat,
                                     'Value': value
                                 })
@@ -1305,11 +1368,15 @@ def parse_goddess_EQ(c):
     # 550은 accessory 전용(5열 IES)이며 Lua acc 분기만 존재한다.
     # 현재 지역에 550 IES가 없으면(twtos/ktest) material 생성과 acc 550 호출을
     # 건너뛴다. 정적 EQUIPMENT_REINFORCE_IES 등록 여부와 현재 지역 파일 존재를 분리.
-    has_550 = 'item_goddess_reinforce_550.ies' in c.file_dict
+    has_550 = ('item_goddess_reinforce_550.ies' in c.EQUIPMENT_REINFORCE_IES
+               and 'item_goddess_reinforce_550.ies' in c.file_dict)
+    has_560 = ('item_goddess_reinforce_560.ies' in c.EQUIPMENT_REINFORCE_IES
+               and 'item_goddess_reinforce_560.ies' in c.file_dict)
+    weapon_armor_levels = [480, 500, 520, 540] + ([560] if has_560 else [])
     acc_levels = [470, 490, 510, 530] + ([550] if has_550 else [])
     func_list = {'setting_lv_material_acc' : acc_levels,
-                 'setting_lv_material_armor' : [480, 500, 520, 540],
-                 'setting_lv_material_weapon' : [480, 500, 520, 540],
+                 'setting_lv_material_armor' : weapon_armor_levels,
+                 'setting_lv_material_weapon' : weapon_armor_levels,
                  'setting_lv460_material' : 460,
                  }
     #mat_list_by_lv[460][1][seasonCoin]
@@ -1362,6 +1429,12 @@ def parse_goddess_EQ(c):
     # mat[550]['acc'][i]에만 쓰므로 안전하며, JSON 소비자는 부재를 키 유무로 판별한다.
     if has_550:
         mat[550] = {'acc' : {i : {} for i in range(1, 31) }}
+    if has_560:
+        mat[560] = {group: {i: {} for i in range(1, 31)} for group in ('armor', 'weapon')}
+        for group in ('armor', 'weapon'):
+            function = 'setting_lv_material_' + group
+            if function not in LUA_RUNTIME:
+                raise ValueError('Missing goddess 560 material function: ' + function)
     for func in func_list:
         levels = func_list[func]
         if func not in LUA_RUNTIME:
@@ -1377,6 +1450,16 @@ def parse_goddess_EQ(c):
                     LUA_RUNTIME[func](mat, lv)
             else:
                 LUA_RUNTIME[func](mat, levels)
+    if has_560:
+        for group in ('armor', 'weapon'):
+            steps = mat[560][group]
+            if not any(steps.values()):
+                raise ValueError('Empty goddess 560 material calculation: ' + group)
+            for materials in steps.values():
+                for quantity in materials.values():
+                    if (type(quantity) not in (int, float) or not isfinite(quantity)
+                            or quantity < 0 or quantity != int(quantity)):
+                        raise ValueError('Invalid goddess 560 material quantity: ' + group)
     a = mat[460] 
     mat[460]  = {'armor' : a}
     c.data['goddess_reinf_mat'] = mat
@@ -1389,10 +1472,16 @@ def parse_goddess_EQ(c):
             ies_path= c.file_dict[file_name]['path']
         except:
             continue
-        ies_file = io.open(ies_path, 'r', encoding="utf-8")
-        ies_reader = csv.DictReader(ies_file, delimiter=',', quotechar='"')
-        obj  = []
-        for row in ies_reader:
-            obj.append(row)
+        obj = read_goddess_reinforce_rows(c, file_name)
         objs[ies_list[ies]] = obj
         c.data['goddess_reinf'][ies_list[ies]] = obj
+    # File discovery is broader than the allowlist. Surface future tables without
+    # interpreting preloaded data as a released level or a supported Lua branch.
+    unregistered = {}
+    for filename in sorted(c.file_dict):
+        match = re.fullmatch(r'item_goddess_reinforce_(\d+)\.ies', filename)
+        if match and filename not in ies_list:
+            unregistered[filename] = int(match.group(1))
+            log.warning('Unregistered goddess reinforcement table: %s (level %s)',
+                        filename, match.group(1))
+    c.data['goddess_reinf_unregistered'] = unregistered

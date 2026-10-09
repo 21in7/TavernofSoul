@@ -1,0 +1,56 @@
+{
+  "items_by_name": {
+    "harness_card": {
+      "$ID": "700", "$ID_NAME": "harness_card", "Name": "Fixture Card",
+      "TimeCoolDown": 0, "Description": "Contract card", "Weight": "",
+      "Tradability": "TTTT", "Type": "Card", "Grade": 1, "Icon": null,
+      "IconTooltip": null, "TypeCard": "ATK"
+    },
+    "harness_collection": {
+      "$ID": "701", "$ID_NAME": "harness_collection", "Name": "Fixture Collection",
+      "TimeCoolDown": 0, "Description": "Contract collection", "Weight": 0,
+      "Tradability": "TTTT", "Type": "Collection", "Grade": 1, "Icon": null,
+      "Link_Items": ["harness_ore"], "Bonus": [["STR", "2"]]
+    },
+    "harness_book": {
+      "$ID": "702", "$ID_NAME": "harness_book", "Name": "Fixture Book",
+      "TimeCoolDown": 0, "Description": null, "Weight": 0,
+      "Tradability": "TTTT", "Type": "Book", "Grade": 1, "Icon": null,
+      "Text": "Contract book text"
+    }
+  },
+  "item_type": {"CARD": ["harness_card"], "COLLECTION": ["harness_collection"], "BOOKS": ["harness_book"]},
+  "npcs": {
+    "800": {"$ID": "800", "$ID_NAME": "Harness_NPC", "Name": "Fixture NPC", "Description": "Contract NPC", "Icon": null}
+  },
+  "maps": {
+    "900": {
+      "$ID": "900", "$ID_NAME": "Harness_Map", "Name": "Fixture Map", "Type": "Field",
+      "HasChallengeMode": false, "HasWarp": true, "Level": -1,
+      "Prop_EliteMonsterCapacity": -1, "Prop_MaxHateCount": -1, "Stars": 1, "Link_Maps": []
+    }
+  },
+  "map_item": [{"Map": "900", "Item": "100", "Chance": 100, "Quantity_MIN": 0, "Quantity_MAX": 2}],
+  "map_npc": [{"Map": "900", "NPC": "800", "TimeRespawn": 2.5, "Population": 1, "Positions": [[-1.5, 2]]}],
+  "map_item_spawn": [{"Map": "900", "Item": "101", "TimeRespawn": 0, "Population": 1, "Positions": [[3, -4]]}],
+  "attributes": {
+    "920": {
+      "$ID": "920", "$ID_NAME": "Harness_Attribute", "Name": "Fixture Attribute",
+      "Description": "Contract attribute", "DescriptionRequired": null, "Icon": null,
+      "IsToggleable": true, "LevelMax": "5", "Link_Jobs": ["300"], "Link_Skills": ["Harness_Fire", "Retired_Skill"]
+    }
+  },
+  "buff": {
+    "910": {
+      "$ID": "910", "$ID_NAME": "Harness_Buff", "Name": "Fixture Buff", "Description": "Contract buff",
+      "Icon": null, "Keyword": "ATK", "ApplyTime": "3000", "OverBuff": "1", "UserRemove": 1,
+      "Group1": null, "Group2": null, "Group3": null, "GroupIndex": "0"
+    }
+  },
+  "achievements": {
+    "930": {
+      "$ID": "930", "$ID_NAME": "Harness_Achievement", "Name": "Fixture Achievement",
+      "Icon": null, "Desc": "Contract achievement", "DescTitle": "Contract title", "Group": null, "Hidden": false
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "files": {
+    "ies.ipf/item.ies": "ClassID,ClassName,Name\n100,harness_ore,Harness Ore\n",
+    "shared.ipf/harness.lua": "HARNESS_PATCH_VERSION = 1\n"
+  }
+}

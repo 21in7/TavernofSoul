@@ -12,6 +12,7 @@ from os.path import exists
 from PIL import Image, ImageDraw, ImageColor, ImageFilter, ImageOps, ImageChops
 
 from DB import ToS_DB as constants
+from ipfparser.contracts import canonical_item_id
 import luautil
 
 import  imageutil
@@ -147,6 +148,10 @@ def parse_links(c = None):
         c = constants()
         c.build(c.iTOS)
     c.data['map_item'] = []
+    c.data['map_item_spawn'] = []
+    # Retain monster diagnostics when rebuilding only map relations.
+    c.data['unresolved_drops'] = [row for row in c.data['unresolved_drops']
+                                  if row.get('collection') != 'map_item']
     parse_links_items(c)
     parse_links_items_rewards(c)
 
@@ -204,10 +209,20 @@ def parse_links_items(constants):
                 # 고정한다(과거엔 dropgroup 이 ies_path 를 덮어써 오염됐었다).
                 chance = 10000.0 if 'id_unknownsanctuary' in zone_path.lower() else 100.0
                 for zone_drop in csv.DictReader(zone_fh, delimiter=',', quotechar='"'):
+                    if not zone_drop['ItemClassName'] and not zone_drop['DropGroup']:
+                        continue
+                    # BaseRatio is the denominator, including million-based
+                    # field drops. Older sources without it retain their scale.
+                    base = int(zone_drop['BaseRatio']) if 'BaseRatio' in zone_drop else int(chance * 100)
+                    if base <= 0:
+                        raise ValueError('{}: BaseRatio must be positive'.format(zone_path))
+                    zone_ratio = int(zone_drop['DropRatio']) * 100 / base
+                    if not 0 <= zone_ratio <= 100:
+                        raise ValueError('{}: zonedrop chance must be in 0..100'.format(zone_path))
                     if len(zone_drop['ItemClassName']) > 0:
                         drops.append({
                             'ItemClassName': zone_drop['ItemClassName'],
-                            'DropRatio': int(zone_drop['DropRatio']) / chance,
+                            'DropRatio': zone_ratio,
                         })
 
                     if len(zone_drop['DropGroup']) > 0:
@@ -223,10 +238,13 @@ def parse_links_items(constants):
                         try:
                             with open(group_path, 'r', encoding='utf-8') as group_fh:
                                 for group_drop in csv.DictReader(group_fh, delimiter=',', quotechar='"'):
-                                    group_drop_ratio += int(group_drop['DropRatio'])
+                                    weight = int(group_drop['DropRatio'])
+                                    if weight < 0:
+                                        raise ValueError('{}: negative dropgroup weight'.format(group_path))
+                                    group_drop_ratio += weight
                                     group_drops.append({
                                         'ItemClassName': group_drop['ItemClassName'],
-                                        'DropRatio': int(group_drop['DropRatio']),
+                                        'DropRatio': weight,
                                     })
                         except (IOError, OSError):
                             logging.debug('dropgroup unreadable: %s', group_path)
@@ -238,7 +256,7 @@ def parse_links_items(constants):
 
                         for group_drop in group_drops:
                             group_drop['DropRatio'] = (
-                                int(zone_drop['DropRatio']) / 100.0
+                                zone_ratio
                                 * group_drop['DropRatio'] / group_drop_ratio
                             )
                             drops.append(group_drop)
@@ -263,13 +281,19 @@ def parse_links_items(constants):
             # importer(Map_Item.qty_max/min 기본값 0)와 importMap.py 필수 키 접근에 안전.
             constants.data['map_item'].append({
                 'Chance'        : drop['DropRatio'],
-                'Item'          : ref['$ID'],
+                'Item'          : canonical_item_id(ref, constants.data['item_type']['RECIPES']),
                 'Map'           : map['$ID'],
                 'Quantity_MAX'  : 0,
                 'Quantity_MIN'  : 0,
                 'SourceRegion'  : src['source_region'],
                 'InputVersion'  : src['input_version'],
             })
+
+    # The ORM/comparer represents one reward per map/item; the last source
+    # variant wins, as in the historical importer (probabilities are not summed).
+    constants.data['map_item'] = list({
+        (str(row['Map']), str(row['Item'])): row
+        for row in constants.data['map_item']}.values())
 
 
 def parse_links_items_rewards(constants):
@@ -348,26 +372,23 @@ def parse_links_maps(constants):
 
     #ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'map.ies')
     ies_path = constants.file_dict['map.ies']['path']
-    name = ''
+    for map in constants.data['maps'].values():
+        map['Link_Maps'] = []
+        map['Link_Maps_Floors'] = []
     with open(ies_path, 'r', encoding='utf8') as ies_file:
-        try:
-            for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-                if len(row['PhysicalLinkZone']) == 0:
-                    continue
-    
-                map = constants.data['maps_by_name'][row['ClassName']]
-                
-                map['Link_Maps'] = [constants.data['maps_by_name'][name]['$ID'] for name in row['PhysicalLinkZone'].split('/')]
-    
-                map_item = constants.data['maps_by_name'][map['$ID_NAME']]
-    
-                # Floors
-                if map['WorldMap'] is not None and map['WorldMap'][2] > 0:
-                    map_ground_floor = constants.data['maps_by_position']['-'.join([str(i) for i in (map['WorldMap'][0:2] + [1])])]
-                    map_ground_floor['Link_Maps_Floors'].append(map_item['$ID'])
-                constants.data['maps'][map['$ID']] = map
-        except:
-            pass
+        for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
+            map = constants.data['maps_by_name'][row['ClassName']]
+            map['Link_Maps'] = [constants.data['maps_by_name'][name]['$ID']
+                               for name in row['PhysicalLinkZone'].split('/') if name]
+            # Only upper floors belong to the ground floor's additional list.
+            if map['WorldMap'] is not None and map['WorldMap'][2] > 1:
+                ground = '-'.join(str(i) for i in map['WorldMap'][0:2] + [1])
+                ground_map = constants.data['maps_by_position'].get(ground)
+                if ground_map is None:
+                    logging.warning('%s: map %s has no ground at %s; skipping optional floor grouping',
+                                    ies_path, row['ClassName'], ground)
+                else:
+                    ground_map['Link_Maps_Floors'].append(map['$ID'])
 
 
 def parse_links_npcs(constants):
@@ -458,7 +479,7 @@ def parse_links_npcs(constants):
 
                 if anchor_name in constants.data['items_by_name']:
                     item = constants.data['items_by_name'][anchor_name]
-                    item_link = item['$ID']
+                    item_link = canonical_item_id(item, constants.data['item_type']['RECIPES'])
                     position = []
                     new_pos = []
                     for i in anchor['Anchors']:

@@ -1,0 +1,10 @@
+{
+  "name": "tavern-browser-harness",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "doctor": "node doctor.js"
+  },
+  "engines": {"node": ">=20"},
+  "devDependencies": {"@playwright/test": "1.63.0"}
+}

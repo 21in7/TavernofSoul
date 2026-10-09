@@ -1,0 +1,2 @@
+ClassID,ClassName,Name,ToolTip,Icon,Keyword,ApplyTime,OverBuff,UserRemove,Group1,Group2,Group3,GroupIndex
+910,Harness_ShieldBuff,하네스 방패 버프,하네스 방패 설명,ICON_HARNESS_BUFF,DEF;SHIELD,3500,2,YES,Defense,Shield,,1

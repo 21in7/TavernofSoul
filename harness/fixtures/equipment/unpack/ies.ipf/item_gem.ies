@@ -1,0 +1,3 @@
+ClassID,ClassName,Name,Desc,Icon,ItemGrade,SellPrice,ItemCoolDown,LifeTime,MarketTrade,UserTrade,ShopTrade,TeamTrade,GroupName,Weight,EquipXpGroup
+230,harness_gem,Fixture Red Gem,Synthetic socket input,ICON_HARNESS_GEM,1,0,0,0,YES,YES,NO,YES,Gem,1,Gem
+240,Gem_Harness_Fire,Fixture Fire Skill Gem,Synthetic socket input,ICON_HARNESS_GEM,1,0,0,0,YES,YES,NO,YES,Gem,1,Gem_Skill

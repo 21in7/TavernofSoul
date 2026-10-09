@@ -1,0 +1,9 @@
+{
+  "projects": ["desktop", "mobile"],
+  "scenarios": [
+    "public HTTPS search detail and static assets work",
+    "public 560 equipment has working reinforcement controls",
+    "public gems show socket bonuses",
+    "public skill gem opens the linked skill"
+  ]
+}

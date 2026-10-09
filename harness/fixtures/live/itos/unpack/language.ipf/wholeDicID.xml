@@ -1,0 +1,126 @@
+<?xml version='1.0' encoding='utf-8'?>
+<filelist>
+    <file name="global\xml\item.xml">
+        <data original="몬스터에게서 얻는 아이템" dicid="@dicID_^*$ITEM_20150317_002103$*^" />
+        </file>
+    <file name="global\xml\item_Equip.xml">
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        <data original="상의[천]" dicid="@dicID_^*$ITEM_20150317_000977$*^" />
+        <data original="방패" dicid="@dicID_^*$ETC_20150317_000843$*^" />
+        <data original="한손검[베기]" dicid="@dicID_^*$ITEM_20150317_000012$*^" />
+        </file>
+    <file name="ui\uixml\controlset.xml">
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        </file>
+    <file name="xml\cabinet_skillgem.xml">
+        <data original="에너지 볼트 젬" dicid="@dicID_^*$ETC_20200320_045633$*^" />
+        </file>
+    <file name="xml\inven_baseid.xml">
+        <data original="레드 젬" dicid="@dicID_^*$ETC_20150317_006186$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        </file>
+    <file name="xml\item.xml">
+        <data original="마법의 빛에 반응해 더욱 강렬하게 빛나며, 신성한 의식이나 축복의 재료로 사용됩니다.{nl} {nl}사용처: 아이템 가공" dicid="@dicID_^*$ITEM_20250826_029164$*^" />
+        <data original="특수한 아이템의 재료가 되는 소재입니다." dicid="@dicID_^*$ITEM_20230904_028637$*^" />
+        <data original="셀라스 가루" dicid="@dicID_^*$ITEM_20260828_029248$*^" />
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        <data original="엘타스 가루" dicid="@dicID_^*$ITEM_20250826_029163$*^" />
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        <data original="최고급 축복받은 조각" dicid="@dicID_^*$ITEM_20250826_029162$*^" />
+        <data original="몬스터에게서 얻는 아이템" dicid="@dicID_^*$ITEM_20150317_002103$*^" />
+        </file>
+    <file name="xml\item_EP12.xml">
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        </file>
+    <file name="xml\item_EP13.xml">
+        <data original="힘을 잃은 엘의 금빛 깃털" dicid="@dicID_^*$ETC_20260828_082206$*^" />
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        <data original="힘을 잃은 엘의 검은 깃털" dicid="@dicID_^*$ETC_20260828_082210$*^" />
+        <data original="즈메이의 정수입니다." dicid="@dicID_^*$ETC_20260206_081134$*^" />
+        <data original="어두운 즈메이의 정수" dicid="@dicID_^*$ETC_20260206_081133$*^" />
+        <data original="엘의 금빛 깃털입니다." dicid="@dicID_^*$ETC_20260828_082207$*^" />
+        <data original="엘의 검은 깃털입니다." dicid="@dicID_^*$ETC_20260828_082211$*^" />
+        </file>
+    <file name="xml\item_Equip.xml">
+        <data original="상의[천]" dicid="@dicID_^*$ITEM_20150317_000977$*^" />
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        <data original="방패" dicid="@dicID_^*$ETC_20150317_000843$*^" />
+        <data original="무기장식" dicid="@dicID_^*$ITEM_20200129_025252$*^" />
+        <data original="한손검[베기]" dicid="@dicID_^*$ITEM_20150317_000012$*^" />
+        </file>
+    <file name="xml\item_Equip_EP12.xml">
+        <data original="상의[천]" dicid="@dicID_^*$ITEM_20150317_000977$*^" />
+        <data original="무기장식" dicid="@dicID_^*$ITEM_20200129_025252$*^" />
+        <data original="한손검[베기]" dicid="@dicID_^*$ITEM_20150317_000012$*^" />
+        <data original="방패" dicid="@dicID_^*$ETC_20150317_000843$*^" />
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        </file>
+    <file name="xml\item_Equip_EP13.xml">
+        <data original="여명의 실드" dicid="@dicID_^*$ETC_20260828_082552$*^" />
+        <data original="{#0000ff}[Lv.560] 가디스 장비 8부위 장착 효과{nl} - 대미지 {img green_up_arrow 16 16}50%{nl} - PVP 피해 감소 {img green_up_arrow 16 16}20%{/}" dicid="@dicID_^*$ETC_20260828_082545$*^" />
+        <data original="여명의 로브" dicid="@dicID_^*$ETC_20260828_082563$*^" />
+        <data original="여명의 소드" dicid="@dicID_^*$ETC_20260828_082544$*^" />
+        <data original="{#0000ff}장착 시 최소 블럭 확률이 30% 증가합니다.(서브 슬롯 사용 시에는 절반만 적용){nl} {nl}[Lv.560] 가디스 장비 8부위 장착 효과{nl} - 대미지 {img green_up_arrow 16 16}50%{nl} - PVP 피해 감소 {img green_up_arrow 16 16}20%{/}" dicid="@dicID_^*$ETC_20260828_082553$*^" />
+        <data original="여명의 트링킷" dicid="@dicID_^*$ETC_20260828_082562$*^" />
+        <data original="암지나스 피크티스 브레이슬릿" dicid="@dicID_^*$ETC_20260206_081168$*^" />
+        <data original="무기장식" dicid="@dicID_^*$ITEM_20200129_025252$*^" />
+        <data original="방패" dicid="@dicID_^*$ETC_20150317_000843$*^" />
+        <data original="한손검[베기]" dicid="@dicID_^*$ITEM_20150317_000012$*^" />
+        <data original="상의[천]" dicid="@dicID_^*$ITEM_20150317_000977$*^" />
+        <data original="암지나스 피크티스 네클리스" dicid="@dicID_^*$ETC_20260206_081167$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        </file>
+    <file name="xml\item_Quest.xml">
+        <data original="몬스터에게서 얻는 아이템" dicid="@dicID_^*$ITEM_20150317_002103$*^" />
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        </file>
+    <file name="xml\item_event.xml">
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        <data original="몬스터에게서 얻는 아이템" dicid="@dicID_^*$ITEM_20150317_002103$*^" />
+        </file>
+    <file name="xml\item_event_Equip.xml">
+        <data original="상의[천]" dicid="@dicID_^*$ITEM_20150317_000977$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        <data original="한손검[베기]" dicid="@dicID_^*$ITEM_20150317_000012$*^" />
+        <data original="방패" dicid="@dicID_^*$ETC_20150317_000843$*^" />
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        <data original="무기장식" dicid="@dicID_^*$ITEM_20200129_025252$*^" />
+        </file>
+    <file name="xml\item_gem.xml">
+        <data original="에너지 볼트 젬" dicid="@dicID_^*$ETC_20200320_045633$*^" />
+        <data original="던전에서 발견되는 보석입니다. 소켓에 장착하여 장비를 강화할 수 있으며, 마력을 충전하면 더 큰 힘을 발휘합니다. 마우스 오른쪽 클릭 후, 원하는 장비를 선택하여 장착합니다." dicid="@dicID_^*$ETC_20150317_006187$*^" />
+        <data original="소켓에 장착하여 장비를 강화할 수 있습니다. 효과는 중복 적용 되지 않습니다. 마우스 오른쪽 클릭 후, 원하는 장비를 선택하여 장착합니다." dicid="@dicID_^*$ETC_20200320_045573$*^" />
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        <data original="레드 젬" dicid="@dicID_^*$ETC_20150317_006186$*^" />
+        </file>
+    <file name="xml\recycle_shop.xml">
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        </file>
+    <file name="xml\recycle_shop_papaya.xml">
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        </file>
+    <file name="xml_client\fullscreen_navigation_menu_info.xml">
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        </file>
+    <file name="xml_lang\clientmessage.xml">
+        <data original="카드" dicid="@dicID_^*$ITEM_20150317_001972$*^" />
+        <data original="방패" dicid="@dicID_^*$ETC_20150317_000843$*^" />
+        <data original="재료" dicid="@dicID_^*$ETC_20150317_001726$*^" />
+        <data original="팔찌" dicid="@dicID_^*$ITEM_20150317_001381$*^" />
+        <data original="목걸이" dicid="@dicID_^*$ITEM_20150317_001291$*^" />
+        <data original="무기장식" dicid="@dicID_^*$ITEM_20200129_025252$*^" />
+        <data original="레드 젬" dicid="@dicID_^*$ETC_20150317_006186$*^" />
+        </file>
+    </filelist>

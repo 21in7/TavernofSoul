@@ -1,0 +1,14 @@
+# Pinned for the project's Python 3.8 stack; isolated harness only.
+Django==4.1.13
+pytest==7.4.4
+django-mysql==4.12.0
+PyMySQL==1.1.0
+cryptography==44.0.3
+cffi==1.17.1
+djangorestframework==3.15.1
+django-mathfilters==1.0.0
+lupa==1.9
+Pillow==10.3.0
+numpy==1.24.4
+pandas==1.5.3
+pytz==2025.2

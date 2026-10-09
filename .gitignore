@@ -1,6 +1,8 @@
 *.log
 *.pyc
 *.ipf
+# Hand-authored parser fixtures use IPF directory names, not downloaded archives.
+!/harness/fixtures/**/*.ipf/
 **/prev/
 # Independent unpack repositories; owned by their own Git indexes.
 itos_unpack/
@@ -25,6 +27,7 @@ TavernofSoul/ktos/3.8/*
 # local-only
 .claude/
 .env
+.agent-keys.json
 
 # Runtime output and downloaded game data (keep local copies).
 /logs/
@@ -37,3 +40,9 @@ TavernofSoul/ktos/3.8/*
 # Local work notes and generated reports.
 /.zcode/
 /parser_tidy/skill_factor_report.xlsx
+
+# Browser harness dependencies; reports live under logs/harness/.
+/harness/browser/node_modules/
+
+# Claude Code generates SDK typings when loading the compaction function module.
+/harness/compaction/.claude-plugin/types/

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Skills>
+  <Skill Name="Mon_HarnessBeast_Attack_1">
+    <ResultList>
+      <ToolScp Scp="S_R_TGTBUFF">
+        <Param Str="HarnessBleed"/>
+        <Param Num="0"/>
+        <Param Num="0"/>
+        <Param Num="4000"/>
+        <Param Num="0"/>
+        <Param Num="50"/>
+      </ToolScp>
+    </ResultList>
+  </Skill>
+</Skills>

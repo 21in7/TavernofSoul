@@ -1,0 +1,24 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "domain": {
+      "type": "choice",
+      "choice": "downloader",
+      "probabilities": {"downloader": 0.96, "parser": 0.01, "django": 0.01, "cross_boundary": 0.01, "unknown": 0.01},
+      "confidence": 0.95
+    },
+    "complexity": {
+      "type": "score",
+      "score": 0.1,
+      "legend": {
+        "0": "A localized, well-understood change with an explicit expected behavior and an existing verification path.",
+        "1": "A change requiring investigation or coordination of multiple functions before the implementation is clear.",
+        "2": "A change requiring architectural planning, cross-area coordination, or resolution of substantial unknowns."
+      },
+      "probabilities": {"0": 0.9, "1": 0.1, "2": 0},
+      "confidence": 0.85
+    },
+    "contract_impact": {"type": "noul", "noul": 0.05}
+  },
+  "usage": {"input_tokens": 500, "output_tokens": 100}
+}

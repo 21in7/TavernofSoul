@@ -55,6 +55,11 @@ class Item_Monster(models.Model):
     chance          = models.FloatField(default=0, blank=True, null=True, )
     qty_max         = models.IntegerField(default=0, blank=True, null=True, )
     qty_min         = models.IntegerField(default=0, blank=True, null=True, )
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=['monster', 'item'], name='unique_monster_item_drop')]
+
     def compare(self, their):
         if (
             self.monster == their.monster and 
@@ -75,7 +80,7 @@ class Skill_Monster(models.Model):
     name            = models.CharField(max_length = 100, )
     element         = models.CharField(max_length = 30) 
     cooldown        = models.IntegerField(blank=True, null=True,) 
-    sfr             = models.IntegerField(blank=True, null=True,) 
+    sfr             = models.FloatField(blank=True, null=True,)
     aar             = models.IntegerField(blank=True, null=True, default=50) 
     hit_count             = models.IntegerField(blank=True, null=True, default=1) 
 

@@ -57,10 +57,12 @@ class Equipments (models.Model):
                     )
     anvil_price     = ListCharField(base_field=models.IntegerField(),
                     size=41,
-                    max_length=(10 * 41),blank=True, null=True
+                    max_length=5000,blank=True, null=True
                     )
     durability      = models.IntegerField(blank=True, null=True )
     level           = models.IntegerField(blank=True, null=True )
+    reinforcement_level = models.IntegerField(blank=True, null=True)
+    reinforcement_group = models.CharField(max_length=6, blank=True, null=True)
     potential       = models.IntegerField(blank=True, null=True )
     requiredClass   = models.CharField(max_length=10,default=None, blank=True, null=True )
     sockets_limit   = models.IntegerField(blank=True, null=True )
@@ -81,6 +83,18 @@ class Equipments (models.Model):
 
     def is_goddess_armor(self):
         return self.item.grade ==6 and  self.type_equipment in ['Shirt', 'Pants', 'Boots', 'Gloves']
+
+
+class GoddessReinforcement(models.Model):
+    level = models.IntegerField()
+    step = models.PositiveSmallIntegerField()
+    chance = models.PositiveIntegerField()  # BasicProp: 100000 == 100%.
+    source = models.TextField()  # Original IES row, including generation-specific fields.
+    materials = models.TextField()  # Group -> ClassName -> quantity; {} is a free step.
+
+    class Meta:
+        ordering = ('level', 'step')
+        constraints = [models.UniqueConstraint(fields=('level', 'step'), name='goddess_level_step')]
 
 
 class Equipment_Bonus(models.Model):
@@ -124,6 +138,7 @@ class Gems (models.Model):
                         primary_key=True,
                     )
     skill           = models.ForeignKey(Skills, on_delete=models.CASCADE, null = True, blank = True, default = None)
+    socket_bonuses = models.TextField(default='{}')
 
     def compare(self, their):
         if (

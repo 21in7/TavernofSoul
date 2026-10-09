@@ -1,0 +1,20 @@
+ETC_20150317_000843	Shield	방패				
+ETC_20150317_001726	Material	재료				
+ETC_20150317_006186	Red Gem	레드 젬				
+ETC_20150317_006187	A gem that can be found in a dungeon. {nl}It is able to enhance equipment by equipping it in a socket. {nl}When charged it exerts a stronger power. Right-click to equip it to an equipment.	던전에서 발견되는 보석입니다. 소켓에 장착하여 장비를 강화할 수 있으며, 마력을 충전하면 더 큰 힘을 발휘합니다. 마우스 오른쪽 클릭 후, 원하는 장비를 선택하여 장착합니다.				
+ETC_20200320_045573	Can enhance equipment by equipping the gem in a socket of equipment. Cannot be used with the same effect simultaneously. Right-click to insert it to an equipment. 	소켓에 장착하여 장비를 강화할 수 있습니다. 효과는 중복 적용 되지 않습니다. 마우스 오른쪽 클릭 후, 원하는 장비를 선택하여 장착합니다.				
+ETC_20200320_045633	Energy Bolt Gem	에너지 볼트 젬				
+ETC_20260206_081133	Dark Essence of Zmei	어두운 즈메이의 정수				
+ETC_20260206_081134	Essence of Zmei.	즈메이의 정수입니다.				
+ETC_20260206_081167	Amjinas Pyktis Necklace	암지나스 피크티스 네클리스				
+ETC_20260206_081168	Amjinas Pyktis Bracelet	암지나스 피크티스 브레이슬릿				
+ETC_20260828_082206	Faded Golden Feather of El	힘을 잃은 엘의 금빛 깃털
+ETC_20260828_082207	Golden Feather of El.	엘의 금빛 깃털입니다.
+ETC_20260828_082210	Faded Black Feather of El	힘을 잃은 엘의 검은 깃털
+ETC_20260828_082211	Black Feather of El.	엘의 검은 깃털입니다.
+ETC_20260828_082544	Dawn Sword	여명의 소드
+ETC_20260828_082545	{#0000ff}When equipping 8 [Lv.560] Goddess Armor{nl} - Damage {img green_up_arrow 16 16}50%{nl} - PVP Damage received decreases by {img green_up_arrow 16 16}20%{/}	{#0000ff}[Lv.560] 가디스 장비 8부위 장착 효과{nl} - 대미지 {img green_up_arrow 16 16}50%{nl} - PVP 피해 감소 {img green_up_arrow 16 16}20%{/}
+ETC_20260828_082552	Dawn Shield	여명의 실드
+ETC_20260828_082553	{#0000ff}When equipped, minimum block probability increases by 30%. (When using a sub slot, only half is applied){nl} {nl} [Lv.560] Goddess equipment 8-piece set effect{nl} - Damage {img green_up_arrow 16 16}50%{nl} - PVP damage reduction {img green_up_arrow 16 16}20%{/}	{#0000ff}장착 시 최소 블럭 확률이 30% 증가합니다.(서브 슬롯 사용 시에는 절반만 적용){nl} {nl}[Lv.560] 가디스 장비 8부위 장착 효과{nl} - 대미지 {img green_up_arrow 16 16}50%{nl} - PVP 피해 감소 {img green_up_arrow 16 16}20%{/}
+ETC_20260828_082562	Dawn Trinket	여명의 트링킷
+ETC_20260828_082563	Dawn Robe	여명의 로브

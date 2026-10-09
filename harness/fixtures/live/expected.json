@@ -1,0 +1,104 @@
+{
+  "equipment": {
+    "11107087": {
+      "patk": 322534,
+      "patk_max": 342484,
+      "matk": 0,
+      "pdef": 0,
+      "mdef": 0,
+      "level": 560,
+      "bonus": "atk",
+      "step6": 38856,
+      "step30": 142500
+    },
+    "11107103": {
+      "patk": 49876,
+      "patk_max": 49876,
+      "matk": 49876,
+      "pdef": 0,
+      "mdef": 0,
+      "level": 560,
+      "bonus": "atk",
+      "step6": 11656,
+      "step30": 42750
+    },
+    "11107104": {
+      "patk": 0,
+      "patk_max": 0,
+      "matk": 0,
+      "pdef": 459148,
+      "mdef": 918297,
+      "level": 560,
+      "bonus": "def",
+      "step6": 50802,
+      "step30": 196750
+    },
+    "11107094": {
+      "patk": 0,
+      "patk_max": 0,
+      "matk": 0,
+      "pdef": 332509,
+      "mdef": 332509,
+      "level": 560,
+      "bonus": "def",
+      "step6": 38856,
+      "step30": 142500
+    },
+    "11100079": {
+      "patk": 5855,
+      "patk_max": 5855,
+      "matk": 5855,
+      "pdef": 0,
+      "mdef": 0,
+      "level": 550,
+      "bonus": "atk",
+      "step6": 4818,
+      "step30": 24090
+    },
+    "11100080": {
+      "patk": 5855,
+      "patk_max": 5855,
+      "matk": 5855,
+      "pdef": 0,
+      "mdef": 0,
+      "level": 550,
+      "bonus": "atk",
+      "step6": 4818,
+      "step30": 24090
+    }
+  },
+  "sword_names": {
+    "itos": "Dawn Sword",
+    "ktos": "여명의 소드"
+  },
+  "weapon_material_6": {
+    "SauleCertificate": 450,
+    "misc_BlessedStone_2": 2,
+    "misc_boss_EP18_weapon_NoTrade": 5,
+    "misc_ore30": 45
+  },
+  "gem_attack": [
+    72,
+    105,
+    138,
+    172,
+    207,
+    240,
+    273,
+    307,
+    342,
+    375
+  ],
+  "gem_penalty": [
+    -3,
+    -5,
+    -7,
+    -9,
+    -11,
+    -13,
+    -15,
+    -17,
+    -19,
+    -21
+  ]
+}

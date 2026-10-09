@@ -20,12 +20,23 @@ def load(ies_name,c):
         logging.warn('Missing ies file: %s', ies_name.lower())
         return []
     ies_path = c.file_dict[ies_name.lower()]['path']
+    # Reuse only short scalar tokens within this read. Once full, keep the
+    # existing entries and convert new tokens normally; never exceed the bound.
+    scalar_cache = {}
+    cache_miss = object()
     with io.open(ies_path, 'r', encoding = "utf-8") as ies_file:
         ies_reader = csv.DictReader(ies_file, delimiter=',', quotechar='"')
 
         for row in ies_reader:
             # auto cast to int/float if possible
             for key in row.keys():
+                value = row[key]
+                cacheable = isinstance(value, str) and len(value) <= 128
+                if cacheable:
+                    converted = scalar_cache.get(value, cache_miss)
+                    if converted is not cache_miss:
+                        row[key] = converted
+                        continue
                 try:
                     row[key] = int(row[key])
                 except :
@@ -33,6 +44,12 @@ def load(ies_name,c):
                         row[key] = float(row[key])
                     except :
                         row[key] = row[key]
+                if cacheable and len(scalar_cache) < 4096:
+                    converted = row[key]
+                    # Shared NaN identity can change container equality. None
+                    # and DictReader's mutable overflow lists bypass the cache.
+                    if not (isinstance(converted, float) and converted != converted):
+                        scalar_cache[value] = converted
 
             ies_data.append(row)
 

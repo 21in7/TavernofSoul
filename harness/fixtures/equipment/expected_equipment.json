@@ -1,0 +1,114 @@
+{
+  "sword_min": 7000,
+  "sword_max": 7100,
+  "armor_def": 9000,
+  "armor_mdef": 4500,
+  "accessory_atk": 3300,
+  "table_levels": [
+    540,
+    550,
+    560
+  ],
+  "unregistered": {
+    "item_goddess_reinforce_580.ies": 580
+  },
+  "transcend": [
+    3,
+    6,
+    9,
+    12,
+    15,
+    18,
+    21,
+    24,
+    27,
+    30,
+    33
+  ],
+  "weapon_material_6": {
+    "harness_ore": 36,
+    "harness_dust": 12
+  },
+  "weapon_material_30": {
+    "harness_ore": 180,
+    "harness_dust": 60
+  },
+  "armor_material_6": {
+    "harness_ore": 18,
+    "harness_dust": 6
+  },
+  "armor_material_30": {
+    "harness_ore": 90,
+    "harness_dust": 30
+  },
+  "accessory_material_6": {
+    "harness_ore": 12,
+    "harness_dust": 7
+  },
+  "accessory_material_30": {
+    "harness_ore": 60,
+    "harness_dust": 31
+  },
+  "gem_weapon": [
+    {
+      "Stat": "ADD_ATK",
+      "Value": 30,
+      "Level": 1
+    },
+    {
+      "Stat": "ADD_MATK",
+      "Value": -5,
+      "Level": 1
+    },
+    {
+      "Stat": "ADD_ATK",
+      "Value": 60,
+      "Level": 2
+    },
+    {
+      "Stat": "ADD_MATK",
+      "Value": -10,
+      "Level": 2
+    }
+  ],
+  "gem_armor": [
+    {
+      "Stat": "ADD_DEF",
+      "Value": 10,
+      "Level": 1
+    },
+    {
+      "Stat": "ADD_HP",
+      "Value": -2,
+      "Level": 1
+    },
+    {
+      "Stat": "ADD_DEF",
+      "Value": 20,
+      "Level": 2
+    },
+    {
+      "Stat": "ADD_HP",
+      "Value": -4,
+      "Level": 2
+    }
+  ],
+  "gem_hand_foot": [
+    {
+      "Stat": "ADD_STR",
+      "Value": 1,
+      "Level": 1
+    },
+    {
+      "Stat": "ADD_STR",
+      "Value": 2,
+      "Level": 2
+    }
+  ],
+  "skill_gem": [
+    {
+      "Stat": "Fixture Fire +1",
+      "Level": 1
+    }
+  ]
+}

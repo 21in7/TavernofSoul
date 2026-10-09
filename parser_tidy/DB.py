@@ -11,6 +11,13 @@ import logging
 import json
 import shutil
 import time
+import sys
+
+# The flat parser also runs directly from parser_tidy/ in regional cron jobs.
+_django_project = join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'TavernofSoul')
+if _django_project not in sys.path:
+    sys.path.append(_django_project)
+from ipfparser.contracts import load_release, validate_release
 
 
 def _atomic_write_json(filepath, item):
@@ -24,7 +31,7 @@ def _atomic_write_json(filepath, item):
     dirname = os.path.dirname(filepath)
     tmp = filepath + '.tmp'
     with open(tmp, 'w') as f:
-        json.dump(item, f)
+        f.write(json.dumps(item, allow_nan=False))
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, filepath)
@@ -74,7 +81,8 @@ class ToS_DB():
                 # armor/weapon용 Lua 분기가 없으므로 material은 acc만 생성한다.
                 # 정적 등록은 유지하되, 현재 지역에 파일이 없으면(twtos/ktest)
                 # parse_goddess_EQ의 file_dict 게이트가 material 생성을 건너뛴다.
-                'item_goddess_reinforce_550.ies' : 550}
+                'item_goddess_reinforce_550.ies' : 550,
+                'item_goddess_reinforce_560.ies' : 560}
     # Declared order defines deterministic precedence for duplicate raw IDs.
     # Canonical recipe IDs are handled separately; this does not remove collisions.
     ITEM_IES = (
@@ -197,6 +205,15 @@ class ToS_DB():
             path = join(self.BASE_PATH_INPUT, path)
             self.data[i] = self.importJSON(path)
         
+    def _validate_release(self, version_payload):
+        data = dict(self.data)
+        if version_payload is not None:
+            data['version'] = version_payload
+        validate_release(data, require_version=version_payload is not None)
+
+    def _validate_staged_release(self, directory, version_payload):
+        load_release(directory, require_version=version_payload is not None)
+
     def export(self, version_payload=None):
         """모든 data 컬렉션을 임시 staging 디렉터리에 완전히 직렬화하고
         검증한 뒤, 전체 성공 시에만 공개 파일을 백업·롤백으로 일괄 교체한다.
@@ -239,6 +256,8 @@ class ToS_DB():
             또는 전부 구버전 둘 중 하나로만 귀결된다. importer 는 cron 이 parser
             전체 성공 후에만 실행되므로 혼합 관찰 창에 도달하지 않는다.
         """
+        # Reject domain errors before creating staging or touching any old release.
+        self._validate_release(version_payload)
         release_dir = self.BASE_PATH_OUTPUT
         staging_dir = release_dir.rstrip('/') + '.staging'
         backup_dir = release_dir.rstrip('/') + '.backup'
@@ -284,6 +303,7 @@ class ToS_DB():
             # 2) 각 파일이 온전히 역직렬화되는지 검증.
             for key, filename, staging_path in written:
                 _validate_json_file(staging_path)
+            self._validate_staged_release(staging_dir, version_payload)
 
             # 3) 교체 전 기존 공개 파일을 백업으로 복사(copy).
             #    copy 를 쓰므로 백업 단계 실패 시 공개 파일은 원래 상태 그대로다.

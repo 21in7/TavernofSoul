@@ -9,6 +9,7 @@ PROFILING_REVIEW P0 (설계 후 범위): export() 는 모든 data 컬렉션을
 이 테스트는 DB.py 의 export(), _atomic_write_json, _validate_json_file 을
 직접 검증한다.
 """
+import io
 import json
 import os
 import shutil
@@ -26,7 +27,14 @@ if PARENT not in sys.path:
 def _make_constants(release_dir, data):
     """export() 에 필요한 최소 ToS_DB 표면을 가짜로 만든다."""
     from DB import ToS_DB
-    c = ToS_DB.__new__(ToS_DB)  # __init__ 건너뛰기(클래스 가변 상태 오염 방지)
+    class StorageDB(ToS_DB):
+        # This suite isolates file promotion using intentionally arbitrary data.
+        # Real domain validation is exercised by test_release_contract.py.
+        def _validate_release(self, version_payload):
+            pass
+        def _validate_staged_release(self, directory, version_payload):
+            pass
+    c = StorageDB()
     c.BASE_PATH_OUTPUT = release_dir
     c.data = data
     return c
@@ -41,6 +49,108 @@ class TestAtomicWriteJson:
             with open(path) as f:
                 assert json.load(f) == {'a': 1}
             assert not os.path.exists(path + '.tmp')
+
+    def test_matches_standard_dump_bytes(self, tmp_path):
+        from DB import _atomic_write_json
+        item = {
+            '한글': '따옴표 "와 역슬래시 \\',
+            'controls': '\n\r\t\b\f\x00\x1f',
+            'nested': {
+                'z': [True, False, None, 460, -7, 1.25, -0.0],
+                'a': {'name': '장비', 'empty': []},
+            },
+        }
+        reference = io.StringIO()
+        json.dump(item, reference, allow_nan=False)
+        path = tmp_path / 'out.json'
+
+        _atomic_write_json(str(path), item)
+
+        assert path.read_bytes() == reference.getvalue().encode('ascii')
+        assert not (tmp_path / 'out.json.tmp').exists()
+
+    @pytest.mark.parametrize('value', [
+        float('nan'), float('inf'), float('-inf'),
+    ], ids=['nan', 'positive-infinity', 'negative-infinity'])
+    def test_nonfinite_numbers_preserve_old_bytes(self, tmp_path, value):
+        from DB import _atomic_write_json
+        path = tmp_path / 'out.json'
+        old_bytes = b'{ "old" : true }\n'
+        path.write_bytes(old_bytes)
+
+        with pytest.raises(ValueError):
+            _atomic_write_json(str(path), {'value': value})
+
+        assert path.read_bytes() == old_bytes
+
+    @pytest.mark.parametrize('case, error', [
+        ('unserializable', TypeError),
+        ('circular', ValueError),
+    ])
+    def test_invalid_objects_preserve_old_bytes(self, tmp_path, case, error):
+        from DB import _atomic_write_json
+        path = tmp_path / 'out.json'
+        old_bytes = b'{ "old" : true }\n'
+        path.write_bytes(old_bytes)
+        item = {'value': object()}
+        if case == 'circular':
+            item = {}
+            item['self'] = item
+
+        with pytest.raises(error):
+            _atomic_write_json(str(path), item)
+
+        assert path.read_bytes() == old_bytes
+
+    @pytest.mark.parametrize('stage', ['flush', 'fsync'])
+    def test_durability_failure_propagates_and_preserves_old_bytes(
+        self, tmp_path, monkeypatch, stage,
+    ):
+        from DB import _atomic_write_json
+        path = tmp_path / 'out.json'
+        old_bytes = b'{ "old" : true }\n'
+        path.write_bytes(old_bytes)
+        failure = OSError('simulated %s failure' % stage)
+
+        if stage == 'flush':
+            original_open = open
+
+            class FlushFailure:
+                def __init__(self, file):
+                    self.file = file
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return self.file.__exit__(*args)
+
+                def __getattr__(self, name):
+                    return getattr(self.file, name)
+
+                def flush(self):
+                    raise failure
+
+            def fail_tmp_flush(file, *args, **kwargs):
+                opened = original_open(file, *args, **kwargs)
+                if str(file) == str(path) + '.tmp':
+                    return FlushFailure(opened)
+                return opened
+
+            monkeypatch.setattr('DB.open', fail_tmp_flush, raising=False)
+        else:
+            def fail_fsync(fd):
+                raise failure
+
+            monkeypatch.setattr('DB.os.fsync', fail_fsync)
+
+        with pytest.raises(OSError, match='simulated %s failure' % stage) as exc:
+            _atomic_write_json(str(path), {'new': True})
+
+        assert exc.value is failure
+        assert path.read_bytes() == old_bytes
+        # Serialization reached the real temporary file, but was not promoted.
+        assert (tmp_path / 'out.json.tmp').read_bytes() == b'{"new": true}'
 
     def test_preserves_old_on_replace_failure(self, monkeypatch):
         from DB import _atomic_write_json

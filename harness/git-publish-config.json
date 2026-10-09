@@ -1,0 +1,10 @@
+{
+  "version": "github-v1",
+  "enabled": true,
+  "repository": "21in7/TavernofSoul",
+  "base": "master",
+  "merge_method": "squash",
+  "required_checks": ["Offline harness (SQLite)", "MySQL harness", "Chromium browser harness"],
+  "check_app": "github-actions",
+  "wait_seconds": 1800
+}

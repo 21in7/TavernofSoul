@@ -1,0 +1,54 @@
+{
+  "jobs_by_name": {
+    "Harness_Mage": {"$ID": "300", "Name": "Fixture Mage", "JobTree": "Wizard", "IsStarter": true, "StatBase_INT": 20}
+  },
+  "skills_by_name": {
+    "Harness_Fire": {
+      "$ID": "400", "Name": "Fixture Fire", "Icon": "icon_harness_fire", "Element": "Fire",
+      "BasicSP": 15, "BasicCoolDown": 6000, "Link_Job": "300", "MaxLevel": 3,
+      "UnlockClassLevel": 5, "OverHeat": 2, "RequiredStanceCompanion": "YES",
+      "sfr": [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220],
+      "CaptionRatio": [40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40],
+      "CaptionTime": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      "SkillSR": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+      "SpendItemCount": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+      "SpendPoison": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+      "SpendSP": [15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39],
+      "CoolDown": [6000, 5900, 5800, 5700, 5600, 5500, 5400, 5300, 5200, 5100, 5000, 4900, 4800]
+    }
+  },
+  "monsters_by_name": {
+    "harness_wolf": {
+      "$ID": 500, "Name": "Fixture Wolf", "Armor": "Plate", "Race": "BEAST", "Level": 10,
+      "Stat_HP": 500, "Stat_ATTACK_PHYSICAL_MIN": 30, "Stat_ATTACK_PHYSICAL_MAX": 35,
+      "Stat_ATTACK_MAGICAL_MIN": 20, "Stat_ATTACK_MAGICAL_MAX": 25,
+      "EXP": 1000, "EXPClass": 300, "Stat_Accuracy": 30, "Stat_Evasion": 20
+    },
+    "harness_boar": {
+      "$ID": 501, "Name": "Fixture Boar", "Armor": "Leather", "Race": "DEMON", "Level": 20,
+      "Stat_HP": 3333, "Stat_ATTACK_PHYSICAL_MIN": 75, "Stat_ATTACK_PHYSICAL_MAX": 95,
+      "Stat_ATTACK_MAGICAL_MIN": 55, "Stat_ATTACK_MAGICAL_MAX": 65,
+      "EXP": 1234, "EXPClass": 432, "Stat_Accuracy": 26, "Stat_Evasion": 21
+    }
+  },
+  "skill_mon": {
+    "600": {
+      "$ID_NAME": "Mon_HarnessBeast_Attack_1", "Name": "Fixture Claw", "CD": "3000",
+      "SFR": "80", "HitCount": "2", "AAR": "5", "Monster": [500, 501],
+      "TargetBuffs": ["HarnessBleed;4.0;50"]
+    }
+  },
+  "item_monster": [
+    {"Item": "100", "Monster": 500, "Chance": 12.5, "Quantity_MIN": 1, "Quantity_MAX": 3,
+     "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"},
+    {"Item": "101", "Monster": 501, "Chance": 1.0, "Quantity_MIN": 2, "Quantity_MAX": 2,
+     "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"}
+  ],
+  "unresolved_drops": [
+    {"collection": "item_monster", "monster": 500, "monster_name": "harness_wolf",
+     "item_classname": "expired_drop", "source_region": "itos"}
+  ],
+  "build_provenance": {
+    "item_monster": {"source_region": "itos", "input_version": "drop-fixture-v1", "fallback_reason": null}
+  }
+}
