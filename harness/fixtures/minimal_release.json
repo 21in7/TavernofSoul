@@ -1,0 +1,27 @@
+{
+  "items_by_name": {
+    "harness_ore": {
+      "$ID": 100, "$ID_NAME": "harness_ore", "Name": "Harness Ore",
+      "TimeCoolDown": 0, "Description": "하네스 검증용 재료", "Weight": 1,
+      "Tradability": "TTTT", "Type": "Material", "Grade": 1, "Icon": "harness_ore"
+    },
+    "harness_recipe": {
+      "$ID": 100, "$ID_NAME": "harness_recipe", "Name": "Harness Recipe",
+      "TimeCoolDown": 0, "Description": "숫자 ID가 재료와 겹치는 레시피", "Weight": 1,
+      "Tradability": "TTTT", "Type": "Recipe", "Grade": 1, "Icon": "harness_recipe",
+      "Link_Materials": [{"Item": "harness_ore", "Quantity": 2}],
+      "Link_Target": "harness_ore"
+    },
+    "harness_package": {
+      "$ID": 101, "$ID_NAME": "harness_package", "Name": "Harness Package",
+      "TimeCoolDown": 0, "Description": "고정 입력에서 파싱하는 패키지", "Weight": 1,
+      "Tradability": "TTTT", "Type": "Package", "Grade": 1, "Icon": "harness_package",
+      "PackageContents_Raw": ["SCR_USE_STRING_GIVE_ITEM_NUMBER_SPLIT", "harness_ore/5", ""]
+    }
+  },
+  "item_type": {"EQUIPMENT": [], "CARD": [], "RECIPES": ["harness_recipe"], "COLLECTION": []},
+  "npcs": {}, "monsters": {}, "item_monster": [], "maps": {},
+  "map_item": [], "map_npc": [], "map_item_spawn": [],
+  "jobs": {}, "skills": {}, "attributes": {}, "skill_mon": {},
+  "buff": {}, "achievements": {}
+}

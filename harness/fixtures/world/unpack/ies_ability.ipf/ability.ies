@@ -1,0 +1,6 @@
+ClassID,ClassName,Desc,Icon,Name,AlwaysActive,SkillCategory,Job,Level
+920,Harness_FireBoost,하네스 화염 설명,ICON_HARNESS_ATTRIBUTE,하네스 화염 특성,NO,Harness_Fire,,1
+921,Harness_FallbackBoost,A fallback skill attribute,ICON_HARNESS_ATTRIBUTE,Fixture Fallback Boost,YES,,,1
+922,Harness_JobBoost,A job attribute,ICON_HARNESS_ATTRIBUTE,Fixture Job Boost,NO,,Harness_Mage,5
+923,Harness_InactiveAttribute,A discarded attribute,ICON_HARNESS_ATTRIBUTE,Fixture Inactive Attribute,YES,Missing_Skill,,1
+924,Harness_RetiredBoost,A retired skill attribute,ICON_HARNESS_ATTRIBUTE,Fixture Retired Boost,YES,Harness_Orphan,,1

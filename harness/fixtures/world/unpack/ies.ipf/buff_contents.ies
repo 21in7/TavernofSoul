@@ -1,0 +1,2 @@
+ClassID,ClassName,Name,ToolTip,Icon,Keyword,ApplyTime,OverBuff,UserRemove,GroupIndex
+914,Harness_ContentBuff,Fixture Content Buff,A content buff,ICON_HARNESS_BUFF,AURA,0,3,NO,4

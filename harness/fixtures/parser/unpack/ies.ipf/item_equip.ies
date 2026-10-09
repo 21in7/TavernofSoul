@@ -1,0 +1,2 @@
+ClassID,ClassName,Name,Desc,Icon,ItemGrade,SellPrice,ItemCoolDown,LifeTime,MarketTrade,UserTrade,ShopTrade,TeamTrade,GroupName,Weight,ClassType,RefreshScp,MaxDur,ItemLv,UseLv,Material,MaxPR,UseJob,BaseSocket,MaxSocket_COUNT,ItemStar,MATK,MINATK,MAXATK,MDEF,DEF,AttackType,NeedAppraisal,NeedRandomOption,BasicTooltipProp,FileName,OptDesc
+110,harness_sword,Fixture Sword,Lua calculated sword,ICON_HARNESS_SWORD,1,20,0,0,YES,YES,YES,YES,Weapon,3.5,Sword,SCR_HARNESS_REFRESH_WEAPON,2500,0,20,Iron,5,All,1,3,2,0,0,0,0,0,Slash,0,0,ATK,,

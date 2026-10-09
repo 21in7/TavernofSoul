@@ -47,7 +47,6 @@ def parse_attributes( constants):
             obj['UpgradePrice'] = []
             obj['Link_Jobs'] = []
             obj['Link_Skills'] = []
-            
             obj['Link_Skills'] = [skill  for skill in row['SkillCategory'].split(';') if len(skill)]
             if obj['Link_Skills']  == []:
                 if row['Job']:
@@ -81,6 +80,10 @@ def parse_attributes( constants):
                 
             constants.data['attributes'][obj['$ID']] = obj
             constants.data['attributes_by_name'][obj['$ID_NAME']] = obj
+            for job_id in obj['Link_Jobs']:
+                job = constants.data['jobs'][str(job_id)]
+                if obj['$ID'] not in job['Link_Attributes']:
+                    job['Link_Attributes'].append(obj['$ID'])
 
 
 def parse_links(c = None):
@@ -144,50 +147,34 @@ def parse_links_jobs(constants):
                         logging.warn('Missing attribute in ability.ies: %s', row2['ClassName'])
                         continue
 
-                    try:
-                        attribute = constants.data['attributes_by_name'][row2['ClassName']]
-                        attribute['DescriptionRequired'] = attribute['DescriptionRequired'] if attribute['DescriptionRequired'] else ''
-                        attribute['DescriptionRequired'] = attribute['DescriptionRequired'] + '{nl}{b}' + constants.translate(row2['UnlockDesc']) + '{b}'
-                        attribute['LevelMax'] = int(row2['MaxLevel'])
-                        
-                       
-                        # Parse attribute skill (in case it is missing in the ability.ies)
-                        if not attribute['Link_Skills'] and row2['UnlockArgStr'] in constants.data['skills_by_name']:
-                            logging.debug('adding missing skill %s', row2['UnlockArgStr'])
-                            try:
-                                skill = constants.data['skills_by_name'][row2['UnlockArgStr']]
-                                skill['Link_Attributes'].append(attribute['$ID'])
-                                attribute['Link_Skills'].append(skill['$ID'])
-                                constants.data['skills'][str(skill['$ID'])]['Link_Attributes'] = skill['Link_Attributes']
-                                constants.data['attributes'][str(attribute['$ID'])]['Link_Skills'] = attribute['Link_Skills']
-                            except KeyError as e:
-                                logging.warning(f"Error processing skill {row2['UnlockArgStr']}: {e}")
+                    # Invalid required source fields must abort before publication.
+                    max_level = int(row2['MaxLevel'])
+                    unlock_description = constants.translate(row2['UnlockDesc'])
+                    unlock_arg = row2['UnlockArgStr']
+                    unlock_number = row2['UnlockArgNum']
+                    attribute = constants.data['attributes_by_name'][row2['ClassName']]
+                    attribute['DescriptionRequired'] = (attribute['DescriptionRequired'] or '') + \
+                        '{nl}{b}' + unlock_description + '{b}'
+                    attribute['LevelMax'] = max_level
 
+                    # Attribute links use skill names; reverse links use attribute IDs.
+                    if not attribute['Link_Skills'] and unlock_arg in constants.data['skills_by_name']:
+                        attribute['Link_Skills'].append(unlock_arg)
+                    for name in attribute['Link_Skills']:
+                        skill = constants.data['skills_by_name'].get(name)
+                        if skill is not None and attribute['$ID'] not in skill['Link_Attributes']:
+                            skill['Link_Attributes'].append(attribute['$ID'])
 
-                        # Parse attribute job
-                        if not attribute['Link_Skills'] or 'All' in attribute['Link_Skills']:
-                            try:
-                                attribute['Link_Jobs'].append(job['$ID'])
-                                job['Link_Attributes'].append(attribute['$ID'])
-                                constants.data['jobs'][str(job['$ID'])]['Link_Attributes'] = job['Link_Attributes']
-                                constants.data['attributes'][str(attribute['$ID'])] = attribute
-                            except KeyError as e:
-                                logging.warning(f"Error linking job and attribute: {e}")
+                    if not attribute['Link_Skills'] or 'All' in attribute['Link_Skills']:
+                        if job['$ID'] not in attribute['Link_Jobs']:
+                            attribute['Link_Jobs'].append(job['$ID'])
+                        if attribute['$ID'] not in job['Link_Attributes']:
+                            job['Link_Attributes'].append(attribute['$ID'])
 
-                        # Parse attribute unlock
-                        #attribute['Unlock'] = luautil.lua_function_source_to_javascript(
-                        #    luautil.lua_function_source(LUA_SOURCE[row2['UnlockScr']])[1:-1]  # remove 'function' and 'end'
-                        #) if not attribute['Unlock'] and row2['UnlockScr'] else attribute['Unlock']
-
-                        try:
-                            attribute['UnlockArgs'][job['$ID']] = {
-                                'UnlockArgStr': row2['UnlockArgStr'],
-                                'UnlockArgNum': row2['UnlockArgNum'],
-                            }
-                        except KeyError as e:
-                            logging.warning(f"Error setting UnlockArgs: {e}")
-                    except Exception as e:
-                        logging.warning(f"Error processing attribute {row2['ClassName']}: {e}")
+                    attribute['UnlockArgs'][job['$ID']] = {
+                        'UnlockArgStr': unlock_arg,
+                        'UnlockArgNum': unlock_number,
+                    }
 
 
 def parse_clean(constants):
@@ -214,4 +201,3 @@ def parse_clean(constants):
         for skill in constants.data['skills'].values():
             skill['Link_Attributes'] = [link for link in skill['Link_Attributes'] if link != attribute_id]
             constants.data['skills_by_name'] [str(skill['$ID_NAME'])]['Link_Attributes']  =  [link for link in constants.data['skills_by_name'] [str(skill['$ID_NAME'])]['Link_Attributes'] if link != attribute_id]
-            

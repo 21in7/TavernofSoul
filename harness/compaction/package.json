@@ -1,0 +1,7 @@
+{
+  "name": "tavern-fast-jev-compaction",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=18"},
+  "scripts": {"test": "node tests/compaction.test.mjs"}
+}

@@ -1,0 +1,7 @@
+{
+  "Harness_RegionalFallback": {
+    "$ID": "9403", "Name": "Borrowed name must not replace the source",
+    "Description": "KToS 보충 설명", "Effect": "KToS 보충 효과",
+    "Icon": "icon_regional_ktos"
+  }
+}

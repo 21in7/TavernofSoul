@@ -76,6 +76,9 @@ def test_transaction_and_baseline(importer, isolated_db, tmp_path, monkeypatch, 
         if failure == 'import':
             raise RuntimeError('import failed')
     monkeypatch.setattr(cmd, '_import_data', import_data)
+    # Arbitrary data.json isolates transaction/publication failure handling.
+    monkeypatch.setattr(cmd, '_validate_staged_release',
+                        lambda directory: cmd.importJSON(Path(directory) / 'version.json'))
     if failure == 'publish':
         real_replace = module.os.replace
         def replace(source, destination):
@@ -109,8 +112,12 @@ def test_drop_update_and_delete_use_queryset(importer, monkeypatch):
     cmd.importItemMonster({'removed': [row], 'added': [], 'changed': [row]}, 1)
     manager.filter.assert_called_once_with(monster__ids=4, item__ids=8)
     manager.filter.return_value.delete.assert_called_once_with()
-    manager.get.assert_called_once_with(monster__ids=4, item__ids=8)
-    manager.get.return_value.save.assert_called_once_with()
+    manager.update_or_create.assert_called_once_with(
+        monster=module.Monsters.objects.get.return_value,
+        item=module.Items.objects.get.return_value,
+        defaults={'chance': 2, 'qty_min': 1, 'qty_max': 1})
+    module.Monsters.objects.get.assert_called_once_with(ids=4)
+    module.Items.objects.get.assert_called_once_with(ids=8)
 
 
 def test_npc_delete_uses_monster_field(importer, monkeypatch):

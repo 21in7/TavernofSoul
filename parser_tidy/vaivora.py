@@ -260,6 +260,30 @@ def _load_dicid_translation(c):
     return out
 
 
+class _TooltipIndexTarget:
+    """Collect tooltip attributes in document preorder without building a tree."""
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    def start(self, tag, attrib):
+        if tag != 'dic_data':
+            return
+        m = _TOOLTIP_KEY_PAT.search(attrib.get('FilenameWithKey', '') or '')
+        if m:
+            self.raw.setdefault(m.group(1), {})[int(m.group(2))] = (
+                attrib.get('ID', ''), attrib.get('kr') or '')
+
+    def end(self, tag):
+        pass
+
+    def data(self, text):
+        pass
+
+    def close(self):
+        return None
+
+
 def _build_tooltip_index(c):
     """tooltip_<X>_Data_<n> -> text. ktos/ktest: kr from DicIDTable.xml.
     itos/jtos/twtos: dicid -> translated .tsv (fallback to kr if untranslated)."""
@@ -268,12 +292,8 @@ def _build_tooltip_index(c):
         logging.warning('DicIDTable.xml not found at %s', dicid_path)
         return {}
     raw = {}  # name -> {idx: (dicid, kr)}
-    for el in ET.parse(dicid_path).getroot().iter('dic_data'):
-        m = _TOOLTIP_KEY_PAT.search(el.get('FilenameWithKey', '') or '')
-        if not m:
-            continue
-        raw.setdefault(m.group(1), {})[int(m.group(2))] = (
-            el.get('ID', ''), el.get('kr') or '')
+    with open(dicid_path, 'rb') as source:
+        ET.parse(source, parser=ET.XMLParser(target=_TooltipIndexTarget(raw)))
 
     if c.region in ('ktos', 'ktest'):
         return {name: ''.join(parts[i][1] for i in sorted(parts))

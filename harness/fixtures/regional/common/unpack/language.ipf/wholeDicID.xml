@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<dictionary>
+  <file name="xml\regional.xml">
+    <data original="원석" dicid="@dicID_^*$HARNESS_ORE_NAME$*^" />
+    <data original="원석 설명" dicid="@dicID_^*$HARNESS_ORE_DESC$*^" />
+    <data original="하네스 검" dicid="@dicID_^*$REGIONAL_SWORD$*^" />
+    <data original="하네스 지팡이" dicid="@dicID_^*$REGIONAL_STAFF$*^" />
+    <data original="하네스 갑옷" dicid="@dicID_^*$REGIONAL_ARMOR$*^" />
+    <data original="하네스 카드" dicid="@dicID_^*$REGIONAL_CARD$*^" />
+    <data original="하네스 수집" dicid="@dicID_^*$REGIONAL_COLLECTION$*^" />
+    <data original="지역별 추가 아이템" dicid="@dicID_^*$REGIONAL_ITEM_DESC$*^" />
+    <data original="하네스 화염" dicid="@dicID_^*$REGIONAL_FIRE$*^" />
+    <data original="하네스 화염 설명" dicid="@dicID_^*$REGIONAL_FIRE_DESC$*^" />
+    <data original="하네스 보충술" dicid="@dicID_^*$REGIONAL_SUPPORT$*^" />
+    <data original="하네스 마법사" dicid="@dicID_^*$REGIONAL_MAGE$*^" />
+    <data original="지역별 마법사" dicid="@dicID_^*$REGIONAL_MAGE_DESC$*^" />
+    <data original="하네스 들판" dicid="@dicID_^*$HARNESS_FIELD_NAME$*^" />
+    <data original="하네스 화염 특성" dicid="@dicID_^*$HARNESS_ATTR_NAME$*^" />
+    <data original="하네스 방패 버프" dicid="@dicID_^*$HARNESS_BUFF_NAME$*^" />
+    <data original="하네스 방패 설명" dicid="@dicID_^*$HARNESS_BUFF_DESC$*^" />
+  </file>
+</dictionary>

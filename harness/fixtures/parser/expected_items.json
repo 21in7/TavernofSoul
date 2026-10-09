@@ -1,0 +1,46 @@
+{
+  "harness_ore": {
+    "$ID": "100", "$ID_NAME": "harness_ore", "Name": "Fixture Ore",
+    "Description": "Translated ore description", "Icon": "icon_harness_ore",
+    "Type": "MATERIAL", "Grade": 1, "Weight": 0.25,
+    "TimeCoolDown": 2.0, "Tradability": "TFFT"
+  },
+  "harness_dust": {
+    "$ID": "101", "Name": "Fixture Dust", "Type": "MATERIAL", "Grade": 2,
+    "Description": "Dust, used for crafting", "Weight": 2.5, "Tradability": "TTTT"
+  },
+  "harness_sword": {
+    "$ID": "110", "Name": "Fixture Sword", "Type": "Equipment", "Grade": 1,
+    "Durability": 25.0, "Level": 20, "RequiredLevel": 20, "RequiredClass": "TTTTT",
+    "Sockets": 1, "SocketsLimit": 3, "Potential": 5, "Stars": 2,
+    "TypeEquipment": "Sword", "TypeAttack": "Slash",
+    "Stat_ATTACK_PHYSICAL_MIN": 140, "Stat_ATTACK_PHYSICAL_MAX": 147,
+    "Bonus": [["STR", 2]], "TranscendPrice": [3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+  },
+  "harness_recipe": {
+    "$ID": "100", "Name": "Recipe - Fixture Sword", "Type": "RECIPES",
+    "Link_Target": "harness_sword",
+    "Link_Materials": [{"Item": "harness_ore", "Quantity": 2}, {"Item": "harness_dust", "Quantity": 3}]
+  },
+  "harness_package": {
+    "$ID": "200", "Name": "Fixture Package", "Type": "PACKAGE", "TimeCoolDown": 2.0,
+    "PackageContents": {"random": false, "kind": "fixed", "items": [
+      {"item": "harness_ore", "name": "Fixture Ore", "count": 5, "options": [["ItemExp", "60"]]}
+    ]}
+  },
+  "harness_mixed": {
+    "$ID": "201", "Name": "Fixture Mixed Package", "Type": "PACKAGE",
+    "PackageContents": {"random": false, "kind": "fixed", "items": [
+      {"item": "harness_ore", "name": "Fixture Ore", "count": 3, "options": []}
+    ], "unresolved": [
+      {"item": "expired_material", "count": 2, "options": [["ItemExp", "7"]]}
+    ]}
+  },
+  "harness_random": {
+    "$ID": "202", "Name": "Fixture Random Package", "Type": "PACKAGE",
+    "PackageContents": {"random": true, "kind": "multiple", "items": [], "alternatives": [
+      [{"item": "harness_ore", "name": "Fixture Ore", "count": 1, "options": []},
+       {"item": "harness_dust", "name": "Fixture Dust", "count": 2, "options": []}]
+    ]}
+  }
+}

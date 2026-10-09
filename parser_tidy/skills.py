@@ -188,7 +188,8 @@ def fill_missing_from_fallback_regions(constants):
     Priority: ktos -> ktest. This helps itos when new content is not yet
     translated or icons are not shipped, so the site can still show rich data.
     """
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Fallback releases belong to the input project, including isolated builds.
+    project_root = os.path.dirname(os.path.normpath(constants.PATH_INPUT_DATA))
     fallback_regions = ['ktos', 'ktest']
 
     # Preload fallback skill maps and icon maps
@@ -413,7 +414,7 @@ def parse_skills(is_rebuild, constants):
             if row['AttackType'] is not None:
                 obj['TypeAttack'].append(TOSAttackType.value_of(row['AttackType']))
 
-            obj['TypeAttack'] = list(set(obj['TypeAttack']))
+            obj['TypeAttack'] = list(dict.fromkeys(obj['TypeAttack']))
             obj['TypeAttack'] = [attack for attack in obj['TypeAttack'] if attack is not None and attack != TOSAttackType.UNKNOWN]
 
             # Add missing Description header

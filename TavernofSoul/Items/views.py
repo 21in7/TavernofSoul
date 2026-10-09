@@ -14,33 +14,8 @@ import math
 import os
 from django.http import JsonResponse
 from django.db.models import Q
-
-goddess_anvil     = [219,219,219,219,219,
-                                     238,238,238,238,238,
-                                     256,256,256,256,256,
-                                     275,275,275,275,275,
-                                     294,294,294,294,294,
-                                     294,294,294,294,294,]
-goddess_scale     = [3,3,3,3,3,
-                     5,5,5,5,5,
-                     7,7,7,7,7,
-                     8,8,8,8,8,
-                     10,11,12,13,14,
-                     15,16,17,18,19                    
-                     ]
-goddess_gabija    = [263,263,263,263,450,
-                     450,450,450,450,673,
-                     673,673,673,673,927,
-                     927,1212,1523,1861,2224,
-                     2586,2948,3311,3673,4036,
-                     4398,4760,5123,5485,5848]
-
-goddess_chance      = [100,100,100,100,100,
-                                          80, 72, 64, 58, 52,
-                                          42, 33, 27, 21, 18,
-                                          12,  8,  6,  4,  3, 
-                                           2, 1,  1,  1,  1 ,
-                                           1, 1,  1,  1,  1]
+from Items.enhancement import calculator_data, gem_bonus_rows
+from Items.models import Gems
 
 bonus_stat_translator={
     'ADD_CLOTH'     : 'Attack against Cloth Armored Targets',
@@ -306,10 +281,10 @@ def item_detail(request, id):
     except:
         pass
 
-    if item.grade == 6:
-        data['scale']   = goddess_scale
-        data['anvil']   = goddess_anvil
-        data['chance']  = goddess_chance
-        data['gabija']  = goddess_gabija
+    data['enhancement'] = calculator_data(item)
+    try:
+        data['gem_bonuses'] = gem_bonus_rows(item.gems)
+    except Gems.DoesNotExist:
+        pass
 
     return render(request, join(APP_NAME,"index.html"),data)

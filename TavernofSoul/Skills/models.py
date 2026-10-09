@@ -24,7 +24,7 @@ class Skills (models.Model):
                     )
     descriptions    = models.TextField( blank=True, null=True,) 
     effect          = models.TextField( blank=True, null=True,) 
-    element         = models.CharField(max_length = 30) 
+    element         = models.CharField(max_length = 30, null=True)
     max_lv          = models.IntegerField( default =-1) 
     unlock          = models.IntegerField( default =0)  
     overheat        = models.IntegerField( default =0)

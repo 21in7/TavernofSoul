@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SocketProperties>
+  <Item Name="harness_gem">
+    <Level Level="0" PropList_TopLeg="DEF/999" />
+    <Level Level="1" PropList_TopLeg="DEF/10" PropList_TopLeg_Penalty="HP/-2"
+           PropList_MainOrSubWeapon="ATK/30" PropList_MainOrSubWeapon_Penalty="MATK/-5"
+           PropList_HandOrFoot="STR/1" />
+    <Level Level="2" PropList_TopLeg="DEF/20" PropList_TopLeg_Penalty="HP/-4"
+           PropList_MainOrSubWeapon="ATK/60" PropList_MainOrSubWeapon_Penalty="MATK/-10"
+           PropList_HandOrFoot="STR/2" />
+  </Item>
+  <Item Name="Gem_Harness_Fire">
+    <Level Level="1" PropList_MainOrSubWeapon="OptDesc/Fixture Fire +1" />
+  </Item>
+</SocketProperties>

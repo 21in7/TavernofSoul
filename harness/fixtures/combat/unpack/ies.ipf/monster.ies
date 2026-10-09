@@ -1,0 +1,3 @@
+ClassID,ClassName,Name,Desc,Icon,GroupName,SkillType,Level,ArmorMaterial,Attribute,RaceType,MonRank,Size
+500,harness_wolf,Fixture Wolf,A Lua calculated monster,ICON_HARNESS_WOLF,Monster,HarnessBeast,10,Iron,Melee,WIDLING,Normal,M
+501,harness_boar,Fixture Boar,A field override monster,ICON_HARNESS_BOAR,Monster,HarnessBeast,20,Leather,Fire,VELNIAS,Boss,L

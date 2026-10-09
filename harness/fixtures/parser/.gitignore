@@ -1,0 +1,3 @@
+# Preserve the small unpacked fixtures despite the repository's *.ipf rule.
+!unpack/*.ipf/
+!unpack/*.ipf/**

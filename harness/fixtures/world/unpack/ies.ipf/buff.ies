@@ -1,0 +1,3 @@
+ClassID,ClassName,Name,ToolTip,Icon,Keyword,ApplyTime,OverBuff,UserRemove,GroupIndex
+911,Harness_BlessingBuff,Fixture Blessing,An ordinary buff,ICON_HARNESS_BUFF,ATK,1000,1,NO,2
+912,Common_HiddenBuff,Fixture Hidden Buff,A common buff,ICON_HARNESS_BUFF,ATK,1000,1,YES,2

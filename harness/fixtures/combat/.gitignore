@@ -1,0 +1,3 @@
+# These are small unpacked text inputs, not downloaded IPF archives.
+!unpack/*.ipf/
+!unpack/*.ipf/**

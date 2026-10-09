@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8'?>
+<SocketProperty>
+  <Item Name="gem_circle_1">
+    <Level Level="0" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/72" PropList_MainOrSubWeapon_Penalty="CRTHR/0" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="1" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/72" PropList_MainOrSubWeapon_Penalty="CRTHR/-3" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="2" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/105" PropList_MainOrSubWeapon_Penalty="CRTHR/-5" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="3" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/138" PropList_MainOrSubWeapon_Penalty="CRTHR/-7" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="4" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/172" PropList_MainOrSubWeapon_Penalty="CRTHR/-9" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="5" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/207" PropList_MainOrSubWeapon_Penalty="CRTHR/-11" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="6" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/240" PropList_MainOrSubWeapon_Penalty="CRTHR/-13" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="7" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/273" PropList_MainOrSubWeapon_Penalty="CRTHR/-15" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="8" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/307" PropList_MainOrSubWeapon_Penalty="CRTHR/-17" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="9" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/342" PropList_MainOrSubWeapon_Penalty="CRTHR/-19" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="10" PropList_TopLeg="None" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="PATK/375" PropList_MainOrSubWeapon_Penalty="CRTHR/-21" PropList_HandOrFoot="None" PropList_HandOrFoot_Penalty="None" />
+  </Item>
+  <Item Name="Gem_Wizard_EnergyBolt">
+    <Level Level="0" PropList_TopLeg="OptDesc/에너지 볼트 스킬 레벨 + 1" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="None" PropList_MainOrSubWeapon_Penalty="None" PropList_HandOrFoot="OptDesc/에너지 볼트 스킬 레벨 + 1" PropList_HandOrFoot_Penalty="None" />
+    <Level Level="1" PropList_TopLeg="OptDesc/에너지 볼트 스킬 레벨 + 1" PropList_TopLeg_Penalty="None" PropList_MainOrSubWeapon="None" PropList_MainOrSubWeapon_Penalty="None" PropList_HandOrFoot="OptDesc/에너지 볼트 스킬 레벨 + 1" PropList_HandOrFoot_Penalty="None" />
+  </Item>
+  </SocketProperty>

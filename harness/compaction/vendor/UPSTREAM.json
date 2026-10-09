@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/tamaratran/fast-jev-compaction",
+  "commit": "e3f262a7f4d42bd8dd32ced30d26176f7cb545b0",
+  "plugin_version": "0.3.0",
+  "compiler": "typescript 5.9.3",
+  "compiler_options": {
+    "target": "es2023",
+    "module": "esnext",
+    "moduleResolution": "bundler"
+  },
+  "source_sha256": {
+    "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+    "hooks/fast-jev.ts": "94355ed9b4ba55d739fc24644d215969584f32f79b92a9aebcf4e7691f8d3cbe",
+    "src/compact.ts": "6dcfe27bc00c1ba9065135a61a128bde0da41b9d300dbfd286de3cd6ce8b745b",
+    "src/request.ts": "aaa0922f89b1a38b304cf8cf922038641338cdae04e1a636c2a618c60c55b53a",
+    "src/state.ts": "585a9e571340a56d604ea7b90a395f286e575fe24b8394600c38064d972c03dc",
+    "src/types.ts": "dbb401b0f9b09af3a8ec4bb331f2c7141dfa70dc38c3dbfd501183d44930973f"
+  },
+  "compiled_sha256": {
+    "hooks/fast-jev.js": "19a078363f7318f4bccba26c0a1790e450ad226ac6f5d4596ec42037809f3b00",
+    "src/compact.js": "876f7642753d8f89fe75eb429c7778a8a4b6f82ce81be72ef42990b0ba9a2108",
+    "src/request.js": "d7351726ccceb9dfc5c332c9749c0f07f67d67cd6bef1e9b61ceabc12d45314b",
+    "src/state.js": "70257a3dc6d2bf04a0e816126227322ec5e221efadfbdae3047334fffb200ac8",
+    "src/types.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881"
+  }
+}

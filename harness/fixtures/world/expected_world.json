@@ -1,0 +1,46 @@
+{
+  "maps": {
+    "900": {"$ID": "900", "$ID_NAME": "harness_field", "Name": "Fixture Field", "HasChallengeMode": true, "HasWarp": true, "Level": 20, "Prop_EliteMonsterCapacity": 2, "Prop_MaxHateCount": 5, "Stars": 1, "Type": "Field", "WorldMap": [1, 1, 1], "Link_Maps": ["901"], "Link_Maps_Floors": ["901"]},
+    "901": {"$ID": "901", "Name": "Fixture Cave", "HasChallengeMode": false, "HasWarp": false, "Level": 30, "Type": "Dungeon", "WorldMap": [1, 1, 2], "Link_Maps": ["900"], "Link_Maps_Floors": []},
+    "902": {"$ID": "902", "Name": "Fixture Sanctuary", "HasChallengeMode": false, "HasWarp": false, "Level": 40, "Type": "Dungeon", "Link_Maps": ["900"], "Link_Maps_Floors": []}
+  },
+  "map_item": [
+    {"Chance": 12.5, "Item": "100", "Map": "900", "Quantity_MAX": 0, "Quantity_MIN": 0, "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"},
+    {"Chance": 15.0, "Item": "101", "Map": "900", "Quantity_MAX": 0, "Quantity_MIN": 0, "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"},
+    {"Chance": 5.0, "Item": "110", "Map": "900", "Quantity_MAX": 0, "Quantity_MIN": 0, "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"},
+    {"Chance": 1.0, "Item": "101", "Map": "901", "Quantity_MAX": 0, "Quantity_MIN": 0, "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"},
+    {"Chance": 12.5, "Item": "100", "Map": "902", "Quantity_MAX": 0, "Quantity_MIN": 0, "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"},
+    {"Chance": 12.5, "Item": "101", "Map": "902", "Quantity_MAX": 0, "Quantity_MIN": 0, "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"},
+    {"Chance": 37.5, "Item": "110", "Map": "902", "Quantity_MAX": 0, "Quantity_MIN": 0, "SourceRegion": "itos", "InputVersion": "drop-fixture-v1"}
+  ],
+  "map_npc": [
+    {"NPC": 500, "Map": "900", "Type": "mon", "Population": 3, "Positions": [[60, 20], [40, 30]], "TimeRespawn": 2.5},
+    {"NPC": 800, "Map": "900", "Type": "npc", "Population": 1, "Positions": [[50, 25]], "TimeRespawn": 10.0}
+  ],
+  "map_item_spawn": [
+    {"Item": "101", "Map": "900", "Population": 1, "Positions": [[0, 0]], "TimeRespawn": 3.0}
+  ],
+  "attributes": {
+    "920": {"$ID_NAME": "Harness_FireBoost", "Name": "Fixture Fire Boost", "Description": "Translated fire boost description{nl}", "LevelMax": 3, "IsToggleable": true, "DescriptionRequired": "{nl}{b}Requires Fixture Fire{b}", "Link_Jobs": [], "Link_Skills": ["Harness_Fire"], "UnlockArgs": {"300": {"UnlockArgStr": "Harness_Fire", "UnlockArgNum": "5"}}},
+    "921": {"$ID_NAME": "Harness_FallbackBoost", "Name": "Fixture Fallback Boost", "LevelMax": 4, "IsToggleable": false, "DescriptionRequired": "{nl}{b}Requires Mage level{b}", "Link_Jobs": [], "Link_Skills": ["Harness_Fire"]},
+    "922": {"$ID_NAME": "Harness_JobBoost", "Name": "Fixture Job Boost", "LevelMax": "5", "IsToggleable": true, "DescriptionRequired": null, "Link_Jobs": ["300"], "Link_Skills": []},
+    "924": {"$ID_NAME": "Harness_RetiredBoost", "Name": "Fixture Retired Boost", "LevelMax": 2, "IsToggleable": false, "Link_Jobs": [], "Link_Skills": ["Harness_Orphan"]}
+  },
+  "buff": {
+    "910": {"$ID_NAME": "Harness_ShieldBuff", "Name": "Fixture Shield Buff", "Description": "A shield{nl}Second line", "ApplyTime": "3500", "OverBuff": "2", "UserRemove": 1, "Keyword": "DEF;SHIELD", "Group1": "Defense", "Group2": "Shield", "Group3": "", "GroupIndex": "1"},
+    "911": {"$ID_NAME": "Harness_BlessingBuff", "Name": "Fixture Blessing", "ApplyTime": "1000", "OverBuff": "1", "UserRemove": 0, "Group1": null, "Group2": null, "Group3": null},
+    "913": {"$ID_NAME": "Harness_MonsterBuff", "ApplyTime": "5000", "OverBuff": "1", "UserRemove": 0},
+    "914": {"$ID_NAME": "Harness_ContentBuff", "ApplyTime": "0", "OverBuff": "3", "UserRemove": 0}
+  },
+  "npcs": {
+    "800": {"$ID": 800, "$ID_NAME": "harness_guide", "Name": "Fixture Guide", "Description": "A fixture NPC", "Icon": null, "Type": "NPC"}
+  },
+  "unresolved_drops": [
+    {"collection": "item_monster", "monster": 500, "monster_name": "harness_wolf", "item_classname": "expired_drop", "source_region": "itos"},
+    {"collection": "map_item", "map": "900", "map_name": "harness_field", "item_classname": "expired_map_item", "source_region": "itos"}
+  ],
+  "build_provenance": {
+    "item_monster": {"source_region": "itos", "input_version": "drop-fixture-v1", "fallback_reason": null},
+    "map_item": {"source_region": "itos", "input_version": "drop-fixture-v1", "fallback_reason": null}
+  }
+}

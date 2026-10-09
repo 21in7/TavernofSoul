@@ -1,0 +1,23 @@
+{
+  "providers": {
+    "codex": {"cli": "codex", "auth": "chatgpt"},
+    "claude": {"cli": "claude", "key_env": "ANTHROPIC_API_KEY", "base_url": "https://api.anthropic.com"},
+    "zai": {"cli": "claude", "key_env": "ZAI_API_KEY", "base_url": "https://api.z.ai/api/anthropic"},
+    "typesafe": {"transport": "http", "key_env": "TYPESAFE_API_KEY", "endpoint": "https://api.typesafe.ai/v1/systemone"}
+  },
+  "compaction": {
+    "enabled": true,
+    "providers": ["claude", "zai"],
+    "plugin_path": "harness/compaction",
+    "minimum_cli_version": "2.1.287"
+  },
+  "roles": {
+    "coordinator": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "high", "instructions": "AGENTS.md", "check": "check"},
+    "downloader": {"provider": "zai", "model": "glm-5.3-flash", "instructions": "downloader/AGENTS.md", "check": "check-downloader"},
+    "parser": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "high", "instructions": "parser_tidy/AGENTS.md", "check": "check-parser"},
+    "django": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "medium", "instructions": "TavernofSoul/AGENTS.md", "check": "check-django"},
+    "git": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "medium", "instructions": "AGENTS.md", "check": "check"},
+    "reviewer": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "medium", "max_budget_usd": 2, "instructions": "AGENTS.md", "check": "check"},
+    "escalation": {"provider": "claude", "model": "claude-opus-5-5", "effort": "high", "max_budget_usd": 5, "instructions": "AGENTS.md", "check": "check"}
+  }
+}

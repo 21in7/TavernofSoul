@@ -17,7 +17,7 @@ from os.path import join, exists
 from Monsters.models import Monsters, Item_Monster, Skill_Monster
 import os
 import shutil
-from Items.models import Items, Equipments, Equipment_Bonus, Cards, Recipes, Books
+from Items.models import Items, Equipments, Equipment_Bonus, Cards, Recipes, Books, Gems, GoddessReinforcement
 from Items.models import Item_Recipe_Material, Item_Recipe_Target, Item_Type
 from Items.models import Collections, Item_Collection_Material, Item_Collection_Bonus
 from Maps.models import Maps, Map_Item, Map_NPC,Map_Item_Spawn
@@ -27,6 +27,8 @@ from Skills.models import Skills
 from Attributes.models import Attributes
 from Dashboard.models import Version
 from Other.models import Achievements
+from ipfparser.contracts import (ContractError, RECIPE_ID_PREFIX, canonical_item_id,
+                                 load_json, load_release, GEM_SLOTS, inactive_recipe, number)
 class Command(BaseCommand):
     
     base_path               = settings.JSON_ROOT
@@ -53,13 +55,15 @@ class Command(BaseCommand):
     achieve_path            = 'achievements.json'
     def importJSON(self, file):
         try:
-            with open(file, encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError) as exc:
+            return load_json(file)
+        except ContractError as exc:
             raise CommandError("Cannot load JSON {}: {}".format(file, exc)) from exc
-        if not isinstance(data, (dict, list)):
-            raise CommandError("Expected an object or array in {}".format(file))
-        return data
+
+    def _validate_staged_release(self, directory):
+        try:
+            return load_release(directory)
+        except ContractError as exc:
+            raise CommandError('Invalid release: {}'.format(exc)) from exc
 
     def add_arguments(self, parser):
         parser.add_argument('-u', '--update', type=int, help='Indicate wether ignore any \
@@ -102,7 +106,7 @@ class Command(BaseCommand):
     # Item/Recipe 가 같은 숫자 ClassID 를 공유해 comparer 의 $ID re-key 에서
     # 49건이 드롭되는 것을 막는다. RECIPES 집합(item_type.json)으로 recipe 를
     # 식별하며, transform 으로 comparer 진입 전에 양쪽 JSON 에 일괄 적용한다.
-    RECIPE_ID_PREFIX = 'recipe-'
+    RECIPE_ID_PREFIX = RECIPE_ID_PREFIX
 
     def _canonical_item_id(self, entry, recipe_id_names):
         """entry 가 recipe 면 dict 복사 후 $ID 에 'recipe-' 접두를 붙인다.
@@ -113,9 +117,17 @@ class Command(BaseCommand):
             return entry
         if entry.get('$ID_NAME') in recipe_id_names:
             e = dict(entry)
-            e['$ID'] = self.RECIPE_ID_PREFIX + str(e.get('$ID', ''))
+            e['$ID'] = canonical_item_id(e, recipe_id_names)
             return e
         return entry
+
+    def _item_by_name(self, name):
+        # ClassName is case-sensitive in IES. MySQL's default collation is not:
+        # GoldMoru_Box_S and goldmoru_box_S are distinct items in the same release.
+        # Resolve validated references through their unambiguous canonical IDs.
+        if hasattr(self, '_item_ids_by_name'):
+            return Items.objects.get(ids=self._item_ids_by_name[name])
+        return Items.objects.get(id_name=name)
 
     @staticmethod
     def _apply_transform(data, transform):
@@ -152,7 +164,7 @@ class Command(BaseCommand):
             rows = data.values() if isinstance(data, dict) else data
             result = {}
             for row in rows:
-                key = tuple(row[field] for field in ids)
+                key = tuple(str(row[field]) for field in ids)
                 result[key] = row
             return result
 
@@ -187,11 +199,9 @@ class Command(BaseCommand):
         try:
             for name in os.listdir(self.base_path):
                 if name.endswith('.json'):
-                    self.importJSON(join(self.base_path, name))
                     shutil.copy2(join(self.base_path, name), join(staged, name))
-            ver_json = self.importJSON(join(staged, self.version_path))
-            if not isinstance(ver_json, dict) or not ver_json.get('version'):
-                raise CommandError('version.json must contain a nonempty version')
+            # Validate the exact snapshot used below, before the first DB query.
+            ver_json = self._validate_staged_release(staged)
             self.base_path = staged
             self._previous_path = destination
             self._reconcile_map_relations = not exists(join(destination, '.map-relations-v1'))
@@ -217,6 +227,7 @@ class Command(BaseCommand):
             self.base_path = original_base
             self.__dict__.pop('_previous_path', None)
             self.__dict__.pop('_reconcile_map_relations', None)
+            self.__dict__.pop('_item_ids_by_name', None)
             if exists(staged):
                 shutil.rmtree(staged)
         if moved_old:
@@ -230,11 +241,15 @@ class Command(BaseCommand):
         # Item/Recipe 49건 ClassID 충돌로 인한 드롭을 방지한다. transform 은
         # comparer 내에서 양쪽 JSON(now/prev)에 일괄 적용된다.
         recipe_id_names = set(item_type.get('RECIPES', []))
+        self._item_ids_by_name = {
+            name: canonical_item_id(row, recipe_id_names)
+            for name, row in self.importJSON(join(self.base_path, self.item_path)).items()}
         items           = self.comparer(
             self.item_path,
             transform=lambda e: self._canonical_item_id(e, recipe_id_names),
         )
         self.importItem(items,item_type, update)
+        self.importReinforcement()
         
         npc             = self.comparer(self.npc_path)
         monster         = self.comparer(self.monster_path)
@@ -260,6 +275,8 @@ class Command(BaseCommand):
         
         skills         = self.importJSON(join(self.base_path,self.skills_path))
         self.importSkills(skills, update)
+        # Gem skill FKs must be created after this release's skills exist.
+        self.importGems(item_type)
         
         attrib         = self.comparer(self.attributes_path)
         self.importAttrib(attrib, update)
@@ -383,6 +400,45 @@ class Command(BaseCommand):
         
            
         
+    def importGems(self, item_type):
+        names = item_type.get('GEMS', [])
+        Gems.objects.exclude(item__id_name__in=names).delete()
+        if not names:
+            return
+        source = self.importJSON(join(self.base_path, self.item_path))
+        rows = source.values() if isinstance(source, dict) else source
+        by_name = {row['$ID_NAME']: row for row in rows}
+        for name in names:
+            row = by_name[name]
+            skill_id = row.get('Link_Skill')
+            skill = Skills.objects.get(ids=str(skill_id)) if skill_id is not None else None
+            bonuses = {slot: row.get('Bonus' + slot, []) for slot in GEM_SLOTS}
+            Gems.objects.update_or_create(item=self._item_by_name(name), defaults={
+                'skill': skill, 'socket_bonuses': json.dumps(bonuses, ensure_ascii=False)})
+
+    def importReinforcement(self):
+        table_path = join(self.base_path, 'goddess_reinf.json')
+        tables = self.importJSON(table_path) if exists(table_path) else {}
+        material_path = join(self.base_path, 'goddess_reinf_mat.json')
+        materials = self.importJSON(material_path) if exists(material_path) else {}
+        materials = {int(key): groups for key, groups in materials.items()}
+        keep = []
+        for raw_level, rows in tables.items():
+            level = int(raw_level)
+            groups = materials.get(level, {})
+            if level == 460 and set(groups) == {'armor'}:
+                # Legacy JSON wraps the shared level-460 Lua costs in 'armor'.
+                groups = {group: groups['armor'] for group in ('acc', 'armor', 'weapon')}
+            for row in rows:
+                step = int(row['ClassID'])
+                costs = {group: values for group, steps in groups.items()
+                         for key, values in steps.items() if int(key) == step}
+                obj, _ = GoddessReinforcement.objects.update_or_create(level=level, step=step, defaults={
+                    'chance': int(row['BasicProp']), 'source': json.dumps(row, ensure_ascii=False),
+                    'materials': json.dumps(costs, ensure_ascii=False)})
+                keep.append(obj.pk)
+        GoddessReinforcement.objects.exclude(pk__in=keep).delete()
+
     def makeEQ(self, item, i, item_type_db,upd = False):
         try:
             handler = Equipments.objects.get(item = item)
@@ -397,6 +453,8 @@ class Command(BaseCommand):
         
         handler.durability      = i['Durability']
         handler.level           = i['Level']
+        handler.reinforcement_level = i.get('GoddessReinforceLevel')
+        handler.reinforcement_group = i.get('GoddessReinforceGroup')
         handler.potential       = i['Potential']
         handler.requiredClass   = i['RequiredClass']
         handler.sockets_limit   = i['SocketsLimit']
@@ -446,7 +504,9 @@ class Command(BaseCommand):
         handler.save()
     
     def makeRecipe(self, item, i, item_type_db,upd = False):
-        
+        if inactive_recipe(i):
+            Recipes.objects.filter(item=item).delete()
+            return
         if ('Link_Materials' not in i):
             raise CommandError("invalid recipe {}".format(i['Name']))
         
@@ -461,7 +521,7 @@ class Command(BaseCommand):
         for link in i['Link_Materials']:
             try:
                 mat             = Item_Recipe_Material(recipe = handler)
-                mat.material    = Items.objects.get(id_name = link['Item'])
+                mat.material    = self._item_by_name(link['Item'])
                 mat.qty         = link['Quantity']
                 mat.save()
             except ObjectDoesNotExist:
@@ -473,7 +533,7 @@ class Command(BaseCommand):
             return
         try:
             target = Item_Recipe_Target(recipe = handler)
-            target.target = Items.objects.get(id_name = i['Link_Target'])
+            target.target = self._item_by_name(i['Link_Target'])
             target.save()
         except ObjectDoesNotExist:
             raise CommandError("[RCP] {} ({}) didnt have target".format(i['Name'], i['$ID_NAME']))
@@ -491,7 +551,7 @@ class Command(BaseCommand):
         for link in i['Link_Items']:
             try:
                 mat             = Item_Collection_Material(collection = handler)
-                mat.material    = Items.objects.get(id_name = link)
+                mat.material    = self._item_by_name(link)
                 mat.save()
             except ObjectDoesNotExist:
                 raise CommandError("[RCP] {} ({}) material not found ({})".format(i['Name'], i['$ID_NAME'], link))
@@ -546,8 +606,8 @@ class Command(BaseCommand):
             handler.accuracy        = i['Stat_Accuracy']
             handler.matk_max        = i['Stat_ATTACK_MAGICAL_MAX']
             handler.matk_min        = i['Stat_ATTACK_MAGICAL_MIN']
-            handler.patk_max        = i['Stat_ATTACK_PHYSICAL_MIN']
-            handler.patk_min        = i['Stat_ATTACK_PHYSICAL_MAX']
+            handler.patk_min        = i['Stat_ATTACK_PHYSICAL_MIN']
+            handler.patk_max        = i['Stat_ATTACK_PHYSICAL_MAX']
             handler.blockpen        = i['Stat_BlockPenetration']
             handler.block           = i['Stat_BlockRate']
             handler.critdmg         = i['Stat_CriticalDamage']
@@ -604,16 +664,11 @@ class Command(BaseCommand):
             except ObjectDoesNotExist:
                 logging.warning("failed to delete item_monster {} ({})".format(i['Item'], i['Monster']))
         for i in item_monster['added'] + item_monster['changed']:
-            try:
-                handler                     = Item_Monster.objects.get(monster__ids=i['Monster'], item__ids=i['Item'])
-            except ObjectDoesNotExist:
-                handler = Item_Monster()
-            handler.monster             = Monsters.objects.get(ids = i['Monster'])
-            handler.item                = Items.objects.get(ids = i['Item'])
-            handler.chance              = i['Chance']
-            handler.qty_min             = i['Quantity_MIN']
-            handler.qty_max             = i['Quantity_MAX']
-            handler.save()
+            Item_Monster.objects.update_or_create(
+                monster=Monsters.objects.get(ids=i['Monster']),
+                item=Items.objects.get(ids=i['Item']),
+                defaults={'chance': i['Chance'], 'qty_min': i['Quantity_MIN'],
+                          'qty_max': i['Quantity_MAX']})
         
         
 
@@ -977,21 +1032,18 @@ class Command(BaseCommand):
             handler.ids             = i['$ID']
             handler.id_name         = i['$ID_NAME']            
             handler.name            = i['Name']
-            try:
-                handler.sfr             = int(i['SFR'])
-            except (ValueError, TypeError):
-                handler.sfr             = 0
+            handler.sfr = 0 if i['SFR'] in (None, '') else number(i['SFR'], 'skill_mon.SFR', raw=True)
             handler.element         = i['Attribute']
             handler.cooldown        = int(i['CD'])
             handler.aar             = i['AAR']
+            handler.hit_count       = int(i.get('HitCount') or 1)
             handler.save()
             for monster in i['Monster']:
                 try:
                     link_mon.append(Monsters.objects.get(ids = monster))
                 except ObjectDoesNotExist:
                     raise CommandError("monster(ids) {} not found (for skill)".format(monster))
-            for mon in link_mon:
-                handler.monsters.add(mon)
+            handler.monsters.set(link_mon)
             handler.save()
             
         

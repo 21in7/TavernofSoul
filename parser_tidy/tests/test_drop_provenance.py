@@ -40,6 +40,7 @@ class _FakeConstants:
         if maps_by_name is not None:
             self.data['maps_by_name'] = maps_by_name
         self.data.setdefault('maps', {})
+        self.data.setdefault('item_type', {'RECIPES': []})
 
 
 def _write_lines(path, lines):

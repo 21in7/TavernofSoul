@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 디스코드 웹훅 URL
-WEBHOOK_URL="https://discord.com/api/webhooks/1283619995401720009/cJiHIJdpX4YDmvIyK9e6seVRsna5CldVK5jXTbOBzWIPufYUvnCpTcu7qdkvR-Zz8PVk"
+WEBHOOK_URL="${TAVERN_DISCORD_WEBHOOK_URL:-}"
 
 output_file="/home/ubuntu/cron_itos_output.txt"
 previous_output_file="/home/ubuntu/cron_itos_previous_output.txt"
@@ -38,6 +38,10 @@ download_start_time=$(date +%s)
 cd downloader
 python downloader.py itos
 download_result=$?
+if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 1 ]; then
+    echo "다운로드 실패(return code $download_result). 파싱과 DB import 중단." >&2
+    exit "$download_result"
+fi
 cd ..
 
 download_elapsed=$(measure_time $download_start_time)

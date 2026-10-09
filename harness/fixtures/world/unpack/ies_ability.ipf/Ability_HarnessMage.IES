@@ -1,0 +1,4 @@
+ClassName,MaxLevel,UnlockDesc,UnlockArgStr,UnlockArgNum
+Harness_FireBoost,3,Requires Fixture Fire,Harness_Fire,5
+Harness_FallbackBoost,4,Requires Mage level,Harness_Fire,10
+Harness_RetiredBoost,2,Retired requirement,Harness_Orphan,1
