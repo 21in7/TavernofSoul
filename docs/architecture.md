@@ -145,6 +145,9 @@ NaN·누락 셀의 `None`·초과 필드의 mutable list는 캐시에 넣지 않
 매 load는 원본 파일을 다시 읽으며 호출·파일·지역 사이에 캐시를 공유하지 않는다.
 이 변환은 raw 장비 CSV의 문자열 UseLv를 Lua로 전달하는 `items.parse_equips` 경로와 별개다.
 
+`items.parse_items`와 `items.parse_equips`는 처리 완료된 원본 CSV 행을 추가 목록에 누적하지 않는다.
+필요한 출력 객체와 Lua 참조는 그대로 유지한다.
+
 `items.parse_equips`는 출력 `EQUIPMENT` 이름 목록의 기존 list 객체·순서·중복을 보존하며,
 새 이름은 원본 행의 첫 등장 순서로 한 번만 추가한다.
 중복 확인은 한 호출 안의 임시 set으로만 수행하고, 다음 호출은 현재 목록에서 set을 다시 구축해

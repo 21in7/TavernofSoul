@@ -328,7 +328,6 @@ def parse_items(constants, file_name):
    
     ies_file = io.open(ies_path, 'r', encoding="utf-8")
     ies_reader = csv.DictReader(ies_file, delimiter=',', quotechar='"')
-    rows = []
 
     for row in ies_reader:
         # 언팩이 파일 끝에서 잘리면 마지막 행이 컬럼 부족(None 값)으로 들어온다
@@ -339,7 +338,6 @@ def parse_items(constants, file_name):
                         file_name, row.get('ClassID'), row.get('ClassName'))
             continue
 
-        rows.append(row)
         item_type = row['GroupName'].upper() if 'GroupName' in row else None 
         item_type = row['Category'].upper() if 'Category' in row and row['Category'] != '' else item_type
 
@@ -437,9 +435,6 @@ def parse_equips(constants, filename, _seen_paths=None):
     equipment_name_set = set(equipment_names)
     LUA_RUNTIME = luautil.LUA_RUNTIME
     LUA_SOURCE = luautil.LUA_SOURCE
-    rows = []
-    objs = []
-    types = []
     for row in ies_reader:
       
         if str(row['ClassName']) not in constants.data['items_by_name'].keys():
@@ -452,8 +447,6 @@ def parse_equips(constants, filename, _seen_paths=None):
             
         item_grade = equipment_grade_ratios[safe_item_grade(row)]
         item_type_equipment = row['ClassType']
-        types.append(row['ClassType'])
-        rows.append(row)
         #continue
         obj = constants.data['items_by_name'][str(row['ClassName'])]
         
@@ -657,8 +650,6 @@ def parse_equips(constants, filename, _seen_paths=None):
         obj['model'] = parse_xac.eq_model_name(row,constants)
         constants.data['items'][obj['$ID']] = obj
         constants.data['items_by_name'] [obj['$ID_NAME']] = obj
-        rows.append(row)
-        objs.append(obj)
     return constants
 
 
