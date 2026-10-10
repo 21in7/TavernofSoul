@@ -3,7 +3,7 @@ import os
 from copy import deepcopy
 from pathlib import Path
 
-from .settings_test import *  # noqa: F403
+from .settings_common import *  # noqa: F403
 
 # The launcher owns and cleans this directory; direct invocations must supply it.
 HARNESS_WORK_DIR = Path(os.environ['HARNESS_WORK_DIR'])

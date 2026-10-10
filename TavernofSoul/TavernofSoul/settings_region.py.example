@@ -1,0 +1,50 @@
+"""Copy only for a new installation; never overwrite existing local settings.
+
+Provide all required TAVERN_* variables in the server environment. Hosts are
+comma-separated hostnames/IP addresses without schemes or ports. Importing this
+module configures Django but does not connect to the database.
+"""
+import os
+
+from django.core.exceptions import ImproperlyConfigured
+
+from .settings_common import *  # noqa: F403
+
+
+def _required_env(name):
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        raise ImproperlyConfigured(f'Required environment variable {name} is missing or empty.')
+    return value
+
+
+REGION = _required_env('TAVERN_REGION').strip()
+if REGION not in {'itos', 'jtos', 'ktos', 'ktest', 'twtos', 'test'}:
+    raise ImproperlyConfigured(
+        'TAVERN_REGION must be one of: itos, jtos, ktos, ktest, twtos, test.'
+    )
+
+SECRET_KEY = _required_env('TAVERN_DJANGO_SECRET_KEY')
+DEBUG = False
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in _required_env('TAVERN_ALLOWED_HOSTS').split(',')
+    if host.strip()
+]
+if not ALLOWED_HOSTS or '*' in ALLOWED_HOSTS:
+    raise ImproperlyConfigured('TAVERN_ALLOWED_HOSTS must contain explicit allowed hosts.')
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': _required_env('TAVERN_DB_NAME'),
+        'USER': _required_env('TAVERN_DB_USER'),
+        'PASSWORD': _required_env('TAVERN_DB_PASSWORD'),
+        'HOST': _required_env('TAVERN_DB_HOST'),
+        'PORT': _required_env('TAVERN_DB_PORT'),
+    },
+}
+
+JSON_ROOT = BASE_DIR / ('JSON_' + REGION)
+CHANGES_DIR = BASE_DIR / 'changes' / REGION
+STATIC_ROOT = BASE_DIR / 'staticfiles' / REGION

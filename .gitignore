@@ -20,9 +20,38 @@ TavernofSoul/JSON_ktos/
 TavernofSoul/JSON_ktest/
 TavernofSoul/JSON_jtos/
 TavernofSoul/JSON_twtos/
-TavernofSoul/itos/3.8/*
-TavernofSoul/jtos/3.8/*
-TavernofSoul/ktos/3.8/*
+/TavernofSoul/itos/3.8/
+/TavernofSoul/jtos/3.8/
+/TavernofSoul/ktos/3.8/
+/TavernofSoul/ktest/3.8/
+/TavernofSoul/twtos/3.8/
+
+# Regional deployment files (Passenger entrypoints and restart markers) stay local.
+/TavernofSoul/itos/
+/TavernofSoul/jtos/
+/TavernofSoul/ktos/
+/TavernofSoul/ktest/
+/TavernofSoul/twtos/
+
+# Local environments, backups, and operational configuration (keep on disk).
+.venv/
+venv/
+/backups/
+/*.ini
+/TavernofSoul/*.ini
+/TavernofSoul/TavernofSoul/*.ini
+/TavernofSoul/TavernofSoul/settings.py
+/TavernofSoul/TavernofSoul/shared_settings.py
+/TavernofSoul/TavernofSoul/settings_itos.py
+/TavernofSoul/TavernofSoul/settings_jtos.py
+/TavernofSoul/TavernofSoul/settings_ktos.py
+/TavernofSoul/TavernofSoul/settings_ktest.py
+/TavernofSoul/TavernofSoul/settings_twtos.py
+/TavernofSoul/TavernofSoul/settings_test.py
+/TavernofSoul/TavernofSoul/settings_ktos_d1.py
+/TavernofSoul/TavernofSoul/*.save
+/TavernofSoul/TavernofSoul/*.bak
+/cron_*.sh
 
 # local-only
 .claude/

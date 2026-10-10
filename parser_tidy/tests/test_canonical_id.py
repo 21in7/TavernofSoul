@@ -12,9 +12,11 @@ comparer 자체는 DB 쿼리를 하지 않는 순수 JSON 처리 로직이므로
 실행: 이 테스트는 parser_tidy 의 다른 테스트와 달리 Django 앱 로드가
 필요하므로 별도 실행한다. DB 가 필요 없는 comparer/헬퍼 로직만 다룬다.
 """
+import atexit
 import json
 import os
 import sys
+import tempfile
 
 import pytest
 
@@ -27,7 +29,10 @@ for p in (PARENT, REPO_ROOT, DJANGO_BASE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'TavernofSoul.settings_test')
+_HARNESS_WORK_DIR = tempfile.TemporaryDirectory(prefix='canonical-id-')
+atexit.register(_HARNESS_WORK_DIR.cleanup)
+os.environ['HARNESS_WORK_DIR'] = _HARNESS_WORK_DIR.name
+os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
 
 _DJANGO_READY = False
 
@@ -36,6 +41,11 @@ def _setup_django():
     """Django 앱 로드를 지연 수행한다(모듈 import 시 실패 방지)."""
     global _DJANGO_READY
     if not _DJANGO_READY:
+        os.environ['HARNESS_WORK_DIR'] = _HARNESS_WORK_DIR.name
+        os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
+        from django.conf import settings
+        if settings.configured and getattr(settings, 'SETTINGS_MODULE', None) != 'TavernofSoul.settings_harness':
+            raise RuntimeError('Django must use TavernofSoul.settings_harness')
         import django
         django.setup()
         _DJANGO_READY = True

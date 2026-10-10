@@ -46,10 +46,61 @@ Ubuntu 20.04 ARM 호스트에서는 엔진만 지원 Ubuntu 컨테이너로 실�
 | Django 서빙 | 검색·관계 조회·화면/API 제공 | `TavernofSoul/urls.py`, 각 앱 |
 | 개발 하네스 | 격리 환경·검증 실행·기계가 읽을 수 있는 결과 | `Makefile`, `harness/runner.py` |
 
-운영에서는 `cron_<region>.sh`가 다운로드, 파싱, 적재를 순서대로 호출한다.
-파서 실패 시 import를 중단하는 기존 동작은 `test_cron_guard.py`가 검증한다.
+운영에서는 로컬 파일인 `cron_<region>.sh`가 다운로드, 파싱, 적재를 순서대로 호출한다.
+Git 추적 대상은 5개 지역(`itos`, `jtos`, `ktos`, `ktest`, `twtos`)의
+`cron_<region>.sh.example`이며 실제 지역 cron과 settings는 서버의 로컬 운영 파일이다.
+파서·import 실패 중단은 `parser_tidy/tests/test_cron_guard.py`가 추적되는 예제를 읽어 검증한다.
 다운로더는 변경 0, 변경 없음 1, 실패 2를 반환한다.
-모든 지역 cron의 다운로드 실패 중단은 `downloader/tests/test_downloader.py`가 검증한다.
+모든 지역 예제의 다운로드 실패 중단은 `downloader/tests/test_downloader.py`가 검증한다.
+필수 예제가 없으면 skip 대신 실패하며 운영 cron은 실행하지 않는다.
+테스트는 로컬 운영 cron으로 대체하지 않는다. 다운로드·import 반환 코드 가드만 분리해
+검사하고 파서 실패 가드와 지역 명령 순서를 읽어 확인하므로 운영 파일 없이도 검증할 수 있다.
+
+## 추적되는 설정과 로컬 운영 환경
+
+`TavernofSoul/TavernofSoul/settings_common.py`는 공통 Django 앱·미들웨어·템플릿 등
+소스에 포함할 기본 설정을 제공한다. 운영 DB·비밀값·지역 설정 파일은 읽지 않는다.
+`settings_harness.py`는 이 common을 가져오며 로컬 운영 `settings_test.py`와 분리된다.
+메모리 SQLite, 임시 JSON, `REGION='ktos'`, 오프라인 전용 키와 템플릿 context processor는
+하네스에서 재정의한다. `settings_harness_mysql.py`도 추적되는 하네스 설정으로 유지한다.
+
+새 서버에서 원본 운영 파일이 없는 경우에만 `settings_region.py.example`과
+해당 지역 `cron_<region>.sh.example`을 `cp -n`으로 복사한다.
+설정 파일명과 `TAVERN_REGION`은 같은 지역으로 맞추며, 복사한 로컬 cron의 설치 경로·
+인터프리터·가상환경 경로는 새 서버 환경에 맞춰 준비한다.
+예를 들어 저장소 루트에서 kTOS를 준비하는 명령은 다음과 같다.
+
+```bash
+cp -n TavernofSoul/TavernofSoul/settings_region.py.example TavernofSoul/TavernofSoul/settings_ktos.py
+cp -n cron_ktos.sh.example cron_ktos.sh
+```
+
+**기존 운영 서버에서는 예제를 복사하거나 기존 파일을 덮어쓰지 않는다.**
+새 설치에는 `TAVERN_REGION`, `TAVERN_DJANGO_SECRET_KEY`, `TAVERN_ALLOWED_HOSTS`와
+`TAVERN_DB_NAME`, `TAVERN_DB_USER`, `TAVERN_DB_PASSWORD`, `TAVERN_DB_HOST`, `TAVERN_DB_PORT`를
+서버 환경에 모두 설정해야 한다. 누락·빈 값은 명확한 설정 오류로 실패한다.
+지역은 `itos`, `jtos`, `ktos`, `ktest`, `twtos`, `test`만 허용하며 `DEBUG=False`다.
+`JSON_ROOT`는 `BASE_DIR / ('JSON_' + REGION)`, 변경 기록은 `BASE_DIR / 'changes' / REGION`,
+정적 출력은 `BASE_DIR / 'staticfiles' / REGION`으로 분리한다.
+예제 설정을 읽는 것만으로 실제 DB에 접속하지 않는다. 호스트와 웹훅 등 상세 준비는
+[하네스 사용법의 신규 서버 안내](harness.md#신규-서버의-로컬-운영-파일)를 따른다.
+
+운영 INI·지역별 가상환경(`3.8/`, `.venv/`, `venv/`)·`backups/`·빌드 파일의 Git 추적 제거는
+실제 디스크 삭제가 아니다. 서버 파일은 그대로 보존하며 새 clone에는 환경 설치가 필요하다.
+공통·하네스 설정, `*.example`, `harness/pytest.ini`와 고정 fixture는 계속 추적한다.
+이번 정리는 과거 Git 기록을 재작성하지 않는다.
+`.gitignore` 추가만으로 이미 추적 중인 파일이 Git 추적에서 해제되지는 않는다.
+따라서 이 소스 준비 단계와 서버 파일을 보존하는 후속 추적 해제는 별도 작업이다.
+`/challenge.json text eol=lf`는 해당 JSON의 Git 정규화만 지정하며 운영 로컬 CRLF 바이트를
+변경하지 않는다. 다른 파일 전체의 줄끝 정책을 바꾸지 않는다.
+
+현재 공개 `origin/master` 작업 사본에는 원본 서버의 개인 설정·cron·가상환경이 제공되지 않았다.
+이 단계는 안전한 소스·예제·문서 준비까지이며 보호 파일의 추적 제거와 별도 IPFUnpacker 저장소의
+빌드 ignore는 메인 `/root`가 별도 Git PR로 수행한다.
+obsolete parsing-server CI 3개도 메인 `/root`에서 로컬에 그대로 보관하고 저장소별 private exclude로
+제외할 예정이다. 이 단계에서는 공개 workflow를 만들거나 수정하지 않는다.
+실행기가 전체 `make check`를 수행하며 작업자는 테스트·cron·다운로더·운영 import·Git 명령을
+실행하지 않는다. 후속 검증·커밋·PR·CI 성공 확인·머지는 현재 작업자 범위 밖이다.
 
 ## 다운로더 → 파서 계약
 
