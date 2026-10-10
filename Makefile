@@ -1,6 +1,7 @@
 PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(if $(wildcard TavernofSoul/itos/3.8/bin/python),TavernofSoul/itos/3.8/bin/python,python3))
 
 .PHONY: help doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql check-mysql-container doctor-browser check-browser check-browser-container
+.PHONY: prepare-ipf-unpacker
 .PHONY: check-live check-site check-site-container
 .PHONY: agent-doctor agent-configure agent-smoke agent-run agent-plan
 .PHONY: agent-triage agent-triage-demo triage-smoke
@@ -10,6 +11,7 @@ PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(i
 
 help:
 	@echo "doctor          Check the offline harness environment"
+	@echo "prepare-ipf-unpacker Force a native release build directly to IPFUnpacker/ipf_unpack"
 	@echo "check-downloader Run local patch, failure, and retry checks"
 	@echo "check-parser    Run parser regressions without game data"
 	@echo "check-django    Run importer regressions and item search tests"
@@ -44,6 +46,9 @@ help:
 	@echo "agent-git-accept Validate a connector response: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=..."
 	@echo "agent-git-resume Continue an existing PR waiting for CI: RUN_ID=..."
 	@echo "Override the interpreter with: make check PYTHON=/path/to/python"
+
+prepare-ipf-unpacker:
+	$(MAKE) -C IPFUnpacker/src/ipf_unpack -B release
 
 doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql doctor-browser check-browser check-live check-site:
 	$(PYTHON) -m harness $@

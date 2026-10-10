@@ -1,5 +1,6 @@
 """Offline download → extraction → version → retry regressions."""
 from pathlib import Path
+import shutil
 import struct
 import stat
 import subprocess
@@ -93,6 +94,124 @@ def test_tool_failure_preserves_cache_and_retries_without_download(workspace, se
     Path('fail-' + action).unlink()
     assert client.main(['itos']) == 0
     assert server.calls.count('1_001001.ipf') == 1
+
+
+VALID_ITEM_CSV = (
+    'ClassID,Name,RefreshScp\n'
+    '1,plain,NO\n'
+    '2,"comma, inside",NO\n'
+    '3,"doubled ""quote"" inside",NO\n'
+    '4,"multi\nline value",NO\n'
+)
+HEADER_ONLY_CSV = 'ClassID,Name,RefreshScp\n'
+
+
+def tree_snapshot(root):
+    return {str(path.relative_to(root)): path.read_bytes()
+            for path in sorted(root.rglob('*')) if path.is_file()}
+
+
+def test_valid_ies_csv_quoting_multiline_and_header_only_reach_output(workspace, server, extract_stub):
+    extract_stub.install({'ies.ipf/item.ies': VALID_ITEM_CSV,
+                          'ies.ipf/nested/header_only.ies': HEADER_ONLY_CSV})
+    assert client.main(['itos']) == 0
+    # The published bytes are the independent expectation: strict validation
+    # must keep quoted commas, doubled quotes, multiline records and a
+    # header-only table byte-for-byte intact.
+    assert (workspace / 'itos_unpack/ies.ipf/item.ies').read_bytes() == VALID_ITEM_CSV.encode('utf-8')
+    assert (workspace / 'itos_unpack/ies.ipf/nested/header_only.ies').read_bytes() == HEADER_ONLY_CSV.encode('utf-8')
+    assert client.read_version('revision.csv')['itos'] == '2'
+    assert not Path('extract').exists()
+    assert not Path('1_001001.ipf').exists()
+
+
+INVALID_IES_CSVS = {
+    # What the old installed ipf_unpack shipped: a raw quote inside a quoted
+    # field shifts every later column (RefreshScp became YES).
+    'raw_inner_quote': ('ClassID,Name,RefreshScp\n1,"raw "inner" quote",YES\n',
+                        ('record 2', 'text follows the closing quote')),
+    'unterminated_quote': ('ClassID,Name,RefreshScp\n1,"never terminated,YES\n',
+                           ('record 2', 'quoted field is not terminated')),
+    'unquoted_inner_quote': ('ClassID,Name,RefreshScp\n1,say "hello",YES\n',
+                             ('record 2', 'quote inside an unquoted field')),
+    'short_row': ('ClassID,Name,RefreshScp\n1,short\n', ('record 2', 'has 2 fields, expected 3')),
+    'overflow_row': ('ClassID,Name,RefreshScp\n1,plain,NO,extra\n', ('record 2', 'has 4 fields, expected 3')),
+    'empty_file': ('', ('is empty',)),
+    'missing_header': ('\n1,plain,NO\n', ('record 1', 'the file has no header row')),
+}
+
+
+@pytest.mark.parametrize('damage', sorted(INVALID_IES_CSVS))
+def test_ies_csv_validation_error_names_file_record_and_cause(tmp_path, damage):
+    content, fragments = INVALID_IES_CSVS[damage]
+    path = tmp_path / 'extract' / 'item.ies'
+    path.parent.mkdir()
+    path.write_text(content, encoding='utf-8')
+    with pytest.raises(RuntimeError) as raised:
+        client.validate_ies_csv(str(path))
+    message = str(raised.value)
+    assert str(path) in message
+    for fragment in fragments:
+        assert fragment in message
+
+
+HEADER_ONLY_VARIANTS = {
+    'without_final_newline': 'ClassID,Name,RefreshScp',
+    'crlf': 'ClassID,Name,RefreshScp\r\n',
+}
+
+
+@pytest.mark.parametrize('variant', sorted(HEADER_ONLY_VARIANTS))
+def test_ies_csv_validation_accepts_header_only_variants(tmp_path, variant):
+    path = tmp_path / 'extract' / 'item.ies'
+    path.parent.mkdir()
+    path.write_text(HEADER_ONLY_VARIANTS[variant], encoding='utf-8')
+    client.validate_ies_csv(str(path))
+
+
+DAMAGED_HEADER = 'ClassID,Name,RefreshScp\n'
+# Every value is the whole extracted file. Prefixing the header would turn
+# empty_file into a valid header-only table and blank_header into an
+# ordinary short-row failure, hiding the cases they exist to cover.
+DAMAGED_IES_FILES = {
+    'raw_inner_quote': DAMAGED_HEADER + '1,"described as "EP12_TRK04_001" in game",YES\n',
+    'unterminated_quote': DAMAGED_HEADER + '1,"never terminated,YES\n',
+    'unquoted_inner_quote': DAMAGED_HEADER + '1,say "hello",YES\n',
+    'short_row': DAMAGED_HEADER + '1,only-two\n',
+    'overflow_row': DAMAGED_HEADER + '1,plain,NO,extra\n',
+    'empty_file': '',
+    'blank_header': '\n1,plain,NO\n',
+}
+
+
+@pytest.mark.parametrize('damage', sorted(DAMAGED_IES_FILES))
+def test_damaged_ies_csv_fails_after_extract_and_preserves_state(workspace, server, extract_stub, damage):
+    extract_stub.install({'ies.ipf/item.ies': DAMAGED_IES_FILES[damage]})
+    (workspace / 'itos_unpack/ies.ipf').mkdir(parents=True)
+    (workspace / 'itos_unpack/ies.ipf/previous.ies').write_bytes(b'PREVIOUS\n')
+    (workspace / 'Translation/English').mkdir(parents=True)
+    (workspace / 'Translation/English/items.tsv').write_bytes(b'PREVIOUS\n')
+    published = {name: tree_snapshot(workspace / name) for name in ('itos_unpack', 'Translation')}
+    versions = [Path(name).read_bytes() for name in ('revision.csv', 'release.csv')]
+
+    assert client.main(['itos']) == 2
+
+    # Damage found after a successful extraction must not advance versions,
+    # touch existing unpack output or Translation, discard the cached
+    # archive, or leave the temporary extract behind.
+    assert {name: tree_snapshot(workspace / name) for name in ('itos_unpack', 'Translation')} == published
+    assert [Path(name).read_bytes() for name in ('revision.csv', 'release.csv')] == versions
+    assert (workspace / 'itos_patch/1_001001.ipf').read_bytes() == server.routes['1_001001.ipf']
+    assert not list((workspace / 'itos_patch').glob('*.part'))
+    assert not Path('extract').exists()
+    assert not Path('1_001001.ipf').exists()
+    assert server.calls == ['data.revision.txt', '1_001001.ipf']
+    # The cached archive is still good: with a correct tool the same patch
+    # completes without being downloaded again.
+    extract_stub.restore()
+    assert client.main(['itos']) == 0
+    assert server.calls.count('1_001001.ipf') == 1
+    assert client.read_version('revision.csv')['itos'] == '2'
 
 
 @pytest.mark.parametrize('extension,state,other', [
@@ -283,3 +402,96 @@ def test_cron_download_failure_blocks_followup(region, code):
                             capture_output=True, text=True)
     assert result.returncode == (code if code > 1 else 0)
     assert ('reached_followup' in result.stdout) == (code <= 1)
+
+
+PREPARE_TARGET = 'prepare-ipf-unpacker'
+
+# A tiny synthetic stand-in for the native project: "release" always rebuilds
+# the tool at the exact path the downloader executes and logs each rebuild so
+# the forced (-B) behaviour is observable. No compiler and no native source.
+SYNTHETIC_RELEASE_MAKEFILE = '''\
+../../ipf_unpack:
+\t@printf 'release\\n' >> build.log
+\t@printf '#!/bin/sh\\n' > $@
+\t@chmod 755 $@
+
+.PHONY: release
+release: ../../ipf_unpack
+'''
+
+FAILING_RELEASE_MAKEFILE = '''\
+../../ipf_unpack:
+\t@printf 'release\\n' >> build.log
+\t@exit 7
+
+.PHONY: release
+release: ../../ipf_unpack
+'''
+
+
+def synthetic_native_project(tmp_path, native_makefile):
+    native = tmp_path / 'IPFUnpacker' / 'src' / 'ipf_unpack'
+    native.mkdir(parents=True)
+    (native / 'Makefile').write_text(native_makefile, encoding='utf-8')
+    # The real root Makefile drives a throwaway copy of the synthetic project,
+    # so the repository checkout is never used as native source or built.
+    shutil.copyfile(ROOT / 'Makefile', tmp_path / 'Makefile')
+    return native
+
+
+def run_prepare(tmp_path):
+    return subprocess.run(['make', '-C', str(tmp_path), PREPARE_TARGET],
+                          capture_output=True, text=True)
+
+
+def prepare_target_block():
+    lines = (ROOT / 'Makefile').read_text(encoding='utf-8').splitlines()
+    start = lines.index(PREPARE_TARGET + ':')
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if not line.startswith('\t'):
+            break
+        block.append(line)
+    return block
+
+
+def test_prepare_ipf_unpacker_runs_only_the_exact_forced_release_command():
+    assert prepare_target_block() == ['prepare-ipf-unpacker:',
+                                      '\t$(MAKE) -C IPFUnpacker/src/ipf_unpack -B release']
+
+
+def test_prepare_ipf_unpacker_is_in_phony_and_help_but_wired_nowhere_else():
+    mentions = [line for line in (ROOT / 'Makefile').read_text(encoding='utf-8').splitlines()
+                if PREPARE_TARGET in line]
+    phony = [line for line in mentions if line.startswith('.PHONY:')]
+    targets = [line for line in mentions if line.startswith(PREPARE_TARGET + ':')]
+    echoed = [line for line in mentions if line.lstrip().startswith(('@echo', '@printf'))]
+    # Declared in .PHONY, documented in help and its own target line: no other
+    # target depends on it, and doctor/check/downloader never invoke it.
+    assert len(phony) == 1
+    assert targets == [PREPARE_TARGET + ':']
+    assert len(echoed) == 1
+    assert len(mentions) == 3
+
+
+def test_prepare_ipf_unpacker_links_release_tool_at_exact_path_and_forces_rebuild(tmp_path):
+    native = synthetic_native_project(tmp_path, SYNTHETIC_RELEASE_MAKEFILE)
+    first = run_prepare(tmp_path)
+    assert first.returncode == 0, first.stdout + first.stderr
+    tool = tmp_path / 'IPFUnpacker' / 'ipf_unpack'
+    assert tool.is_file()
+    # The tool is linked exactly where the downloader executes it: no
+    # bin/Release tree and no separate installed copy next to it.
+    assert sorted(path.name for path in (tmp_path / 'IPFUnpacker').iterdir()) == ['ipf_unpack', 'src']
+    # The second prepare must run the release target again although the tool
+    # is already up to date: that is the forced -B in the exact command.
+    second = run_prepare(tmp_path)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert (native / 'build.log').read_text(encoding='utf-8') == 'release\nrelease\n'
+
+
+def test_prepare_ipf_unpacker_propagates_release_failure(tmp_path):
+    synthetic_native_project(tmp_path, FAILING_RELEASE_MAKEFILE)
+    result = run_prepare(tmp_path)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert not (tmp_path / 'IPFUnpacker' / 'ipf_unpack').exists()

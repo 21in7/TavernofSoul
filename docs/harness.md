@@ -48,6 +48,48 @@ PYTHONPATH=TavernofSoul:parser_tidy TavernofSoul/itos/3.8/bin/python -m harness.
 공개 적용은 격리 적재·재적재·롤백 검증과 백업을 갖춘 별도 작업이다.
 세부 호환 규칙과 단위는 [데이터 계약](data-contracts.md)을 따른다.
 
+## IPF 추출기 명시적 준비와 재실행 역할
+
+native 소스 `IPFUnpacker/src/ipf_unpack`과 Git ignore 대상인 설치 바이너리
+`IPFUnpacker/ipf_unpack`은 별개다. 소스 수정이나 checkout만으로 설치 바이너리가
+갱신되지는 않는다. 준비 담당자는 GCC, make, zlib 개발 헤더·라이브러리를 갖추고
+IPFUnpacker submodule을 준비한 뒤 저장소 루트에서 명시적으로 빌드한다.
+다음은 일반 개발 환경의 준비 명령이며 범위가 제한된 작업자는 실행하지 않는다.
+
+```bash
+git submodule update --init --recursive -- IPFUnpacker
+make prepare-ipf-unpacker
+```
+
+`.PHONY`와 help에 등록하는 독립 타깃 `prepare-ipf-unpacker`의 내부 호출은 정확히 다음 하나다.
+
+```make
+$(MAKE) -C IPFUnpacker/src/ipf_unpack -B release
+```
+
+`-B release`로 강제 빌드하며 `IPFUnpacker/ipf_unpack`에 직접 링크한다.
+`config=release`, `bin/Release` 산출물 가정이나 별도 install/copy를 사용하지 않는다.
+실패는 호출자에게 전파하며 기본 doctor/check/downloader에서 자동 호출하지 않는다.
+준비 타깃의 회귀 테스트는 `tmp_path`의 작은 합성 Make 프로젝트에서 `release`가
+`../../ipf_unpack`을 생성하게 하여 강제 release 호출·정확한 설치 위치·실패 전파를 검증한다.
+이 테스트에는 컴파일러나 실제 native 소스가 필요하지 않으며 실제 빌드 검증과 구분한다.
+
+이번 동일 하네스 재실행의 승인된 읽기/변경 scope는 `Makefile`,
+`downloader/downloader.py`, `downloader/tests/conftest.py`,
+`downloader/tests/test_downloader.py`, `docs/architecture.md`, `docs/harness.md`의 6개 파일이다.
+각 작업자는 배정된 파일만 수정하며 기존 사용자 편집을 보존한다.
+작업자 network disabled와 기존 역할별 모델 설정을 유지하고 추가 최적화는 중단한다.
+원본 IPF·unpack·JSON·Translation·버전을 보존하며 작업자는 직접 checks,
+재위임·agent-run·harness.workflow, native 소스 열람·변경, cron·다운로드·importAll 등
+운영실행을 하지 않는다.
+
+main Codex의 원본 보호, 실제 native build, binary IES roundtrip,
+kTOS/iTOS/jTOS 전체 파싱 검증은 진행 중이다. 완료하거나 통과했다고 기록하지 않는다.
+오케스트레이터는 동일 하네스의 max round 내 전체 `make check`와 Claude 검토를 담당한다.
+main Codex는 GitHub 앱으로 오프라인·MySQL·브라우저 CI 3개 성공을 확인한 뒤
+머지와 원격·로컬 브랜치 정리를 수행한다. 이 문서 변경 자체는 이번 재실행의
+검증·검토·CI 성공이나 머지 완료의 증거가 아니다.
+
 ## Python 환경
 
 Makefile은 `harness/.venv/bin/python`, 기존 `TavernofSoul/itos/3.8/bin/python`,
@@ -136,7 +178,7 @@ obsolete parsing-server CI 3개는 메인 `/root`가 로컬에 그대로 보관�
 
 | 명령 | 검증 내용 |
 | --- | --- |
-| `check-downloader` | 로컬 암호화 revision·작은 IPF 대체 입력·실제 PAK 해제·변경 없음·전송/도구/복사 실패·버전 보존·재시도·CLI 종료 코드·cron 중단 |
+| `check-downloader` | 로컬 암호화 revision·작은 IPF 대체 입력·IES CSV 검증 게이트·합성 Make 준비 타깃·실제 PAK 해제·변경 없음·전송/도구/검증/복사 실패·버전 보존·재시도·CLI 종료 코드·cron 중단 |
 | `check-parser` | 실제 CSV IES·XML/TSV·Lua → 아이템·combat·맵/속성/버프·5개 지역·560/550 장비·젬 JSON, 공통 계약·공개 차단·수치·참조·재계산·재시도와 기존 회귀 |
 | `check-django` | 기존 canonical ID·import 안전성·레시피 복구 테스트와 `Items.tests`의 검색·페이지·쿼리 수 검증 |
 | `check-pipeline` | 원본 IES/Lua 및 고정 JSON → 실제 importer·ORM·HTTP, 5개 지역·560/550 장비·젬·추가 유형, 계약 차단·상태 보존·재적재·관계 삭제·롤백 후 재시도 |
@@ -513,13 +555,25 @@ IPF는 임시 실행 파일로 도구 호출 순서와 종료 코드 처리를 �
 | --- | --- | --- |
 | 0 | 새 패치 처리 완료 | 다음 단계 진행 |
 | 1 | 새 패치 없음 | 기존 지역별 변경 없음 처리 유지 |
-| 2 | 네트워크·파일·복호화·압축 해제·복사·버전 기록 실패 | 파싱·DB import 전에 중단 |
+| 2 | 네트워크·파일·복호화·압축 해제·IES CSV 검증·복사·버전 기록 실패 | 파싱·DB import 전에 중단 |
 
 다운로드는 `.part`에 저장하고 비어 있거나 Content-Length와 다르면 공개하지 않는다.
 완료된 파일만 캐시로 교체하며 도구 실패 시 원본 IPF를 유지한다.
+data 패치는 extract 성공 뒤 임시 `extract` 아래 모든 IES CSV의 quoting·헤더·행 너비·UTF-8을
+검증하고 나서 unpack 복사·원본 IPF 폐기·버전 전진으로 승급한다.
+쉼표·따옴표·줄바꿈이 있는 필드는 인용하고 내부 따옴표를 두 번 써야 한다.
+올바른 인용·여러 줄 필드·헤더만 있는 표는 허용한다. 빈 파일·인용되지 않은 빈 첫 레코드,
+헤더와 다른 필드 수, 잘못된 인용과 UTF-8 오류는 보정이나 행 삭제 없이 실패한다.
+검증 실패는 기존 unpack·Translation·버전에 손대기 전에 중단하고 캐시 원본 IPF를 보존한다.
+파서나 운영 import를 실행하지 않으므로 기존 JSON도 보존한다.
 버전 CSV는 개별 패치의 해제·복사 성공 후 임시 파일로 기록하고 교체한다.
 release 패치의 경우 번역 복사 성공도 버전 전진 조건에 포함한다.
 손상된 PAK은 재사용하지 않고 다음 실행에서 다시 다운로드한다.
+
+과거 손상 CSV는 보존 원본 IPF에서 올바르게 준비한 추출기로 새 격리 경로에 재추출해야 한다.
+기존 unpack·JSON·Translation·버전이나 원본 IPF를 덮어쓰지 않고,
+따옴표·열을 추측 보정해서 정확성을 주장하지 않는다. CSV 형식 검증 통과는
+binary IES 변환 정확성이나 게임 값의 의미적 정확성을 증명하지 않는다.
 
 복수 패치 중 두 번째 패치가 실패하면 첫 번째 완료 버전은 유지하며,
 재실행은 실패한 패치부터 시작한다. 서로 다른 data/release 스트림도 각각 완료 버전을 유지한다.
