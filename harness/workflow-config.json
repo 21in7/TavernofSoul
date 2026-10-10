@@ -2,6 +2,7 @@
   "version": "workflow-v1",
   "max_tasks": 8,
   "max_rounds": 2,
+  "max_plan_attempts": 2,
   "agent_timeout_seconds": 900,
   "check_timeout_seconds": 1800,
   "max_file_bytes": 33554432,

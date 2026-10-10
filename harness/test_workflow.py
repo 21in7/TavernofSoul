@@ -575,3 +575,306 @@ def test_sync_scope_propagates_reversions_and_deletions_without_copying_extra_fi
     assert (candidate / scope[0]).read_text() == 'existing parser edit\n'
     assert not (candidate / scope[1]).exists()
     assert (candidate / 'downloader/example.py').read_text() == 'existing downloader edit\n'
+
+
+@pytest.mark.parametrize('invalid, category', [
+    ('{"tasks":[', 'json_syntax'),
+    ('{"tasks":[]}', 'plan_schema'),
+    ('{"tasks":[{"role":"parser","task":"Implement.","files":["parser_tidy/example.py"]}]', 'json_syntax'),
+    ('{"tasks":[{"role":"parser","task":"Fix "PRIVATE-UNESCAPED-CODE" slices.",'
+     '"files":["parser_tidy/example.py"]}]}', 'json_syntax'),
+])
+def test_plan_parse_failure_repairs_only_coordinator_with_trusted_guidance(project, invalid, category):
+    calls, prompts = [], []
+    normal = runner_for(calls)
+    def repair(role, task, keys, **options):
+        prompts.append((role, task))
+        result = normal(role, task, keys, **options)
+        if task.startswith('Plan this development task') and len(calls) == 1:
+            result['response'] = invalid
+        return result
+    report = run_fixture(runner=repair)
+    assert report['status'] == 'passed', report.get('error')
+    assert [role for role, _, _ in calls] == ['coordinator', 'coordinator', 'parser', 'reviewer']
+    assert report['plan_recovered'] is True
+    assert report['plan_attempts'][0]['diagnostic']['category'] == category
+    if category == 'json_syntax':
+        with pytest.raises(json.JSONDecodeError) as caught:
+            json.loads(invalid)
+        assert report['plan_attempts'][0]['diagnostic'] == {
+            'category': category, 'line': caught.value.lineno,
+            'column': caught.value.colno, 'position': caught.value.pos}
+    second = prompts[1][1]
+    assert second.startswith('Plan this development task')
+    assert 'Owners: {"parser_tidy/example.py": "parser"}\nTask:' in second
+    assert 'fresh short complete valid JSON object' in second
+    assert 'Correctly escape task strings' in second
+    assert '\n' + invalid not in second
+    assert 'PRIVATE-UNESCAPED-CODE' not in second
+    assert any(event['state'] == 'recovered' for event in report['events'])
+
+
+@pytest.mark.parametrize('cap', [1, 2, 3])
+def test_repeated_malformed_plan_never_implements_applies_or_publishes(project, monkeypatch, cap):
+    policy = workflow.load_policy()
+    monkeypatch.setattr(workflow, 'load_policy', lambda: {**policy, 'max_plan_attempts': cap})
+    calls, prompts = [], []
+    normal = runner_for(calls)
+    def malformed(role, task, keys, **options):
+        prompts.append(task)
+        result = normal(role, task, keys, **options)
+        result['response'] = '{"tasks": "PRIVATE-INVALID-RESPONSE"'
+        return result
+    report = run_fixture(runner=malformed)
+    assert report['status'] == 'failed' and report['applied'] == []
+    assert len(calls) == cap and all(role == 'coordinator' for role, _, _ in calls)
+    assert len(report['plan_attempts']) == cap and report['validation'] == []
+    assert 'Plan attempts exhausted' in report['error']
+    assert all('PRIVATE-INVALID-RESPONSE' not in prompt for prompt in prompts)
+    assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
+    assert not any(event['phase'] in ('implement', 'apply', 'github') for event in report['events'])
+
+
+@pytest.mark.parametrize('value', [0, 4, True, 1.0, '2', None])
+def test_plan_attempt_policy_bounds_are_strict_and_independent(project, monkeypatch, value):
+    policy = workflow.load_policy()
+    config = project / 'workflow-policy.json'
+    config.write_text(json.dumps({**policy, 'max_plan_attempts': value}))
+    monkeypatch.setattr(workflow, 'CONFIG', config)
+    with pytest.raises(ValueError, match='max_plan_attempts'):
+        workflow.load_policy()
+    config.write_text(json.dumps({**policy, 'max_plan_attempts': 3, 'max_rounds': 1}))
+    assert workflow.load_policy()['max_plan_attempts'] == 3
+
+
+@pytest.mark.parametrize('kind', ['owner', 'scope', 'planner_write', 'cli_failure'])
+def test_unsafe_planner_failures_are_fatal_without_repair(project, kind):
+    calls = []
+    normal = runner_for(calls)
+    def unsafe(role, task, keys, **options):
+        result = normal(role, task, keys, **options)
+        if kind in ('owner', 'scope'):
+            result['response'] = json.dumps({'tasks': [{'role': 'downloader' if kind == 'owner' else 'parser',
+                'task': 'Edit.', 'files': ['parser_tidy/outside.py' if kind == 'scope' else 'parser_tidy/example.py']}]})
+        elif kind == 'planner_write':
+            (options['workspace'] / 'parser_tidy/example.py').write_text('planner edit')
+        else:
+            result['status'] = 'failed'
+        return result
+    report = run_fixture(runner=unsafe)
+    assert report['status'] == 'failed' and report['applied'] == []
+    assert len(calls) == 1 and calls[0][0] == 'coordinator'
+    assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
+
+
+SLICE_SOURCE = 'def test_slice_newline():\n    text = "abc\\n"\n    assert text[:3] == "abc\\n"\n'
+
+
+def scoped_repair_runner(calls, prompts, fix=True, unchanged=False):
+    normal = runner_for(calls)
+    attempts = []
+    def run(role, task, keys, **options):
+        prompts.append((role, task))
+        result = normal(role, task, keys, **options)
+        if options['write']:
+            names = json.loads(re.search(r'Allowed edit files \(exact paths\): (.*)\n', task).group(1))
+            if 'parser_tidy/example.py' in names:
+                attempts.append(task)
+                source = SLICE_SOURCE
+                if fix and len(attempts) > 1:
+                    source = source.replace('text[:3]', 'text[:4]')
+                if unchanged:
+                    source = SLICE_SOURCE
+                (options['workspace'] / 'parser_tidy/example.py').write_text(source)
+        return result
+    return run
+
+
+def slice_check(checks, fail_always=False):
+    def check(candidate, command, report_dir, keys, policy):
+        result = successful_check(candidate, command, report_dir, keys, policy)
+        if command != 'doctor':
+            checks.append(command)
+            if fail_always or 'text[:3]' in (candidate / 'parser_tidy/example.py').read_text():
+                result['status'] = 'failed'
+                result['checks']['fixture']['failures'] = [{
+                    'test': 'parser_tidy/example.py::test_slice_newline[PRIVATE-PARAM]',
+                    'reason': str(candidate / 'parser_tidy/example.py') + ':3: in test_slice_newline\n'
+                              'E   AssertionError: PRIVATE-RUNTIME-VALUE\n' +
+                              str(candidate / 'parser_tidy/example.py') + ':3: AssertionError',
+                    'longrepr': 'UNAPPROVED-SOURCE-CANARY', 'log': '/outside/SECRET-LOG'}]
+        return result
+    return check
+
+
+def test_assertion_excerpt_routes_to_exact_task_without_downloader_or_same_owner_retry(project):
+    (project / 'parser_tidy/other.py').write_text('another user edit\n')
+    calls, prompts, checks = [], [], []
+    scope = ['parser_tidy/example.py', 'parser_tidy/other.py', 'downloader/example.py']
+    report = workflow.execute('Fix scoped behavior.', scope, rules_only=True, keys={},
+                              runner=scoped_repair_runner(calls, prompts), checker=slice_check(checks))
+    assert report['status'] == 'passed', report.get('error')
+    assert [role for role, _, _ in calls] == \
+        ['coordinator', 'downloader', 'parser', 'parser', 'reviewer', 'parser', 'reviewer']
+    repair_prompts = [prompt for role, prompt in prompts if 'Required correction;' in prompt]
+    assert len(repair_prompts) == 1
+    assert '3:     assert text[:3] == ' in repair_prompts[0]
+    assert 'test_slice_newline' in repair_prompts[0] and 'AssertionError' in repair_prompts[0]
+    assert 'Allowed edit files (exact paths): ["parser_tidy/example.py"]' in repair_prompts[0]
+    assert checks == report['required_checks'] * 2
+    assert report['repairs'][0]['target_files'] == ['parser_tidy/example.py']
+    assert report['repairs'][0]['assignments'][0]['sent'] is True
+    for _, prompt in prompts:
+        assert all(marker not in prompt for marker in
+                   ('PRIVATE-PARAM', 'PRIVATE-RUNTIME-VALUE', 'UNAPPROVED-SOURCE-CANARY', 'SECRET-LOG'))
+    assert 'PRIVATE-RUNTIME-VALUE' in json.dumps(report['validation'])
+    assert 'text[:4]' in (project / 'parser_tidy/example.py').read_text()
+
+
+def test_reviewer_findings_only_repair_the_task_owning_each_finding(project):
+    (project / 'parser_tidy/other.py').write_text('separate user edit\n')
+    calls, prompts, reviews = [], [], []
+    normal = runner_for(calls)
+    def review_once(role, task, keys, **options):
+        prompts.append((role, task))
+        result = normal(role, task, keys, **options)
+        if role == 'reviewer':
+            reviews.append(task)
+            if len(reviews) == 1:
+                result['response'] = json.dumps({'verdict': 'changes_requested',
+                    'summary': 'NOT-FOR-REPAIR-SUMMARY', 'findings': [
+                        {'file': 'parser_tidy/other.py', 'severity': 'high', 'message': 'OWN-FINDING'}]})
+        return result
+    report = run_fixture(['parser_tidy/example.py', 'parser_tidy/other.py', 'downloader/example.py'],
+                         runner=review_once)
+    assert report['status'] == 'passed', report.get('error')
+    repairs = [prompt for _, prompt in prompts if 'Required correction;' in prompt]
+    assert len(repairs) == 1 and 'OWN-FINDING' in repairs[0]
+    assert 'Allowed edit files (exact paths): ["parser_tidy/other.py"]' in repairs[0]
+    assert 'NOT-FOR-REPAIR-SUMMARY' not in repairs[0]
+    assert len(reviews) == 2
+
+
+def test_repeated_same_failure_records_no_source_progress_and_preserves_user_edit(project):
+    calls, prompts, checks = [], [], []
+    (project / 'parser_tidy/example.py').write_text(SLICE_SOURCE)
+    report = workflow.execute('Fix newline assertion.', ['parser_tidy/example.py'], rules_only=True, keys={},
+        runner=scoped_repair_runner(calls, prompts, fix=False, unchanged=True),
+        checker=slice_check(checks, fail_always=True))
+    assert report['status'] == 'failed' and report['repair_failure'] == 'no_progress'
+    assert report['applied'] == [] and len(checks) == 2
+    first, last = report['repairs']
+    assert first['assignments'][0]['failure_fingerprint'] == last['assignments'][0]['failure_fingerprint']
+    assert last['assignments'][0]['same_failure_recurred'] is True
+    assert last['assignments'][0]['preceding_attempt_source_changed'] is False
+    assert last['assignments'][0]['sent'] is False
+    assert all(not attempt['source_changed'] for attempt in report['implementation_attempts'])
+    assert any('preceding implementation attempt made no assigned source change' in prompt
+               for _, prompt in prompts)
+    assert any(event['state'] == 'no_progress' for event in report['events'])
+    assert (project / 'parser_tidy/example.py').read_text() == SLICE_SOURCE
+
+
+def test_last_failure_with_source_changes_reports_exhausted_repair(project):
+    calls, prompts, checks, attempts = [], [], [], []
+    normal = scoped_repair_runner(calls, prompts, fix=False)
+    def changing(role, task, keys, **options):
+        result = normal(role, task, keys, **options)
+        if options['write']:
+            attempts.append(task)
+            (options['workspace'] / 'parser_tidy/example.py').write_text(
+                SLICE_SOURCE + '# correction attempt {}\n'.format(len(attempts)))
+        return result
+    report = workflow.execute('Fix.', ['parser_tidy/example.py'], rules_only=True, keys={},
+                              runner=changing, checker=slice_check(checks, fail_always=True))
+    assert report['status'] == 'failed' and report['repair_failure'] == 'exhausted_repair'
+    assert report['repairs'][-1]['assignments'][0]['same_failure_recurred'] is True
+    assert all(attempt['source_changed'] for attempt in report['implementation_attempts'])
+    assert report['applied'] == []
+    assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
+
+
+@pytest.mark.parametrize('malformed', [None, 'PRIVATE-MALFORMED',
+    {'fixture': {'errors': [{'frames': [{'file': '/outside/parser_tidy/example.py', 'line': 3}],
+                            'test': 'parser_tidy/example.py::test[PRIVATE-PARAM]',
+                            'exception_type': 'PRIVATE-TYPE', 'reason': 'PRIVATE-MESSAGE'}]}},
+    {'fixture': {'failures': [{'file': 'parser_tidy/../downloader/example.py', 'line': True,
+                             'reason': ['PRIVATE-MESSAGE'], 'longrepr': {'secret': 'PRIVATE-LONGREPR'}}]}}])
+def test_malformed_and_unapproved_diagnostics_never_leak_into_any_prompt(project, malformed):
+    calls, prompts, checks = [], [], []
+    normal = runner_for(calls)
+    def capture(role, task, keys, **options):
+        prompts.append(task)
+        return normal(role, task, keys, **options)
+    def fail_once(candidate, command, report_dir, keys, policy):
+        result = successful_check(candidate, command, report_dir, keys, policy)
+        if command != 'doctor':
+            checks.append(command)
+            if len(checks) == 1:
+                result.update(status='failed', checks=malformed, log='/outside/PRIVATE-LOG')
+        return result
+    report = workflow.execute('Fix.', ['parser_tidy/example.py'], rules_only=True, keys={},
+                              runner=capture, checker=fail_once)
+    assert report['status'] == 'passed', report.get('error')
+    assert report['repairs'][0]['fallback'] is True
+    assert all('PRIVATE-' not in prompt and '/outside' not in prompt and
+               'downloader/example.py' not in prompt for prompt in prompts)
+    assert checks == report['required_checks'] * 2
+
+
+@pytest.mark.parametrize('category', ['skipped', 'errors'])
+def test_failure_categories_override_success_and_fallback_keeps_all_original_checks(project, monkeypatch, category):
+    monkeypatch.setattr(triage, 'observe', lambda *a, **kw: {'status': 'passed', 'source': 'fixture',
+        'recommendation': {'role': 'parser', 'required_checks': ['check-parser', 'check-pipeline']}})
+    checks, calls, prompts = [], [], []
+    normal = runner_for(calls)
+    def capture(role, task, keys, **options):
+        prompts.append(task)
+        return normal(role, task, keys, **options)
+    def fail_once(candidate, command, report_dir, keys, policy):
+        result = successful_check(candidate, command, report_dir, keys, policy)
+        if command != 'doctor':
+            checks.append(command)
+            if len(checks) == 1:
+                # Untrusted 'passed' must not conceal skipped/error outcomes.
+                result['checks']['fixture'][category] = [{'reason': 'PRIVATE-UNATTRIBUTED'}]
+        return result
+    report = workflow.execute('Fix.', ['parser_tidy/example.py'], rules_only=True, keys={},
+                              runner=capture, checker=fail_once)
+    assert report['status'] == 'passed', report.get('error')
+    assert checks == ['check-parser', 'check-pipeline'] * 2
+    assert report['repairs'][0]['fallback'] is True
+    assert report['validation'][0]['status'] == 'failed'
+    assert any('unavailable' in prompt and 'unattributed' in prompt for prompt in prompts)
+    assert all('PRIVATE-UNATTRIBUTED' not in prompt for prompt in prompts)
+
+
+@pytest.mark.parametrize('failure', ['review', 'check'])
+def test_read_only_failures_never_enable_writes_or_retry_repairs(project, failure):
+    calls = []
+    report = workflow.execute('Analyze.', ['parser_tidy/example.py'], rules_only=True, keys={}, read_only=True,
+        runner=runner_for(calls, verdict='changes_requested' if failure == 'review' else 'approved'),
+        checker=slice_check([], fail_always=True) if failure == 'check' else successful_check)
+    assert report['status'] == 'failed' and report['round'] == 1 and report['applied'] == []
+    assert [role for role, _, _ in calls] == ['coordinator', 'parser', 'reviewer']
+    assert not any(write for _, write, _ in calls)
+    assert all(not item['sent'] for record in report['repairs'] for item in record['assignments'])
+    assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
+
+
+def test_approved_excerpt_still_redacts_registered_secret_before_prompt(project):
+    secret = 'SECRET-IN-APPROVED-SOURCE'
+    calls, prompts = [], []
+    normal = runner_for(calls)
+    def capture(role, task, keys, **options):
+        assert secret not in task
+        prompts.append(task)
+        result = normal(role, task, keys, **options)
+        if options['write']:
+            (options['workspace'] / 'parser_tidy/example.py').write_text(SLICE_SOURCE + '# ' + secret + '\n')
+        return result
+    report = workflow.execute('Fix.', ['parser_tidy/example.py'], rules_only=True,
+        keys={'OPENAI_API_KEY': secret}, runner=capture, checker=slice_check([], fail_always=True))
+    assert report['status'] == 'failed'
+    assert any('[REDACTED]' in prompt and 'Required correction;' in prompt for prompt in prompts)
+    assert secret not in json.dumps(report)
