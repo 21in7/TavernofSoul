@@ -17,6 +17,7 @@ import iesutil
 _QUOTED_INDEX_RE = re.compile(r'\[\"(\w*?)\"\]')
 _REQUIRE_RE = re.compile(r'local \w+ = require[ (]["\']\w+["\'][ )]*')
 _METHOD_RE = re.compile(r'function (\w+):(\w+)\((.*)\)')
+_FUNCTION_DECLARATION_RE = re.compile(r'(local\s+)?function\s+[\w.:]+\(.*?\)')
 
 
 # HotFix: don't throw errors when LUA is getting an unknown key
@@ -590,7 +591,7 @@ def init_runtime(c):
                             if len(line) == 0:
                                 continue
 
-                            if bool(re.match(r'(local\s+)?function\s+[\w.:]+\(.*?\)', line)):
+                            if 'function' in line and bool(_FUNCTION_DECLARATION_RE.match(line)):
                                 try:
                                     lua_function_load(lua_function)
                                 except LuaError as error:
