@@ -145,6 +145,12 @@ NaN·누락 셀의 `None`·초과 필드의 mutable list는 캐시에 넣지 않
 매 load는 원본 파일을 다시 읽으며 호출·파일·지역 사이에 캐시를 공유하지 않는다.
 이 변환은 raw 장비 CSV의 문자열 UseLv를 Lua로 전달하는 `items.parse_equips` 경로와 별개다.
 
+`items.parse_equips`는 출력 `EQUIPMENT` 이름 목록의 기존 list 객체·순서·중복을 보존하며,
+새 이름은 원본 행의 첫 등장 순서로 한 번만 추가한다.
+중복 확인은 한 호출 안의 임시 set으로만 수행하고, 다음 호출은 현재 목록에서 set을 다시 구축해
+호출·파일·지역 사이에 공유하지 않는다.
+이름이 이미 있어도 모든 장비 행과 Lua 수식 처리를 계속 수행하며 후속 행의 값 덮어쓰기를 유지한다.
+
 legacy Lua 줄 전처리는 quoted index → require 제거 → method 변환 순서와 기존 regex/replacement를
 유지한다. private compiled regex를 재사용하고 각 단계의 현재 줄에 literal substring guard를
 적용해 매칭이 불가능한 경우에만 치환 호출을 생략한다. 이는 전처리 비용만 줄이며,
