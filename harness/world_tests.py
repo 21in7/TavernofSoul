@@ -56,7 +56,7 @@ class WorldPipelineTests(TransactionTestCase):
         self.assertEqual(Maps.objects.count(), 3)
         field = Maps.objects.get(ids='900')
         self.assertEqual((field.name, field.level, field.has_cm, field.has_warp, field.map_link),
-                         ('Fixture Field', 20, True, True, ['901']))
+                         ('Fixture Field', 20, True, True, ['901', '902']))
         self.assertEqual(list(Map_Item.objects.order_by('map__ids', 'item__ids')
                               .values_list('map__ids', 'item__ids', 'chance')), [
             ('900', '100', 12.5), ('900', '101', 15), ('900', '110', 5),
@@ -155,12 +155,75 @@ class WorldPipelineTests(TransactionTestCase):
         self.assertContains(self.client.get('/buffs/910'), '8 s')
         self.assertEqual(Version.objects.latest('created').version, V2)
 
+    def test_unresolved_map_links_export_import_and_clear_when_source_restored(self):
+        path = self.workspace / 'itos_unpack/ies.ipf/map.ies'
+        original_source = path.read_bytes()
+        clean = 'harness_cave/id_unknownsanctuary_harness'
+        raw = 'harness_cave/missing/900/id_unknownsanctuary_harness/missing/900'
+        expected = [
+            {'Map': '900', 'MapClassName': 'harness_field', 'Token': token,
+             'Raw': raw, 'SourceFile': 'ies.ipf/map.ies',
+             'SourceField': 'PhysicalLinkZone', 'SourceRow': 2}
+            for token in ('missing', '900')
+        ]
+        diagnostics = self.release / 'unresolved_map_links.json'
+        try:
+            # Establish a clean baseline; the shared fixture itself has diagnostics.
+            change_ies_column(path, 'PhysicalLinkZone', clean)
+            clean_db = self.parse_release(V1)
+            self.assertEqual(clean_db.data['unresolved_map_links'], [])
+            self.assertEqual(json.loads(diagnostics.read_text(encoding='utf-8')), [])
+            self.import_release()
+            try:
+                change_ies_column(path, 'PhysicalLinkZone', raw)
+                changed = self.parse_release(V2)
+                self.assertEqual(changed.data['unresolved_map_links'], expected)
+                self.assertEqual(json.loads(diagnostics.read_text(encoding='utf-8')), expected)
+                self.assertEqual(changed.data['maps']['900']['Link_Maps'], ['901', '902'])
+                self.assertEqual(changed.data['maps']['900']['Link_Maps_Floors'], ['901'])
+                self.assertEqual(set(changed.data['maps']), {'900', '901', '902'})
+                self.import_release()
+                self.assertEqual(Maps.objects.get(ids='900').map_link, ['901', '902'])
+                self.assertEqual(list(Maps.objects.order_by('ids').values_list('ids', flat=True)),
+                                 ['900', '901', '902'])
+                self.assertEqual(Maps.objects.get(ids='901').map_link, ['900'])
+                self.assertEqual(Maps.objects.get(ids='902').map_link, ['900'])
+                self.assertEqual(self.client.get('/maps/', {'q': 'Fixture'}).context['item_len'], 3)
+                for map_id, name in (('900', 'Fixture Field'), ('901', 'Fixture Cave'),
+                                     ('902', 'Fixture Sanctuary')):
+                    self.assertContains(self.client.get('/maps/' + map_id), name)
+                self.assertEqual(self.client.get('/maps/missing').status_code, 404)
+                self.assertEqual(Version.objects.latest('created').version, V2)
+                before = self.database_snapshot(ignore_updated=True)
+                files = self.snapshot_files(self.release)
+                repeated = self.parse_release(V2)
+                self.assertEqual(repeated.data['unresolved_map_links'], expected)
+                self.assertEqual(repeated.data['maps']['900']['Link_Maps'], ['901', '902'])
+                self.assertEqual(self.snapshot_files(self.release), files)
+                self.import_release()
+                self.assertEqual(self.database_snapshot(ignore_updated=True), before)
+                self.assertEqual((Map_Item.objects.count(), Map_NPC.objects.count(),
+                                  Map_Item_Spawn.objects.count()), (7, 2, 1))
+                self.assertEqual(Version.objects.count(), 2)
+                self.assertFalse(list(self.release.glob('.import-prev-*')))
+            finally:
+                change_ies_column(path, 'PhysicalLinkZone', clean)
+            restored = self.parse_release(V2)
+            self.assertEqual(restored.data['unresolved_map_links'], [])
+            self.assertEqual(json.loads(diagnostics.read_text(encoding='utf-8')), [])
+            self.assertEqual(restored.data['maps']['900']['Link_Maps'], ['901', '902'])
+            self.assertEqual(restored.data['maps']['900']['Link_Maps_Floors'], ['901'])
+            self.import_release()
+            self.assertEqual(self.database_snapshot(ignore_updated=True), before)
+            self.assertContains(self.client.get('/maps/900'), 'Fixture Field')
+        finally:
+            path.write_bytes(original_source)
+
     def test_source_errors_preserve_publication_database_and_baseline_then_retry(self):
         self.import_release()
         before = self.database_snapshot()
         files, baseline = self.snapshot_files(self.release), self.snapshot_files(self.release / 'prev')
         cases = [
-            ('ies.ipf/map.ies', 'PhysicalLinkZone', 'missing', 0, KeyError),
             ('ies_ability.ipf/Ability_HarnessMage.IES', 'MaxLevel', 'bad', 0, ValueError),
             ('ies.ipf/buff_hardskill.ies', 'ApplyTime', 'bad', 0, ValueError),
         ]
@@ -168,12 +231,14 @@ class WorldPipelineTests(TransactionTestCase):
             with self.subTest(filename=filename):
                 path = self.workspace / 'itos_unpack' / filename
                 original = change_ies_column(path, column, value, index)
-                with self.assertRaises(error):
-                    self.parse_release(V2)
-                self.assertEqual(self.snapshot_files(self.release), files)
-                self.assertEqual(self.snapshot_files(self.release / 'prev'), baseline)
-                self.assertEqual(self.database_snapshot(), before)
-                change_ies_column(path, column, original, index)
+                try:
+                    with self.assertRaises(error):
+                        self.parse_release(V2)
+                    self.assertEqual(self.snapshot_files(self.release), files)
+                    self.assertEqual(self.snapshot_files(self.release / 'prev'), baseline)
+                    self.assertEqual(self.database_snapshot(), before)
+                finally:
+                    change_ies_column(path, column, original, index)
         self.parse_release(V2)
         self.import_release()
         self.assertEqual(Version.objects.count(), 2)

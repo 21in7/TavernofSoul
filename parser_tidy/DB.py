@@ -151,6 +151,7 @@ class ToS_DB():
        # P0-10: 드롭 provenance. data 는 클래스 수준 mutable 이라 monsters 와
        # maps 양쪽이 공유하므로 build() 에서 새 객체로 교체한다.
        'unresolved_drops'    : [],   # items_by_name 에 없는 드롭 참조 (raw, 문맥 보존)
+       'unresolved_map_links': [],   # 없는 PhysicalLinkZone 클래스 참조 (raw, 문맥 보존)
        'build_provenance'    : {},   # 드롭 소스 결정: source_region/input_version/fallback_reason
        }
     
@@ -197,6 +198,7 @@ class ToS_DB():
         # unresolved_drops, build_provenance 가 잔존할 수 있다.
         # monsters·maps 양쪽이 append/갱신하므로 빌드 시작에 새 객체로 교체한다.
         self.data['unresolved_drops'] = []
+        self.data['unresolved_map_links'] = []
         self.data['build_provenance'] = {}
         
         

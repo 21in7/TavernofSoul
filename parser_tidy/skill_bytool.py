@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 import os
 import luautil
 import codecs
+import game_xml
 test = 0
 def parse(c):
     xml_skills = {}
@@ -16,7 +17,7 @@ def parse(c):
         #    break
         try:
             with codecs.open(path,'r',encoding='utf-8',errors='replace') as f:
-                root=ET.parse(f)
+                root=game_xml.parse(f)
             
             for skill in root.iter("Skill"):
             

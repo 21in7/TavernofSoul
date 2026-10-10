@@ -236,6 +236,191 @@ def test_valid_json_corruption_in_staging_cannot_be_published(release_db, monkey
     assert not Path(release_db.BASE_PATH_OUTPUT + '.backup').exists()
 
 
+@pytest.fixture
+def map_link_release(release_db):
+    # Hand-authored source context, independent of the map parser's diagnostics.
+    source = copy.deepcopy(release_db.data['maps']['900'])
+    source.update({'$ID': '970', '$ID_NAME': 'contract_source_map',
+                   'Name': 'Contract Source', 'Link_Maps': ['971'], 'Link_Maps_Floors': []})
+    target = copy.deepcopy(source)
+    target.update({'$ID': '971', '$ID_NAME': 'contract_other_map',
+                   'Name': 'Contract Target', 'Link_Maps': []})
+    release_db.data['maps'].update({'970': source, '971': target})
+    release_db.data['unresolved_map_links'] = [{
+        'Map': '970', 'MapClassName': 'contract_source_map',
+        'Token': 'contract_missing', 'Raw': 'contract_other_map/contract_missing/970',
+        'SourceFile': 'ies.ipf/map.ies', 'SourceField': 'PhysicalLinkZone', 'SourceRow': 17,
+    }]
+    release_db.export(version_payload={'version': 'contract-map-v1'})
+    return release_db
+
+
+MAP_LINK_DIAGNOSTIC_CASES = [
+    ('collection-object', (), {}, 'type'),
+    ('collection-null', (), None, 'type'),
+    ('row-not-object', (0,), 'missing', 'type'),
+    ('unknown-source-id', (0, 'Map'), '999999', 'reference'),
+    ('other-existing-source-id', (0, 'Map'), '971', 'reference'),
+    ('wrong-source-class', (0, 'MapClassName'), 'contract_other_map', 'reference'),
+    ('boolean-map-id', (0, 'Map'), True, 'id'),
+    ('empty-map-id', (0, 'Map'), '', 'id'),
+    ('nonnumeric-map-id', (0, 'Map'), 'contract_source_map', 'range'),
+    ('nonpositive-map-id', (0, 'Map'), '0', 'range'),
+    ('class-type', (0, 'MapClassName'), 970, 'type'),
+    ('class-empty', (0, 'MapClassName'), ' ', 'empty'),
+    ('token-type', (0, 'Token'), 970, 'type'),
+    ('token-empty', (0, 'Token'), ' ', 'empty'),
+    ('known-target-is-not-unresolved', (0, 'Token'), 'contract_other_map', 'reference'),
+    ('token-is-only-a-substring', (0, 'Token'), 'missing', 'value'),
+    ('token-is-not-a-single-raw-token', (0, 'Token'), 'contract_missing/970', 'value'),
+    ('raw-does-not-contain-token', (0, 'Raw'), 'contract_other_map/another_missing', 'value'),
+    ('raw-type', (0, 'Raw'), [], 'type'),
+    ('raw-empty', (0, 'Raw'), '', 'empty'),
+    ('file-type', (0, 'SourceFile'), ['ies.ipf/map.ies'], 'type'),
+    ('file-empty', (0, 'SourceFile'), ' ', 'empty'),
+    ('absolute-posix-file', (0, 'SourceFile'), '/machine/unpack/ies.ipf/map.ies', 'path'),
+    ('absolute-windows-file', (0, 'SourceFile'), 'C:/unpack/ies.ipf/map.ies', 'path'),
+    ('windows-separators', (0, 'SourceFile'), 'ies.ipf\\map.ies', 'path'),
+    ('parent-traversal', (0, 'SourceFile'), '../ies.ipf/map.ies', 'path'),
+    ('internal-parent-traversal', (0, 'SourceFile'), 'ies.ipf/../map.ies', 'path'),
+    ('current-directory-component', (0, 'SourceFile'), './ies.ipf/map.ies', 'path'),
+    ('empty-path-component', (0, 'SourceFile'), 'ies.ipf//map.ies', 'path'),
+    ('control-in-path', (0, 'SourceFile'), 'ies.ipf/ma\x01p.ies', 'path'),
+    ('field-type', (0, 'SourceField'), False, 'type'),
+    ('field-empty', (0, 'SourceField'), '', 'empty'),
+    ('wrong-source-field', (0, 'SourceField'), 'WorldMap', 'value'),
+    ('string-source-row', (0, 'SourceRow'), '17', 'type'),
+    ('boolean-source-row', (0, 'SourceRow'), True, 'type'),
+    ('float-source-row', (0, 'SourceRow'), 17.0, 'type'),
+    ('fractional-source-row', (0, 'SourceRow'), 17.5, 'type'),
+    ('header-source-row', (0, 'SourceRow'), 1, 'range'),
+    ('negative-source-row', (0, 'SourceRow'), -1, 'range'),
+    ('duplicate-normalized-source-id', None, None, 'duplicate'),
+] + [
+    ('missing-' + field, (0, field), DELETE, 'required')
+    for field in ('Map', 'MapClassName', 'Token', 'Raw', 'SourceFile', 'SourceField', 'SourceRow')
+]
+
+
+def invalid_map_link_diagnostics(valid, path, value):
+    result = copy.deepcopy(valid)
+    if path is None:
+        duplicate = copy.deepcopy(result[0])
+        duplicate['Map'] = 970  # Equivalent to the first row's string ID.
+        result.append(duplicate)
+    elif not path:
+        result = copy.deepcopy(value)
+    else:
+        target = result
+        for key in path[:-1]:
+            target = target[key]
+        if value is DELETE:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = copy.deepcopy(value)
+    return result
+
+
+@pytest.mark.parametrize('boundary', ['memory-export', 'load-release', 'staging'])
+@pytest.mark.parametrize('case,path,value,code', MAP_LINK_DIAGNOSTIC_CASES,
+                         ids=[case[0] for case in MAP_LINK_DIAGNOSTIC_CASES])
+def test_invalid_map_link_context_is_rejected_at_both_release_boundaries(
+        map_link_release, tmp_path, monkeypatch, boundary, case, path, value, code):
+    db = map_link_release
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    invalid = invalid_map_link_diagnostics(db.data['unresolved_map_links'], path, value)
+    if boundary == 'memory-export':
+        db.data['unresolved_map_links'] = invalid
+        unchanged = copy.deepcopy(db.data)
+        with pytest.raises(ContractError) as error:
+            validate_release(db.data, require_version=False)
+        assert error.value.code == code
+        assert db.data == unchanged
+        with pytest.raises(ContractError) as error:
+            db.export(version_payload={'version': 'contract-map-v2'})
+    elif boundary == 'load-release':
+        incoming = tmp_path / 'incoming-release'
+        shutil.copytree(db.BASE_PATH_OUTPUT, incoming)
+        (incoming / 'unresolved_map_links.json').write_text(json.dumps(invalid), encoding='utf-8')
+        with pytest.raises(ContractError) as error:
+            load_release(incoming)
+    else:
+        import DB
+        real_write = DB._atomic_write_json
+        corrupted = []
+
+        def corrupt_diagnostic_file(filepath, payload):
+            real_write(filepath, payload)
+            if Path(filepath).name == 'unresolved_map_links.json':
+                Path(filepath).write_text(json.dumps(invalid), encoding='utf-8')
+                corrupted.append(str(filepath))
+
+        monkeypatch.setattr(DB, '_atomic_write_json', corrupt_diagnostic_file)
+        with pytest.raises(ContractError) as error:
+            db.export(version_payload={'version': 'contract-map-v2'})
+        assert len(corrupted) == 1
+    assert error.value.code == code
+    assert 'unresolved_map_links' in error.value.path
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-map-v1'}
+    assert not Path(db.BASE_PATH_OUTPUT + '.staging').exists()
+    assert not Path(db.BASE_PATH_OUTPUT + '.backup').exists()
+
+
+def test_valid_map_link_diagnostics_preserve_raw_numeric_tokens_and_roundtrip(map_link_release):
+    db = map_link_release
+    numeric = copy.deepcopy(db.data['unresolved_map_links'][0])
+    numeric['Token'] = '970'  # An existing ID is not a ClassName reference.
+    db.data['unresolved_map_links'].append(numeric)
+    before = copy.deepcopy(db.data)
+    validate_release(db.data, require_version=False)
+    assert db.data == before
+    db.export(version_payload={'version': 'contract-map-v2'})
+    path = Path(db.BASE_PATH_OUTPUT) / 'unresolved_map_links.json'
+    assert load_json(path) == before['unresolved_map_links']
+    assert db.data['maps']['970']['Link_Maps'] == ['971']
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-map-v2'}
+    files = snapshot(db.BASE_PATH_OUTPUT)
+    db.export(version_payload={'version': 'contract-map-v2'})
+    assert snapshot(db.BASE_PATH_OUTPUT) == files
+
+
+def test_existing_release_without_map_link_diagnostics_remains_compatible(map_link_release):
+    db = map_link_release
+    del db.data['unresolved_map_links']
+    (Path(db.BASE_PATH_OUTPUT) / 'unresolved_map_links.json').unlink()
+    validate_release(db.data, require_version=False)
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-map-v1'}
+    db.export(version_payload={'version': 'legacy-map-v2'})
+    assert 'unresolved_map_links' not in db.data
+    assert not (Path(db.BASE_PATH_OUTPUT) / 'unresolved_map_links.json').exists()
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'legacy-map-v2'}
+
+
+@pytest.mark.parametrize('target', ['contract_missing', 'contract_other_map', '999999'])
+def test_unresolved_diagnostics_do_not_relax_normal_map_foreign_keys(map_link_release, target):
+    db = map_link_release
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    db.data['maps']['970']['Link_Maps'].append(target)
+    with pytest.raises(ContractError) as error:
+        db.export(version_payload={'version': 'contract-map-v2'})
+    assert error.value.code == 'reference'
+    assert 'Link_Maps' in error.value.path
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+    directory = Path(db.BASE_PATH_OUTPUT)
+    valid_maps = load_json(directory / 'maps.json')
+    valid_maps['970']['Link_Maps'].append(target)
+    # The importer reads a separate snapshot; leave the public release intact.
+    incoming = directory.parent / ('fk-snapshot-' + target)
+    shutil.copytree(directory, incoming)
+    (incoming / 'maps.json').write_text(json.dumps(valid_maps), encoding='utf-8')
+    with pytest.raises(ContractError) as error:
+        load_release(incoming)
+    assert error.value.code == 'reference'
+    assert 'Link_Maps' in error.value.path
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+
+
 def test_export_without_version_payload_still_checks_complete_collections(release_db):
     before = (Path(release_db.BASE_PATH_OUTPUT) / 'version.json').read_bytes()
     release_db.export()
