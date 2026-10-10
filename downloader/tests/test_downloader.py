@@ -270,7 +270,11 @@ runpy.run_path(str(Path(root) / 'downloader/downloader.py'), run_name='__main__'
 @pytest.mark.parametrize('region', ['itos', 'ktos', 'jtos', 'ktest', 'twtos'])
 @pytest.mark.parametrize('code', [0, 1, 2, 7])
 def test_cron_download_failure_blocks_followup(region, code):
-    source = (ROOT / ('cron_' + region + '.sh')).read_text()
+    # Only the tracked .example is read: operational cron_*.sh stay untracked
+    # local files, so a fresh checkout must pass without them. A missing or
+    # guard-less example raises here (FileNotFoundError/ValueError): it fails
+    # the test, it is never skipped.
+    source = (ROOT / ('cron_' + region + '.sh.example')).read_text(encoding='utf-8')
     start = source.index('download_result=$?')
     end = source.index('\nfi', start) + len('\nfi')
     # Execute just the failure guard; cron itself and webhooks never run.

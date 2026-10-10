@@ -1,8 +1,10 @@
 """Run migration regressions in subprocesses using SQLite :memory: only."""
+import atexit
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -20,10 +22,13 @@ def test_recipe_migration_database(case):
 def run_case(case):
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root / 'TavernofSoul'))
-    os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_test'
+    harness_work_dir = tempfile.TemporaryDirectory(prefix='recipe-migration-')
+    atexit.register(harness_work_dir.cleanup)
+    os.environ['HARNESS_WORK_DIR'] = harness_work_dir.name
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
     from django.conf import settings
-    settings.DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3',
-                                    'NAME': ':memory:'}}
+    if settings.configured and getattr(settings, 'SETTINGS_MODULE', None) != 'TavernofSoul.settings_harness':
+        raise RuntimeError('Django must use TavernofSoul.settings_harness')
     import django
     django.setup()
     from django.db import connection

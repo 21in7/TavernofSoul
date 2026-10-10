@@ -1,7 +1,9 @@
 """Importer regression tests; database is an isolated in-memory SQLite alias."""
+import atexit
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -9,11 +11,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'TavernofSoul'))
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'TavernofSoul.settings_test')
+_HARNESS_WORK_DIR = tempfile.TemporaryDirectory(prefix='import-safety-')
+atexit.register(_HARNESS_WORK_DIR.cleanup)
+os.environ['HARNESS_WORK_DIR'] = _HARNESS_WORK_DIR.name
+os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
 
 
 @pytest.fixture
 def importer(tmp_path):
+    os.environ['HARNESS_WORK_DIR'] = _HARNESS_WORK_DIR.name
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
+    from django.conf import settings
+    if settings.configured and getattr(settings, 'SETTINGS_MODULE', None) != 'TavernofSoul.settings_harness':
+        raise RuntimeError('Django must use TavernofSoul.settings_harness')
     import django
     django.setup()
     from ipfparser.management.commands import importAll

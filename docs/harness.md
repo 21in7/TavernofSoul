@@ -11,7 +11,9 @@ Claude Code 역할의 [Jev 대화 기록 압축](compaction.md)은 `make compact
 오프라인 Node 테스트는 기본 `make check`에 포함하고, 네이티브 훅 엔진·실제 API 확인은
 각각 `make check-compaction-engine`, `make compaction-smoke`로 실행한다.
 
-저장소 루트에서 다음 명령을 실행한다.
+아래 명령은 일반 개발 환경의 사용법이다. 현재 문서·소스 준비 단계에서는 실행기가 전체
+`make check`를 수행하며, 범위가 제한된 작업자는 검증이나 운영 명령을 실행하지 않는다.
+일반 개발 환경에서는 저장소 루트에서 다음 명령을 실행한다.
 
 ```bash
 make doctor
@@ -74,6 +76,62 @@ CI는 Node.js 22를 별도로 준비한다.
 자동 설치, 버전 CSV 초기화, 운영 DB 접속을 수행하지 않는다.
 Make 없이 실행하려면 동일 인터프리터로 `python -m harness check`를 사용한다.
 
+## 신규 서버의 로컬 운영 파일
+
+Git에 추적하는 cron은 `cron_itos.sh.example`, `cron_jtos.sh.example`, `cron_ktos.sh.example`,
+`cron_ktest.sh.example`, `cron_twtos.sh.example`이다. 실제 `cron_<region>.sh`와 지역 settings는
+서버에 유지하는 로컬 운영 파일이다. 새 설치에서 원본 파일이 없는 경우에만 예제를 복사한다.
+다음은 저장소 루트에서 kTOS 파일을 준비하는 예다. 다른 지역은 파일명의 `ktos`를 바꾼다.
+아래 파일을 준비할 때는 `TAVERN_REGION=ktos`를 사용한다. 다른 지역도 설정 파일명과
+환경 변수의 지역을 일치시킨다.
+
+```bash
+cp -n TavernofSoul/TavernofSoul/settings_region.py.example TavernofSoul/TavernofSoul/settings_ktos.py
+cp -n cron_ktos.sh.example cron_ktos.sh
+```
+
+`cp -n`은 기존 파일을 덮어쓰지 않는다. **기존 운영 서버에서는 이 복사 단계 자체를 수행하지 않고,
+기존 cron·settings를 복사하거나 덮어쓰지 않는다.** 새로 복사한 cron은 지역 흐름·실패 가드와
+실행 권한을 유지하고 설치 경로·인터프리터·가상환경 경로를 새 서버에 맞춰 준비한다.
+예제에는 기존 서버의 절대 경로가 있으므로 복사만으로 실행 환경이 준비되는 것은 아니다.
+하네스 검증을 위해 운영 cron을 실행하거나 등록하지 않는다.
+
+`settings_region.py.example`은 추적되는 `settings_common.py`를 가져온다.
+다음 필수 환경 변수는 새 서버의 실행 환경에서 제공하며 개인 키·비밀번호·웹훅을
+소스나 예제·로그에 기록하지 않는다.
+
+| 환경 변수 | 설정 내용 |
+| --- | --- |
+| `TAVERN_REGION` | 복사한 설정 파일과 일치하는 `itos`, `jtos`, `ktos`, `ktest`, `twtos`, `test` 중 하나 |
+| `TAVERN_DJANGO_SECRET_KEY` | 서버별 Django 비밀 키 |
+| `TAVERN_ALLOWED_HOSTS` | 쉼표로 구분한 명시적 호스트명/IP; 스킴·포트·`*` 제외 |
+| `TAVERN_DB_NAME`, `TAVERN_DB_USER`, `TAVERN_DB_PASSWORD` | 운영 MySQL DB명·사용자·비밀번호 |
+| `TAVERN_DB_HOST`, `TAVERN_DB_PORT` | 운영 MySQL 호스트·포트 |
+
+누락되거나 빈 필수 값은 설정 오류로 실패하며 임의의 DB·키로 대체하지 않는다.
+`DEBUG=False`이고 `JSON_ROOT=BASE_DIR / ('JSON_' + REGION)`,
+`CHANGES_DIR=BASE_DIR / 'changes' / REGION`, `STATIC_ROOT=BASE_DIR / 'staticfiles' / REGION`이다.
+예제 설정을 읽는 것만으로 실제 DB에 접속하지 않는다.
+Discord 알림을 사용하는 iTOS·jTOS·kTOS cron의 웹훅은 기존
+`TAVERN_DISCORD_WEBHOOK_URL` 환경 변수 방식으로 제공한다.
+필수 운영 환경 변수는 기본 오프라인 하네스에 필요하지 않다.
+
+운영 INI·가상환경(5개 지역의 `3.8/`, `.venv/`, `venv/`)·`backups/`·빌드 파일의
+Git 추적 제거는 디스크 삭제가 아니다. 기존 서버 파일을 보존하며 clone 후 가상환경과
+의존성·운영 환경 설정을 별도로 준비해야 한다. 과거 Git 기록은 재작성하지 않는다.
+`.gitignore`는 이미 추적 중인 파일의 추적을 해제하지 않는다. 현재 단계에서 ignore 규칙과
+안전한 소스를 준비하고 실제 추적 해제는 서버 파일을 보존하는 별도 작업으로 진행한다.
+`settings_common.py`, `settings_harness.py`, `settings_harness_mysql.py`, `*.example`,
+`harness/pytest.ini`와 고정 fixture는 계속 추적해 새 체크아웃의 검증에 사용한다.
+
+현재 공개 `origin/master` 작업 사본에는 원본 서버의 개인 설정·cron·가상환경이 제공되지 않았다.
+이 단계는 안전한 소스와 예제 준비까지다. 보호 파일의 Git 추적 제거와 별도 IPFUnpacker 저장소의
+빌드 ignore는 메인 `/root`의 별도 Git PR 범위다.
+obsolete parsing-server CI 3개는 메인 `/root`가 로컬에 그대로 보관하면서 저장소별 private exclude로
+제외할 예정이며 이 단계에서는 공개 workflow를 만들거나 수정하지 않는다.
+전체 `make check`는 실행기가 수행한다. 현재 작업자는 테스트·cron·다운로더·운영 import·Git 명령을
+실행하지 않으며 후속 검증·커밋·PR·CI 성공 확인·머지도 담당하지 않는다.
+
 ## 실행 범위
 
 | 명령 | 검증 내용 |
@@ -95,11 +153,19 @@ Django test runner로 `Items.tests`를 실행한다. 디렉터리 위치와 검�
 ## 격리와 결과
 
 - 기본 런처는 `DJANGO_SETTINGS_MODULE=TavernofSoul.settings_harness`를 강제한다.
+- `settings_harness.py`는 추적되는 `settings_common.py`를 가져오며 로컬 운영
+  `settings_test.py`를 import하지 않는다. common은 공통 앱·미들웨어·템플릿 설정만 제공하고
+  운영 DB·비밀값·지역 파일을 읽지 않는다. 하네스의 `REGION='ktos'`, 오프라인 전용 키,
+  임시 JSON과 템플릿의 `harness.context_processors.offline` 재정의는 유지한다.
 - 기본 하네스는 SQLite `:memory:`를 사용한다. MySQL 명령은 `settings_harness_mysql`을 강제한다.
   두 설정 모두 실제 migrations를 적용한다.
 - JSON·미디어·캐시·메일은 하네스 환경으로 분리한다. 임시 JSON과 DB는 실행 후 정리된다.
 - 기존 환경의 `PYTEST_ADDOPTS`/추가 plugin 설정을 제거하고 하네스 전용 pytest 설정을 사용한다.
 - 선택된 pytest/Django 테스트의 skip, xfail, 테스트 미수집은 실패로 처리한다.
+- `downloader/tests/test_downloader.py`와 `parser_tidy/tests/test_cron_guard.py`는 추적되는
+  5개 지역의 `cron_<region>.sh.example`을 읽는다. 예제가 없으면 실패하며 로컬 운영 cron으로
+  대체하지 않는다. 다운로드·import 반환 코드 가드만 분리해 검사하고 파서 실패 가드와
+  지역 명령 순서를 확인하므로 전체 cron·다운로드·웹훅·운영 import는 실행하지 않는다.
 - 결과는 Git에서 제외된 `logs/harness/`에 JSON으로 남는다.
   `doctor.json`, `downloader.json`, `parser.json`, `django-regressions.json`, `django.json`, `pipeline.json` 및
   실행 명령별 집계 파일에서 성공 수·실패·오류·skip·제외 목록을 확인한다.
@@ -462,7 +528,10 @@ unpack과 번역 디렉터리 전체를 롤백하는 구조는 아니므로 실�
 
 ## 공개 저장소의 운영 알림 설정
 
-`cron_itos.sh`, `cron_jtos.sh`, `cron_ktos.sh`의 Discord 웹훅은 `TAVERN_DISCORD_WEBHOOK_URL` 환경 변수에서 읽는다.
+추적되는 `cron_itos.sh.example`, `cron_jtos.sh.example`, `cron_ktos.sh.example`의 Discord 웹훅은
+`TAVERN_DISCORD_WEBHOOK_URL` 환경 변수에서 읽는다. 실제 지역 cron은 로컬 운영 파일이다.
 운영 cron 환경에서 지역에 맞는 값을 따로 설정하며 URL을 소스나 로그에 기록하지 않는다.
-최초 GitHub 등록은 서버의 지역별 DB 접속 설정을 제외하고 공개 저장소의 기존 설정을 유지한다.
-서버의 기존 설정과 운영 파일은 등록 작업에서 수정하지 않는다.
+`downloader/tests/test_downloader.py`와 `parser_tidy/tests/test_cron_guard.py`는 5개 지역의
+추적되는 `.example`을 읽어 다운로드·파서·import 실패 가드를 검사한다.
+예제가 없으면 skip하지 않고 실패하며 운영 cron은 실행하지 않는다.
+서버의 기존 설정과 운영 파일은 이 소스 준비 작업에서 수정하지 않는다.
