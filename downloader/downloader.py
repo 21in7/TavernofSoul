@@ -58,6 +58,103 @@ def copyfiles(output):
             logging.warning("copying to {}".format(join(output,i)))
 
 
+def validate_ies_csv(path):
+    """Strictly parse one extracted IES CSV in memory without writing to it.
+
+    A field containing a comma, quote or newline must be quoted with inner
+    quotes doubled; quoted commas, doubled quotes, multiline fields and
+    header-only tables are valid. A first record that is a single unquoted
+    empty field (for example a leading blank line) is a missing header. The
+    first problem raises RuntimeError naming the file, the 1-based record
+    number and the cause. Content is never repaired and no record is ever
+    dropped.
+    """
+    try:
+        with open(path, 'r', encoding='utf-8', newline='') as handle:
+            text = handle.read()
+    except UnicodeDecodeError as error:
+        raise RuntimeError('Extracted IES CSV is not UTF-8: {}'.format(path)) from error
+    if not text:
+        raise RuntimeError('Extracted IES CSV is empty: {}'.format(path))
+
+    def fail(record, cause):
+        raise RuntimeError('Extracted IES CSV {} record {}: {}'.format(path, record, cause))
+
+    width = None
+    number = 1
+    fields = []
+    characters = []
+    quoted = False
+    closed = False
+    record_quoted = False
+    position = 0
+    size = len(text)
+    while position < size:
+        char = text[position]
+        if quoted:
+            if char == '"':
+                if position + 1 < size and text[position + 1] == '"':
+                    characters.append('"')
+                    position += 1
+                else:
+                    quoted = False
+                    closed = True
+            else:
+                characters.append(char)
+        elif char == '"':
+            if closed:
+                fail(number, 'text follows the closing quote')
+            if characters:
+                fail(number, 'quote inside an unquoted field')
+            quoted = True
+            record_quoted = True
+        elif char == ',':
+            fields.append(''.join(characters))
+            characters = []
+            closed = False
+        elif char == '\r' or char == '\n':
+            if char == '\r' and position + 1 < size and text[position + 1] == '\n':
+                position += 1
+            fields.append(''.join(characters))
+            characters = []
+            closed = False
+            if number == 1:
+                if fields == [''] and not record_quoted:
+                    fail(number, 'the file has no header row')
+                width = len(fields)
+            elif len(fields) != width:
+                fail(number, 'has {} fields, expected {} per the header'.format(len(fields), width))
+            fields = []
+            record_quoted = False
+            number += 1
+        elif closed:
+            fail(number, 'text follows the closing quote')
+        else:
+            characters.append(char)
+        position += 1
+    if quoted:
+        fail(number, 'quoted field is not terminated')
+    if closed or characters or fields:
+        fields.append(''.join(characters))
+        if number == 1:
+            if fields == [''] and not record_quoted:
+                fail(number, 'the file has no header row')
+        elif len(fields) != width:
+            fail(number, 'has {} fields, expected {} per the header'.format(len(fields), width))
+
+
+def validate_extracted_ies(root):
+    """Validate every *.ies extracted under root in a deterministic order."""
+    validated = 0
+    for directory, subdirectories, names in os.walk(root):
+        subdirectories.sort()
+        for name in sorted(names):
+            if name.lower().endswith('.ies'):
+                validate_ies_csv(join(directory, name))
+                validated += 1
+    logging.debug('Validated {} IES CSV files under {}'.format(validated, root))
+
+
 def unpack(f):
     IPF_PATH    = join("..", "{}_patch".format(region))
     OUTPUT_PATH = join("..", "{}_unpack".format(region))
@@ -74,6 +171,10 @@ def unpack(f):
         subprocess.run([unpacker, f, 'extract'] + extension_needed, check=True)
         if not os.path.isdir('extract'):
             raise RuntimeError('IPF extraction produced no output directory')
+        # An old installed ipf_unpack wrote raw quotes that shifted every
+        # column after them; extracted CSVs must parse strictly before any of
+        # this patch is published or the downloaded archive is discarded.
+        validate_extracted_ies('extract')
         copyfiles(OUTPUT_PATH)
         # Keep the original downloaded archive until every copy has succeeded.
         os.remove(cur_file)

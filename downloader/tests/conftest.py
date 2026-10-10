@@ -87,3 +87,41 @@ def server(workspace, monkeypatch):
     local = LocalServer()
     monkeypatch.setattr(urllib.request, 'urlopen', local.urlopen)
     return local
+
+
+SYNTHETIC_EXTRACT_STUB = '''import os, sys
+FILES = {files}
+if sys.argv[2] == 'decrypt':
+    raise SystemExit(0)
+if sys.argv[2] != 'extract':
+    raise SystemExit('unexpected stub invocation: ' + repr(sys.argv))
+for name, content in FILES.items():
+    path = os.path.join('extract', name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        handle.write(content)
+'''
+
+
+class SyntheticExtractStub:
+    """Same stub-tool subprocess flow, with the extract output chosen per test."""
+
+    def __init__(self, tool):
+        self.tool = tool
+        self.original = tool.read_text(encoding='utf-8')
+
+    def install(self, files):
+        body = SYNTHETIC_EXTRACT_STUB.format(files=repr(files))
+        self.tool.write_text('#!' + sys.executable + '\n' + body, encoding='utf-8')
+        self.tool.chmod(0o755)
+
+    def restore(self):
+        self.tool.write_text(self.original, encoding='utf-8')
+        self.tool.chmod(0o755)
+
+
+@pytest.fixture
+def extract_stub(workspace):
+    # Each test gets its own workspace tool copy, so swapping the script
+    # never leaks into other tests.
+    return SyntheticExtractStub(workspace / 'IPFUnpacker' / 'ipf_unpack')

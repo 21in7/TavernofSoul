@@ -102,16 +102,61 @@ obsolete parsing-server CI 3개도 메인 `/root`에서 로컬에 그대로 보�
 실행기가 전체 `make check`를 수행하며 작업자는 테스트·cron·다운로더·운영 import·Git 명령을
 실행하지 않는다. 후속 검증·커밋·PR·CI 성공 확인·머지는 현재 작업자 범위 밖이다.
 
+## IPF 추출기 준비와 이번 재실행의 경계
+
+`IPFUnpacker/src/ipf_unpack`의 native 소스와 Git ignore 대상인 설치 바이너리
+`IPFUnpacker/ipf_unpack`은 별개다. 소스가 준비되어 있어도 기존 설치 바이너리가
+그 소스를 반영했다는 보장은 없다. 빌드에는 GCC, make, zlib 개발 헤더·라이브러리가
+필요하며 IPFUnpacker submodule을 먼저 준비해야 한다. 새 개발 환경의 준비 담당자는
+`git submodule update --init --recursive -- IPFUnpacker` 후 저장소 루트에서
+`make prepare-ipf-unpacker`를 명시적으로 실행한다. 범위가 제한된 작업자는 실행하지 않는다.
+
+독립적인 `.PHONY` 준비 타깃의 내부 호출은 정확히 다음 하나다.
+
+```make
+$(MAKE) -C IPFUnpacker/src/ipf_unpack -B release
+```
+
+이 호출은 `IPFUnpacker/ipf_unpack`에 직접 링크한다. `config=release`나
+`bin/Release` 경로를 사용하지 않으며 별도 install/copy 단계도 없다.
+준비 실패는 호출자에게 전파하고 기본 doctor/check/downloader에는 연결하지 않는다.
+
+이번 동일 하네스 재실행은 승인된 `Makefile`, `downloader/downloader.py`,
+`downloader/tests/conftest.py`, `downloader/tests/test_downloader.py`,
+`docs/architecture.md`, `docs/harness.md`의 6개 파일만 변경한다.
+읽기도 승인된 파일로 제한하고 기존 사용자 편집을 보존한다. 작업자 network는 disabled이며
+기존 역할별 모델 설정을 유지한다. 새 스트리밍 전환 등 추가 최적화는 중단한다.
+원본 IPF와 기존 unpack·JSON·Translation·버전은 보존하며, 작업자는 직접 checks,
+재위임, native 소스 열람·변경, cron·다운로드·importAll 등 운영실행을 하지 않는다.
+
+main Codex의 원본 보호, 실제 native build, binary IES roundtrip 및
+kTOS/iTOS/jTOS 전체 파싱 검증은 진행 중이며 완료 결과로 간주하지 않는다.
+동일 하네스의 max round 내 전체 `make check`와 Claude 검토는 오케스트레이터가 담당한다.
+main Codex는 GitHub 앱으로 오프라인·MySQL·브라우저 CI 3개 성공을 확인한 뒤
+머지와 원격·로컬 브랜치 정리를 수행한다. 이번 재실행의 검증·검토·CI·머지 완료는
+각 담당자의 결과 확인 전까지 주장하지 않는다.
+
 ## 다운로더 → 파서 계약
 
 - 다운로드는 임시 `.part` 파일에서 완료한 뒤 공개한다. 비어 있거나 응답 길이가 다르면 실패한다.
-- data 패치는 IPF 도구의 복호화·추출과 unpack 디렉터리 복사를 거친다.
+- data 패치는 IPF 도구의 복호화·추출 뒤, 임시 `extract` 아래 모든 IES CSV의
+  quoting·헤더·행 너비·UTF-8 검증을 통과해야 unpack 디렉터리 복사로 승급한다.
+  쉼표·따옴표·줄바꿈을 포함한 필드는 인용하고 내부 따옴표는 두 번 써야 한다.
+  인용된 쉼표·여러 줄 필드·헤더만 있는 표는 허용하되 빈 파일·인용되지 않은 빈 첫 레코드와
+  헤더 대비 필드 수 불일치·잘못된 인용·UTF-8 오류는 실패한다.
+  extract 명령 성공만으로 데이터 정확성이나 승급을 보장하지 않는다.
+  검증 오류는 복사·원본 IPF 폐기·버전 전진 전에 중단하며 내용을 보정하거나 행을 버리지 않는다.
 - release 패치는 PAK 해제와 지역별 번역 복사를 거친다.
 - 각 스트림의 버전 CSV는 해당 패치의 해제·복사 성공 후 원자 교체로 전진한다.
   여러 패치 중 실패가 발생하면 마지막 완료 버전부터 재시도한다.
 - 실패 시 cron은 파서를 실행하지 않는다. 개별 파일 복사까지는 일부 반영되었을 수 있으므로
   디렉터리 전체의 원자 교체나 데이터셋 무결성 manifest로 설명하지 않는다.
 - 하네스는 실제 Python 다운로드·PAK 해제를 검사한다. 네이티브 IPF는 대체 실행 파일을 사용한다.
+
+과거 손상 CSV는 보존한 원본 IPF에서 올바르게 준비한 추출기로 새 격리 경로에 재추출해야 한다.
+기존 unpack·JSON·Translation·버전과 원본 IPF를 덮어쓰지 않으며,
+따옴표나 열을 추측 보정한 결과로 정확성을 주장하지 않는다.
+CSV 형식 검증 통과도 binary IES 변환·게임 값의 의미적 정확성 검증을 대신하지 않는다.
 
 ## 파서 → importer 계약
 
