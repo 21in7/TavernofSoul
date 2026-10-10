@@ -141,6 +141,7 @@ importer는 복사한 스냅샷을 DB 쿼리 전에 검사한다.
 `iesutil.load()`는 한 호출에서 길이 128 이하 문자열 token의 변환 결과인 immutable scalar를
 최대 4096개 재사용한다. 변환은 기존 `int` → 실패 시 `float` → 실패 시 원값 순서이며,
 NaN·누락 셀의 `None`·초과 필드의 mutable list는 캐시에 넣지 않는다.
+문자열 cache hit은 길이 판정과 변환을 생략하며, miss에서 기존 길이 128·용량 4096 제한을 적용한다.
 행과 list는 독립적으로 유지하고, 캐시는 반환·오류 시 수명이 끝난다.
 매 load는 원본 파일을 다시 읽으며 호출·파일·지역 사이에 캐시를 공유하지 않는다.
 이 변환은 raw 장비 CSV의 문자열 UseLv를 Lua로 전달하는 `items.parse_equips` 경로와 별개다.
