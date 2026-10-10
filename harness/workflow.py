@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 
-from harness import agent_models, git_publish, triage, workspace
+from harness import agent_models, failure_feedback, git_publish, triage, workspace
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/workflow-config.json'
@@ -25,7 +25,7 @@ CHECKS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pi
 
 def load_policy():
     policy = json.loads(CONFIG.read_text(encoding='utf-8'))
-    bounds = {'max_tasks': 8, 'max_rounds': 3, 'agent_timeout_seconds': 1800,
+    bounds = {'max_tasks': 8, 'max_rounds': 3, 'max_plan_attempts': 3, 'agent_timeout_seconds': 1800,
               'check_timeout_seconds': 3600, 'max_file_bytes': 33554432,
               'max_snapshot_bytes': 268435456, 'max_diff_bytes': 1048576}
     if set(policy) != set(bounds) | {'version'} or policy['version'] != 'workflow-v1':
@@ -68,6 +68,10 @@ def object_response(text):
     return result
 
 
+class PlanScopeError(ValueError):
+    """Scope and ownership violations are fatal, never plan repair candidates."""
+
+
 def parse_plan(response, scope, policy):
     plan = object_response(response)
     tasks = plan.get('tasks')
@@ -80,10 +84,13 @@ def parse_plan(response, scope, policy):
                 len(task['task'].encode('utf-8')) > 16000 or \
                 not isinstance(task['files'], list) or not task['files']:
             raise ValueError('Invalid coordinator task.')
-        files = triage.scoped_paths(task['files'], 128)
+        try:
+            files = triage.scoped_paths(task['files'], 128)
+        except ValueError:
+            raise PlanScopeError('Coordinator supplied invalid file scope.') from None
         if files != sorted(task['files']) or set(files) - set(scope) or \
                 any(owner(name) != task['role'] for name in files):
-            raise ValueError('Coordinator changed the declared scope or file owner.')
+            raise PlanScopeError('Coordinator changed the declared scope or file owner.')
         if assigned & set(files):
             raise ValueError('Each scoped file must have exactly one implementation task.')
         assigned.update(files)
@@ -147,12 +154,7 @@ def run_check(candidate, command, report_dir, keys, policy):
     groups = data.get('checks', {})
     passed = result.returncode == 0 and data.get('status') == 'passed'
     if command != 'doctor':
-        passed = passed and isinstance(groups, dict) and bool(groups) and all(
-            isinstance(group, dict) and group.get('status') == 'passed' and
-            type(group.get('selected')) is int and group['selected'] > 0 and
-            group.get('passed') == group.get('selected') and not group.get('skipped') and
-            not group.get('errors') and not group.get('failures')
-            for group in groups.values())
+        passed = passed and failure_feedback.check_groups_passed(groups)
     return {'command': command, 'status': 'passed' if passed else 'failed',
             'exit_code': result.returncode, 'report': str(path), 'log': str(log),
             'checks': groups}
@@ -188,20 +190,67 @@ class Progress:
 
 
 def model_step(progress, candidate, phase, role, task, keys, policy, runner,
-               scope=(), write=False):
+               scope=(), write=False, task_id=None):
     before = workspace.manifest(candidate, policy)
-    progress.event(phase, 'running', role, agent_started=not progress.report['simulated'])
+    progress.event(phase, 'running', role, agent_started=not progress.report['simulated'], task_id=task_id)
     task += '\nApproved readable files (exact paths): ' + json.dumps(progress.report['scope'])
     result = triage.scrub(runner(role, agent_models.redact(task, keys), keys, write=write,
                                 timeout=policy['agent_timeout_seconds'], workspace=candidate,
                                 scoped=True), keys)
-    progress.report['agents'].append({'phase': phase, **result})
+    progress.report['agents'].append({'phase': phase, 'task_id': task_id,
+                                     'prompt_sha256': triage.digest(agent_models.redact(task, keys)), **result})
     progress.save()
     if result['status'] != 'passed':
         raise ValueError('Agent failed: {}. See the private agent report.'.format(role))
     workspace.enforce_scope(before, workspace.manifest(candidate, policy), scope, read_only=not write)
-    progress.event(phase, 'responded' if phase in ('plan', 'review', 'github') else 'passed', role)
+    progress.event(phase, 'responded' if phase in ('plan', 'review', 'github') else 'passed',
+                   role, task_id=task_id)
     return result['response']
+
+
+def repair_feedback(progress, tasks, items, round_number, attempts, previous, keys, read_only, policy):
+    targets = failure_feedback.route(tasks, items)
+    evidence, pending = [], {}
+    for index, own in targets.items():
+        identity = failure_feedback.fingerprint(own)
+        recurring = previous.get(index) == identity
+        changed = attempts[index]['source_changed']
+        payload = {'task_id': index, 'files': tasks[index]['files'], 'attempt_round': round_number,
+                   'implementation_attempt_round': attempts[index]['round'],
+                   'failure_fingerprint': identity, 'same_failure_recurred': recurring,
+                   'preceding_attempt_source_changed': changed, 'diagnostics': own}
+        text = ('Required correction; do not run checks yourself. Diagnostics contain only approved '
+                'source context or scoped reviewer findings. Unavailable/unattributed context has no '
+                'known cause; conservatively inspect only your assigned files or report missing context. '
+                'All originally required checks will run after a fresh review.\n' +
+                json.dumps(payload, ensure_ascii=False))
+        if recurring:
+            text += '\nThe same failure recurred.'
+        if not changed:
+            text += '\nThe preceding implementation attempt made no assigned source change.'
+        text = agent_models.redact(text, keys)
+        evidence.append({**payload, 'role': tasks[index]['role'], 'feedback': text,
+                         'sent': False})
+        pending[index] = text
+        previous[index] = identity
+    record = {'round': round_number, 'target_tasks': list(targets),
+              'target_files': sorted({name for index in targets for name in tasks[index]['files']}),
+              'fallback': any(item.get('attribution') == 'unattributed' for item in items),
+              'assignments': evidence}
+    progress.report['repairs'].append(record)
+    progress.event('implement', 'repair_targets', **triage.scrub(record, keys))
+    if read_only:
+        raise ValueError('Read-only failure; repair retries disabled; originals are preserved.')
+    if round_number == policy['max_rounds']:
+        no_progress = any(item['same_failure_recurred'] and
+                          not item['preceding_attempt_source_changed'] for item in evidence)
+        category = 'no_progress' if no_progress else 'exhausted_repair'
+        progress.report['repair_failure'] = category
+        progress.event('implement', category, round=round_number, target_tasks=list(targets))
+        raise ValueError(category + ': required correction failed within max_rounds; originals are preserved.')
+    if not pending:
+        raise ValueError('No approved repair task; originals are preserved.')
+    return pending
 
 
 def execute(task, files, read_only=False, rules_only=False, simulated=False,
@@ -233,7 +282,8 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
               'status': 'running', 'read_only': read_only, 'simulated': simulated,
               'scope': scope, 'task_sha256': triage.digest(task),
               'workspace': str(candidate), 'model_read_scope': scope,
-              'agents': [], 'events': [], 'validation': [],
+              'agents': [], 'events': [], 'validation': [], 'plan_attempts': [],
+              'implementation_attempts': [], 'repairs': [],
               'applied': [], 'report': str(directory / 'report.json')}
     report['github_enabled'] = github_enabled
     progress = Progress(directory, report, keys)
@@ -282,16 +332,57 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                       'Role must equal the supplied owner. Tasks execute sequentially in listed order. '
                       'Do not call agent-run or harness.workflow.\nOwners: {}\nTask: {}').format(
                           json.dumps({name: owner(name) for name in scope}, ensure_ascii=False), task)
-            response = model_step(progress, model_context, 'plan', 'coordinator', prompt, keys, policy, runner)
-            tasks = parse_plan(response, scope, policy)
+            original_prompt = prompt
+            for plan_attempt in range(1, policy['max_plan_attempts'] + 1):
+                attempt = {'attempt': plan_attempt, 'status': 'running'}
+                report['plan_attempts'].append(attempt)
+                progress.event('plan', 'attempt', 'coordinator', attempt=plan_attempt)
+                # CLI failures and read-only scope enforcement are outside the
+                # parse recovery boundary; neither is retried.
+                try:
+                    response = model_step(progress, model_context, 'plan', 'coordinator', prompt, keys, policy, runner)
+                except Exception:
+                    attempt.update(status='failed', diagnostic={'category': 'planner_execution'})
+                    progress.event('plan', 'rejected', 'coordinator', **attempt)
+                    raise
+                try:
+                    tasks = parse_plan(response, scope, policy)
+                except PlanScopeError:
+                    attempt.update(status='failed', diagnostic={'category': 'scope_or_owner_violation'})
+                    progress.event('plan', 'rejected', 'coordinator', **attempt)
+                    raise
+                except (json.JSONDecodeError, ValueError) as exc:
+                    diagnostic = {'category': 'json_syntax' if isinstance(exc, json.JSONDecodeError)
+                                  else 'plan_schema'}
+                    if isinstance(exc, json.JSONDecodeError):
+                        diagnostic.update(line=exc.lineno, column=exc.colno, position=exc.pos)
+                    attempt.update(status='invalid', diagnostic=diagnostic)
+                    progress.event('plan', 'invalid', 'coordinator', **attempt)
+                    if plan_attempt == policy['max_plan_attempts']:
+                        raise ValueError('Plan attempts exhausted; no implementation or application allowed.') from None
+                    prompt = (original_prompt + '\nTrusted plan diagnostic: ' + json.dumps(diagnostic) +
+                              '\nReturn a fresh short complete valid JSON object with exactly tasks. '
+                              'Each task has exactly role (supplied owner), task (nonempty string), '
+                              'files (nonempty approved path list). Cover each supplied file once. '
+                              'Correctly escape task strings; avoid embedded unescaped quotes or code. '
+                              'No extra text. Keep the exact original owners and file scope.')
+                else:
+                    attempt.update(status='accepted', recovered=plan_attempt > 1)
+                    report['plan_recovered'] = plan_attempt > 1
+                    progress.event('plan', 'recovered' if plan_attempt > 1 else 'accepted',
+                                   'coordinator', **attempt)
+                    break
         else:
             tasks = [{'role': recommendation['role'], 'task': task, 'files': scope}]
             progress.event('plan', 'direct', detail='Jev와 경로 규칙이 일치해 담당자에 직접 배정')
         report['tasks'] = tasks
-        feedback = ''
+        pending = {index: '' for index in range(len(tasks))}
+        previous, attempts = {}, {}
         for round_number in range(1, policy['max_rounds'] + 1):
             report['round'] = round_number
-            for assigned in tasks:
+            for index, feedback in pending.items():
+                assigned = tasks[index]
+                before_attempt = workspace.manifest(model_context, policy)
                 prompt = ('Original request:\n{}\nAssigned task:\n{}\n'
                           'Allowed edit files (exact paths): {}\n'
                           'Preserve existing user edits. {} '
@@ -300,8 +391,24 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                               task, assigned['task'], json.dumps(assigned['files'], ensure_ascii=False),
                               'Do not edit any files; this is analysis only.' if read_only else
                               'Implement the assigned change only in the allowed files.', feedback)
+                if feedback:
+                    assignment = next(item for item in report['repairs'][-1]['assignments']
+                                      if item['task_id'] == index)
+                    assignment['sent'] = True
+                    progress.event('implement', 'repair_feedback', assigned['role'], task_id=index,
+                                   round=round_number, feedback=feedback)
                 model_step(progress, model_context, 'implement', assigned['role'], prompt, keys, policy,
-                           runner, assigned['files'], write=not read_only)
+                           runner, assigned['files'], write=not read_only, task_id=index)
+                after_attempt = workspace.manifest(model_context, policy)
+                source_changed = any(before_attempt.get(name, {}).get('sha256') !=
+                                     after_attempt.get(name, {}).get('sha256') for name in assigned['files'])
+                attempts[index] = {'round': round_number, 'task_id': index,
+                                   'files': assigned['files'], 'source_changed': source_changed,
+                                   'before': {name: before_attempt.get(name) for name in assigned['files']},
+                                   'after': {name: after_attempt.get(name) for name in assigned['files']}}
+                report['implementation_attempts'].append(attempts[index])
+                progress.event('implement', 'source_progress', assigned['role'], task_id=index,
+                               round=round_number, source_changed=source_changed)
             workspace.sync_scope(model_context, candidate, model_baseline, scope, policy, read_only=read_only)
             candidate_manifest = workspace.manifest(candidate, policy)
             changes = workspace.enforce_scope(baseline, candidate_manifest, scope, read_only=read_only)
@@ -324,10 +431,12 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             review = parse_review(response, scope)
             report['review'] = review
             if review['verdict'] != 'approved':
-                feedback = 'Address these reviewer findings:\n' + json.dumps(review, ensure_ascii=False)
                 progress.event('review', 'changes_requested', 'reviewer', round=round_number)
-                if read_only or round_number == policy['max_rounds']:
-                    raise ValueError('Review did not approve within max_rounds; originals are preserved.')
+                findings = [{'file': item['file'], 'severity': item['severity'],
+                             'message': item['message'][:2000], 'category': 'review_changes_requested'}
+                            for item in review['findings']]
+                pending = repair_feedback(progress, tasks, findings, round_number, attempts,
+                                          previous, keys, read_only, policy)
                 continue
             progress.event('review', 'approved', 'reviewer', round=round_number)
             failures, round_validation = [], []
@@ -335,6 +444,12 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                 progress.event('validate', 'running', detail=command, round=round_number)
                 result = checker(candidate, command, directory / ('checks-' + str(round_number)) / command,
                                  keys, policy)
+                # A successful CLI/fixture status cannot override structured
+                # failures, skipped coverage, or a nonzero process exit.
+                if result.get('status') != 'passed' or result.get('exit_code', 0) != 0 or \
+                        (not (simulated and result.get('checks') == {}) and
+                         not failure_feedback.check_groups_passed(result.get('checks'))):
+                    result = {**result, 'status': 'failed'}
                 report['validation'].append(result)
                 round_validation.append(result)
                 workspace.enforce_scope(candidate_manifest, workspace.manifest(candidate, policy), [], read_only=True)
@@ -342,15 +457,9 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                 if result['status'] != 'passed':
                     failures.append(result)
             if failures:
-                # Tracebacks, node IDs and log paths can contain unapproved source.
-                # Only fixed, allowlisted command/status metadata crosses this boundary.
-                feedback = ('Required local checks failed; do not run checks yourself. '
-                            'Detailed logs remain local because they may contain unapproved source. '
-                            'Inspect approved files for a correction or report missing context:\n' +
-                            json.dumps([{'command': failure['command'], 'status': 'failed'}
-                                        for failure in failures], ensure_ascii=False))
-                if read_only or round_number == policy['max_rounds']:
-                    raise ValueError('Required checks failed within max_rounds; originals are preserved.')
+                items = failure_feedback.diagnostics(failures, candidate, model_context, scope, policy)
+                pending = repair_feedback(progress, tasks, items, round_number, attempts,
+                                          previous, keys, read_only, policy)
                 continue
             report['delivery_validation'] = round_validation
             progress.event('apply', 'running', detail='읽기 전용/데모는 원본에 반영하지 않음' if read_only or simulated else '')
