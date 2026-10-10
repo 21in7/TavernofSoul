@@ -29,21 +29,21 @@ def load(ies_name,c):
 
         for row in ies_reader:
             # auto cast to int/float if possible
-            for key in row.keys():
-                value = row[key]
-                cacheable = isinstance(value, str) and len(value) <= 128
-                if cacheable:
+            for key, value in row.items():
+                cacheable = False
+                if isinstance(value, str):
                     converted = scalar_cache.get(value, cache_miss)
                     if converted is not cache_miss:
                         row[key] = converted
                         continue
+                    cacheable = len(value) <= 128
                 try:
-                    row[key] = int(row[key])
+                    row[key] = int(value)
                 except :
                     try:
-                        row[key] = float(row[key])
+                        row[key] = float(value)
                     except :
-                        row[key] = row[key]
+                        row[key] = value
                 if cacheable and len(scalar_cache) < 4096:
                     converted = row[key]
                     # Shared NaN identity can change container equality. None

@@ -158,6 +158,65 @@ def test_ies_cache_capacity_and_short_token_length_boundaries(tmp_path):
                 assert math.copysign(1.0, row['Value']) == -1.0
 
 
+def test_ies_saturated_cache_with_special_cells_and_independent_rows(tmp_path):
+    fields = ('Existing', 'New', 'NaN', 'TwinNaN', 'NegativeZero',
+              'PositiveZero', 'Arabic', 'Fullwidth', 'Tail')
+    path = tmp_path / 'saturated.csv'
+    # Fill beyond capacity using distinct short tokens before mixing cached
+    # and new values with NaNs, signed zeros, Unicode digits and uneven rows.
+    path.write_text(','.join(fields) + '\n'
+                    + ''.join(','.join([str(10000 + index)] * len(fields)) + '\n'
+                              for index in range(4100))
+                    + '10000,20000,NaN,NaN,-0.0,0.0,١٢,１２,,001,extra\n'
+                    + '10000,20000,NaN,NaN,-0.0,0.0,١٢,１２,,001,extra\n'
+                    + '10000,20000,NaN,NaN,-0.0,0.0,١٢,１２\n'
+                    + '10000,20000,NaN,NaN,-0.0,0.0,١٢,１２\n',
+                    encoding='utf-8')
+    c = SimpleNamespace(file_dict={'saturated.ies': {'path': str(path)}})
+    rows = iesutil.load('saturated.ies', c)
+    assert len(rows) == 4104
+    assert len({id(row) for row in rows}) == 4104
+    for index, row in enumerate(rows[:4100]):
+        assert list(row) == list(fields)
+        assert all(type(value) is int and value == 10000 + index
+                   for value in row.values())
+
+    expected_scalars = {
+        'Existing': 10000, 'New': 20000,
+        'NegativeZero': -0.0, 'PositiveZero': 0.0,
+        'Arabic': 12, 'Fullwidth': 12,
+    }
+    special_rows = rows[4100:]
+    nans = []
+    for index, row in enumerate(special_rows):
+        assert list(row) == list(fields) + ([None] if index < 2 else [])
+        for key, expected in expected_scalars.items():
+            actual = row[key]
+            assert type(actual) is type(expected)
+            assert actual == expected
+            if type(expected) is float:
+                assert math.copysign(1.0, actual) == math.copysign(1.0, expected)
+        for key in ('NaN', 'TwinNaN'):
+            actual = row[key]
+            assert type(actual) is float and math.isnan(actual)
+            assert all(actual is not previous for previous in nans)
+            nans.append(actual)
+        if index < 2:
+            assert type(row['Tail']) is str and row['Tail'] == ''
+            assert type(row[None]) is list and row[None] == ['001', 'extra']
+            assert all(type(value) is str for value in row[None])
+        else:
+            assert row['Tail'] is None
+
+    assert special_rows[0][None] is not special_rows[1][None]
+    special_rows[0]['Existing'] = 99
+    special_rows[0][None].append('changed')
+    assert special_rows[1]['Existing'] == 10000
+    assert special_rows[1][None] == ['001', 'extra']
+    assert special_rows[2]['Existing'] == special_rows[3]['Existing'] == 10000
+    assert rows[0]['Existing'] == 10000
+
+
 def test_legacy_line_preprocessing_executes_and_preserves_exact_source(tmp_path):
     source = r'''
 -- A skipped line with ["comment"] and function ignored:method()
