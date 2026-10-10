@@ -159,6 +159,8 @@ legacy Lua 줄 전처리는 quoted index → require 제거 → method 변환 �
 적용해 매칭이 불가능한 경우에만 치환 호출을 생략한다. 이는 전처리 비용만 줄이며,
 `luautil.init()`는 매번 새 LuaRuntime을 만들고 실패 가능한 초기화 전에 레지스트리를 reset한다.
 원본 로딩·함수 분리·override 보호·whole-module 실행과 필수 함수 실패 전파 계약은 유지한다.
+함수 선언 감지도 기존 패턴과 기본 flags를 private compiled regex로 재사용하며,
+전처리된 현재 줄에 필수 literal `function`이 없을 때만 매칭을 생략한다.
 `harness/parser_fixture.py`의 `isolated_parser_state`도 새 runtime/레지스트리와 격리된
 아이템·스킬·몬스터 상태를 사용하고 `finally`에서 기존 상태를 복구한다.
 

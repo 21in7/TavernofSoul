@@ -227,6 +227,208 @@ end
         assert luautil.LUA_RUNTIME['later']() == 23
 
 
+@pytest.mark.parametrize('header,expected_header,call,answer', (
+    ('function\ttabbed(x) return x + 2 end', None, 'tabbed(7)', 9),
+    ('function  spaced(x) return x + 2 end',
+     'function  spaced(x) return x + 2 end', 'spaced(7)', 9),
+    ('function \t mixed(x) return x + 2 end',
+     'function \t mixed(x) return x + 2 end', 'mixed(7)', 9),
+    ('function\fpage_space(x) return x + 2 end', None, 'page_space(7)', 9),
+    ('local function helper(x) return x + 2 end', None, 'helper(7)', 9),
+    ('local\t function \t helper(x) return x + 2 end', None, 'helper(7)', 9),
+    ('function fixture.dot(x) return x + 2 end',
+     'function fixture.dot(x) return x + 2 end', 'fixture.dot(7)', 9),
+    ('function fixture:method(x) return x + 2 end',
+     'function fixture.method(x) return x + 2 end', 'fixture.method(7)', 9),
+    ('function\tfixture:method(x) return self.base + x end',
+     None, 'fixture:method(7)', 17),
+))
+def test_legacy_declaration_whitespace_prefix_and_chunk_scope(
+        tmp_path, header, expected_header, call, answer):
+    # The body on the header line still starts a new chunk. Only the existing
+    # ASCII-space registration path records sources; tabs remain native Lua.
+    source = '''trace = "bootstrap"
+fixture = {base = 10}
+function before()
+    return 5
+end
+trace = trace .. "|before"
+local previous_chunk_local = 100
+''' + header + '''
+trace = trace .. "|header"
+header_result = ''' + call + '''
+header_scope = previous_chunk_local
+function after() return 23 end
+trace = trace .. "|after"
+helper_after = helper
+'''
+    (tmp_path / 'headers.lua').write_text(source, encoding='utf-8')
+    expected = {
+        'before': '''function before()
+return 5
+end
+trace = trace .. "|before"
+local previous_chunk_local = 100''',
+        'after': '''function after() return 23 end
+trace = trace .. "|after"
+helper_after = helper''',
+    }
+    if expected_header is not None:
+        name = {'spaced(7)': 'spaced', 'mixed(7)': 'mixed',
+                'fixture.dot(7)': 'fixture.dot',
+                'fixture.method(7)': 'fixture.method'}[call]
+        expected[name] = (expected_header + '\ntrace = trace .. "|header"'
+                          + '\nheader_result = ' + call
+                          + '\nheader_scope = previous_chunk_local')
+    with isolated_parser_state():
+        luautil.init_runtime(SimpleNamespace(PATH_INPUT_DATA=str(tmp_path)))
+        assert luautil.LUA_SOURCE == expected
+        assert set(luautil.LUA_RUNTIME) == set(expected)
+        globals_ = luautil.lua.globals()
+        assert globals_.trace == 'bootstrap|before|header|after'
+        assert globals_.header_result == answer
+        assert globals_.header_scope is None
+        assert globals_.previous_chunk_local is None
+        assert globals_.helper is None and globals_.helper_after is None
+        assert globals_.before() == luautil.LUA_RUNTIME['before']() == 5
+        assert globals_.after() == luautil.LUA_RUNTIME['after']() == 23
+        if call != 'helper(7)':
+            assert luautil.lua.eval(call) == answer
+        if expected_header is not None:
+            assert luautil.LUA_RUNTIME[name](7) == answer
+
+
+def test_legacy_function_literals_and_assignments_do_not_split_chunks(tmp_path):
+    (tmp_path / 'non_declarations.lua').write_text('''
+trace = "bootstrap"
+local seed = 4
+text = "function phantom() end"
+function_count = seed + 1
+assigned = function(x) return seed + x end
+bootstrap_result = assigned(3)
+function calculate()
+    return function_count * 2
+end
+local chunk_seed = 11
+chunk_text = "local function shadow() end"
+chunk_assignment = function(x) return chunk_seed + x end
+function spaced_name (x) return chunk_seed + x end
+assigned_result = chunk_assignment(2)
+spaced_result = spaced_name(3)
+trace = trace .. "|calculate"
+function final() return calculate() + assigned_result + spaced_result end
+trace = trace .. "|final"
+'''.lstrip(), encoding='utf-8')
+    # A space before '(' prevents header recognition. The declaration and
+    # anonymous assignments stay in their chunks and close over those locals.
+    expected = {
+        'calculate': '''function calculate()
+return function_count * 2
+end
+local chunk_seed = 11
+chunk_text = "local function shadow() end"
+chunk_assignment = function(x) return chunk_seed + x end
+function spaced_name (x) return chunk_seed + x end
+assigned_result = chunk_assignment(2)
+spaced_result = spaced_name(3)
+trace = trace .. "|calculate"''',
+        'final': '''function final() return calculate() + assigned_result + spaced_result end
+trace = trace .. "|final"''',
+    }
+    with isolated_parser_state():
+        luautil.init_runtime(SimpleNamespace(PATH_INPUT_DATA=str(tmp_path)))
+        assert luautil.LUA_SOURCE == expected
+        assert set(luautil.LUA_RUNTIME) == {'calculate', 'final'}
+        globals_ = luautil.lua.globals()
+        assert globals_.trace == 'bootstrap|calculate|final'
+        assert globals_.text == 'function phantom() end'
+        assert globals_.chunk_text == 'local function shadow() end'
+        assert globals_.phantom is None and globals_.shadow is None
+        assert globals_.seed is None and globals_.chunk_seed is None
+        assert globals_.function_count == 5
+        assert globals_.bootstrap_result == globals_.assigned(3) == 7
+        assert globals_.assigned_result == globals_.chunk_assignment(2) == 13
+        assert globals_.spaced_result == globals_.spaced_name(3) == 14
+        assert globals_.calculate() == luautil.LUA_RUNTIME['calculate']() == 10
+        assert globals_.final() == luautil.LUA_RUNTIME['final']() == 37
+
+
+def test_legacy_declaration_free_file_executes_without_registering_functions(tmp_path):
+    (tmp_path / 'assignments.lua').write_text('''
+local seed = 6
+text = "function phantom() end"
+function_total = seed * 2
+assigned = function(x) return seed + x end
+result = assigned(function_total)
+'''.lstrip(), encoding='utf-8')
+    with isolated_parser_state():
+        luautil.init_runtime(SimpleNamespace(PATH_INPUT_DATA=str(tmp_path)))
+        assert luautil.LUA_SOURCE == {}
+        assert set(luautil.LUA_RUNTIME) == set()
+        globals_ = luautil.lua.globals()
+        assert globals_.text == 'function phantom() end'
+        assert globals_.seed is None and globals_.phantom is None
+        assert globals_.function_total == 12
+        assert globals_.result == globals_.assigned(12) == 18
+
+
+@pytest.mark.parametrize('invalid_header', (
+    'function\u2003unicode_space() return + end',
+    'local\u2003function unicode_local() return + end',
+    'function caf\u00e9() return + end',
+))
+def test_legacy_unicode_headers_isolate_invalid_chunks(tmp_path, invalid_header):
+    # The Unicode header must split the preceding valid chunk even though
+    # its body is invalid Lua; these cases do not depend on Lua identifier rules.
+    source = '''trace = "bootstrap"
+function before() return 5 end
+trace = trace .. "|before"
+''' + invalid_header + '''
+trace = trace .. "|invalid"
+function after() return before() + 18 end
+trace = trace .. "|after"
+'''
+    (tmp_path / 'unicode_headers.lua').write_text(source, encoding='utf-8')
+    with isolated_parser_state():
+        luautil.init_runtime(SimpleNamespace(PATH_INPUT_DATA=str(tmp_path)))
+        assert luautil.LUA_SOURCE == {
+            'before': 'function before() return 5 end\ntrace = trace .. "|before"',
+            'after': 'function after() return before() + 18 end\ntrace = trace .. "|after"',
+        }
+        assert set(luautil.LUA_RUNTIME) == {'before', 'after'}
+        globals_ = luautil.lua.globals()
+        assert globals_.trace == 'bootstrap|before|after'
+        assert globals_.before() == luautil.LUA_RUNTIME['before']() == 5
+        assert globals_.after() == luautil.LUA_RUNTIME['after']() == 23
+        assert globals_.unicode_space is None and globals_.unicode_local is None
+        assert globals_['caf\u00e9'] is None
+
+
+def test_legacy_tab_declaration_survives_engine_error_and_keeps_later_functions(tmp_path):
+    (tmp_path / 'engine_then_tab.lua').write_text('''
+trace = "bootstrap"
+missing_engine.initialize()
+trace = trace .. "|unreachable"
+function\trecovered(x) return x * 3 end
+trace = trace .. "|recovered"
+recovered_result = recovered(7)
+function later() return recovered_result + recovered(2) end
+trace = trace .. "|later"
+'''.lstrip(), encoding='utf-8')
+    with isolated_parser_state():
+        luautil.init_runtime(SimpleNamespace(PATH_INPUT_DATA=str(tmp_path)))
+        assert luautil.LUA_SOURCE == {
+            'later': '''function later() return recovered_result + recovered(2) end
+trace = trace .. "|later"''',
+        }
+        assert set(luautil.LUA_RUNTIME) == {'later'}
+        globals_ = luautil.lua.globals()
+        assert globals_.missing_engine is None
+        assert globals_.trace == 'bootstrap|recovered|later'
+        assert globals_.recovered_result == globals_.recovered(7) == 21
+        assert globals_.later() == luautil.LUA_RUNTIME['later']() == 27
+
+
 def test_goddess_module_preserves_local_tables_and_file_scope_initializers(tmp_path):
     (tmp_path / 'shared_item_goddess_reinforce.lua').write_text('''
 local end_level = 560
