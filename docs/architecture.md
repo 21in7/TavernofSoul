@@ -121,20 +121,29 @@ $(MAKE) -C IPFUnpacker/src/ipf_unpack -B release
 `bin/Release` 경로를 사용하지 않으며 별도 install/copy 단계도 없다.
 준비 실패는 호출자에게 전파하고 기본 doctor/check/downloader에는 연결하지 않는다.
 
-이번 동일 하네스 재실행은 승인된 `Makefile`, `downloader/downloader.py`,
-`downloader/tests/conftest.py`, `downloader/tests/test_downloader.py`,
-`docs/architecture.md`, `docs/harness.md`의 6개 파일만 변경한다.
-읽기도 승인된 파일로 제한하고 기존 사용자 편집을 보존한다. 작업자 network는 disabled이며
-기존 역할별 모델 설정을 유지한다. 새 스트리밍 전환 등 추가 최적화는 중단한다.
-원본 IPF와 기존 unpack·JSON·Translation·버전은 보존하며, 작업자는 직접 checks,
-재위임, native 소스 열람·변경, cron·다운로드·importAll 등 운영실행을 하지 않는다.
+이번 strict IES CSV 게이트 호환성 수정은 승인된 `downloader/downloader.py`,
+`downloader/tests/test_downloader.py`, `docs/architecture.md`, `docs/harness.md`의
+4개 파일에 한정한다. 각 작업자는 배정된 파일만 수정하고 승인된 파일만 읽으며
+기존 사용자 편집을 보존한다. 기존 역할·provider·model·sandbox 설정을 유지하고
+새 스트리밍 전환 등 추가 최적화는 하지 않는다.
+원본 IPF·patch와 기존 unpack·JSON·Translation·버전은 보존하며, 작업자는 직접 checks,
+Git 명령·재위임·agent-run·harness.workflow, native 소스 열람·변경,
+cron·다운로드·importAll 등 운영실행을 하지 않는다.
 
-main Codex의 원본 보호, 실제 native build, binary IES roundtrip 및
-kTOS/iTOS/jTOS 전체 파싱 검증은 진행 중이며 완료 결과로 간주하지 않는다.
-동일 하네스의 max round 내 전체 `make check`와 Claude 검토는 오케스트레이터가 담당한다.
-main Codex는 GitHub 앱으로 오프라인·MySQL·브라우저 CI 3개 성공을 확인한 뒤
-머지와 원격·로컬 브랜치 정리를 수행한다. 이번 재실행의 검증·검토·CI·머지 완료는
-각 담당자의 결과 확인 전까지 주장하지 않는다.
+main이 관측한 공식 current407263 격리 입력에서는 실제 kTOS/iTOS/jTOS 전체 파서가
+성공했지만 기존 게이트는 다른 지역에서도 사용하는 iTOS 드롭 표 153개를 거부했다.
+이 파일들은 모두 정확히 LF 한 바이트였다. 공식 암호화 IPF 엔트리의 서로 다른 표본
+3개를 크기·CRC32·SHA256으로 독립 확인한 결과, 각 binary IES는 본문 없는 156바이트
+헤더로 행 0개·열 0개였고 병합된 native 추출기는 종료 코드 0과 정확히 `b'\n'`을
+출력했다. 이는 main이 제공한 형식 관측 사실이며 원본 바이트는 외부 모델에 제공하지 않았다.
+합성 하네스·native 변환·전체 지역 파싱은 별개 검증이며, 이 관측이 게임 엔진 동작이나
+geometry 정확성을 검증하지는 않는다.
+
+새 Claude 검토와 전체 `make check`는 오케스트레이터가, Git 작업은 git 역할이 담당한다.
+main은 수정 후 세 전체 파싱에 사용한 기존 IES 경로 9239개 모두에 게이트를 재실행하여
+오류 0개를 머지 조건으로 확인해야 한다. 이 수정 후 실데이터 게이트는 아직 통과로 기록하지 않는다.
+main은 GitHub 앱 journal과 오프라인·MySQL·브라우저 CI 3개 성공 확인 후 머지,
+원격·로컬 브랜치 정리를 담당한다. 검증·검토·CI·머지 완료는 담당자의 결과 확인 전까지 주장하지 않는다.
 
 ## 다운로더 → 파서 계약
 
@@ -142,8 +151,11 @@ main Codex는 GitHub 앱으로 오프라인·MySQL·브라우저 CI 3개 성공�
 - data 패치는 IPF 도구의 복호화·추출 뒤, 임시 `extract` 아래 모든 IES CSV의
   quoting·헤더·행 너비·UTF-8 검증을 통과해야 unpack 디렉터리 복사로 승급한다.
   쉼표·따옴표·줄바꿈을 포함한 필드는 인용하고 내부 따옴표는 두 번 써야 한다.
-  인용된 쉼표·여러 줄 필드·헤더만 있는 표는 허용하되 빈 파일·인용되지 않은 빈 첫 레코드와
-  헤더 대비 필드 수 불일치·잘못된 인용·UTF-8 오류는 실패한다.
+  인용된 쉼표·여러 줄 필드·헤더만 있는 표는 허용한다. binary IES는 행 0개·열 0개도
+  유효하며 native CSV가 정확히 LF 하나(`'\n'`) 또는 플랫폼 CRLF 하나(`'\r\n'`)인
+  완전한 파일만 zero-schema 표로 바이트 변경 없이 허용한다.
+  0바이트 빈 파일, 빈 헤더 뒤 추가 레코드·여러 빈 줄·쉼표 필드가 있는 빈 헤더,
+  헤더 대비 필드 수 불일치·잘못된 인용·UTF-8 오류는 계속 실패한다.
   extract 명령 성공만으로 데이터 정확성이나 승급을 보장하지 않는다.
   검증 오류는 복사·원본 IPF 폐기·버전 전진 전에 중단하며 내용을 보정하거나 행을 버리지 않는다.
 - release 패치는 PAK 해제와 지역별 번역 복사를 거친다.

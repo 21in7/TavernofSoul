@@ -68,6 +68,13 @@ def validate_ies_csv(path):
     first problem raises RuntimeError naming the file, the 1-based record
     number and the cause. Content is never repaired and no record is ever
     dropped.
+
+    A binary IES can legitimately have zero rows and zero columns: the
+    native extractor merges such a table to exactly one line terminator,
+    so the complete bytes '\n' (or '\r\n' for the platform line terminator)
+    are a valid zero-schema table and are accepted early, unchanged. An
+    empty file and a blank first record followed by any further content
+    still fail the validation below.
     """
     try:
         with open(path, 'r', encoding='utf-8', newline='') as handle:
@@ -76,6 +83,13 @@ def validate_ies_csv(path):
         raise RuntimeError('Extracted IES CSV is not UTF-8: {}'.format(path)) from error
     if not text:
         raise RuntimeError('Extracted IES CSV is empty: {}'.format(path))
+    # Real official drop tables exist with zero rows and zero columns, and
+    # the native extractor then exports exactly one line terminator. Only
+    # these two complete representations are accepted as extracted,
+    # byte-for-byte; an empty file and a blank first record followed by any
+    # further content still fail in the validator below.
+    if text in ('\n', '\r\n'):
+        return
 
     def fail(record, cause):
         raise RuntimeError('Extracted IES CSV {} record {}: {}'.format(path, record, cause))

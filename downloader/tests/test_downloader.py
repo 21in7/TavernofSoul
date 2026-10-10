@@ -125,6 +125,39 @@ def test_valid_ies_csv_quoting_multiline_and_header_only_reach_output(workspace,
     assert not Path('1_001001.ipf').exists()
 
 
+# A binary IES can legitimately have zero rows and zero columns: the native
+# extractor then exports exactly one line terminator. That complete file is
+# real official data and must publish unchanged, advance the version and
+# clean up like any other patch.
+ZERO_SCHEMA_IES_CSVS = {'lf': '\n', 'crlf': '\r\n'}
+
+
+@pytest.mark.parametrize('variant', sorted(ZERO_SCHEMA_IES_CSVS))
+def test_ies_csv_validation_accepts_zero_schema_table_unchanged(tmp_path, variant):
+    path = tmp_path / 'extract' / 'item.ies'
+    path.parent.mkdir()
+    path.write_bytes(ZERO_SCHEMA_IES_CSVS[variant].encode('utf-8'))
+    client.validate_ies_csv(str(path))
+    assert path.read_bytes() == ZERO_SCHEMA_IES_CSVS[variant].encode('utf-8')
+
+
+@pytest.mark.parametrize('variant', sorted(ZERO_SCHEMA_IES_CSVS))
+def test_zero_schema_ies_csv_publishes_unchanged_and_disposes_cache(workspace, server, extract_stub, variant):
+    zero_schema = ZERO_SCHEMA_IES_CSVS[variant]
+    extract_stub.install({'ies.ipf/item.ies': zero_schema})
+    assert client.main(['itos']) == 0
+    # The published table is the extracted bytes, exactly one line terminator.
+    assert (workspace / 'itos_unpack/ies.ipf/item.ies').read_bytes() == zero_schema.encode('utf-8')
+    assert client.read_version('revision.csv')['itos'] == '2'
+    assert client.read_version('release.csv')['itos'] == '2'
+    # Success cleans the temporary extraction, the local archive copy and the
+    # cached download alike.
+    assert not Path('extract').exists()
+    assert not Path('1_001001.ipf').exists()
+    assert not (workspace / 'itos_patch/1_001001.ipf').exists()
+    assert not list((workspace / 'itos_patch').glob('*.part'))
+
+
 INVALID_IES_CSVS = {
     # What the old installed ipf_unpack shipped: a raw quote inside a quoted
     # field shifts every later column (RefreshScp became YES).
@@ -138,6 +171,11 @@ INVALID_IES_CSVS = {
     'overflow_row': ('ClassID,Name,RefreshScp\n1,plain,NO,extra\n', ('record 2', 'has 4 fields, expected 3')),
     'empty_file': ('', ('is empty',)),
     'missing_header': ('\n1,plain,NO\n', ('record 1', 'the file has no header row')),
+    # A zero-schema table is exactly one line terminator: a second record, or
+    # a blank header carrying fields, is a missing header again.
+    'blank_lines': ('\n\n', ('record 1', 'the file has no header row')),
+    'crlf_blank_lines': ('\r\n\r\n', ('record 1', 'the file has no header row')),
+    'blank_header_comma_fields': ('\n,,\n', ('record 1', 'the file has no header row')),
 }
 
 
@@ -153,6 +191,17 @@ def test_ies_csv_validation_error_names_file_record_and_cause(tmp_path, damage):
     assert str(path) in message
     for fragment in fragments:
         assert fragment in message
+
+
+def test_ies_csv_validation_rejects_invalid_utf8(tmp_path):
+    path = tmp_path / 'extract' / 'item.ies'
+    path.parent.mkdir()
+    path.write_bytes(b'ClassID,Name,RefreshScp\n1,\xff\xfe,NO\n')
+    with pytest.raises(RuntimeError) as raised:
+        client.validate_ies_csv(str(path))
+    message = str(raised.value)
+    assert str(path) in message
+    assert 'not UTF-8' in message
 
 
 HEADER_ONLY_VARIANTS = {
@@ -181,6 +230,12 @@ DAMAGED_IES_FILES = {
     'overflow_row': DAMAGED_HEADER + '1,plain,NO,extra\n',
     'empty_file': '',
     'blank_header': '\n1,plain,NO\n',
+    # Exactly one line terminator is a valid zero-schema table; anything
+    # beyond it (or a blank header carrying fields) must fail with all the
+    # preservation and recovery guarantees below.
+    'blank_lines': '\n\n',
+    'crlf_blank_lines': '\r\n\r\n',
+    'blank_header_comma_fields': '\n,,\n',
 }
 
 
