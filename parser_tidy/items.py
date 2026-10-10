@@ -433,6 +433,8 @@ def parse_equips(constants, filename, _seen_paths=None):
     
     if not 'EQUIPMENT' in constants.data['item_type']:
         constants.data['item_type']['EQUIPMENT'] = []
+    equipment_names = constants.data['item_type']['EQUIPMENT']
+    equipment_name_set = set(equipment_names)
     LUA_RUNTIME = luautil.LUA_RUNTIME
     LUA_SOURCE = luautil.LUA_SOURCE
     rows = []
@@ -461,8 +463,9 @@ def parse_equips(constants, filename, _seen_paths=None):
         if 'Desc' in row and row['Desc']:
             obj['Description'] = constants.translate(row['Desc'])
         
-        if obj['$ID_NAME'] not in constants.data['item_type']['EQUIPMENT']:
-            constants.data['item_type']['EQUIPMENT'].append(obj['$ID_NAME'])
+        if obj['$ID_NAME'] not in equipment_name_set:
+            equipment_names.append(obj['$ID_NAME'])
+            equipment_name_set.add(obj['$ID_NAME'])
         obj['Type'] = 'Equipment'
         # Calculate all properties using in-game formulas
         tooltip_script = row['RefreshScp']

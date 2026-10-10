@@ -25,6 +25,127 @@ def snapshot(release):
     return {path.name: path.read_bytes() for path in release.glob('*.json')}
 
 
+def test_equipment_names_preserve_seeded_list_duplicates_order_and_identity(tmp_path):
+    root = prepare_equipment_workspace(tmp_path)
+    db = parse(root)
+    names = ['harness_accessory', 'harness_sword', 'harness_sword']
+    # Exercise legacy duplicates at the parser boundary, after the fixture's
+    # normal export. The seeded list is only an input to this parse_equips call.
+    db.data['item_type']['EQUIPMENT'] = names
+    sword = db.data['items_by_name']['harness_sword']
+    sword['Stat_ATTACK_PHYSICAL_MIN'] = -1
+    sword['Stat_ATTACK_PHYSICAL_MAX'] = -1
+    with isolated_parser_state():
+        luautil.init(db)
+        columns = luautil.LUA_RUNTIME['GET_COMMON_PROP_LIST']()
+        items.EQUIPMENT_STAT_COLUMNS = [columns[index] for index in columns]
+        items.parse_equipment_grade_ratios(db)
+        items.parse_goddess_reinf(db)
+        items.parse_equips(db, 'item_equip.ies')
+    assert db.data['item_type']['EQUIPMENT'] is names
+    assert names == ['harness_accessory', 'harness_sword', 'harness_sword',
+                     'harness_staff', 'harness_armor']
+    assert db.data['items_by_name']['harness_sword'] is sword
+    assert (sword['Stat_ATTACK_PHYSICAL_MIN'], sword['Stat_ATTACK_PHYSICAL_MAX']) == (7000, 7100)
+
+
+def test_duplicate_equipment_rows_and_files_overwrite_real_lua_values(tmp_path, monkeypatch):
+    root = prepare_equipment_workspace(tmp_path)
+    equipment = root / 'itos_unpack/ies.ipf/item_equip.ies'
+    with equipment.open(encoding='utf-8', newline='') as source:
+        reader = csv.DictReader(source)
+        fields, rows = reader.fieldnames, list(reader)
+    later_row = dict(rows[0], ClassType='Shirt', RefreshScp='SCR_HARNESS_REFRESH_DAWN_ARMOR',
+                     MaxDur='3900', BasicTooltipProp='DEF,MDEF')
+    with equipment.open('w', encoding='utf-8', newline='') as target:
+        writer = csv.DictWriter(target, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows + [later_row])
+    override = equipment.with_name('equipment_name_override.ies')
+    with override.open('w', encoding='utf-8', newline='') as target:
+        writer = csv.DictWriter(target, fieldnames=fields)
+        writer.writeheader()
+        writer.writerow(dict(rows[0], MaxDur='4700'))
+    original_parse_equips = items.parse_equips
+
+    def parse_with_later_file(c, filename, _seen_paths=None):
+        result = original_parse_equips(c, filename, _seen_paths=_seen_paths)
+        if filename.lower() != 'item_equip.ies':
+            return result
+        names = c.data['item_type']['EQUIPMENT']
+        assert names == ['harness_sword', 'harness_staff', 'harness_armor', 'harness_accessory']
+        sword = c.data['items_by_name']['harness_sword']
+        assert (sword['Stat_ATTACK_PHYSICAL_MIN'], sword['Stat_ATTACK_PHYSICAL_MAX'],
+                sword['Stat_DEFENSE_PHYSICAL'], sword['Stat_DEFENSE_MAGICAL'],
+                sword['Durability']) == (0, 0, 9000, 4500, 39)
+        c.file_dict[override.name] = {'path': str(override)}
+        original_parse_equips(c, override.name, _seen_paths=_seen_paths)
+        assert c.data['item_type']['EQUIPMENT'] is names
+        assert names == ['harness_sword', 'harness_staff', 'harness_armor', 'harness_accessory']
+        assert c.data['items_by_name']['harness_sword'] is sword
+        assert (sword['Stat_ATTACK_PHYSICAL_MIN'], sword['Stat_ATTACK_PHYSICAL_MAX'],
+                sword['Stat_DEFENSE_PHYSICAL'], sword['Stat_DEFENSE_MAGICAL'],
+                sword['Durability']) == (7000, 7100, 0, 0, 47)
+        return result
+
+    monkeypatch.setattr(items, 'parse_equips', parse_with_later_file)
+    db = parse(root)
+    assert db.data['items_by_name']['harness_sword']['Durability'] == 47
+
+
+def test_equipment_names_rebuild_after_external_edits_repeats_and_region_switch(tmp_path, monkeypatch):
+    roots = {}
+    for region in ('itos', 'ktos'):
+        root = prepare_equipment_workspace(tmp_path / region, region)
+        roots[region] = root
+        equipment = root / (region + '_unpack') / 'ies.ipf/item_equip.ies'
+        with equipment.open(encoding='utf-8', newline='') as source:
+            reader = csv.DictReader(source)
+            fields, rows = reader.fieldnames, list(reader)
+        equipment.with_name('equipment_name_followup.ies').write_bytes(equipment.read_bytes())
+        with equipment.open('w', encoding='utf-8', newline='') as target:
+            writer = csv.DictWriter(target, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows[1:])
+    original_parse_equips = items.parse_equips
+
+    def parse_with_external_edits(c, filename, _seen_paths=None):
+        if filename.lower() != 'item_equip.ies':
+            return original_parse_equips(c, filename, _seen_paths=_seen_paths)
+        followup = roots[c.region] / (c.region + '_unpack') / 'ies.ipf/equipment_name_followup.ies'
+        c.file_dict[followup.name] = {'path': str(followup)}
+        # Populate the base sword from real CSV before registering its name externally.
+        items.parse_items(c, followup.name)
+        result = original_parse_equips(c, filename, _seen_paths=_seen_paths)
+        names = c.data['item_type']['EQUIPMENT']
+        assert names == ['harness_staff', 'harness_armor', 'harness_accessory']
+        names.remove('harness_armor')
+        names.append('harness_sword')
+        original_parse_equips(c, followup.name, _seen_paths=_seen_paths)
+        assert c.data['item_type']['EQUIPMENT'] is names
+        assert names == ['harness_staff', 'harness_accessory', 'harness_sword', 'harness_armor']
+        # A separate invocation may process the same source again without a seen-path guard.
+        original_parse_equips(c, followup.name)
+        assert c.data['item_type']['EQUIPMENT'] is names
+        assert names == ['harness_staff', 'harness_accessory', 'harness_sword', 'harness_armor']
+        sword = c.data['items_by_name']['harness_sword']
+        armor = c.data['items_by_name']['harness_armor']
+        assert (sword['Stat_ATTACK_PHYSICAL_MIN'], sword['Stat_ATTACK_PHYSICAL_MAX']) == (7000, 7100)
+        assert (armor['Stat_DEFENSE_PHYSICAL'], armor['Stat_DEFENSE_MAGICAL']) == (9000, 4500)
+        return result
+
+    monkeypatch.setattr(items, 'parse_equips', parse_with_external_edits)
+    first = parse(roots['itos'])
+    before = snapshot(Path(first.BASE_PATH_OUTPUT))
+    switched = parse(roots['ktos'], region='ktos')
+    repeated = parse(roots['itos'])
+    assert first.data['item_type']['EQUIPMENT'] == switched.data['item_type']['EQUIPMENT'] == [
+        'harness_staff', 'harness_accessory', 'harness_sword', 'harness_armor']
+    assert first.data['item_type']['EQUIPMENT'] is not switched.data['item_type']['EQUIPMENT']
+    assert repeated.data['item_type']['EQUIPMENT'] is not first.data['item_type']['EQUIPMENT']
+    assert snapshot(Path(repeated.BASE_PATH_OUTPUT)) == before
+
+
 @pytest.mark.parametrize('region', REGIONS)
 def test_registered_560_table_reaches_json_and_real_lua_equipment_values(tmp_path, caplog, region):
     db = parse(prepare_equipment_workspace(tmp_path, region), region)
@@ -267,4 +388,3 @@ end
     assert json.loads(after['version.json']) == {'version': 'equipment-v2'}
     assert {name: data for name, data in after.items() if name != 'version.json'} == {
         name: data for name, data in before.items() if name != 'version.json'}
-
