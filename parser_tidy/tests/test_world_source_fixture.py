@@ -1,5 +1,6 @@
 """Small world IES/XML/TSV inputs exercise maps, attributes and all buff files."""
 import copy
+import csv
 import json
 import logging
 from pathlib import Path
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from DB import ToS_DB
 from harness.fixture_inputs import WORLD_FIXTURE
 from harness.parser_fixture import change_ies_column, parse_workspace, prepare_world_workspace
 from ipfparser.contracts import ContractError
@@ -90,12 +92,94 @@ def test_optional_floor_grouping_preserves_maps_and_physical_links_on_rebuild(fl
             assert '16-50-1' in message
 
 
-def test_missing_floor_ground_does_not_hide_unknown_physical_link(floor_source):
+def test_missing_floor_ground_preserves_known_links_and_unresolved_context(floor_source, caplog):
     db = floor_source
-    change_ies_column(Path(db.file_dict['map.ies']['path']), 'PhysicalLinkZone', 'missing_map', index=1)
+    path = Path(db.file_dict['map.ies']['path'])
+    raw = 'harness_existing_ground/missing_map/900/harness_upper_3/missing_map'
+    change_ies_column(path, 'PhysicalLinkZone', raw, index=1)
     maps.parse_maps(db)
-    with pytest.raises(KeyError, match='missing_map'):
-        maps.parse_links_maps(db)
+    original_ids = set(db.data['maps'])
+    original_classes = set(db.data['maps_by_name'])
+    expected = [
+        {'Map': '901', 'MapClassName': 'harness_upper_2', 'Token': token,
+         'Raw': raw, 'SourceFile': 'map.ies', 'SourceField': 'PhysicalLinkZone',
+         'SourceRow': 3}
+        for token in ('missing_map', '900')
+    ]
+    for _ in range(2):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            maps.parse_links_maps(db)
+        assert db.data['maps']['901']['Link_Maps'] == ['900', '902']
+        assert db.data['unresolved_map_links'] == expected
+        assert set(db.data['maps']) == original_ids
+        assert set(db.data['maps_by_name']) == original_classes
+        assert db.data['maps']['905']['Link_Maps_Floors'] == ['906']
+        assert db.data['maps']['901']['Link_Maps_Floors'] == []
+        warnings = [record.getMessage() for record in caplog.records
+                    if record.levelno == logging.WARNING]
+        assert len(warnings) == 4
+        assert all('16-50-1' in message for message in warnings)
+    previous_diagnostics = db.data['unresolved_map_links']
+    change_ies_column(path, 'PhysicalLinkZone', 'harness_upper_3/harness_existing_ground', index=1)
+    maps.parse_links_maps(db)
+    assert db.data['maps']['901']['Link_Maps'] == ['902', '900']
+    assert db.data['unresolved_map_links'] == []
+    assert db.data['unresolved_map_links'] is not previous_diagnostics
+    assert previous_diagnostics == expected
+
+
+@pytest.mark.parametrize('builder', [maps.parse_maps, maps.parse_links_items_rewards],
+                         ids=['parse-maps', 'reward-map-creation'])
+@pytest.mark.parametrize('missing_column', [False, True], ids=['reward-column', 'legacy-column-missing'])
+def test_reward_expbm_uses_its_own_float_column_in_both_creation_paths(
+        world_workspace, builder, missing_column):
+    root = world_workspace / 'itos_unpack'
+    path = root / 'ies.ipf/map.ies'
+    if missing_column:
+        with path.open(encoding='utf-8', newline='') as stream:
+            reader = csv.DictReader(stream)
+            fields = [field for field in reader.fieldnames if field != 'RewardEXPBM']
+            rows = list(reader)
+        with path.open('w', encoding='utf-8', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(rows)
+    db = SimpleNamespace(
+        PATH_INPUT_DATA=str(root), file_dict={'map.ies': {'path': str(path)}},
+        data={'maps': {}, 'maps_by_name': {}, 'maps_by_position': {}},
+        translate=lambda value: value,
+    )
+    builder(db)
+    expected = {'harness_field': 0.0, 'harness_cave': 12.5,
+                'id_unknownsanctuary_harness': 2.5}
+    assert set(db.data['maps_by_name']) == set(expected)
+    for name, value in expected.items():
+        row = db.data['maps_by_name'][name]
+        assert type(row['Prop_RewardEXPBM']) is float
+        assert row['Prop_RewardEXPBM'] == (0.0 if missing_column else value)
+        assert row['Prop_RewardEXPBM'] != row['Prop_MaxHateCount']
+    # The separately authored world oracle must also check the public field.
+    if not missing_column:
+        for map_id, value in [('900', 0.0), ('901', 12.5), ('902', 2.5)]:
+            assert EXPECTED['maps'][map_id]['Prop_RewardEXPBM'] == value
+
+
+def test_build_initializes_a_fresh_unresolved_map_link_list(tmp_path, monkeypatch):
+    db = ToS_DB()
+    stale = [{'Token': 'prior_region_missing'}]
+    db.data = {'unresolved_map_links': stale}
+    # Isolate build's initialization from file discovery and legacy JSON loads.
+    monkeypatch.setattr(db, 'directoryDictionary', lambda directory: None)
+    monkeypatch.setattr(db, 'importJSON', lambda path: {})
+    for region in ('itos', 'jtos'):
+        db.build(region, str(tmp_path / 'parser_tidy'))
+        fresh = db.data['unresolved_map_links']
+        assert fresh == []
+        assert fresh is not stale
+        assert stale == [{'Token': 'prior_region_missing'}]
+        fresh.append({'Token': 'prior_region_missing'})
+        stale = fresh
 
 
 @pytest.mark.parametrize('collection', sorted(EXPECTED))
@@ -129,7 +213,8 @@ def test_rebuild_and_relink_preserve_json_without_duplicate_relations(world_work
     db = parse(world_workspace)
     before = snapshot(db)
     relations = {name: copy.deepcopy(db.data[name]) for name in
-                 ('map_item', 'map_npc', 'map_item_spawn', 'unresolved_drops', 'maps')}
+                 ('map_item', 'map_npc', 'map_item_spawn', 'unresolved_drops',
+                  'unresolved_map_links', 'maps')}
     maps.parse_links(db)
     maps.parse_links(db)
     for name, value in relations.items():
@@ -137,6 +222,40 @@ def test_rebuild_and_relink_preserve_json_without_duplicate_relations(world_work
     db.export(version_payload={'version': 'world-v1'})
     assert snapshot(db) == before
     assert snapshot(parse(world_workspace)) == before
+
+
+def test_changed_physical_links_export_exact_diagnostics_and_rebuild_cleanly(world_workspace):
+    db = parse(world_workspace)
+    path = world_workspace / 'itos_unpack/ies.ipf/map.ies'
+    raw = 'id_unknownsanctuary_harness/2/harness_cave/missing_new/2'
+    change_ies_column(path, 'PhysicalLinkZone', raw)
+    expected = [
+        {'Map': '900', 'MapClassName': 'harness_field', 'Token': token,
+         'Raw': raw, 'SourceFile': 'ies.ipf/map.ies',
+         'SourceField': 'PhysicalLinkZone', 'SourceRow': 2}
+        for token in ('2', 'missing_new')
+    ]
+    for _ in range(2):
+        maps.parse_links_maps(db)
+        assert db.data['maps']['900']['Link_Maps'] == ['902', '901']
+        assert db.data['maps']['900']['Link_Maps_Floors'] == ['901']
+        assert set(db.data['maps']) == {'900', '901', '902'}
+        assert db.data['unresolved_map_links'] == expected
+    db.export(version_payload={'version': 'world-v1'})
+    exported = Path(db.BASE_PATH_OUTPUT) / 'unresolved_map_links.json'
+    assert json.loads(exported.read_text()) == expected
+    before = snapshot(db)
+    rebuilt = parse(world_workspace)
+    assert snapshot(rebuilt) == before
+    change_ies_column(path, 'PhysicalLinkZone', 'harness_cave/id_unknownsanctuary_harness')
+    maps.parse_links_maps(rebuilt)
+    assert rebuilt.data['unresolved_map_links'] == []
+    rebuilt.export(version_payload={'version': 'world-v2'})
+    assert json.loads(exported.read_text()) == []
+    clean_snapshot = snapshot(rebuilt)
+    clean_rebuild = parse(world_workspace, 'world-v2')
+    assert clean_rebuild.data['unresolved_map_links'] == []
+    assert snapshot(clean_rebuild) == clean_snapshot
 
 
 def test_changed_group_weights_spawn_and_buff_units_recompute(world_workspace):
@@ -184,7 +303,6 @@ def test_unused_zone_rows_do_not_require_a_drop_ratio(world_workspace):
 
 INVALID_INPUTS = [
     ('map-level', 'ies.ipf/map.ies', 'QuestLevel', 'bad', 0, ValueError),
-    ('map-link', 'ies.ipf/map.ies', 'PhysicalLinkZone', 'missing_map', 0, KeyError),
     ('drop-string', 'ies_drop.ipf/zonedrop/ZoneDropItemList_harness_field.ies', 'DropRatio', 'bad', 0, ValueError),
     ('drop-negative', 'ies_drop.ipf/zonedrop/ZoneDropItemList_harness_field.ies', 'DropRatio', '-1', 0, ValueError),
     ('drop-range', 'ies_drop.ipf/zonedrop/ZoneDropItemList_harness_field.ies', 'DropRatio', '10001', 0, ValueError),

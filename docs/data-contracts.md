@@ -33,6 +33,11 @@ JSON 계약이 0 수치를 허용한다는 이유로 계산 실패를 유효한 
 | `item_monster`, `map_item`, `map_npc`, `map_item_spawn` | 관계 행 배열 |
 | `version` | 비어 있지 않은 문자열 `version`, 최대 50자 |
 
+`unresolved_map_links.json`은 선택적 진단 컬렉션이며 객체 행의 JSON 배열이다.
+새 파서는 해결되지 않은 지도 링크가 없어도 `[]`을 export한다.
+이 파일이 없는 이전 릴리스는 그대로 호환되지만, 제공된 파일은 아래 진단 계약을 검사한다.
+변경 범위는 parser export와 importer 계약 경계이며 운영 DB 스키마를 변경하거나 진단용 ORM 관계를 만들지 않는다.
+
 엔티티는 `$ID`, `$ID_NAME`, `Name`이 필요하다.
 ID는 비어 있지 않은 문자열 또는 정수이며 boolean은 허용하지 않는다.
 유일성·관계 비교에서는 `100`과 `"100"`을 같은 ID로 취급한다.
@@ -46,7 +51,7 @@ ORM 유형 행을 만드는 EQUIPMENT·CARD·RECIPES·COLLECTION·BOOKS 간 중�
 
 추가 필드와 컬렉션은 허용한다. 모든 JSON에서 잘못된 문법·중복 객체 키·NaN·Infinity를 거부한다.
 `1e999`처럼 읽을 때 무한대로 넘치는 값도 거부한다.
-필수 컬렉션 외의 lookup·자산·provenance 파일은 JSON 형식을 검사하며 별도 도메인 schema를 강제하지 않는다.
+명시한 선택적 계약 컬렉션 외의 lookup·자산·provenance 파일은 JSON 형식을 검사하며 별도 도메인 schema를 강제하지 않는다.
 
 `export(version_payload=None)`은 기존 호출 호환을 위해 버전 파일을 새로 만들지 않는다.
 이 경로도 15개 데이터 컬렉션은 검사한다. 실제 적재는 항상 유효한 버전 파일이 필요하다.
@@ -92,6 +97,43 @@ importer가 앞선 DB 변경·Version·prev를 보존하는지 검사한다. 수
 - `PackageContents.unresolved`와 `unresolved_drops`는 해결되지 않은 참조를 보존한다.
   unresolved를 정상 DB 관계와 같은 참조 실패로 처리하지 않는다.
 - 지도 좌표는 음수와 소수를 허용한다.
+
+## 해결되지 않은 지도 링크
+
+`PhysicalLinkZone`은 `/`로 구분한 원본 ClassName 목록이다.
+알려진 참조는 원본 순서대로 모두 지도 ID로 변환해 기존 `Link_Maps`에 보존한다.
+없는 대상은 새 지도나 ID를 만들지 않고 `unresolved_map_links`에 원문과 출처를 보존한다.
+숫자 토큰도 문자 그대로 ClassName으로 취급하며, 기존 지도 ID와 같아도 ID 참조로 재해석하지 않는다.
+빈 slash 토큰은 링크나 진단을 만들지 않는다.
+
+각 진단 행에는 다음 필드가 모두 필요하다.
+
+| 필드 | 형식·검증 규칙 |
+| --- | --- |
+| `Map` | 원본 지도 ID; 양의 정수 형태의 문자열 또는 정수, 최대 20자. boolean은 거부하며 릴리스의 기존 지도를 참조해야 함 |
+| `MapClassName` | 비어 있지 않은 문자열; `Map`이 가리키는 지도의 `$ID_NAME`과 정확히 일치 |
+| `Token` | 비어 있지 않은 원문 문자열; `Raw.split('/')`의 한 토큰과 정확히 일치하며 릴리스에 같은 ClassName의 지도가 없어야 함 |
+| `Raw` | 비어 있지 않은 문자열; 전체 원본 `PhysicalLinkZone` 값을 수정 없이 보존 |
+| `SourceFile` | 비어 있지 않은 unpack 루트 상대 POSIX 파일 경로; 예: `ies.ipf/map.ies` |
+| `SourceField` | 문자열 `PhysicalLinkZone` |
+| `SourceRow` | 헤더를 1행으로 센 CSV 레코드 번호; 2 이상의 JSON 정수. 문자열·boolean·소수형은 거부 |
+
+`SourceFile`에는 머신 절대 경로를 내보내지 않는다. 선행 `/`, 역슬래시, `:`,
+ASCII 제어문자와 DEL, 빈 경로 구성요소, `.`과 `..` 구성요소는 거부한다.
+진단 배열의 null·객체 형식, 객체가 아닌 행, 필수 문맥 누락, 잘못된 타입·빈 문자열도 거부한다.
+중복은 `(Map, SourceFile, SourceField, SourceRow, Token)`으로 판별하며 정수·문자열 지도 ID는 같은 ID로 비교한다.
+이미 해결 가능한 ClassName을 unresolved로 표시하거나 `Raw`의 일부 문자열만 토큰으로 기록한 진단은 유효하지 않다.
+이 규칙은 메모리 export, staging 스냅샷과 importer가 읽는 릴리스 스냅샷에 적용한다.
+
+`DB.build()`는 진단 리스트를 새 객체로 초기화한다. `parse_links_maps()`도 호출할 때마다
+진단과 지도 링크·층 목록을 재구성하므로 반복 호출에서 중복이나 이전 진단이 남지 않는다.
+정상 층 그룹화와 ground가 없을 때의 경고·선택적 그룹화 생략은 유지한다.
+정상 `Link_Maps`의 FK는 계속 릴리스의 기존 지도 ID를 엄격하게 참조해야 하며,
+진단 존재가 잘못된 정상 링크를 허용하는 근거가 되지 않는다.
+
+진단을 보존한 파싱 결과는 원본의 참조 오류를 드러내는 결과다.
+계약을 통과해 export할 수 있어도 모든 참조를 성공적으로 완전히 해석했다는 뜻은 아니다.
+진단의 부재만으로 전체 원본 파싱 정확성을 증명할 수도 없다.
 
 ## 몬스터 드롭의 유일성
 
@@ -151,6 +193,7 @@ AnvilATK/DEF는 원본 SCR_GET_GODDESS_REINFORCE로 계산한 단계별 누적�
 | 여신 강화 BasicProp | 원본 0..100000 | ORM 원본 유지; view에서 /1000하여 퍼센트 표시 |
 | 스킬 BasicCoolDown·CoolDown, 몬스터 스킬 CD, 버프 ApplyTime | ms | 파서 출력 유지; 화면에서 초로 표시 |
 | 지도 관계 TimeRespawn | 초 | 파서: 원본 ms / 1000 |
+| 지도 Prop_RewardEXPBM | 원본 RewardEXPBM의 수치 스케일 | 파서: float로 보존; 별도 단위 변환 없음 |
 | 몬스터 드롭 Chance | 퍼센트 0..100 | 파서: DropRatio / 100 |
 | 맵 드롭 Chance | 퍼센트 0..100 | 파서: DropRatio × 100 / BaseRatio; 분모가 없는 구형 입력만 일반 10000·unknownsanctuary 1000000 사용 |
 | 맵 그룹 Chance | 퍼센트 0..100 | 맵 확률 × 그룹 가중치 / 가중치 합계 |
@@ -160,6 +203,31 @@ AnvilATK/DEF는 원본 SCR_GET_GODDESS_REINFORCE로 계산한 단계별 누적�
 계약 검사는 타입과 범위를 확인하고, 원본 fixture의 독립적인 기대값이 변환을 검증한다.
 버프·맵의 선택한 단위 경로는 world 원본 fixture로 검증한다.
 아이템의 소수 초 쿨다운은 JSON에서 허용하지만 현재 DB IntegerField의 정밀도는 이번 작업에서 바꾸지 않는다.
+
+`Prop_RewardEXPBM`은 `parse_maps()`와 `parse_links_items_rewards()`의 신규 지도 생성 경로 모두
+원본 `RewardEXPBM` 열을 float로 읽는다. `0`, `12.5` 같은 값과 소수 부분을 그대로 보존하며,
+퍼센트·배율 등 다른 단위로 변환하거나 `MaxHateCount`로 대체하지 않는다.
+구형 고정 입력에 `RewardEXPBM` 열이 없으면 `0.0`을 기본값으로 사용한다.
+계약은 제공된 공개 필드가 boolean·문자열이 아닌 유한한 숫자인지 검사한다.
+
+## 스킬 엔진 XML의 제한된 확장
+
+`skill_bytool.parse()`만 `parser_tidy/game_xml.py`의 helper를 통해 엔진 XML을 읽는다.
+허용하는 확장은 실제 시작 태그의 정확히 `ScriptName`이라는 속성에서,
+작은따옴표 또는 큰따옴표로 둘러싼 값 안에 직접 들어 있는 XML 1.0 불허 ASCII 제어문자뿐이다.
+범위는 U+0000..U+001F 중 tab(U+0009)·LF(U+000A)·CR(U+000D)을 제외한 문자다.
+속성명은 대소문자를 구분하며 접두사·접미사·namespace가 붙은 다른 이름은 해당하지 않는다.
+
+helper는 해당 문자만 충돌 없는 XML 유효 marker로 치환하고 표준 ElementTree로 엄격하게 파싱한 뒤
+원래 제어문자를 `ScriptName` 속성 값에 복원한다. 문자 참조나 DTD entity 확장으로 발생하는
+marker 충돌도 피하며, 따옴표 안의 `>`를 태그 끝으로 오인하지 않는다.
+표준 ElementTree가 제공하는 트리·노드 순서·속성·텍스트·tail을 보존하고 정상 XML의 표준 처리도 유지한다.
+노드를 버리거나 문자열 전체에서 제어문자를 삭제하는 복구를 하지 않는다.
+
+다른 속성·텍스트·tail의 불허 제어문자, comments·CDATA·PI 안의 가짜 `ScriptName` 속성에 있는 불허 제어문자,
+`&#1;` 같은 불허 문자 참조와 그 밖의 잘못된 markup은 계속 `ElementTree.ParseError`다.
+helper가 이를 복구하지 않으며, 호출자인 `skill_bytool.parse()`의 기존 ParseError 경고 처리도 유지한다.
+원본 파일이나 bytes는 쓰지 않는다. 기존 UTF-8 replacement 디코딩 동작과 Lua 함수 실행 의미는 확장하지 않는다.
 
 ## 실제 릴리스 호환과 명시적 보정
 
@@ -208,4 +276,21 @@ importAll에는 잘못된 확률을 임의로 축소하거나 계약을 우회�
 맵·속성·버프에는 별도의 `world/` 원본 fixture와 `test_world_source_fixture.py`,
 `harness/world_tests.py`가 있다. 이 경로의 실제 원본 파싱·DB·HTTP coverage와
 위 고정 JSON의 계약 coverage를 구분한다. 세부 범위는 [하네스 안내](harness.md)를 참고한다.
-전체 지역 게임 데이터·운영 MySQL·기존 DB의 일괄 보정은 실행하지 않는다.
+운영 MySQL·기존 DB의 일괄 보정은 이번 변경 범위에 포함하지 않는다.
+
+이번 지도·XML 수정의 회귀 테스트는 작성된 상태이며 이 문서 작업자는 실행하지 않았다.
+`test_world_source_fixture.py`와 독립적인 `expected_world.json`에는 `MaxHateCount`와 다른
+RewardEXPBM의 0·12.5·2.5 기대값, 두 생성 경로의 열 누락 시 0.0 호환,
+알려진 링크 순서와 정확한 진단·export·반복 실행·빌드 초기화 기대값이 있다.
+`test_release_contract.py`에는 잘못된 참조·필수 문맥 누락·타입·형식·중복 거부,
+이전 릴리스 호환과 정상 `Link_Maps` FK의 엄격한 검사에 대한 테스트가 있다.
+`test_game_xml.py`에는 양쪽 따옴표·quoted `>`·marker 충돌·정상 XML·잘못된 markup,
+comments·CDATA·PI의 가짜 속성, 허용 범위 밖 제어문자의 ParseError 기대값이 있다.
+합성 XML의 정상 버전과 제어문자 버전은 같은 메타데이터를 기대하며,
+독립적인 buff name `Regression_ShieldBuff`, 2.5초·75%와 모든 노드·원래 ScriptName 값·파일 bytes 보존을 확인하도록 작성했다.
+이 설명은 테스트 통과 보고가 아니며, 실제 패치 407263의 kTOS·iTOS·jTOS 전체 파싱 정확성은 아직 검증하지 않았다.
+
+`make check` 전체, 현재 원본을 사용하는 별도 격리 세 지역 검증, Claude 검토, Git 작업,
+GitHub 앱 게시, 성공 CI 후 머지와 원격·로컬 병합 브랜치 정리는 main Codex의 후속 책임이다.
+이 문서 작업자는 승인 파일만 읽고 `docs/data-contracts.md`만 수정하며 기존 사용자 변경을 보존한다.
+검증 실행·최적화·네트워크·다운로드·cron·importAll·새 모델 사용·재위임은 수행하지 않는다.

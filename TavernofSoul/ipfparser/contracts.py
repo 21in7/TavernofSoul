@@ -337,10 +337,12 @@ def validate_release(data, require_version=True):
 
     validate_other_entities(entity_rows, indexed)
     validate_relations(data, indexed)
+    validate_unresolved_map_links(data, entity_rows)
 
 
 GEM_SLOTS = ('Weapon', 'SubWeapon', 'TopAndBottom', 'Gloves', 'Boots')
 REINFORCEMENT_COLLECTIONS = ('goddess_reinf', 'goddess_reinf_mat')
+DIAGNOSTIC_COLLECTIONS = ('unresolved_map_links',)
 
 
 def positive_key(value, path, maximum=2147483647):
@@ -487,6 +489,8 @@ def validate_other_entities(entity_rows, indexed):
     for path, row in entity_rows['maps']:
         fields(row, path, strings=('Type',), booleans=('HasChallengeMode', 'HasWarp'),
                integers=('Level', 'Prop_EliteMonsterCapacity', 'Prop_MaxHateCount', 'Stars'))
+        if 'Prop_RewardEXPBM' in row:
+            number(row['Prop_RewardEXPBM'], path + '.Prop_RewardEXPBM')
         if 'Link_Maps' not in row:
             fail(path + '.Link_Maps', 'required', 'missing map links')
         for link in array(row['Link_Maps'], path + '.Link_Maps'):
@@ -547,6 +551,53 @@ def validate_relations(data, indexed):
                     numeric_array(position, target, minimum=None)
 
 
+def validate_unresolved_map_links(data, entity_rows):
+    """Validate preserved source errors without relaxing resolved map links."""
+    collection = 'unresolved_map_links'
+    if collection not in data:
+        return  # Releases predating the diagnostic collection remain valid.
+    if not isinstance(data[collection], list):
+        fail(collection, 'type', 'expected an array of diagnostic rows')
+    map_classes = {str(row['$ID']): row['$ID_NAME']
+                   for _, row in entity_rows['maps']}
+    known_classes = set(map_classes.values())
+    seen = {}
+    for path, row in rows(collection, data[collection]):
+        for field in ('Map', 'MapClassName', 'Token', 'Raw', 'SourceFile',
+                      'SourceField', 'SourceRow'):
+            if field not in row:
+                fail(path + '.' + field, 'required', 'missing diagnostic context')
+        map_id = identifier(row['Map'], path + '.Map', limit=20)
+        # Source map ClassIDs are positive integers, serialized as IDs without
+        # changing the established string/integer identity comparison.
+        if not re.fullmatch(r'[0-9]+', map_id) or int(map_id) < 1:
+            fail(path + '.Map', 'range', 'expected a positive source map ID')
+        reference(row['Map'], path + '.Map', map_classes)
+        for field in ('MapClassName', 'Token', 'Raw', 'SourceFile', 'SourceField'):
+            text(row[field], path + '.' + field, nonempty=True)
+        if row['MapClassName'] != map_classes[map_id]:
+            fail(path + '.MapClassName', 'reference', 'class name does not match the source map ID')
+        if row['SourceField'] != 'PhysicalLinkZone':
+            fail(path + '.SourceField', 'value', 'expected PhysicalLinkZone')
+        source_file = row['SourceFile']
+        if '\\' in source_file or ':' in source_file \
+                or any(ord(char) < 32 or ord(char) == 127 for char in source_file) \
+                or any(part in ('', '.', '..') for part in source_file.split('/')):
+            fail(path + '.SourceFile', 'path', 'expected an unpack-relative POSIX file path')
+        # Row 1 is the IES header; source data starts at row 2. Unlike generic
+        # integer-valued numbers, provenance row numbers must be JSON integers.
+        if type(row['SourceRow']) is not int:
+            fail(path + '.SourceRow', 'type', 'expected an integer source row number')
+        number(row['SourceRow'], path + '.SourceRow', minimum=2, integer=True)
+        token = row['Token']
+        if token not in row['Raw'].split('/'):
+            fail(path + '.Token', 'value', 'token is not an original slash-delimited Raw token')
+        # A numeric token is still a ClassName, never an inferred map ID.
+        if token in known_classes:
+            fail(path + '.Token', 'reference', 'resolved map class cannot be an unresolved diagnostic')
+        unique(seen, (map_id, source_file, row['SourceField'], row['SourceRow'], token), path)
+
+
 def load_json(path):
     """Reject duplicate keys and nonstandard NaN/Infinity before they lose context."""
     path = Path(path)
@@ -582,7 +633,7 @@ def load_release(directory, require_version=True):
     data = {}
     for path in sorted(directory.glob('*.json')):
         value = load_json(path)
-        if path.stem in REQUIRED_COLLECTIONS + REINFORCEMENT_COLLECTIONS + ('version',):
+        if path.stem in REQUIRED_COLLECTIONS + REINFORCEMENT_COLLECTIONS + DIAGNOSTIC_COLLECTIONS + ('version',):
             data[path.stem] = value
     validate_release(data, require_version=require_version)
     return data.get('version')

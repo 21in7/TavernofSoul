@@ -70,7 +70,7 @@ def parse_maps(constants):
             obj['Level'] = int(row['QuestLevel'])
             obj['Prop_EliteMonsterCapacity'] = int(row['EliteMonsterCapacity'])
             obj['Prop_MaxHateCount'] = int(row['MaxHateCount'])
-            obj['Prop_RewardEXPBM'] = float(row['MaxHateCount'])
+            obj['Prop_RewardEXPBM'] = float(row.get('RewardEXPBM', 0.0))
             obj['Stars'] = int(row['MapRank'])
             obj['Type'] = row['MapType']
             obj['Warp'] = int(row['WarpCost'])
@@ -339,7 +339,7 @@ def parse_links_items_rewards(constants):
                     'Level': int(row.get('QuestLevel', 0)),
                     'Prop_EliteMonsterCapacity': int(row.get('EliteMonsterCapacity', 0)),
                     'Prop_MaxHateCount': int(row.get('MaxHateCount', 0)),
-                    'Prop_RewardEXPBM': float(row.get('MaxHateCount', 0)),
+                    'Prop_RewardEXPBM': float(row.get('RewardEXPBM', 0.0)),
                     'Stars': int(row.get('MapRank', 0)),
                     'Type': row.get('MapType', ''),
                     'Warp': int(row.get('WarpCost', 0)),
@@ -372,14 +372,41 @@ def parse_links_maps(constants):
 
     #ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'map.ies')
     ies_path = constants.file_dict['map.ies']['path']
+    # Rebuild diagnostics as well as relations on every call.
+    unresolved = []
+    constants.data['unresolved_map_links'] = unresolved
+    input_root = getattr(constants, 'PATH_INPUT_DATA', None) or os.path.dirname(ies_path)
+    source_file = os.path.relpath(ies_path, input_root).replace(os.sep, '/')
+    seen_unresolved = set()
     for map in constants.data['maps'].values():
         map['Link_Maps'] = []
         map['Link_Maps_Floors'] = []
     with open(ies_path, 'r', encoding='utf8') as ies_file:
-        for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
+        for source_row, row in enumerate(csv.DictReader(ies_file, delimiter=',', quotechar='"'), start=2):
             map = constants.data['maps_by_name'][row['ClassName']]
-            map['Link_Maps'] = [constants.data['maps_by_name'][name]['$ID']
-                               for name in row['PhysicalLinkZone'].split('/') if name]
+            raw = row['PhysicalLinkZone']
+            links = []
+            for token in raw.split('/'):
+                if not token:
+                    continue
+                if token in constants.data['maps_by_name']:
+                    links.append(constants.data['maps_by_name'][token]['$ID'])
+                    continue
+                # Numeric tokens are still literal ClassNames. Preserve each
+                # missing reference once per source row, with the complete raw field.
+                identity = (str(map['$ID']), source_row, token)
+                if identity not in seen_unresolved:
+                    seen_unresolved.add(identity)
+                    unresolved.append({
+                        'Map': map['$ID'],
+                        'MapClassName': row['ClassName'],
+                        'Token': token,
+                        'Raw': raw,
+                        'SourceFile': source_file,
+                        'SourceField': 'PhysicalLinkZone',
+                        'SourceRow': source_row,
+                    })
+            map['Link_Maps'] = links
             # Only upper floors belong to the ground floor's additional list.
             if map['WorldMap'] is not None and map['WorldMap'][2] > 1:
                 ground = '-'.join(str(i) for i in map['WorldMap'][0:2] + [1])
