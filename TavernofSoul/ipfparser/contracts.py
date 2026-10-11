@@ -104,14 +104,27 @@ def inactive_recipe(row):
 
 
 def finite_tree(value, path):
+    suffix = _nonfinite_suffix(value)
+    if suffix is not None:
+        fail('{}{}'.format(path, suffix) if suffix else path,
+             'number', 'NaN and Infinity are not JSON numbers')
+
+
+def _nonfinite_suffix(value):
+    # Build diagnostic strings only while unwinding the first invalid branch.
     if isinstance(value, float) and not math.isfinite(value):
-        fail(path, 'number', 'NaN and Infinity are not JSON numbers')
+        return ''
     if isinstance(value, dict):
         for key, child in value.items():
-            finite_tree(child, '{}[{!r}]'.format(path, key))
+            suffix = _nonfinite_suffix(child)
+            if suffix is not None:
+                return '[{!r}]{}'.format(key, suffix)
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
-            finite_tree(child, '{}[{}]'.format(path, index))
+            suffix = _nonfinite_suffix(child)
+            if suffix is not None:
+                return '[{}]{}'.format(index, suffix)
+    return None
 
 
 def rows(collection, value):
@@ -365,275 +378,376 @@ def validate_reinforcement(data, items, equipment):
         steps = {}
         for index, row in enumerate(array(table, path)):
             target = '{}[{}]'.format(path, index)
-            if not isinstance(row, dict):
-                fail(target, 'type', 'expected an IES row')
-            fields(row, target, strings=('ClassName',), integers=('ClassID', 'BasicProp'), raw=True)
-            step = positive_key(row['ClassID'], target + '.ClassID', maximum=30)
-            unique(steps, step, target)
-            number(row['BasicProp'], target + '.BasicProp', minimum=0, maximum=100000, integer=True, raw=True)
-            for column in ('AddAtk', 'AddDef', 'AddAccAtk', 'BasicAtk', 'BasicDef', 'BasicAccAtk', 'EvolveAtk'):
-                if column in row:
-                    number(row[column], target + '.' + column, minimum=0, maximum=2147483647, integer=True, raw=True)
-        if not steps or set(steps) != set(range(1, len(steps) + 1)):
-            fail(path, 'steps', 'expected consecutive reinforcement steps starting at 1')
-        levels[level] = steps
-    seen = {}
-    for key, groups in materials.items():
-        path = 'goddess_reinf_mat[{!r}]'.format(key)
-        level = positive_key(key, path)
-        unique(seen, level, path)
-        if not isinstance(groups, dict):
-            fail(path, 'type', 'expected material groups')
-        for group, steps in groups.items():
-            if group not in ('acc', 'armor', 'weapon') or not isinstance(steps, dict):
-                fail(path, 'group', 'expected acc, armor or weapon step objects')
-            step_seen = {}
-            for key, values in steps.items():
-                target = '{}.{}[{!r}]'.format(path, group, key)
-                step = positive_key(key, target, maximum=30)
-                unique(step_seen, step, target)
-                if not isinstance(values, dict):
-                    fail(target, 'type', 'expected material ClassName/quantity pairs')
-                for name, quantity in values.items():
-                    text(name, target, nonempty=True, limit=100)
-                    number(quantity, target + '.' + name, minimum=0, maximum=2147483647, integer=True)
-                if values and step not in levels.get(level, {}):
-                    fail(target, 'reference', 'material step has no registered reinforcement row')
-    for name in equipment:
-        path, row = items[name]
-        if 'GoddessReinforceLevel' not in row:
-            continue
-        level, group = row['GoddessReinforceLevel'], row['GoddessReinforceGroup']
-        steps = levels.get(level)
-        if not steps:
-            fail(path + '.GoddessReinforceLevel', 'reference', 'registered reinforcement table missing')
-        for field in ('AnvilATK', 'AnvilDEF'):
-            values = row[field]
-            if values and len(values) != len(steps):
-                fail(path + '.' + field, 'steps', 'expected one calculation per reinforcement step')
-            for value in values:
-                number(value, path + '.' + field, minimum=0, maximum=2147483647, integer=True)
-        # Missing groups/steps mean unavailable costs, not a free enhancement.
+            if not isinstance…13503 tokens truncated…', ('items_by_name', 'harness_random', 'PackageContents', 'alternatives', 0, 0, 'item'), 'missing', 'reference'),
+    ('equipment-attack-order', ('items_by_name', 'harness_sword', 'Stat_ATTACK_PHYSICAL_MIN'), 9999, 'order'),
+    ('equipment-durability', ('items_by_name', 'harness_sword', 'Durability'), -2, 'range'),
+    ('equipment-array', ('items_by_name', 'harness_sword', 'AnvilATK'), ['7'], 'number'),
+    ('equipment-flags', ('items_by_name', 'harness_sword', 'RequiredClass'), 'TTTT', 'flags'),
+    ('equipment-bonus', ('items_by_name', 'harness_sword', 'Bonus'), [['STR']], 'shape'),
+    ('card-field', ('items_by_name', 'harness_card', 'TypeCard'), DELETE, 'required'),
+    ('collection-reference', ('items_by_name', 'harness_collection', 'Link_Items'), ['missing'], 'reference'),
+    ('book-type', ('items_by_name', 'harness_book', 'Text'), [], 'type'),
+    ('job-flag', ('jobs', '300', 'IsStarter'), 1, 'type'),
+    ('skill-job', ('skills', '400', 'Link_Job'), 'missing', 'reference'),
+    ('skill-factor-type', ('skills', '400', 'sfr'), ['100'], 'number'),
+    ('skill-resource', ('skills', '400', 'SpendSP'), [-1], 'range'),
+    ('skill-ms', ('skills', '400', 'BasicCoolDown'), 0.5, 'integer'),
+    ('monster-attack-order', ('monsters', 500, 'Stat_ATTACK_PHYSICAL_MIN'), 1000, 'order'),
+    ('monster-hp', ('monsters', 500, 'Stat_HP'), -1, 'range'),
+    ('npc-monster-id', ('npcs', '800', '$ID'), '500', 'duplicate'),
+    ('monster-skill-reference', ('skill_mon', '600', 'Monster'), [999], 'reference'),
+    ('monster-skill-hits', ('skill_mon', '600', 'HitCount'), '0', 'range'),
+    ('monster-skill-ms', ('skill_mon', '600', 'CD'), '3 seconds', 'number'),
+    ('monster-skill-factor', ('skill_mon', '600', 'SFR'), 'NaN', 'number'),
+    ('monster-skill-negative-aar', ('skill_mon', '600', 'AAR'), '-1', 'range'),
+    ('active-recipe-missing-materials', ('items_by_name', 'harness_recipe', 'Link_Materials'), DELETE, 'required'),
+    ('required-anvil-calculation', ('items_by_name', 'harness_sword', 'AnvilATK'), None, 'type'),
+    ('drop-percent', ('item_monster', 0, 'Chance'), 100.1, 'range'),
+    ('drop-order', ('item_monster', 0, 'Quantity_MIN'), 4, 'order'),
+    ('drop-reference', ('item_monster', 0, 'Item'), 'missing', 'reference'),
+    ('map-links', ('maps', '900', 'Link_Maps'), ['missing'], 'reference'),
+    ('map-item-reference', ('map_item', 0, 'Item'), 'missing', 'reference'),
+    ('map-npc-reference', ('map_npc', 0, 'NPC'), 'missing', 'reference'),
+    ('map-respawn', ('map_npc', 0, 'TimeRespawn'), -1, 'range'),
+    ('map-position', ('map_npc', 0, 'Positions'), [[1, 2, 3]], 'shape'),
+    ('map-population', ('map_item_spawn', 0, 'Population'), -1, 'range'),
+    ('attribute-job', ('attributes', '920', 'Link_Jobs'), ['missing'], 'reference'),
+    ('attribute-level', ('attributes', '920', 'LevelMax'), 'five', 'number'),
+    ('buff-ms', ('buff', '910', 'ApplyTime'), '3s', 'number'),
+    ('buff-remove', ('buff', '910', 'UserRemove'), 2, 'type'),
+    ('achievement-flag', ('achievements', '930', 'Hidden'), 'false', 'type'),
+    ('nonfinite-extra-field', ('items_by_name', 'harness_ore', 'NewMetric'), float('nan'), 'number'),
+]
 
 
-def ordered(row, path, low, high):
-    if row[low] > row[high]:
-        fail(path + '.' + low, 'order', '{} must not exceed {}'.format(low, high))
+@pytest.mark.parametrize('case,path,value,code', CASES, ids=[case[0] for case in CASES])
+def test_invalid_release_is_rejected_before_publication(release_db, case, path, value, code):
+    before = snapshot(release_db.BASE_PATH_OUTPUT)
+    target = release_db.data
+    for key in path[:-1]:
+        target = target[key]
+    if value is DELETE:
+        del target[path[-1]]
+    else:
+        target[path[-1]] = value
+    with pytest.raises(ContractError) as error:
+        release_db.export(version_payload={'version': 'contract-v2'})
+    assert error.value.code == code
+    assert path[0] in str(error.value)
+    assert snapshot(release_db.BASE_PATH_OUTPUT) == before
+    assert not Path(release_db.BASE_PATH_OUTPUT + '.staging').exists()
+    assert not Path(release_db.BASE_PATH_OUTPUT + '.backup').exists()
 
 
-def validate_drop_values(row, path):
-    fields(row, path, numbers=('Chance',), integers=('Quantity_MIN', 'Quantity_MAX'))
-    number(row['Chance'], path + '.Chance', minimum=0, maximum=100)
-    for field in ('Quantity_MIN', 'Quantity_MAX'):
-        number(row[field], path + '.' + field, minimum=0, integer=True)
-    ordered(row, path, 'Quantity_MIN', 'Quantity_MAX')
+def test_valid_release_preserves_legacy_and_optional_values(release_db):
+    before = copy.deepcopy(release_db.data)
+    validate_release(release_db.data, require_version=False)
+    assert release_db.data == before  # Validation never rewrites parser data.
+    ore = release_db.data['items_by_name']['harness_ore']
+    recipe = release_db.data['items_by_name']['harness_recipe']
+    assert str(ore['$ID']) == str(recipe['$ID']) == '100'
+    recipe['Link_Target'] = None
+    release_db.data['items_by_name']['harness_sword']['Durability'] = -1
+    release_db.data['attributes']['920']['LevelMax'] = -1
+    release_db.data['skills']['400']['Link_Job'] = None
+    release_db.data['skills']['400']['CaptionRatio'] = [-10]
+    release_db.data['skill_mon']['600']['SFR'] = ''
+    release_db.data['skill_mon']['600']['HitCount'] = None
+    release_db.export(version_payload={'version': 'contract-v2'})
+    assert load_release(release_db.BASE_PATH_OUTPUT) == {'version': 'contract-v2'}
+    assert release_db.data['unresolved_drops'][0]['item_classname'] == 'expired_drop'
 
 
-def validate_other_entities(entity_rows, indexed):
-    for path, row in entity_rows['jobs']:
-        fields(row, path, strings=('Icon', 'Description', 'JobTree'), booleans=('IsStarter',))
-        text(row['Name'], path + '.Name', limit=30)
-        text(row['$ID_NAME'], path + '.$ID_NAME', limit=30)
-        text(row['Icon'], path + '.Icon', limit=30)
-        text(row['JobTree'], path + '.JobTree', limit=15)
-    for path, row in entity_rows['skills']:
-        fields(row, path, strings=('Icon', 'Description', 'Effect', 'Element', 'RequiredStance',
-               'RequiredStanceCompanion'), integers=('BasicSP', 'MaxLevel', 'UnlockClassLevel', 'OverHeat'), nullable=('Element',))
-        text(row['Name'], path + '.Name', limit=30)
-        text(row['Icon'], path + '.Icon', limit=50)
-        if 'Link_Job' not in row:
-            fail(path + '.Link_Job', 'required', 'missing skill job link')
-        if row['Link_Job'] is not None:
-            reference(row['Link_Job'], path + '.Link_Job', indexed['jobs'][0])
-        for field in ('BasicSP', 'OverHeat'):
-            number(row[field], path + '.' + field, minimum=0, integer=True)
-        if 'BasicCoolDown' in row:
-            number(row['BasicCoolDown'], path + '.BasicCoolDown', minimum=0, integer=True)
-        for field in ('sfr', 'CaptionRatio', 'CaptionRatio2', 'CaptionRatio3', 'CaptionTime',
-                      'SkillSR', 'SpendItemCount', 'SpendPoison', 'SpendSP', 'CoolDown'):
-            if field in row and row[field] is not None and row[field] != '':
-                numeric_array(row[field], path + '.' + field,
-                              minimum=None if field.startswith('CaptionRatio') else 0)
-    combined = dict(indexed['monsters'][0])
-    for key, location in indexed['npcs'][0].items():
-        unique(combined, key, location)
-    stats = ('Stat_CON', 'Stat_DEX', 'Stat_INT', 'Stat_SPR', 'Stat_STR', 'Stat_HP',
-             'Stat_ATTACK_MAGICAL_MIN', 'Stat_ATTACK_MAGICAL_MAX', 'Stat_ATTACK_PHYSICAL_MIN',
-             'Stat_ATTACK_PHYSICAL_MAX', 'Stat_DEFENSE_MAGICAL', 'Stat_DEFENSE_PHYSICAL',
-             'Stat_Accuracy', 'Stat_Evasion', 'Stat_CriticalDamage', 'Stat_CriticalDefense',
-             'Stat_CriticalRate', 'Stat_BlockRate', 'Stat_BlockPenetration')
-    for path, row in entity_rows['monsters']:
-        fields(row, path, strings=('Armor', 'Description', 'Element', 'Icon', 'Race', 'Rank', 'Size'),
-               integers=('Level', 'EXP', 'EXPClass') + stats, nullable=('Icon', 'Size'))
-        for field in ('Level', 'EXP', 'EXPClass', 'Stat_HP'):
-            number(row[field], path + '.' + field, minimum=0, integer=True)
-        ordered(row, path, 'Stat_ATTACK_PHYSICAL_MIN', 'Stat_ATTACK_PHYSICAL_MAX')
-        ordered(row, path, 'Stat_ATTACK_MAGICAL_MIN', 'Stat_ATTACK_MAGICAL_MAX')
-    for path, row in entity_rows['npcs']:
-        fields(row, path, strings=('Description', 'Icon'), nullable=('Icon',))
-    for path, row in entity_rows['skill_mon']:
-        fields(row, path, strings=('Attribute',), integers=('CD', 'AAR'), raw=True)
-        number(row['CD'], path + '.CD', minimum=0, integer=True, raw=True)
-        if number(row['AAR'], path + '.AAR', integer=True, raw=True) != -99:
-            number(row['AAR'], path + '.AAR', minimum=0, integer=True, raw=True)
-        if 'SFR' not in row:
-            fail(path + '.SFR', 'required', 'missing monster skill factor')
-        if row['SFR'] not in (None, ''):
-            number(row['SFR'], path + '.SFR', raw=True)
-        if row.get('HitCount') not in (None, ''):
-            number(row['HitCount'], path + '.HitCount', minimum=1, integer=True, raw=True)
-        if 'Monster' not in row:
-            fail(path + '.Monster', 'required', 'missing monster links')
-        for index, monster in enumerate(array(row['Monster'], path + '.Monster')):
-            reference(monster, '{}.Monster[{}]'.format(path, index), indexed['monsters'][0])
-    for path, row in entity_rows['maps']:
-        fields(row, path, strings=('Type',), booleans=('HasChallengeMode', 'HasWarp'),
-               integers=('Level', 'Prop_EliteMonsterCapacity', 'Prop_MaxHateCount', 'Stars'))
-        if 'Prop_RewardEXPBM' in row:
-            number(row['Prop_RewardEXPBM'], path + '.Prop_RewardEXPBM')
-        if 'Link_Maps' not in row:
-            fail(path + '.Link_Maps', 'required', 'missing map links')
-        for link in array(row['Link_Maps'], path + '.Link_Maps'):
-            reference(link, path + '.Link_Maps', indexed['maps'][0])
-    for path, row in entity_rows['attributes']:
-        fields(row, path, strings=('Description', 'Icon', 'DescriptionRequired'),
-               booleans=('IsToggleable',), integers=('LevelMax',), raw=True,
-               nullable=('Icon', 'DescriptionRequired'))
-        for field in ('Link_Jobs', 'Link_Skills'):
-            if field not in row:
-                fail(path + '.' + field, 'required', 'missing attribute links')
-        for job in array(row['Link_Jobs'], path + '.Link_Jobs'):
-            reference(job, path + '.Link_Jobs', indexed['jobs'][0])
-        # Retired/non-job skills are explicitly optional in importAttrib.
-        for skill in array(row['Link_Skills'], path + '.Link_Skills'):
-            text(skill, path + '.Link_Skills', nonempty=True)
-    for path, row in entity_rows['buff']:
-        fields(row, path, strings=('Description', 'Icon', 'Keyword', 'Group1', 'Group2', 'Group3', 'GroupIndex'),
-               integers=('ApplyTime', 'OverBuff'), raw=True,
-               nullable=('Description', 'Icon', 'Keyword', 'Group1', 'Group2', 'Group3', 'GroupIndex'))
-        if 'UserRemove' not in row:
-            fail(path + '.UserRemove', 'required', 'missing remove flag')
-        boolean(row['UserRemove'], path + '.UserRemove', raw=True)
-    for path, row in entity_rows['achievements']:
-        fields(row, path, strings=('Icon', 'Desc', 'DescTitle', 'Group'), booleans=('Hidden',),
-               nullable=('Icon', 'Group'))
+def test_real_source_template_nullable_arrays_arcane_and_long_name_reference(release_db):
+    data = release_db.data
+    template = copy.deepcopy(data['items_by_name']['harness_ore'])
+    template.update({'$ID': '910000', '$ID_NAME': 'Default_Recipe', 'Type': 'RECIPE'})
+    data['items_by_name']['Default_Recipe'] = template
+    long_name = 'harness_material_' + 'x' * 50
+    material = copy.deepcopy(template)
+    material.update({'$ID': '9900', '$ID_NAME': long_name, 'Type': 'MATERIAL'})
+    data['items_by_name'][long_name] = material
+    data['items_by_name']['harness_recipe']['Link_Materials'][0]['Item'] = long_name
+    sword = data['items_by_name']['harness_sword']
+    sword.update({'AnvilATK': None, 'AnvilDEF': None, 'AnvilPrice': [],
+                  'TypeEquipment': 'Arcane', 'Stat_ATTACK_PHYSICAL_MAX': 0})
+    validate_release(data, require_version=False)
+    sword['TypeEquipment'] = 'Sword'
+    with pytest.raises(ContractError, match='order'):
+        validate_release(data, require_version=False)
 
 
-def validate_relations(data, indexed):
-    item_ids = indexed['items_by_name'][0]
-    monster_ids = {**indexed['monsters'][0], **indexed['npcs'][0]}
-    for collection in RELATIONS:
-        if not isinstance(data[collection], list):
-            fail(collection, 'type', 'expected an array of relations')
-        seen = {}
-        parents = ('Monster', 'Item') if collection == 'item_monster' else \
-                  ('Map', 'NPC') if collection == 'map_npc' else ('Map', 'Item')
-        for path, row in rows(collection, data[collection]):
-            for field in parents:
-                if field not in row:
-                    fail(path + '.' + field, 'required', 'missing relation parent')
-                available = indexed['maps'][0] if field == 'Map' else \
-                            monster_ids if field in ('Monster', 'NPC') else item_ids
-                reference(row[field], path + '.' + field, available)
-            unique(seen, tuple(str(row[field]) for field in parents), path)
-            if collection in ('item_monster', 'map_item'):
-                validate_drop_values(row, path)
-            else:
-                fields(row, path, numbers=('TimeRespawn',), integers=('Population',))
-                number(row['TimeRespawn'], path + '.TimeRespawn', minimum=0)
-                number(row['Population'], path + '.Population', minimum=0, integer=True)
-                if 'Positions' not in row:
-                    fail(path + '.Positions', 'required', 'missing spawn positions')
-                for index, position in enumerate(array(row['Positions'], path + '.Positions')):
-                    target = '{}.Positions[{}]'.format(path, index)
-                    if len(array(position, target)) != 2:
-                        fail(target, 'shape', 'expected a two-dimensional map position')
-                    numeric_array(position, target, minimum=None)
+def test_duplicate_relations_use_normalized_ids(release_db):
+    row = copy.deepcopy(release_db.data['item_monster'][0])
+    row['Item'], row['Monster'] = str(row['Item']), str(row['Monster'])
+    release_db.data['item_monster'].append(row)
+    with pytest.raises(ContractError, match='duplicate identity'):
+        release_db.export(version_payload={'version': 'contract-v2'})
 
 
-def validate_unresolved_map_links(data, entity_rows):
-    """Validate preserved source errors without relaxing resolved map links."""
-    collection = 'unresolved_map_links'
-    if collection not in data:
-        return  # Releases predating the diagnostic collection remain valid.
-    if not isinstance(data[collection], list):
-        fail(collection, 'type', 'expected an array of diagnostic rows')
-    map_classes = {str(row['$ID']): row['$ID_NAME']
-                   for _, row in entity_rows['maps']}
-    known_classes = set(map_classes.values())
-    seen = {}
-    for path, row in rows(collection, data[collection]):
-        for field in ('Map', 'MapClassName', 'Token', 'Raw', 'SourceFile',
-                      'SourceField', 'SourceRow'):
-            if field not in row:
-                fail(path + '.' + field, 'required', 'missing diagnostic context')
-        map_id = identifier(row['Map'], path + '.Map', limit=20)
-        # Source map ClassIDs are positive integers, serialized as IDs without
-        # changing the established string/integer identity comparison.
-        if not re.fullmatch(r'[0-9]+', map_id) or int(map_id) < 1:
-            fail(path + '.Map', 'range', 'expected a positive source map ID')
-        reference(row['Map'], path + '.Map', map_classes)
-        for field in ('MapClassName', 'Token', 'Raw', 'SourceFile', 'SourceField'):
-            text(row[field], path + '.' + field, nonempty=True)
-        if row['MapClassName'] != map_classes[map_id]:
-            fail(path + '.MapClassName', 'reference', 'class name does not match the source map ID')
-        if row['SourceField'] != 'PhysicalLinkZone':
-            fail(path + '.SourceField', 'value', 'expected PhysicalLinkZone')
-        source_file = row['SourceFile']
-        if '\\' in source_file or ':' in source_file \
-                or any(ord(char) < 32 or ord(char) == 127 for char in source_file) \
-                or any(part in ('', '.', '..') for part in source_file.split('/')):
-            fail(path + '.SourceFile', 'path', 'expected an unpack-relative POSIX file path')
-        # Row 1 is the IES header; source data starts at row 2. Unlike generic
-        # integer-valued numbers, provenance row numbers must be JSON integers.
-        if type(row['SourceRow']) is not int:
-            fail(path + '.SourceRow', 'type', 'expected an integer source row number')
-        number(row['SourceRow'], path + '.SourceRow', minimum=2, integer=True)
-        token = row['Token']
-        if token not in row['Raw'].split('/'):
-            fail(path + '.Token', 'value', 'token is not an original slash-delimited Raw token')
-        # A numeric token is still a ClassName, never an inferred map ID.
-        if token in known_classes:
-            fail(path + '.Token', 'reference', 'resolved map class cannot be an unresolved diagnostic')
-        unique(seen, (map_id, source_file, row['SourceField'], row['SourceRow'], token), path)
+def test_duplicate_names_and_swapped_name_indexes(release_db):
+    data = release_db.data
+    data['jobs']['copy'] = copy.deepcopy(data['jobs']['300'])
+    data['jobs']['copy']['$ID'] = '301'
+    with pytest.raises(ContractError, match=r'\$ID_NAME \[duplicate\]'):
+        validate_release(data, require_version=False)
+    del data['jobs']['copy']
+    items = data['items_by_name']
+    items['harness_ore'], items['harness_dust'] = items['harness_dust'], items['harness_ore']
+    with pytest.raises(ContractError, match=r'\$ID_NAME \[index\]'):
+        validate_release(data, require_version=False)
 
 
-def load_json(path):
-    """Reject duplicate keys and nonstandard NaN/Infinity before they lose context."""
-    path = Path(path)
-    def pairs(entries):
-        result = {}
-        for key, value in entries:
-            if key in result:
-                fail(str(path), 'duplicate_key', 'duplicate JSON key {!r}'.format(key))
-            result[key] = value
-        return result
-    def constant(value):
-        fail(str(path), 'number', '{} is not a JSON number'.format(value))
-    try:
-        with path.open(encoding='utf-8') as stream:
-            value = json.load(stream, object_pairs_hook=pairs, parse_constant=constant)
-    except ContractError:
-        raise
-    except (OSError, ValueError) as exc:
-        fail(str(path), 'json', 'cannot load JSON: {}'.format(exc))
-    if not isinstance(value, (dict, list)):
-        fail(str(path), 'type', 'expected a JSON object or array')
-    finite_tree(value, str(path))
-    return value
+@pytest.mark.parametrize('version', [{}, {'version': ''}, {'version': 1}, {'version': 'v' * 51}])
+def test_invalid_version_cannot_advance_release(release_db, version):
+    before = snapshot(release_db.BASE_PATH_OUTPUT)
+    with pytest.raises(ContractError, match='version.version'):
+        release_db.export(version_payload=version)
+    assert snapshot(release_db.BASE_PATH_OUTPUT) == before
 
 
-def load_release(directory, require_version=True):
-    """Validate the snapshot to be imported, retaining only importer collections."""
-    directory = Path(directory)
-    required = REQUIRED_COLLECTIONS + (('version',) if require_version else ())
-    for name in required:
-        if not (directory / (name + '.json')).is_file():
-            fail(name + '.json', 'required', 'missing release file')
-    data = {}
-    for path in sorted(directory.glob('*.json')):
-        value = load_json(path)
-        if path.stem in REQUIRED_COLLECTIONS + REINFORCEMENT_COLLECTIONS + DIAGNOSTIC_COLLECTIONS + ('version',):
-            data[path.stem] = value
-    validate_release(data, require_version=require_version)
-    return data.get('version')
+@pytest.mark.parametrize('content,code', [
+    ('{"a": 1, "a": 2}', 'duplicate_key'),
+    ('{"a": {"id": 1, "id": 2}}', 'duplicate_key'),
+    ('{"a": NaN}', 'number'), ('{"a": Infinity}', 'number'),
+    ('{"a": -Infinity}', 'number'), ('{"a": 1e999}', 'number'),
+    ('{"a":', 'json'), ('null', 'type'),
+])
+def test_strict_json_reader_rejects_ambiguous_values(tmp_path, content, code):
+    path = tmp_path / 'bad.json'
+    path.write_text(content)
+    with pytest.raises(ContractError) as error:
+        load_json(path)
+    assert error.value.code == code
+    assert str(path) in error.value.path
+
+
+def test_snapshot_requires_all_files_and_checks_auxiliary_json(release_db):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    (directory / 'future.json').write_text('{"a":1e999}')
+    with pytest.raises(ContractError, match='future.json'):
+        load_release(directory)
+    (directory / 'future.json').unlink()
+    (directory / 'buff.json').unlink()
+    with pytest.raises(ContractError, match='buff.json.*required'):
+        load_release(directory)
+
+
+def test_valid_json_corruption_in_staging_cannot_be_published(release_db, monkeypatch):
+    import DB
+    before = snapshot(release_db.BASE_PATH_OUTPUT)
+    real_write = DB._atomic_write_json
+    def corrupt_after_write(filepath, value):
+        real_write(filepath, value)
+        if Path(filepath).name == 'items_by_name.json':
+            data = json.loads(Path(filepath).read_text())
+            data['harness_ore']['Grade'] = 7
+            Path(filepath).write_text(json.dumps(data))
+    monkeypatch.setattr(DB, '_atomic_write_json', corrupt_after_write)
+    with pytest.raises(ContractError, match='Grade.*range'):
+        release_db.export(version_payload={'version': 'contract-v2'})
+    assert snapshot(release_db.BASE_PATH_OUTPUT) == before
+    assert not Path(release_db.BASE_PATH_OUTPUT + '.staging').exists()
+    assert not Path(release_db.BASE_PATH_OUTPUT + '.backup').exists()
+
+
+@pytest.fixture
+def map_link_release(release_db):
+    # Hand-authored source context, independent of the map parser's diagnostics.
+    source = copy.deepcopy(release_db.data['maps']['900'])
+    source.update({'$ID': '970', '$ID_NAME': 'contract_source_map',
+                   'Name': 'Contract Source', 'Link_Maps': ['971'], 'Link_Maps_Floors': []})
+    target = copy.deepcopy(source)
+    target.update({'$ID': '971', '$ID_NAME': 'contract_other_map',
+                   'Name': 'Contract Target', 'Link_Maps': []})
+    release_db.data['maps'].update({'970': source, '971': target})
+    release_db.data['unresolved_map_links'] = [{
+        'Map': '970', 'MapClassName': 'contract_source_map',
+        'Token': 'contract_missing', 'Raw': 'contract_other_map/contract_missing/970',
+        'SourceFile': 'ies.ipf/map.ies', 'SourceField': 'PhysicalLinkZone', 'SourceRow': 17,
+    }]
+    release_db.export(version_payload={'version': 'contract-map-v1'})
+    return release_db
+
+
+MAP_LINK_DIAGNOSTIC_CASES = [
+    ('collection-object', (), {}, 'type'),
+    ('collection-null', (), None, 'type'),
+    ('row-not-object', (0,), 'missing', 'type'),
+    ('unknown-source-id', (0, 'Map'), '999999', 'reference'),
+    ('other-existing-source-id', (0, 'Map'), '971', 'reference'),
+    ('wrong-source-class', (0, 'MapClassName'), 'contract_other_map', 'reference'),
+    ('boolean-map-id', (0, 'Map'), True, 'id'),
+    ('empty-map-id', (0, 'Map'), '', 'id'),
+    ('nonnumeric-map-id', (0, 'Map'), 'contract_source_map', 'range'),
+    ('nonpositive-map-id', (0, 'Map'), '0', 'range'),
+    ('class-type', (0, 'MapClassName'), 970, 'type'),
+    ('class-empty', (0, 'MapClassName'), ' ', 'empty'),
+    ('token-type', (0, 'Token'), 970, 'type'),
+    ('token-empty', (0, 'Token'), ' ', 'empty'),
+    ('known-target-is-not-unresolved', (0, 'Token'), 'contract_other_map', 'reference'),
+    ('token-is-only-a-substring', (0, 'Token'), 'missing', 'value'),
+    ('token-is-not-a-single-raw-token', (0, 'Token'), 'contract_missing/970', 'value'),
+    ('raw-does-not-contain-token', (0, 'Raw'), 'contract_other_map/another_missing', 'value'),
+    ('raw-type', (0, 'Raw'), [], 'type'),
+    ('raw-empty', (0, 'Raw'), '', 'empty'),
+    ('file-type', (0, 'SourceFile'), ['ies.ipf/map.ies'], 'type'),
+    ('file-empty', (0, 'SourceFile'), ' ', 'empty'),
+    ('absolute-posix-file', (0, 'SourceFile'), '/machine/unpack/ies.ipf/map.ies', 'path'),
+    ('absolute-windows-file', (0, 'SourceFile'), 'C:/unpack/ies.ipf/map.ies', 'path'),
+    ('windows-separators', (0, 'SourceFile'), 'ies.ipf\\map.ies', 'path'),
+    ('parent-traversal', (0, 'SourceFile'), '../ies.ipf/map.ies', 'path'),
+    ('internal-parent-traversal', (0, 'SourceFile'), 'ies.ipf/../map.ies', 'path'),
+    ('current-directory-component', (0, 'SourceFile'), './ies.ipf/map.ies', 'path'),
+    ('empty-path-component', (0, 'SourceFile'), 'ies.ipf//map.ies', 'path'),
+    ('control-in-path', (0, 'SourceFile'), 'ies.ipf/ma\x01p.ies', 'path'),
+    ('field-type', (0, 'SourceField'), False, 'type'),
+    ('field-empty', (0, 'SourceField'), '', 'empty'),
+    ('wrong-source-field', (0, 'SourceField'), 'WorldMap', 'value'),
+    ('string-source-row', (0, 'SourceRow'), '17', 'type'),
+    ('boolean-source-row', (0, 'SourceRow'), True, 'type'),
+    ('float-source-row', (0, 'SourceRow'), 17.0, 'type'),
+    ('fractional-source-row', (0, 'SourceRow'), 17.5, 'type'),
+    ('header-source-row', (0, 'SourceRow'), 1, 'range'),
+    ('negative-source-row', (0, 'SourceRow'), -1, 'range'),
+    ('duplicate-normalized-source-id', None, None, 'duplicate'),
+] + [
+    ('missing-' + field, (0, field), DELETE, 'required')
+    for field in ('Map', 'MapClassName', 'Token', 'Raw', 'SourceFile', 'SourceField', 'SourceRow')
+]
+
+
+def invalid_map_link_diagnostics(valid, path, value):
+    result = copy.deepcopy(valid)
+    if path is None:
+        duplicate = copy.deepcopy(result[0])
+        duplicate['Map'] = 970  # Equivalent to the first row's string ID.
+        result.append(duplicate)
+    elif not path:
+        result = copy.deepcopy(value)
+    else:
+        target = result
+        for key in path[:-1]:
+            target = target[key]
+        if value is DELETE:
+            del target[path[-1]]
+        else:
+            target[path[-1]] = copy.deepcopy(value)
+    return result
+
+
+@pytest.mark.parametrize('boundary', ['memory-export', 'load-release', 'staging'])
+@pytest.mark.parametrize('case,path,value,code', MAP_LINK_DIAGNOSTIC_CASES,
+                         ids=[case[0] for case in MAP_LINK_DIAGNOSTIC_CASES])
+def test_invalid_map_link_context_is_rejected_at_both_release_boundaries(
+        map_link_release, tmp_path, monkeypatch, boundary, case, path, value, code):
+    db = map_link_release
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    invalid = invalid_map_link_diagnostics(db.data['unresolved_map_links'], path, value)
+    if boundary == 'memory-export':
+        db.data['unresolved_map_links'] = invalid
+        unchanged = copy.deepcopy(db.data)
+        with pytest.raises(ContractError) as error:
+            validate_release(db.data, require_version=False)
+        assert error.value.code == code
+        assert db.data == unchanged
+        with pytest.raises(ContractError) as error:
+            db.export(version_payload={'version': 'contract-map-v2'})
+    elif boundary == 'load-release':
+        incoming = tmp_path / 'incoming-release'
+        shutil.copytree(db.BASE_PATH_OUTPUT, incoming)
+        (incoming / 'unresolved_map_links.json').write_text(json.dumps(invalid), encoding='utf-8')
+        with pytest.raises(ContractError) as error:
+            load_release(incoming)
+    else:
+        import DB
+        real_write = DB._atomic_write_json
+        corrupted = []
+
+        def corrupt_diagnostic_file(filepath, payload):
+            real_write(filepath, payload)
+            if Path(filepath).name == 'unresolved_map_links.json':
+                Path(filepath).write_text(json.dumps(invalid), encoding='utf-8')
+                corrupted.append(str(filepath))
+
+        monkeypatch.setattr(DB, '_atomic_write_json', corrupt_diagnostic_file)
+        with pytest.raises(ContractError) as error:
+            db.export(version_payload={'version': 'contract-map-v2'})
+        assert len(corrupted) == 1
+    assert error.value.code == code
+    assert 'unresolved_map_links' in error.value.path
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-map-v1'}
+    assert not Path(db.BASE_PATH_OUTPUT + '.staging').exists()
+    assert not Path(db.BASE_PATH_OUTPUT + '.backup').exists()
+
+
+def test_valid_map_link_diagnostics_preserve_raw_numeric_tokens_and_roundtrip(map_link_release):
+    db = map_link_release
+    numeric = copy.deepcopy(db.data['unresolved_map_links'][0])
+    numeric['Token'] = '970'  # An existing ID is not a ClassName reference.
+    db.data['unresolved_map_links'].append(numeric)
+    before = copy.deepcopy(db.data)
+    validate_release(db.data, require_version=False)
+    assert db.data == before
+    db.export(version_payload={'version': 'contract-map-v2'})
+    path = Path(db.BASE_PATH_OUTPUT) / 'unresolved_map_links.json'
+    assert load_json(path) == before['unresolved_map_links']
+    assert db.data['maps']['970']['Link_Maps'] == ['971']
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-map-v2'}
+    files = snapshot(db.BASE_PATH_OUTPUT)
+    db.export(version_payload={'version': 'contract-map-v2'})
+    assert snapshot(db.BASE_PATH_OUTPUT) == files
+
+
+def test_existing_release_without_map_link_diagnostics_remains_compatible(map_link_release):
+    db = map_link_release
+    del db.data['unresolved_map_links']
+    (Path(db.BASE_PATH_OUTPUT) / 'unresolved_map_links.json').unlink()
+    validate_release(db.data, require_version=False)
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-map-v1'}
+    db.export(version_payload={'version': 'legacy-map-v2'})
+    assert 'unresolved_map_links' not in db.data
+    assert not (Path(db.BASE_PATH_OUTPUT) / 'unresolved_map_links.json').exists()
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'legacy-map-v2'}
+
+
+@pytest.mark.parametrize('target', ['contract_missing', 'contract_other_map', '999999'])
+def test_unresolved_diagnostics_do_not_relax_normal_map_foreign_keys(map_link_release, target):
+    db = map_link_release
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    db.data['maps']['970']['Link_Maps'].append(target)
+    with pytest.raises(ContractError) as error:
+        db.export(version_payload={'version': 'contract-map-v2'})
+    assert error.value.code == 'reference'
+    assert 'Link_Maps' in error.value.path
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+    directory = Path(db.BASE_PATH_OUTPUT)
+    valid_maps = load_json(directory / 'maps.json')
+    valid_maps['970']['Link_Maps'].append(target)
+    # The importer reads a separate snapshot; leave the public release intact.
+    incoming = directory.parent / ('fk-snapshot-' + target)
+    shutil.copytree(directory, incoming)
+    (incoming / 'maps.json').write_text(json.dumps(valid_maps), encoding='utf-8')
+    with pytest.raises(ContractError) as error:
+        load_release(incoming)
+    assert error.value.code == 'reference'
+    assert 'Link_Maps' in error.value.path
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+
+
+def test_export_without_version_payload_still_checks_complete_collections(release_db):
+    before = (Path(release_db.BASE_PATH_OUTPUT) / 'version.json').read_bytes()
+    release_db.export()
+    assert (Path(release_db.BASE_PATH_OUTPUT) / 'version.json').read_bytes() == before
+
+
+def test_contract_import_works_from_flat_parser_without_pythonpath():
+    root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env.pop('PYTHONPATH', None)
+    result = subprocess.run([sys.executable, '-c',
+        'from DB import ToS_DB; from ipfparser.contracts import validate_release; '
+        'assert callable(validate_release)'], cwd=str(root / 'parser_tidy'), env=env,
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
