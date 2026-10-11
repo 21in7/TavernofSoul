@@ -53,6 +53,12 @@ ORM 유형 행을 만드는 EQUIPMENT·CARD·RECIPES·COLLECTION·BOOKS 간 중�
 `1e999`처럼 읽을 때 무한대로 넘치는 값도 거부한다.
 명시한 선택적 계약 컬렉션 외의 lookup·자산·provenance 파일은 JSON 형식을 검사하며 별도 도메인 schema를 강제하지 않는다.
 
+`finite_tree`는 정상 순회 중 진단 경로 문자열을 만들지 않고, 비유한 float를 발견할 때만 구성한다.
+정상 입력의 모든 값을 검사하며, dict 삽입 순서와 list·tuple 인덱스 순서에 따른 첫 오류 위치를 유지한다.
+dict 키의 `{!r}`·인덱스의 `[{}]` 표현과 `ContractError`의 path·code·message·문자열 표현도 동일하다.
+기존 dict·list·tuple·float 하위 클래스 지원과 허용 값(유한 수치·정수·bool·None·문자열 `'NaN'` 등),
+입력 보존 및 JSON·도메인 계약 정책은 바뀌지 않는다.
+
 `export(version_payload=None)`은 기존 호출 호환을 위해 버전 파일을 새로 만들지 않는다.
 이 경로도 15개 데이터 컬렉션은 검사한다. 실제 적재는 항상 유효한 버전 파일이 필요하다.
 
