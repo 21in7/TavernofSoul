@@ -53,5 +53,7 @@ Codex는 root deny와 좁은 workspace/CLI/셸 예외, 도구 network=false, 자
 - [agent_models.py](../../harness/agent_models.py): scoped 권한·private Codex runtime·환경 분리.
 - [test_workflow.py](../../harness/test_workflow.py): 승인 외 canary 분리·user content 보존·host template 차단·범위 검사 회귀.
 - [workflow](../workflow.md), [전체 설계](../harness-design.md#두-작업-사본과-보호-범위), [0006](0006-versioned-design-review.md).
+- [0007](0007-codex-warning-success-boundary.md): 2026-10-12 추가한 Codex 경고·성공 판정 결정.
+  이 ADR의 격리 결정은 유지하고 런타임 도구 접근 허용으로 경고를 해결하지 않는다.
 
 회귀 링크는 검증 명세이며 이 ADR 작성 중 실행한 결과는 아니다.

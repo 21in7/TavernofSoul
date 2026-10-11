@@ -215,19 +215,27 @@ def codex_failure_category(output, stage):
     return 'cli_failed'
 
 
+def codex_warnings(output, stage):
+    """Fixed metadata only; warnings never establish authentication or completion."""
+    if codex_failure_category(output, stage) == 'path_aliases_read_only':
+        return [{'stage': stage, 'category': 'path_aliases_read_only'}]
+    return []
+
+
 def codex_login_status(runtime):
     command = [runtime['cli'], '--no-daemon', '-c', 'forced_login_method="chatgpt"',
                '-c', 'cli_auth_credentials_store="file"', 'login', 'status']
     auth = codex_subprocess(command, runtime['env'], 'authentication', timeout=20)
     output = auth.stdout + '\n' + auth.stderr
-    category = codex_failure_category(output, 'authentication')
-    if category == 'path_aliases_read_only':
-        raise CodexFailure('authentication', category)
-    subscribed = auth.returncode == 0 and any(
-        line.strip().lower().startswith('logged in using chatgpt') for line in output.splitlines())
+    if auth.returncode:
+        raise CodexFailure('authentication', codex_failure_category(output, 'authentication'))
+    lines = [line.strip().lower() for line in output.splitlines()]
+    subscribed = 'logged in using chatgpt' in lines and not any(
+        line.startswith('logged in using api key') for line in lines)
     if not subscribed:
-        raise CodexFailure('authentication', category)
-    return {'status': 'ready', 'auth': 'chatgpt'}
+        raise CodexFailure('authentication', 'authentication_failed')
+    return {'status': 'ready', 'auth': 'chatgpt',
+            'warnings': codex_warnings(auth.stderr, 'authentication')}
 
 
 def connection_status(provider, keys):
@@ -241,6 +249,8 @@ def connection_status(provider, keys):
         return result
     cli = shutil.which(spec['cli'])
     result = {'provider': provider, 'cli': cli, 'status': 'not_configured'}
+    if provider == 'codex':
+        result['warnings'] = []
     if not cli:
         result['reason'] = 'Missing CLI: ' + spec['cli']
         if provider == 'codex':
@@ -415,6 +425,8 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
               else task_prompt(role, task, workspace=workspace, scoped=scoped))
     report = {'role': role, 'provider': provider, 'model': spec['model'],
               'kind': 'smoke' if smoke else 'task', 'status': 'failed'}
+    if provider == 'codex':
+        report['warnings'] = []
     report['compaction'] = {'requested': enabled, 'key_registered': bool(keys.get('TYPESAFE_API_KEY')),
                             'status': 'requested' if enabled else 'disabled'}
     try:
@@ -425,7 +437,8 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             if provider == 'codex' else nullcontext(None)
         with context as runtime:
             if runtime is not None:
-                codex_login_status(runtime)
+                status = codex_login_status(runtime)
+                report['warnings'].extend(status['warnings'])
                 env = runtime['env']
                 command = command_for(role, write=write, smoke=smoke, compaction=compaction,
                                       workspace=workspace, scoped=scoped, codex_cli=runtime['cli'],
@@ -452,8 +465,8 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             report['exit_code'] = result.returncode
             if provider != 'codex':
                 report['stderr'] = redact(result.stderr, keys)
-            elif codex_failure_category(result.stderr, 'execution') == 'path_aliases_read_only':
-                raise CodexFailure('execution', 'path_aliases_read_only')
+            else:
+                report['warnings'].extend(codex_warnings(result.stderr, 'execution'))
             if enabled and any(message in result.stderr.lower() for message in (
                     'hooks module not loaded', 'hooks module did not load', 'not loaded:', 'hook skipped')):
                 report['compaction']['status'] = 'unavailable'
@@ -468,8 +481,9 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             except (ValueError, KeyError, TypeError):
                 if provider == 'codex':
                     category = codex_failure_category(result.stdout + '\n' + result.stderr, 'execution')
-                    raise CodexFailure('execution', category if category != 'cli_failed'
-                                       else 'invalid_response') from None
+                    if category in ('cli_failed', 'path_aliases_read_only'):
+                        category = 'invalid_response'
+                    raise CodexFailure('execution', category) from None
                 raise
             if smoke and response.strip() != nonce:
                 if provider == 'codex':

@@ -11,6 +11,7 @@
 | [0004](0004-reviewed-and-validated-publication.md) | 새 검토·필수 검증 뒤 충돌 검사와 범위 반영 | 승인(accepted), 현 구현 복원 | 2026-10-11 |
 | [0005](0005-github-connector-delivery.md) | 메인 GitHub 앱 journal·3개 CI·SHA 고정 merge | 승인(accepted), 현 구현 복원 | 2026-10-11 |
 | [0006](0006-versioned-design-review.md) | Git 관리 설계·ADR와 매 검토의 문서 판단 | 승인(accepted), 이번 요청의 결정 | 2026-10-11 |
+| [0007](0007-codex-warning-success-boundary.md) | Codex 성공 증거 우선과 안전한 경고 metadata | 승인(accepted), 새 결정 | 2026-10-12 |
 
 ## 상태와 근거의 의미
 
@@ -18,6 +19,8 @@
 뜻이며 과거 도입 당시 승인을 증명하지 않는다. 기록일은 이번 문서 작성일이고 실제 도입일·당시 의도·
 검토 과정·실행 성공 날짜를 추정하지 않는다. 대안 비교와 선택 이유는 이번 문서화 시점의 평가다.
 0006은 이번 요청에 따른 문서 유지·검토 게이트 결정이며 승인 상태가 검사 통과를 뜻하지 않는다.
+0007은 Codex warning과 성공/실패 판정을 분리하는 새 결정이다. 0002의 격리 결정을 바꾸거나
+대체하지 않으며, 승인 상태는 수리 worker의 검사 실행·일반 workflow 성공·게시 완료를 뜻하지 않는다.
 
 상태는 제안(proposed), 승인(accepted), 대체됨(superseded)을 사용한다. 이후 결정 변경은
 기존 ADR를 삭제하거나 새 결론으로 재작성하지 않는다. 기존 상태를 superseded로 바꾸고

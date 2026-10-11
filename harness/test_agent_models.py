@@ -9,6 +9,9 @@ import pytest
 from harness import agent_models as models
 
 
+PATH_ALIASES_WARNING = 'PATH aliases: Read-only file system (os error 30)'
+
+
 @pytest.fixture
 def local_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(models, 'KEY_FILE', tmp_path / '.agent-keys.json')
@@ -458,20 +461,32 @@ def codex_completed(command, response='Approved sources updated.', stderr=''):
     return subprocess.CompletedProcess(command, 0, output, stderr)
 
 
-def test_codex_doctor_is_private_local_and_cleans_up(codex_login, local_keys, monkeypatch, capsys):
+@pytest.mark.parametrize('warning', [False, True])
+@pytest.mark.parametrize('status_stream', ['stdout', 'stderr'])
+def test_codex_doctor_is_private_local_and_cleans_up(codex_login, local_keys, monkeypatch, capsys,
+                                                   warning, status_stream):
     parent_env = dict(os.environ)
     roots = []
     def cli(command, **options):
         roots.append(inspect_codex_runtime(command, options, codex_login))
         assert 'login' in command and 'input' not in options
         assert options['timeout'] == 20
-        return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', 'fixture-access-secret')
+        status = 'Logged in using ChatGPT'
+        stderr = (PATH_ALIASES_WARNING + '\n' if warning else '') + 'fixture-access-secret'
+        return subprocess.CompletedProcess(command, 0, status if status_stream == 'stdout' else '',
+                                           stderr + ('\n' + status if status_stream == 'stderr' else ''))
     monkeypatch.setattr(models.subprocess, 'run', cli)
     assert models.main(['doctor', '--provider', 'codex']) == 0
     assert len(roots) == 1 and not roots[0].exists()
     output = capsys.readouterr().out
     assert 'fixture-access-secret' not in output
     assert 'chatgpt' in output
+    report = json.loads((models.REPORTS / 'doctor-codex.json').read_text(encoding='utf-8'))
+    assert report['checks'][0]['warnings'] == ([{'stage': 'authentication',
+                                              'category': 'path_aliases_read_only'}] if warning else [])
+    assert PATH_ALIASES_WARNING not in output and PATH_ALIASES_WARNING not in json.dumps(report)
+    assert 'fixture-access-secret' not in json.dumps(report)
+    assert report['checks'][0]['status'] == 'ready'
     assert os.environ == parent_env
     assert_codex_source_unchanged(codex_login)
 
@@ -490,18 +505,24 @@ def test_codex_scoped_login_and_execution_share_runtime(codex_login, local_keys,
             # Simulate a CLI credential refresh, which must remain in the private copy.
             (Path(options['env']['CODEX_HOME']) / 'auth.json').write_text('private-refreshed-auth')
             (Path(options['env']['TMPDIR']) / 'path-alias').write_text('private-runtime-write')
-            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT',
+                                               PATH_ALIASES_WARNING + ' fixture-access-secret')
         assert (Path(options['env']['CODEX_HOME']) / 'auth.json').read_text() == 'private-refreshed-auth'
         assert 'private user instructions' not in options['input'].lower()
         assert options['cwd'] == str(workspace)
         policy = next(value for value in command if value.startswith('permissions.harness-scoped.filesystem='))
         assert json.dumps(str(workspace)) + '=' + json.dumps('write' if write else 'read') in policy
         assert '":root"="deny"' in policy and '":minimal"="read"' in policy
-        return codex_completed(command, stderr='remote-warning fixture-refresh-secret')
+        return codex_completed(command, stderr=PATH_ALIASES_WARNING +
+                               ' remote-warning fixture-refresh-secret')
     monkeypatch.setattr(models.subprocess, 'run', cli)
     report = models.run('parser', 'Use approved sources.', local_keys, write=write,
                         workspace=workspace, scoped=True)
     assert report['status'] == 'passed'
+    assert report['warnings'] == [{'stage': stage, 'category': 'path_aliases_read_only'}
+                                   for stage in ('authentication', 'execution')]
+    assert all(value not in json.dumps(report) for value in (
+        PATH_ALIASES_WARNING, 'fixture-access-secret', 'fixture-refresh-secret'))
     assert 'stderr' not in report and 'remote-warning' not in json.dumps(report)
     assert len(roots) == 2 and roots[0] == roots[1] and not roots[0].exists()
     assert os.environ == parent_env
@@ -547,7 +568,8 @@ def test_codex_failures_are_safe_cleaned_and_never_retried(codex_login, local_ke
         if current != stage:
             return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
         if failure == 'timeout':
-            raise subprocess.TimeoutExpired(command, options['timeout'], output=sensitive, stderr=sensitive)
+            raise subprocess.TimeoutExpired(command, options['timeout'], output=sensitive,
+                                            stderr=PATH_ALIASES_WARNING + ' ' + sensitive)
         if failure == 'spawn':
             raise OSError(sensitive)
         message = {'aliases': 'PATH aliases: Read-only file system (os error 30)',
@@ -569,25 +591,39 @@ def test_codex_failures_are_safe_cleaned_and_never_retried(codex_login, local_ke
     assert_codex_source_unchanged(codex_login)
 
 
+@pytest.mark.parametrize('warning', [False, True])
 @pytest.mark.parametrize('failure,category', [
-    ('api', 'authentication_failed'), ('aliases', 'path_aliases_read_only'), ('timeout', 'timeout'),
+    ('api', 'authentication_failed'), ('missing', 'authentication_failed'),
+    ('failed', 'authentication_failed'), ('ambiguous', 'authentication_failed'),
+    ('prefix', 'authentication_failed'), ('timeout', 'timeout'),
 ])
 def test_codex_doctor_failure_diagnostics_are_structured(codex_login, local_keys, monkeypatch, capsys,
-                                                        failure, category):
+                                                        failure, category, warning):
     roots = []
     def cli(command, **options):
         roots.append(inspect_codex_runtime(command, options, codex_login))
         if failure == 'timeout':
-            raise subprocess.TimeoutExpired(command, 20, output='fixture-access-secret')
-        message = ('Logged in using API key: fixture-access-secret' if failure == 'api' else
-                   'PATH aliases: Read-only file system (os error 30) fixture-access-secret')
-        # Initialization warnings must fail safely even when the CLI exits zero.
-        return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT' if failure == 'aliases'
-                                           else message, message if failure == 'aliases' else '')
+            raise subprocess.TimeoutExpired(command, 20, output='fixture-access-secret',
+                                            stderr=PATH_ALIASES_WARNING if warning else '')
+        statuses = {
+            'api': 'Logged in using API key: fixture-access-secret',
+            'missing': '',
+            'failed': 'Not logged in: fixture-access-secret',
+            'ambiguous': 'Logged in using ChatGPT\nLogged in using API key: fixture-access-secret',
+            'prefix': 'Logged in using ChatGPT but not a valid status: fixture-access-secret',
+        }
+        return subprocess.CompletedProcess(command, 0, statuses[failure],
+                                           (PATH_ALIASES_WARNING + '\n' if warning else '') +
+                                           'fixture-refresh-secret')
     monkeypatch.setattr(models.subprocess, 'run', cli)
     assert models.main(['doctor', '--provider', 'codex']) == 1
     output = capsys.readouterr().out
     assert category in output and 'fixture-access-secret' not in output
+    report = json.loads((models.REPORTS / 'doctor-codex.json').read_text(encoding='utf-8'))
+    assert report['checks'][0]['status'] == 'not_configured'
+    assert report['checks'][0]['diagnostic'] == {'stage': 'authentication', 'category': category}
+    assert all(value not in json.dumps(report) for value in (
+        PATH_ALIASES_WARNING, 'fixture-access-secret', 'fixture-refresh-secret'))
     assert len(roots) == 1 and not roots[0].exists()
     assert_codex_source_unchanged(codex_login)
 
@@ -629,39 +665,63 @@ def test_codex_runtime_creation_failure_does_not_use_real_home(codex_login, loca
     assert_codex_source_unchanged(codex_login)
 
 
-@pytest.mark.parametrize('output', ['remote body fixture-access-secret',
-                                   '{"type":"turn.failed","message":"fixture-access-secret"}',
-                                   'null', '[]',
-                                   '{"type":"item.completed","item":"fixture-access-secret"}',
-                                   '{"type":"item.completed","item":{"type":"agent_message","text":5}}\n'
-                                   '{"type":"turn.completed"}'])
-def test_codex_invalid_responses_never_become_diagnostics(codex_login, local_keys, monkeypatch, output):
+@pytest.mark.parametrize('warning', [False, True])
+@pytest.mark.parametrize('output', [
+    '', '   \n', 'remote body fixture-access-secret', 'null', '[]',
+    '{"type":"item.completed","item":"fixture-access-secret"}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":5}}\n'
+    '{"type":"turn.completed"}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":" "}}\n'
+    '{"type":"turn.completed"}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":"fixture-access-secret"}}',
+    '{"type":"turn.completed"}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":"fixture-access-secret"}}\n'
+    '{"type":"turn.completed"}\nnot-json',
+    *('\n'.join(json.dumps(event) for event in (
+        {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'fixture-access-secret'}},
+        {'type': 'turn.completed'}, {'type': failure, 'message': 'fixture-refresh-secret'},
+    )) for failure in ('turn.failed', 'error')),
+])
+def test_codex_invalid_responses_never_become_diagnostics(codex_login, local_keys, monkeypatch,
+                                                         output, warning):
     roots = []
     def cli(command, **options):
         roots.append(inspect_codex_runtime(command, options, codex_login))
+        stderr = (PATH_ALIASES_WARNING + '\n' if warning else '') + 'fixture-refresh-secret'
         return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT' if 'login' in command
-                                           else output, 'fixture-refresh-secret')
+                                           else output, stderr)
     monkeypatch.setattr(models.subprocess, 'run', cli)
     report = models.run('parser', 'Task.', local_keys, workspace=codex_login['workspace'], scoped=True)
+    assert report['status'] == 'failed'
     assert report['diagnostic'] == {'stage': 'execution', 'category': 'invalid_response'}
-    assert 'fixture-access-secret' not in json.dumps(report)
-    assert 'fixture-refresh-secret' not in json.dumps(report)
-    assert all(not root.exists() for root in roots)
+    assert report['warnings'] == ([{'stage': stage, 'category': 'path_aliases_read_only'}
+                                   for stage in ('authentication', 'execution')] if warning else [])
+    assert all(value not in json.dumps(report) for value in (
+        PATH_ALIASES_WARNING, 'fixture-access-secret', 'fixture-refresh-secret'))
+    assert 'response' not in report and 'stdout' not in report and 'stderr' not in report
+    assert len(roots) == 2 and all(not root.exists() for root in roots)
+    assert_codex_source_unchanged(codex_login)
 
 
-def test_codex_smoke_mismatch_does_not_save_untrusted_response(codex_login, local_keys, monkeypatch):
+@pytest.mark.parametrize('warning', [False, True])
+def test_codex_smoke_mismatch_does_not_save_untrusted_response(codex_login, local_keys, monkeypatch,
+                                                             warning):
     roots = []
     def cli(command, **options):
         roots.append(inspect_codex_runtime(command, options, codex_login))
+        stderr = (PATH_ALIASES_WARNING + '\n' if warning else '') + 'fixture-refresh-secret'
         if 'login' in command:
-            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
-        return codex_completed(command, 'remote fixture-access-secret')
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', stderr)
+        return codex_completed(command, 'remote fixture-access-secret', stderr)
     monkeypatch.setattr(models.subprocess, 'run', cli)
     report = models.run('coordinator', '', local_keys, smoke=True)
     assert report['status'] == 'failed'
-    assert report['diagnostic']['category'] == 'probe_mismatch'
-    assert 'response' not in report and 'fixture-access-secret' not in json.dumps(report)
-    assert all(not root.exists() for root in roots)
+    assert report['diagnostic'] == {'stage': 'execution', 'category': 'probe_mismatch'}
+    assert all(value not in json.dumps(report) for value in (
+        PATH_ALIASES_WARNING, 'fixture-access-secret', 'fixture-refresh-secret'))
+    assert 'response' not in report and 'stdout' not in report and 'stderr' not in report
+    assert len(roots) == 2 and all(not root.exists() for root in roots)
+    assert_codex_source_unchanged(codex_login)
 
 
 def test_codex_auth_defaults_to_existing_home_without_changing_parent(codex_login, local_keys,
@@ -699,8 +759,10 @@ def test_overlapping_codex_calls_do_not_share_auth_or_temp_paths(codex_login, lo
     assert_codex_source_unchanged(codex_login)
 
 
+@pytest.mark.parametrize('warning', [False, True])
 @pytest.mark.parametrize('doctor', [False, True])
-def test_codex_cleanup_failure_is_never_reported_as_ready(codex_login, local_keys, monkeypatch, doctor):
+def test_codex_cleanup_failure_is_never_reported_as_ready(codex_login, local_keys, monkeypatch, doctor,
+                                                         warning):
     real_directory = models.tempfile.TemporaryDirectory
     class CleanupFailure(real_directory):
         def __exit__(self, *args):
@@ -709,28 +771,89 @@ def test_codex_cleanup_failure_is_never_reported_as_ready(codex_login, local_key
     monkeypatch.setattr(models.tempfile, 'TemporaryDirectory', CleanupFailure)
     def cli(command, **options):
         inspect_codex_runtime(command, options, codex_login)
+        stderr = PATH_ALIASES_WARNING + ' fixture-refresh-secret' if warning else ''
         if 'login' in command:
-            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', stderr)
         nonce = options['input'].split('exactly ')[1].split('.')[0]
-        return codex_completed(command, nonce)
+        return codex_completed(command, nonce, stderr)
     monkeypatch.setattr(models.subprocess, 'run', cli)
     report = (models.connection_status('codex', local_keys) if doctor else
               models.run('coordinator', '', local_keys, smoke=True))
     assert report['status'] == ('not_configured' if doctor else 'failed')
     assert report['diagnostic'] == {'stage': 'runtime', 'category': 'runtime_unavailable'}
-    assert 'response' not in report and 'fixture-access-secret' not in json.dumps(report)
+    assert 'response' not in report
+    assert all(value not in json.dumps(report) for value in (
+        PATH_ALIASES_WARNING, 'fixture-access-secret', 'fixture-refresh-secret'))
     assert list(codex_login['base'].iterdir()) == []
 
 
-def test_codex_zero_exit_alias_failure_does_not_accept_a_completed_turn(codex_login, local_keys, monkeypatch):
+@pytest.mark.parametrize('authentication_warning,execution_warning', [
+    (False, False), (True, False), (False, True), (True, True),
+])
+@pytest.mark.parametrize('smoke', [False, True])
+def test_codex_valid_completed_turn_preserves_warnings(codex_login, local_keys, monkeypatch,
+                                                      authentication_warning, execution_warning, smoke):
+    roots = []
+    parent_env = dict(os.environ)
     def cli(command, **options):
-        inspect_codex_runtime(command, options, codex_login)
+        roots.append(inspect_codex_runtime(command, options, codex_login))
         if 'login' in command:
-            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
-        nonce = options['input'].split('exactly ')[1].split('.')[0]
-        return codex_completed(command, nonce, 'PATH aliases: Read-only file system (os error 30)')
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT',
+                                               PATH_ALIASES_WARNING + ' fixture-access-secret'
+                                               if authentication_warning else '')
+        response = (options['input'].split('exactly ')[1].split('.')[0] if smoke else
+                    'Approved sources updated.')
+        return codex_completed(command, response, PATH_ALIASES_WARNING + ' fixture-refresh-secret'
+                               if execution_warning else '')
     monkeypatch.setattr(models.subprocess, 'run', cli)
-    report = models.run('coordinator', '', local_keys, smoke=True)
+    report = models.run('parser', 'Task.', local_keys, smoke=smoke,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert report['status'] == 'passed' and report['exit_code'] == 0
+    assert 'diagnostic' not in report
+    if smoke:
+        assert report['response'].startswith('TAVERN_MODEL_OK_')
+    else:
+        assert report['response'] == 'Approved sources updated.'
+    assert report['warnings'] == [
+        {'stage': stage, 'category': 'path_aliases_read_only'}
+        for stage, present in (('authentication', authentication_warning), ('execution', execution_warning))
+        if present
+    ]
+    models.private_json(models.REPORTS / 'warning-run.json', report)
+    saved = json.loads((models.REPORTS / 'warning-run.json').read_text(encoding='utf-8'))
+    assert saved == report
+    assert (models.REPORTS / 'warning-run.json').stat().st_mode & 0o777 == 0o600
+    assert all(value not in json.dumps(saved) for value in (
+        PATH_ALIASES_WARNING, 'fixture-access-secret', 'fixture-refresh-secret'))
+    assert 'stdout' not in report and 'stderr' not in report
+    assert len(roots) == 2 and roots[0] == roots[1] and not roots[0].exists()
+    assert os.environ == parent_env
+    assert_codex_source_unchanged(codex_login)
+
+
+@pytest.mark.parametrize('stage', ['authentication', 'execution'])
+def test_codex_nonzero_with_warning_and_success_output_still_fails(codex_login, local_keys,
+                                                                  monkeypatch, stage):
+    roots = []
+    def cli(command, **options):
+        roots.append(inspect_codex_runtime(command, options, codex_login))
+        current = 'authentication' if 'login' in command else 'execution'
+        if current == 'authentication':
+            result = subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        else:
+            nonce = options['input'].split('exactly ')[1].split('.')[0]
+            result = codex_completed(command, nonce)
+        if current == stage:
+            return subprocess.CompletedProcess(command, 1, result.stdout,
+                                               PATH_ALIASES_WARNING + ' fixture-access-secret')
+        return result
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    report = models.run('parser', '', local_keys, smoke=True,
+                        workspace=codex_login['workspace'], scoped=True)
     assert report['status'] == 'failed'
-    assert report['diagnostic'] == {'stage': 'execution', 'category': 'path_aliases_read_only'}
-    assert list(codex_login['base'].iterdir()) == []
+    assert report['diagnostic'] == {'stage': stage, 'category': 'path_aliases_read_only'}
+    assert 'response' not in report and 'stdout' not in report and 'stderr' not in report
+    assert all(value not in json.dumps(report) for value in (PATH_ALIASES_WARNING, 'fixture-access-secret'))
+    assert len(roots) == (1 if stage == 'authentication' else 2)
+    assert all(not root.exists() for root in roots)
+    assert_codex_source_unchanged(codex_login)

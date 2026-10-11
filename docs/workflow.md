@@ -84,8 +84,28 @@ score `0.07` / probabilities `{'0': 0.94, '1': 0.06, '2': 0.0}` / confidence `0.
 triage의 추천은 허용 응답과 fallback 모두 `execution_allowed=false`이며 에이전트를 실행하지 않는다.
 
 Jev 진단은 허용된 `error_type`과 선택적인 정수 `errno`, HTTP 실패의 정수 `http_status`로 제한한다.
-Codex 진단은 `stage`와 고정 `category`로 구분하며 PATH aliases의 읽기 전용 오류는
-`path_aliases_read_only`다. 키·인증 내용·예외 원문·원격 오류 응답 본문을 진단으로 노출하지 않는다.
+Codex 실패 진단은 `stage`와 고정 `category`로 구분한다. nonzero에서 PATH aliases의 읽기 전용
+메시지가 있으면 `path_aliases_read_only`로 분류할 수 있다. 유효 성공에 동반된 경고는 실패 선판정 대신
+`warnings=[{"stage":"authentication","category":"path_aliases_read_only"},
+{"stage":"execution","category":"path_aliases_read_only"}]`에서 실제 관측된 단계만 기록한다.
+인증 경고도 역할 실행 보고서에 전달하며 `model_step`은 결과 전체를 통합 보고서의 `agents`에 보존한다.
+경고가 없으면 빈 목록이다. 키·인증 내용·예외 원문·stdout/stderr·원격 오류 응답 본문은 진단에 넣지 않는다.
+
+2026-10-12 [ADR 0007](adr/0007-codex-warning-success-boundary.md)에 따라 인증은 exit0와 정확한
+ChatGPT 로그인 상태(API 키 불가), 실행은 exit0·엄격한 JSON event·유효한 비어 있지 않은 최종 응답·
+turn.completed·failed/error event 없음을 요구한다. smoke는 nonce 일치도 요구한다. 이 조건을 통과한
+warning은 ready/passed를 막지 않으며 nonzero·인증 실패·잘못된/빈/미완료 응답·실패 event·timeout·
+nonce 불일치·runtime 생성/정리 실패는 계속 실패다. warning 자체는 성공 근거가 아니다.
+`model_step`의 passed 확인과 승인 파일 범위 검사, 후속 새 review/documentation·필수 check·충돌 검사·
+apply·Git 역할·게시/CI/merge 게이트를 유지한다. auth runtime 접근 허용·API 키 fallback·재시도·권한 확대는 없다.
+
+이전 일반 실행의 exit0 편집이 stderr 선판정으로 반영되지 않은 사실과 CLI 0.161.0의 메인 무추론 비교
+관측은 [모델 연결의 원인 기록](agent-models.md#실패-진단-읽기)에 둔다. 최초 경고를 낸 하위 프로세스는
+raw stderr 미보존으로 미확정이며 runtime deny로 인한 하위 초기화 경고 가능성은 추론이다.
+[공식 sandbox 문서](https://learn.chatgpt.com/docs/sandboxing)는 spawned commands의 일반 경계 참고이며
+PATH aliases 구현의 증거가 아니다. 별도 draft 복구는 일반 경로의 성공 검증으로 취급하지 않는다.
+수리 worker는 테스트·workflow·실모델·Git을 실행하지 않았다. 메인/orchestrator가 새 Claude 문서 의미 검토,
+full make check·일반 Codex 도구 편집 실호출·Git 역할·PR/CI/merge를 별도로 수행한다.
 필드와 분류는 [에이전트 모델 연결](agent-models.md)의 실패 진단 설명을 참고한다.
 `agent-doctor`는 로컬 설정·런타임·로그인 상태만 확인한다. 외부 DNS와 실제 모델 연결은 운영자가
 명시적으로 요청한 `agent-smoke`/`triage-smoke`로 별도 확인하며, 이때도 네트워크 권한은 자동 확대하지 않는다.
