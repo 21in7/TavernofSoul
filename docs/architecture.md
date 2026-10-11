@@ -193,6 +193,15 @@ importer는 복사한 스냅샷을 DB 쿼리 전에 검사한다.
 검사 범위·기존 sentinel과 optional 값·단위의 소유권은 [데이터 계약](data-contracts.md)을 참고한다.
 모든 자산·보조 인덱스·게임 계산식의 schema를 강제하는 것은 아니다.
 
+`DB.export`는 공통 staging 계약 검사가 일반 JSON 역직렬화 검증도 포함하므로,
+그 앞에서 같은 파일을 다시 읽던 중복 pass를 제거한다. `load_release`는 도메인 검사에
+보관(retain)할 컬렉션인지와 무관하게 모든 staging `*.json`을 엄격히 읽는다.
+정상 export에서는 보조·비-importer JSON과 기록된 `version.json`까지 각각 한 번만
+역직렬화하며, 문법 오류·중복 키·비유한 수치·객체/배열이 아닌 루트를 `ContractError`로
+거부한 뒤 보관한 컬렉션의 도메인 계약을 검사한다. staging 검증 실패는 승급 전에 중단하여
+기존 공개 bytes와 버전을 보존하고 staging을 정리한다. 직렬화 전 메모리 검증과
+기존 백업·sentinel·파일별 승급·롤백·재시도 의미, 직렬화 bytes는 유지한다.
+
 ## 파서 초기화 비용과 상태 경계
 
 `iesutil.load()`는 한 호출에서 길이 128 이하 문자열 token의 변환 결과인 immutable scalar를

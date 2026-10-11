@@ -6,7 +6,7 @@ PROFILING_REVIEW P0 (설계 후 범위): export() 는 모든 data 컬렉션을
 완전히 직렬화·검증한 뒤, 전체 성공 시에만 공개 파일을 os.replace 로
 원자 교체한다. 실패 시 staging 만 폐기하고 기존 공개 릴리스를 보존한다.
 
-이 테스트는 DB.py 의 export(), _atomic_write_json, _validate_json_file 을
+이 테스트는 DB.py 의 export(), _atomic_write_json 과 staging 검증 경계를
 직접 검증한다.
 """
 import io
@@ -27,13 +27,17 @@ if PARENT not in sys.path:
 def _make_constants(release_dir, data):
     """export() 에 필요한 최소 ToS_DB 표면을 가짜로 만든다."""
     from DB import ToS_DB
+    from ipfparser import contracts
     class StorageDB(ToS_DB):
         # This suite isolates file promotion using intentionally arbitrary data.
-        # Real domain validation is exercised by test_release_contract.py.
+        # Skip domain rules only; retain the shared strict reader for every file.
+        # Full release contracts are exercised by test_release_contract.py.
         def _validate_release(self, version_payload):
             pass
         def _validate_staged_release(self, directory, version_payload):
-            pass
+            for filename in sorted(os.listdir(directory)):
+                if filename.endswith('.json'):
+                    contracts.load_json(os.path.join(directory, filename))
     c = StorageDB()
     c.BASE_PATH_OUTPUT = release_dir
     c.data = data
@@ -169,26 +173,6 @@ class TestAtomicWriteJson:
                 assert json.load(f) == {'old': True}
 
 
-class TestValidateJsonFile:
-    def test_valid_file_passes(self):
-        from DB import _validate_json_file
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'ok.json')
-            with open(path, 'w') as f:
-                json.dump({'a': 1}, f)
-            # 예외 없이 통과해야 한다.
-            _validate_json_file(path)
-
-    def test_invalid_json_raises(self):
-        from DB import _validate_json_file
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'bad.json')
-            with open(path, 'w') as f:
-                f.write('{not valid json')
-            with pytest.raises(json.JSONDecodeError):
-                _validate_json_file(path)
-
-
 class TestExportAtomicPromotion:
     def test_all_files_promoted_on_success(self):
         """export() 성공 시 모든 컬렉션이 공개 디렉터리에 원자 교체된다."""
@@ -257,7 +241,8 @@ class TestExportAtomicPromotion:
         검증 단계에서 실패하면 아직 공개 파일 교체가 시작되지 않았으므로
         공개 릴리스는 무결하다.
         """
-        from DB import _validate_json_file
+        import DB
+        from ipfparser.contracts import ContractError
         with tempfile.TemporaryDirectory() as d:
             release_dir = os.path.join(d, 'JSON_ktos')
             os.makedirs(release_dir)
@@ -265,14 +250,23 @@ class TestExportAtomicPromotion:
             with open(existing_path, 'w') as f:
                 json.dump({'old': True}, f)
 
-            # 검증 단계에서 항상 실패하게 만든다.
-            def fail_validate(filepath):
-                raise OSError('simulated validation failure')
+            # 실제 기록 뒤 손상시켜 공통 strict reader 에서 실패하게 만든다.
+            original_write = DB._atomic_write_json
+            corrupted = []
 
-            monkeypatch.setattr('DB._validate_json_file', fail_validate)
+            def corrupt_after_write(filepath, value):
+                original_write(filepath, value)
+                with open(filepath, 'w') as f:
+                    f.write('{not valid json')
+                corrupted.append(filepath)
+
+            monkeypatch.setattr('DB._atomic_write_json', corrupt_after_write)
             c = _make_constants(release_dir, {'items': {'new': True}})
-            with pytest.raises(OSError):
+            with pytest.raises(ContractError) as error:
                 c.export()
+            assert error.value.code == 'json'
+            assert corrupted == [os.path.join(release_dir + '.staging', 'items.json')]
+            assert error.value.path == corrupted[0]
             with open(existing_path) as f:
                 assert json.load(f) == {'old': True}
             staging_dir = release_dir + '.staging'
@@ -293,22 +287,28 @@ class TestExportAtomicPromotion:
                     json.dump({'old_%s' % name: True}, f)
 
             # 검증 단계: 두 번째 파일 검증 시 실패.
-            original_validate = _validate_json_file_import()
+            c = _make_constants(release_dir, {
+                'items': {'new_items': True},
+                'skills': {'new_skills': True},
+            })
+            from ipfparser import contracts
+            original_validate = contracts.load_json
             call_count = {'n': 0}
 
             def selective_fail(filepath):
                 call_count['n'] += 1
                 if call_count['n'] >= 2:
-                    raise OSError('simulated validation failure on 2nd file')
-                original_validate(filepath)
+                    raise contracts.ContractError(
+                        str(filepath), 'json', 'simulated validation failure on 2nd file',
+                    )
+                return original_validate(filepath)
 
-            monkeypatch.setattr('DB._validate_json_file', selective_fail)
-            c = _make_constants(release_dir, {
-                'items': {'new_items': True},
-                'skills': {'new_skills': True},
-            })
-            with pytest.raises(OSError):
+            monkeypatch.setattr(contracts, 'load_json', selective_fail)
+            with pytest.raises(contracts.ContractError) as error:
                 c.export()
+            assert call_count['n'] == 2
+            assert error.value.code == 'json'
+            assert error.value.path == os.path.join(release_dir + '.staging', 'skills.json')
             # 두 파일 모두 기존 내용이어야 한다(교체 전 검증 실패).
             for name in ('items', 'skills'):
                 with open(os.path.join(release_dir, name + '.json')) as f:
@@ -990,8 +990,3 @@ def _read_json(path):
     with open(path) as f:
         return json.load(f)
 
-
-def _validate_json_file_import():
-    """테스트 내에서 원본 _validate_json_file 을 가져오는 헬퍼."""
-    import DB
-    return DB._validate_json_file
