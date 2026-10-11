@@ -13,9 +13,123 @@ import pytest
 from DB import ToS_DB
 from harness.contract_fixture import add_contract_edges
 from harness.parser_fixture import parse_workspace, prepare_combat_workspace
-from ipfparser.contracts import ContractError, load_json, load_release, validate_release
+from ipfparser.contracts import ContractError, finite_tree, load_json, load_release, validate_release
 
 DELETE = object()
+
+
+def assert_nonfinite_error(error, path):
+    assert error.path == path
+    assert error.code == 'number'
+    assert error.message == 'NaN and Infinity are not JSON numbers'
+    assert str(error) == path + ' [number]: NaN and Infinity are not JSON numbers'
+
+
+@pytest.mark.parametrize('value,path', [
+    pytest.param(float('nan'), 'payload', id='root-nan'),
+    pytest.param(float('inf'), 'payload', id='root-positive-infinity'),
+    pytest.param(float('-inf'), 'payload', id='root-negative-infinity'),
+    pytest.param({'rows': [0, (1, {'metric': float('nan')})]},
+                 "payload['rows'][1][1]['metric']", id='nested-dict-list-tuple'),
+    pytest.param({'줄\n\\키': [(0, float('inf'))]},
+                 r"payload['줄\n\\키'][0][1]", id='escaped-unicode-key'),
+    pytest.param({"quote'\"": float('-inf')},
+                 r"""payload['quote\'"']""", id='quoted-key'),
+    pytest.param({(3, '키'): [float('nan')]},
+                 "payload[(3, '키')][0]", id='tuple-key-repr'),
+    pytest.param({'z': {'deep': [float('nan')]}, 'a': float('inf')},
+                 "payload['z']['deep'][0]", id='insertion-order-depth-first'),
+    pytest.param({'a': float('inf'), 'z': float('nan')},
+                 "payload['a']", id='reversed-insertion-order'),
+    pytest.param([0, float('-inf'), float('nan')],
+                 'payload[1]', id='list-index-order'),
+    pytest.param((0, float('nan'), float('inf')),
+                 'payload[1]', id='tuple-index-order'),
+    pytest.param([{}, ('NaN', 0), {'last': float('-inf')}],
+                 "payload[2]['last']", id='after-valid-branches'),
+])
+def test_finite_tree_reports_exact_first_error(value, path):
+    with pytest.raises(ContractError) as error:
+        finite_tree(value, 'payload')
+    assert_nonfinite_error(error.value, path)
+
+
+@pytest.mark.parametrize('value', [
+    None, True, False, 0, -7, 10 ** 400, '', 'NaN', 'Infinity',
+    0.0, -1.5, sys.float_info.max, -sys.float_info.max,
+    {}, [], (), {'mixed': [None, True, 'NaN', (1, 2.5), {}, [], ()]},
+])
+def test_finite_tree_accepts_values_without_rewriting(value):
+    before = copy.deepcopy(value)
+    assert finite_tree(value, 'payload') is None
+    assert value == before
+
+
+@pytest.mark.parametrize('number', [float('nan'), float('inf'), float('-inf')],
+                         ids=['nan', 'positive-infinity', 'negative-infinity'])
+def test_finite_tree_supports_container_and_float_subclasses(number):
+    class DictSubclass(dict):
+        pass
+
+    class ListSubclass(list):
+        pass
+
+    class TupleSubclass(tuple):
+        pass
+
+    class FloatSubclass(float):
+        pass
+
+    values = ListSubclass([FloatSubclass(sys.float_info.max), TupleSubclass(())])
+    tree = DictSubclass({'values': values})
+    assert finite_tree(FloatSubclass(1.5), 'payload') is None
+    assert finite_tree(tree, 'payload') is None
+    values.append(TupleSubclass((0, FloatSubclass(number))))
+    for value, path in [(FloatSubclass(number), 'payload'),
+                        (tree, "payload['values'][2][1]")]:
+        with pytest.raises(ContractError) as error:
+            finite_tree(value, 'payload')
+        assert_nonfinite_error(error.value, path)
+    assert tree['values'] is values
+    assert type(values[2]) is TupleSubclass
+    assert type(values[2][1]) is FloatSubclass
+
+
+def test_finite_tree_preserves_input_and_rechecks_mutated_shared_objects():
+    entry = {'metric': 1.0}
+    pair = ('NaN', entry)
+    entries = [pair, {}]
+    tree = {'entries': entries, 'alias': entry}
+    before = copy.deepcopy(tree)
+    assert finite_tree(tree, 'payload') is None
+    assert tree == before
+
+    entry['metric'] = float('inf')
+    before = copy.deepcopy(tree)
+    with pytest.raises(ContractError) as error:
+        finite_tree(tree, 'payload')
+    assert_nonfinite_error(error.value, "payload['entries'][0][1]['metric']")
+    assert tree == before
+
+    entry['metric'] = 2.0
+    assert finite_tree(tree, 'payload') is None
+    entries.append({'latest': float('-inf')})
+    before = copy.deepcopy(tree)
+    with pytest.raises(ContractError) as error:
+        finite_tree(tree, 'fresh')
+    assert_nonfinite_error(error.value, "fresh['entries'][2]['latest']")
+    assert tree == before
+    assert tree['entries'] is entries
+    assert entries[0] is pair
+    assert pair[1] is tree['alias'] is entry
+
+
+def test_load_json_rejects_nested_exponent_overflow_with_exact_path(tmp_path):
+    path = tmp_path / 'overflow.json'
+    path.write_text('{"rows": [0, {"값": [1, 1e999]}]}', encoding='utf-8')
+    with pytest.raises(ContractError) as error:
+        load_json(path)
+    assert_nonfinite_error(error.value, str(path) + "['rows'][1]['값'][1]")
 
 
 @pytest.fixture(scope='module')

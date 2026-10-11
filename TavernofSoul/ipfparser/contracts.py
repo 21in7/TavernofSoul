@@ -104,14 +104,27 @@ def inactive_recipe(row):
 
 
 def finite_tree(value, path):
+    suffix = _nonfinite_suffix(value)
+    if suffix is not None:
+        fail('{}{}'.format(path, suffix) if suffix else path,
+             'number', 'NaN and Infinity are not JSON numbers')
+
+
+def _nonfinite_suffix(value):
+    # Build diagnostic strings only while unwinding the first invalid branch.
     if isinstance(value, float) and not math.isfinite(value):
-        fail(path, 'number', 'NaN and Infinity are not JSON numbers')
+        return ''
     if isinstance(value, dict):
         for key, child in value.items():
-            finite_tree(child, '{}[{!r}]'.format(path, key))
+            suffix = _nonfinite_suffix(child)
+            if suffix is not None:
+                return '[{!r}]{}'.format(key, suffix)
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
-            finite_tree(child, '{}[{}]'.format(path, index))
+            suffix = _nonfinite_suffix(child)
+            if suffix is not None:
+                return '[{}]{}'.format(index, suffix)
+    return None
 
 
 def rows(collection, value):
