@@ -1,5 +1,6 @@
 """Real parser releases must satisfy the same contract used by Django imports."""
 import copy
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -36,6 +37,77 @@ def release_db(good_release, tmp_path):
 
 def snapshot(directory):
     return {path.name: path.read_bytes() for path in Path(directory).glob('*.json')}
+
+
+def test_export_deserializes_each_staging_json_once_including_version(release_db, monkeypatch):
+    staging = Path(release_db.BASE_PATH_OUTPUT + '.staging')
+    # Derive the expected files from the output collections, independently of
+    # the export's written list and the files observed by the reader.
+    expected = {staging / (name + '.json') for name in release_db.data}
+    expected.add(staging / 'version.json')
+    reads = Counter()
+    real_load = json.load
+
+    def count_staging_load(stream, *args, **kwargs):
+        path = Path(stream.name)
+        if path.parent == staging:
+            reads[path] += 1
+        return real_load(stream, *args, **kwargs)
+
+    # Fixture parsing and publication assertions must not affect this count.
+    with monkeypatch.context() as patch:
+        patch.setattr(json, 'load', count_staging_load)
+        release_db.export(version_payload={'version': 'contract-v2'})
+
+    assert reads == Counter({path: 1 for path in expected})
+    assert load_release(release_db.BASE_PATH_OUTPUT) == {'version': 'contract-v2'}
+
+
+@pytest.mark.parametrize('content,code', [
+    ('{"value":', 'json'),
+    ('{"value": 1, "value": 2}', 'duplicate_key'),
+    ('{"value": NaN}', 'number'),
+    ('42', 'type'),
+], ids=['malformed', 'duplicate-key', 'nonfinite', 'scalar-root'])
+def test_auxiliary_staging_corruption_fails_before_promotion(
+        release_db, monkeypatch, content, code):
+    import DB
+    release = Path(release_db.BASE_PATH_OUTPUT)
+    staging = Path(release_db.BASE_PATH_OUTPUT + '.staging')
+    # dictionary is exported but not retained for importer domain validation.
+    target = staging / 'dictionary.json'
+    assert 'dictionary' in release_db.data
+    before = snapshot(release)
+    assert 'version.json' in before
+    corrupted = []
+    promotions = []
+    real_write = DB._atomic_write_json
+    real_replace = DB.os.replace
+
+    def corrupt_after_write(filepath, value):
+        real_write(filepath, value)
+        if Path(filepath) == target:
+            target.write_text(content, encoding='utf-8')
+            corrupted.append(target)
+
+    def record_promotion(src, dst):
+        if Path(src).parent == staging and Path(dst).parent == release:
+            promotions.append(Path(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(DB, '_atomic_write_json', corrupt_after_write)
+    monkeypatch.setattr(DB.os, 'replace', record_promotion)
+    with pytest.raises(ContractError) as error:
+        release_db.export(version_payload={'version': 'contract-v2'})
+
+    assert corrupted == [target]
+    assert error.value.code == code
+    assert error.value.path == str(target)
+    assert promotions == []
+    assert snapshot(release) == before  # Includes every public JSON and version.
+    assert load_release(release) == {'version': 'contract-v1'}
+    assert not staging.exists()
+    assert not Path(release_db.BASE_PATH_OUTPUT + '.backup').exists()
 
 
 CASES = [

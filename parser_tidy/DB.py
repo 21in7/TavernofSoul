@@ -37,13 +37,6 @@ def _atomic_write_json(filepath, item):
     os.replace(tmp, filepath)
 
 
-def _validate_json_file(filepath):
-    """직렬화한 JSON 파일이 온전히 읽히는지 검증.
-
-    staging 단계에서 쓰기 직후 읽어 보아 디스크 손상/잘림을 잡는다.
-    """
-    with open(filepath, 'r') as f:
-        json.load(f)
 def is_ascii(item):
     try:
         item.decode('ascii')
@@ -302,9 +295,8 @@ class ToS_DB():
                 _atomic_write_json(version_staging, version_payload)
                 written.append(('__version__', version_filename, version_staging))
 
-            # 2) 각 파일이 온전히 역직렬화되는지 검증.
-            for key, filename, staging_path in written:
-                _validate_json_file(staging_path)
+            # 2) 공통 계약이 보조 JSON·version 포함 모든 staging JSON 을
+            #    한 번씩 엄격히 읽고 도메인 계약까지 검증한다.
             self._validate_staged_release(staging_dir, version_payload)
 
             # 3) 교체 전 기존 공개 파일을 백업으로 복사(copy).
