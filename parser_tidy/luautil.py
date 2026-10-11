@@ -449,9 +449,10 @@ def init_global_functions(c):
             end
             
             local value = item[prop]
+            local number = tonumber(value)
             
-            if tonumber(value) ~= nil then
-                return tonumber(value)
+            if number ~= nil then
+                return number
             end
             
             if value ~= nil then
