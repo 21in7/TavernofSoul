@@ -55,6 +55,9 @@ Codex의 `login status`도 아래 임시 런타임에서 실행한다. 추론 �
 `passed`는 외부 DNS·모델 접근 권한·실제 응답 성공을 보장하지 않는다. TypeSafe는 CLI 없이 키 등록만 확인하며
 키 등록 전에는 전체 doctor가 `not_configured`를 반환한다. 기존 역할은 개별 공급자 doctor로 확인할 수 있다.
 모델 접근 권한과 실제 응답은 다음 smoke로 별도 확인한다.
+Codex 인증은 `login status`의 exit0와 정확한 ChatGPT 로그인 상태 행을 모두 요구한다.
+API 키 로그인(서로 모순되는 로그인 상태 포함)이나 상태 누락은 거부한다. PATH aliases 읽기 전용
+경고만으로 이 조건을 만족한 인증을 실패시키지 않으며 `ready` 결과의 고정 `warnings`를 보존한다.
 키가 없거나 잘못된 Codex 로그인인 경우 0이 아닌 코드로 종료한다.
 
 ## Codex의 private CLI 런타임
@@ -104,7 +107,11 @@ make triage-smoke
 `triage-smoke`는 작업 판단의 타입·확률·사용량을 검사한다. 등록 뒤에 명시적으로 실행한다.
 Claude/Z.ai에는 파일·셸 도구를 주지 않고, Codex에는 작업 경로 읽기만 허용하는 권한 프로필과
 도구 사용 금지 지시를 사용한다. Codex 인증 런타임은 모델 도구에서 접근할 수 없으며 네트워크 제한도 유지한다.
-로그인이나 키 존재만으로 연결 성공을 보고하지 않는다. 실패 응답·미완료 이벤트·예산 초과도 실패다.
+로그인이나 키 존재만으로 연결 성공을 보고하지 않는다. Codex 역할 실행은 exit0, JSON event 행 파싱,
+객체 event, 실패 event(`turn.failed`/`error`) 없음, 비어 있지 않은 문자열 최종 agent_message와
+`turn.completed`를 모두 요구한다. smoke는 무작위 nonce 일치까지 검사한다.
+PATH aliases 읽기 전용 경고는 이 성공 조건을 대신하지 않으며 유효한 완료를 실패로 바꾸지도 않는다.
+실패 응답·malformed/미완료/빈 응답·nonce 불일치·예산 초과는 계속 실패다.
 Claude smoke의 CLI 비용 한도는 $0.25이며 구독과 API 호출은 각 서비스의 사용량을 소비한다.
 CLI 상태와 응답은 `logs/harness/agents/`, Jev 판단은 `logs/harness/triage/`의 private JSON 보고서에 저장한다.
 Claude의 CLI 비용 추정값만 기록하며 Z.ai의 토큰 출력을 Anthropic 요금으로 계산하지 않는다.
@@ -144,12 +151,36 @@ score level이 `0, 1, 2`인 경우
 `invalid_response` fallback은 coordinator 계획과 전체 `check`를 요구하며 검증 통과를 뜻하지 않는다.
 
 Codex 실패의 `diagnostic`은 `stage`(`runtime`, `authentication`, `execution`)와 고정 `category`만 포함한다.
-예를 들어 PATH aliases의 읽기 전용 파일시스템 오류는 `path_aliases_read_only`,
 인증 문제는 `authentication_failed`, 생성·정리 문제는 `runtime_unavailable`이다.
 그 밖에 `missing_cli`, `auth_file_unavailable`, `timeout`, `cli_failed`, `invalid_response`,
-`probe_mismatch`로 구분하며 고정된 오류 설명을 제공한다. 실패한 CLI의 stdout/stderr 원문,
-원격 오류 응답·인증 내용은 진단 보고서에 저장하지 않는다. 정상 모델 응답은 기존 private 보고서에 저장한다.
-실패 시 더 넓은 파일 읽기나 네트워크 권한으로 자동 재시도하지 않는다.
+`probe_mismatch`로 구분하며 고정된 오류 설명을 제공한다. nonzero exit에서 PATH aliases 읽기 전용
+메시지가 있으면 실패 진단을 `path_aliases_read_only`로 분류할 수 있다. exit0여도 응답 검증이 실패하면
+경고로 구제하지 않고 `invalid_response`(인증 오류가 확인되면 `authentication_failed`)로 실패한다.
+CLI stdout/stderr 원문, 원격 오류 응답·인증 내용은 진단 보고서에 저장하지 않는다.
+모든 검증을 통과한 정상 모델 최종 응답만 기존 private 보고서에 저장한다.
+
+Codex 보고서의 `warnings`는 원문·경로·비밀 없는 고정 metadata 목록이다. 현재 항목은
+`{"stage":"authentication","category":"path_aliases_read_only"}` 또는
+`{"stage":"execution","category":"path_aliases_read_only"}`이며 단계당 하나만 기록한다.
+경고가 없으면 빈 목록이다. 유효 인증의 경고는 해당 역할 실행 보고서까지 전달하고 실행 stderr의
+경고도 기록하므로 후속 실패가 생겨도 관측할 수 있다. warning은 성공 판정이나 재시도 근거가 아니다.
+nonzero exit, 인증 실패/API 키 로그인, 실패 event, 잘못된/미완료/빈 응답, timeout, nonce 불일치,
+런타임 생성·정리 실패는 계속 실패다. runtime deny와 network=false, CLI/model/roles/예산·source scope는
+유지하며 실제 home fallback·권한 확대·자동 재시도는 하지 않는다.
+
+2026-10-12 원인 기록: 메인이 제공한 조사 요약에 따르면 이전 일반 workflow
+`1791729971212631163-d0abf4`의 Jev와 Codex 계획은 통과했고 coordinator 편집은 exit0이었다.
+그러나 `agent_models.run`이 완료 응답 검증 전에 stderr 문자열로 `execution/path_aliases_read_only`를
+선판정해 완성 초안의 반영을 막았다. 뒤의 별도 draft 복구 성공은 일반 실행 경로 수리의 증거가 아니다.
+CLI 0.161.0의 메인 무추론 `--no-daemon --version` 비교에서 매 호출 writable private runtime은
+exit0/경고 없음, 다른 private 임시 경로를 유지하고 `CODEX_HOME=/sys`만 지정하면 exit0/동일 경고가
+관측되었다. 이는 진행 가능한 warning의 관측이며 이 worker가 실행한 검증이 아니다.
+이전 raw stderr는 보안 정책상 저장하지 않아 최초 경고를 낸 하위 프로세스는 미확정이다.
+모델 도구의 runtime deny가 하위 도구 초기화에도 경고를 유발할 수 있다는 설명은 추론이다.
+[공식 sandbox 문서](https://learn.chatgpt.com/docs/sandboxing)의 spawned commands 경계는 일반 참고이며
+PATH aliases 구현이나 최초 발생 프로세스를 증명하지 않는다. 새 판단 경계는
+[ADR 0007](adr/0007-codex-warning-success-boundary.md)에 기록한다. private 로그는 이 사실 요약만
+기록하며 모델 응답·인증 원문을 문서에 복사하지 않는다.
 Jev fallback과 workflow 종료 상태의 관계는 [자동 작업 실행](workflow.md)을 참고한다.
 
 ## 역할 실행
@@ -199,10 +230,16 @@ Jev 반올림 오차 한계 안팎·원본 숫자에 따른 임계값 판단·in
 정상 실행·전송 실패·응답 검증 회귀의 workspace는 original auth_home을 포함하지 않는 별도 소스
 디렉터리를 사용한다. 인증 home을 포함하는 경로는 unsafe_workspace 거부 회귀에서만 사용하여,
 실행 단계의 실패가 workspace 거부로 가려지지 않도록 한다.
+PATH aliases 회귀는 ChatGPT 로그인+경고의 ready, completed+경고의 passed, 인증·실행 경고 전달,
+nonzero+경고의 실패, 경고가 있는 malformed/미완료/failed/error/빈 응답·nonce 불일치의 실패와
+원문·비밀 미노출·runtime cleanup을 다룬다. 기존 실제 권한 경계 회귀도 유지한다.
+2026-10-12 수리 worker는 테스트·검사·실모델·workflow를 실행하지 않았다. 새 Claude 문서 의미 검토,
+full `make check`, 일반 Codex 도구 편집 실호출, Git 역할·PR/CI/merge는 메인/orchestrator의 남은 검증이다.
 scoped workflow의 담당 worker는 테스트를 실행하지 않으며 orchestrator가 검증을 수행한다.
 
 - [Codex 인증과 헤드리스 로그인](https://learn.chatgpt.com/docs/auth)
 - [Codex 비대화형 실행](https://learn.chatgpt.com/docs/non-interactive-mode)
+- [Codex sandbox 경계와 spawned commands](https://learn.chatgpt.com/docs/sandboxing)
 - [Claude Code CLI 옵션과 비용 추정 한도](https://code.claude.com/docs/en/cli-reference)
 - [Claude Code bare 실행과 API 키 인증](https://code.claude.com/docs/en/headless)
 - [Z.ai Coding Lite 모델·사용량](https://docs.z.ai/devpack/overview)
