@@ -222,6 +222,16 @@ legacy Lua 줄 전처리는 quoted index → require 제거 → method 변환 �
 `harness/parser_fixture.py`의 `isolated_parser_state`도 새 runtime/레지스트리와 격리된
 아이템·스킬·몬스터 상태를 사용하고 `finally`에서 기존 상태를 복구한다.
 
+`TryGetProp`는 한 호출에서 `item[prop]`에 대한 `tonumber` 결과를 local 변수에 저장해 재사용한다.
+행·지역·호출 사이의 값 캐시는 만들지 않으며, setter 이후 재조회는 현재 행의 값을 읽는다.
+기존 attribute handler, nil/default 분기, 오류 전파와 setter 동작을 유지한다.
+새 runtime과 반복 `init()`의 상태 경계도 유지하며 Lua 브리지의 수치 정밀도 정책은 변경하지 않는다.
+`parser_tidy/tests/test_lua_attribute_handlers.py`의 테스트는 실제 Lupa runtime과
+실제 `init_global_functions`를 사용해 독립 기대값과 기존 helper의 반환값·타입을 함께 비교한다.
+`tonumber` 호출 수로 중복 변환 제거를 검증하고, 원본 IES 로딩은 격리한다.
+테스트의 전역 상태·patch·변환 wrapper는 `finally`에서 복원한다.
+이 helper 검증과 원본 IES를 사용하는 전체 실데이터·지역별 JSON 출력 검증은 별개다.
+
 제공된 로컬 kTOS 진단에서 cProfile의 초기화 내 `iesutil.load` 41회는 self 2.84s/total 3.43s,
 `init_runtime`은 total 3.99s였다. 이는 profiler를 켠 부분 실행 시간이다.
 별도의 profiler 없는 fresh 6-worker 초기화 측정은 기존 중앙값 약 6.008s,
