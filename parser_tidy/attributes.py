@@ -188,16 +188,24 @@ def parse_clean(constants):
         elif attribute['Link_Skills'] == ['All'] and attribute['Link_Jobs'] == []:
             attributes_to_remove.append(attribute)
 
+    if not attributes_to_remove:
+        return
+
     # Remove all inactive attributes
+    removed_attribute_ids = set()
     for attribute in attributes_to_remove:
         constants.data['attributes'].pop (str(attribute['$ID']))
         constants.data['attributes_by_name'].pop(str(attribute['$ID_NAME']))
+        removed_attribute_ids.add(attribute['$ID'])
 
-        attribute_id = attribute['$ID']
-
-        for job in constants.data['jobs'].values():
-            job['Link_Attributes'] = [link for link in job['Link_Attributes'] if link != attribute_id]
-            constants.data['jobs_by_name'][str(job['$ID_NAME'])]['Link_Attributes']  = [link for link in constants.data['jobs_by_name'][str(job['$ID_NAME'])]['Link_Attributes'] if link != attribute_id]
-        for skill in constants.data['skills'].values():
-            skill['Link_Attributes'] = [link for link in skill['Link_Attributes'] if link != attribute_id]
-            constants.data['skills_by_name'] [str(skill['$ID_NAME'])]['Link_Attributes']  =  [link for link in constants.data['skills_by_name'] [str(skill['$ID_NAME'])]['Link_Attributes'] if link != attribute_id]
+    # Filter reverse links once, preserving the original ID types and list order.
+    for job in constants.data['jobs'].values():
+        job['Link_Attributes'] = [link for link in job['Link_Attributes'] if link not in removed_attribute_ids]
+        named_job = constants.data['jobs_by_name'][str(job['$ID_NAME'])]
+        if named_job is not job:
+            named_job['Link_Attributes'] = [link for link in named_job['Link_Attributes'] if link not in removed_attribute_ids]
+    for skill in constants.data['skills'].values():
+        skill['Link_Attributes'] = [link for link in skill['Link_Attributes'] if link not in removed_attribute_ids]
+        named_skill = constants.data['skills_by_name'][str(skill['$ID_NAME'])]
+        if named_skill is not skill:
+            named_skill['Link_Attributes'] = [link for link in named_skill['Link_Attributes'] if link not in removed_attribute_ids]
