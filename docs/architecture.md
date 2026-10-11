@@ -1,5 +1,8 @@
 # 프로젝트 지도와 데이터 경계
 
+하네스 전체의 목표·책임·격리·검토·게시 설계는 [전체 설계서](harness-design.md),
+주요 선택과 변경 이력은 [ADR 목록](adr/README.md)에 기록한다.
+
 TavernofSoul은 다운로더, 파서, Django 적재·서빙의 세 영역으로 구성된다.
 `harness/`는 개발 중 이 영역을 검증하는 공통 실행 환경이다.
 개발 에이전트는 `harness/agent-models.json`의 역할별 설정으로 Codex/Claude Code CLI를 사용한다.

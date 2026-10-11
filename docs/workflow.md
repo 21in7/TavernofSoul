@@ -97,6 +97,17 @@ private 런타임이 정상 생성되거나 doctor가 통과해도 외부 DNS �
 
 ## 검토와 검증 기준
 
+업무 시작 시 문서 영향을 판단한다. 구조·책임·데이터 계약·격리·검증·실패 복구·GitHub 게시
+정책 변경은 관련 설계·경계 문서를 갱신한다. 주요 선택은 신규 또는 대체 ADR를 작성하고,
+기존 결정은 삭제·재작성 대신 superseded와 대체 ADR 링크로 보존한다.
+[전체 설계서](harness-design.md)와 [ADR 작성 규칙](adr/README.md)을 기준으로 사용한다.
+단순 오타나 동작 불변 국소 수정은 문서 갱신이 불필요할 수 있지만 검토에 구체적 이유를 남긴다.
+planner·worker·reviewer 모두 이 기준을 받고 Jev 직접 배정도 worker·reviewer 기준을 받는다.
+이 지침은 승인 밖 문서를 읽는 허가가 아니다. 필요한 문서가 scope 밖이면 worker는 정확한
+누락 경로를 보고하고 reviewer는 기존 승인 파일에 finding을 귀속하여 승인을 거부한다.
+메인이 문서 범위를 확인·승인한 뒤 새 실행을 준비한다. 문서를 자동 복사·열람·생성하거나
+수정 라운드에서 범위를 늘리지 않는다.
+
 계획은 선언된 파일을 정확히 한 번씩 담당 역할에 배정해야 한다. 모델이 새로운 파일을
 추가하거나 소유 영역을 바꾸면 실행을 중단한다. 범위가 부족하면 `/root`가 원인을 확인하고
 필요한 소스·테스트·문서를 포함해 새 실행을 준비한다.
@@ -110,12 +121,35 @@ JSON 문법 오류에는 숫자 line/column/position도 넣는다. 짧고 완전
 planner 쓰기, CLI 실패는 재시도 대상이 아니다. 한도 내에서도 유효한 계획을 얻지 못하면
 구현·반영·게시 없이 종료한다. 시도·오류 분류·복구 여부는 private 보고서와 진행 이벤트에 남는다.
 
-reviewer의 정상 CLI 응답만으로 승인 처리하지 않는다. `verdict`, `summary`, `findings`의
-JSON을 검사하며 `approved`는 빈 findings를 요구한다. 읽기 전용 역할이 파일을 바꾸면 실패다.
+reviewer의 정상 CLI 응답만으로 승인 처리하지 않는다. 최상위 JSON은 정확히 `verdict`,
+`summary`, `findings`, `documentation`을 갖는다. `summary`는 공백 제외 비어 있지 않은 문자열이며,
+`findings`는 최대 32개로 각 항목에 정확히 `file`(승인 파일), `severity`(high/medium/low),
+`message`(공백 제외 비어 있지 않은 문자열)를 둔다. `approved`는 빈 findings,
+`changes_requested`는 비어 있지 않은 findings를 요구한다. 읽기 전용 역할이 파일을 바꾸면 실패다.
+
+`documentation`은 정확히 `status`, `files`, `reason`을 갖는다. `reason`은 공백 제외
+비어 있지 않은 문자열이고 `files`는 중복 없는 승인 범위의 `.md` 경로 목록이다.
+
+| status | 문서 판단과 게이트 |
+| --- | --- |
+| `updated` | 실제 변경 `.md` 파일을 최소 하나 참조한다. scope 밖·비문서·미변경 경로는 거부한다. 문서가 수정돼도 다른 finding이 있으면 수정 요청이다. |
+| `not_required` | `files=[]`이며 문서 갱신이 불필요한 구체적 이유를 적는다. 다른 코드 finding에 의한 수정 요청과도 함께 쓸 수 있다. |
+| `missing` | 필요한 문서·내용 또는 승인 문서 범위가 부족하다. `changes_requested`와 기존 승인 파일에 귀속 가능한 finding을 요구하며 approved는 거부한다. files는 빈 목록 또는 승인된 `.md` 경로다. |
+
+```json
+{"verdict":"approved","summary":"검토 완료","findings":[],"documentation":{"status":"not_required","files":[],"reason":"표시 오타만 고쳤으며 구조·계약·검증·사용법은 그대로다."}}
+```
+
+필수 필드 누락·잘못된 스키마·verdict 모순은 fail closed로 종료한다. 문서 판단 형식 오류를
+임의 승인이나 계획 JSON 복구 대상으로 취급하지 않는다. 파일 확장자·변경 목록 검사는
+증거 경로를 제한할 뿐 문서의 의미적 완전성을 증명하지 않는다. 영향과 생략 근거의 적절성은
+reviewer가 판단한다. read_only·demo도 이 필드를 반환하며 원본 변경·외부 호출을 추가하지 않는다.
+통합 보고서의 `review.documentation`과 private 모델 응답에 판단을 보존한다.
 수정 요청은 finding 파일을 맡은 **정확한 구현 task**에만 전달한다. 검증 실패도 승인된
 실패 파일을 찾으면 그 파일을 맡은 task에만 전달하며, 같은 역할의 다른 task나 관련 없는
 downloader 작업을 다시 호출하지 않는다. 각 task에는 자기 파일의 finding·진단만 전달한다.
 수정 뒤에는 **새 reviewer 검토와 최초의 모든 필수 검사**를 다시 요구한다.
+문서 finding도 같은 task 범위·`max_rounds`·새 검토 규칙을 따른다.
 
 검증 피드백은 per-check `failures`/`errors`/`skipped`와 traceback의 위치 토큰을 로컬에서
 필터링하여 만든다. 허용된 명령명, 고정 분류, 허용 목록의 예외 타입, 승인 파일/줄 번호,
@@ -229,6 +263,8 @@ Jev 직접 배정에서는 계획 단계가 `direct`, Jev 실패에서는 판단
 `model_read_scope`는 외부 분석 승인 목록이다. 상위 디렉터리는 `0700`, 통합 보고서·진행 기록·로그는
 `0600`이며 등록된 API 키 값은 보고서와 요청의 작업 텍스트에서 제거한다.
 작업 본문은 hash로 기록하고 계획·모델 응답은 private 보고서 안에만 둔다.
+장기 설계와 주요 결정은 Git 관리 `docs/harness-design.md`·`docs/adr/`에 별도로 남긴다.
+private 계획·응답·로그는 설계 문서나 ADR를 대신하지 않으며 그대로 공개 문서에 복사하지 않는다.
 실패한 작업 사본은 조사를 위해 남는다. 저장 공간 관리는 사용자가 끝난 실행 디렉터리와
 보고서에 기록한 `/tmp/tavern-model-context-*` 디렉터리를 함께 정리한다.
 `passed`만 실제 완료이고 `failed`/`interrupted`는 실패다. `awaiting_github`는 앱 실행 대기,
