@@ -1,5 +1,8 @@
 # 개발 하네스 사용법
 
+[전체 하네스 설계](harness-design.md)와 [ADR 목록](adr/README.md)은 목표·책임·격리·검토·게시의
+설계 기준을 설명한다. 이 문서는 환경 준비와 상세 명령을 다룬다.
+
 AI 역할별 모델 연결과 API 키 등록은 [에이전트 모델 연결](agent-models.md)을 참고한다.
 개발 요청의 배정·구현·검토·검증·반영은 [자동 작업 실행](workflow.md)의 `make agent-workflow`로 연결한다.
 `make agent-workflow-status`는 현재 단계와 실제 담당 역할·모델을 표시한다.

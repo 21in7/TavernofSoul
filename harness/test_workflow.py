@@ -46,12 +46,16 @@ def successful_check(candidate, command, report_dir, keys, policy):
             'checks': {'fixture': {'status': 'passed', 'selected': 1, 'passed': 1, 'skipped': []}}}
 
 
-def runner_for(calls, mutate=None, verdict='approved'):
+def runner_for(calls, mutate=None, verdict='approved', documentation=None):
     def run(role, task, keys, **options):
         calls.append((role, options['write'], options['workspace']))
         if role == 'reviewer':
             response = {'verdict': verdict, 'summary': 'Reviewed.', 'findings': [] if verdict == 'approved' else
-                        [{'file': 'parser_tidy/example.py', 'severity': 'high', 'message': 'Fix it.'}]}
+                        [{'file': 'parser_tidy/example.py', 'severity': 'high', 'message': 'Fix it.'}],
+                        'documentation': documentation if documentation is not None else
+                        {'status': 'not_required', 'files': [],
+                         'reason': 'The synthetic local edit preserves structure, contracts and '
+                                   'harness policy; no design or usage document changes are needed.'}}
         elif role == 'git':
             response = {'commit_message': 'Fix assigned parser behavior', 'pr_title': 'Fix parser behavior',
                         'pr_body': 'Correct the assigned behavior. Validation: fixture check passed.'}
@@ -75,9 +79,9 @@ def runner_for(calls, mutate=None, verdict='approved'):
     return run
 
 
-def run_fixture(scope=None, **options):
+def run_fixture(scope=None, checker=successful_check, **options):
     return workflow.execute('Make the assigned improvement.', scope or ['parser_tidy/example.py'],
-                            rules_only=True, keys={}, checker=successful_check, **options)
+                            rules_only=True, keys={}, checker=checker, **options)
 
 
 def test_cross_area_routes_to_configured_specialists_and_publishes_after_gates(project):
@@ -111,6 +115,7 @@ def test_direct_jev_route_skips_planner_and_preserves_required_checks(project, m
     assert report['status'] == 'passed'
     assert [role for role, _, _ in calls] == ['parser', 'reviewer']
     assert report['required_checks'] == ['check-parser']
+    assert report['review']['documentation']['status'] == 'not_required'
 
 
 def test_jev_failure_uses_codex_planning_and_full_check(project):
@@ -337,6 +342,7 @@ def test_read_only_workflow_runs_real_roles_but_never_enables_edit_tools(project
     report = run_fixture(runner=runner_for(calls), read_only=True)
     assert report['status'] == 'passed' and not report['changed_files'] and not report['applied']
     assert not any(write for _, write, _ in calls)
+    assert report['review']['documentation']['status'] == 'not_required'
 
 
 @pytest.mark.parametrize('kind', ['passed', 'skipped', 'empty', 'missing', 'crashed',
@@ -396,6 +402,7 @@ def test_preview_and_demo_never_call_real_agents_or_modify_sources(project, caps
     assert workflow.main(['demo']) == 0
     report = json.loads(next(workflow.REPORTS.glob('*/report.json')).read_text())
     assert report['simulated'] and report['status'] == 'demonstrated' and report['applied'] == []
+    assert report['review']['documentation']['status'] == 'not_required'
     assert all(not event.get('agent_started') for event in report['events'])
     assert not (project / 'harness/fixtures/workflow/example.txt').exists()
     assert workflow.main(['status']) == 0
@@ -742,6 +749,7 @@ def test_reviewer_findings_only_repair_the_task_owning_each_finding(project):
             reviews.append(task)
             if len(reviews) == 1:
                 result['response'] = json.dumps({'verdict': 'changes_requested',
+                    'documentation': json.loads(result['response'])['documentation'],
                     'summary': 'NOT-FOR-REPAIR-SUMMARY', 'findings': [
                         {'file': 'parser_tidy/other.py', 'severity': 'high', 'message': 'OWN-FINDING'}]})
         return result
@@ -878,3 +886,184 @@ def test_approved_excerpt_still_redacts_registered_secret_before_prompt(project)
     assert report['status'] == 'failed'
     assert any('[REDACTED]' in prompt and 'Required correction;' in prompt for prompt in prompts)
     assert secret not in json.dumps(report)
+
+
+@pytest.mark.parametrize('documentation', [
+    None, {}, [], 'updated',
+    {'status': 'unknown', 'files': [], 'reason': 'Local change.'},
+    {'status': 'not_required', 'files': [], 'reason': ' \t\n'},
+    {'status': 'not_required', 'files': [], 'reason': False},
+    {'status': 'not_required', 'files': [], 'reason': 'Local change.', 'extra': True},
+    {'status': 'not_required', 'files': [], 'extra': 'missing reason'},
+    {'status': 'not_required', 'reason': 'Missing files.'},
+    {'status': 'not_required', 'files': {}, 'reason': 'Local change.'},
+    {'status': 'not_required', 'files': ['docs/design.md'], 'reason': 'Local change.'},
+    {'status': 'updated', 'files': [], 'reason': 'Changed docs.'},
+    {'status': 'updated', 'files': ['docs/outside.md'], 'reason': 'Changed docs.'},
+    {'status': 'updated', 'files': ['parser_tidy/example.py'], 'reason': 'Changed docs.'},
+    {'status': 'updated', 'files': ['docs/design.md'], 'reason': 'Unchanged docs.'},
+    {'status': 'updated', 'files': ['docs/design.md'] * 2, 'reason': 'Changed docs.'},
+    {'status': 'updated', 'files': [None], 'reason': 'Changed docs.'},
+    {'status': 'updated', 'files': [{}], 'reason': 'Changed docs.'},
+    {'status': 'missing', 'files': [], 'reason': 'Design required.'},
+])
+def test_invalid_documentation_fails_before_checks_apply_or_git(project, monkeypatch, documentation):
+    enable_github(project, monkeypatch)
+    doc = project / 'docs/design.md'
+    doc.parent.mkdir()
+    doc.write_text('existing design\n')
+    calls, checks = [], []
+    normal = runner_for(calls)
+    def invalid(role, task, keys, **options):
+        # Use a changed document for the duplicate case, so duplicate rejection
+        # cannot be masked by the unchanged-file gate.
+        before = (options['workspace'] / 'docs/design.md').read_text()
+        result = normal(role, task, keys, **options)
+        duplicated = isinstance(documentation, dict) and documentation.get('files') == ['docs/design.md'] * 2
+        if not duplicated:
+            (options['workspace'] / 'docs/design.md').write_text(before)
+        if role == 'reviewer':
+            review = json.loads(result['response'])
+            if documentation is None:
+                review.pop('documentation')
+            else:
+                review['documentation'] = documentation
+            result['response'] = json.dumps(review)
+        return result
+    def capture_check(*args):
+        checks.append(args[1])
+        return successful_check(*args)
+    report = run_fixture(['parser_tidy/example.py', 'docs/design.md'], runner=invalid,
+                         checker=capture_check)
+    assert report['status'] == 'failed' and report['round'] == 1
+    assert checks == ['doctor'] and report['validation'] == [] and report['applied'] == []
+    assert not any(role == 'git' for role, _, _ in calls)
+    assert not (Path(report['report']).parent / 'github.json').exists()
+    assert doc.read_text() == 'existing design\n'
+    assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
+
+
+@pytest.mark.parametrize('verdict, findings', [
+    ('approved', [{'file': 'parser_tidy/example.py', 'severity': 'high', 'message': 'Needs docs.'}]),
+    ('changes_requested', []),
+    ('changes_requested', [{'file': 'docs/outside.md', 'severity': 'high', 'message': 'Needs docs.'}]),
+])
+def test_missing_documentation_requires_consistent_scoped_findings(verdict, findings):
+    response = {'verdict': verdict, 'summary': 'Design is missing.', 'findings': findings,
+                'documentation': {'status': 'missing', 'files': [], 'reason': 'New isolation boundary.'}}
+    with pytest.raises(ValueError):
+        workflow.parse_review(json.dumps(response), ['parser_tidy/example.py'])
+
+
+@pytest.mark.parametrize('read_only, cap', [(False, 1), (False, 2), (False, 3), (True, 2)])
+def test_out_of_scope_required_document_never_expands_scope_or_delivers(project, monkeypatch,
+                                                                      read_only, cap):
+    enable_github(project, monkeypatch)
+    policy = workflow.load_policy()
+    monkeypatch.setattr(workflow, 'load_policy', lambda: {**policy, 'max_rounds': cap})
+    calls = []
+    missing = {'status': 'missing', 'files': [],
+               'reason': 'The new isolation boundary needs docs/harness-design.md; it is outside scope.'}
+    report = run_fixture(runner=runner_for(calls, verdict='changes_requested', documentation=missing),
+                         read_only=read_only)
+    assert report['status'] == 'failed' and report['applied'] == [] and report['validation'] == []
+    assert report['review']['documentation'] == missing
+    assert [role for role, _, _ in calls].count('reviewer') == (1 if read_only else cap)
+    assert not any(role == 'git' for role, _, _ in calls)
+    assert not (Path(report['report']).parent / 'github.json').exists()
+    assert set(workspace.manifest(Path(report['model_workspace']), policy)) == {'parser_tidy/example.py'}
+    assert all(record['target_files'] == ['parser_tidy/example.py'] for record in report['repairs'])
+    assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_changed_document_passes_review_validation_apply_and_is_retained_in_report(project, monkeypatch, existing):
+    enable_github(project, monkeypatch)
+    name = 'docs/design.md'
+    if existing:
+        (project / 'docs').mkdir()
+        (project / name).write_text('previous design\n')
+    judgment = {'status': 'updated', 'files': [name],
+                'reason': 'The design records the changed validation responsibility.'}
+    calls, checks = [], []
+    def checker(candidate, command, report_dir, keys, policy):
+        checks.append(command)
+        if command != 'doctor':
+            assert (candidate / name).read_text() == 'validated edit\n'
+            if existing:
+                assert (project / name).read_text() == 'previous design\n'
+            else:
+                assert not (project / name).exists()
+        return successful_check(candidate, command, report_dir, keys, policy)
+    report = run_fixture(['parser_tidy/example.py', name],
+                         runner=runner_for(calls, documentation=judgment), checker=checker)
+    assert report['status'] == 'awaiting_github', report.get('error')
+    assert checks == ['doctor', 'check'] and set(report['applied']) == {name, 'parser_tidy/example.py'}
+    assert (project / name).read_text() == 'validated edit\n'
+    assert json.loads(Path(report['report']).read_text())['review']['documentation'] == judgment
+    assert calls[-1][0] == 'git' and calls[-1][1] is False
+    journal = json.loads((Path(report['report']).parent / 'github.json').read_text())
+    assert set(journal['files']) == {name, 'parser_tidy/example.py'}
+    phases = [(event['phase'], event['state']) for event in report['events']]
+    assert phases.index(('review', 'approved')) < phases.index(('validate', 'passed')) < \
+        phases.index(('apply', 'passed'))
+
+
+def test_not_required_with_concrete_reason_allows_an_unchanged_scoped_document(project):
+    name = 'docs/design.md'
+    (project / 'docs').mkdir()
+    (project / name).write_text('existing design\n')
+    judgment = {'status': 'not_required', 'files': [],
+                'reason': 'Only a local display typo changes; the documented API and isolation stay the same.'}
+    calls = []
+    normal = runner_for(calls, documentation=judgment)
+    def preserve_doc(role, task, keys, **options):
+        before = (options['workspace'] / name).read_text()
+        result = normal(role, task, keys, **options)
+        (options['workspace'] / name).write_text(before)
+        return result
+    report = run_fixture([name, 'parser_tidy/example.py'], runner=preserve_doc)
+    assert report['status'] == 'passed', report.get('error')
+    assert report['review']['documentation'] == judgment
+    assert report['applied'] == ['parser_tidy/example.py']
+    assert (project / name).read_text() == 'existing design\n'
+
+
+def test_documentation_finding_repairs_only_its_task_then_requires_fresh_review(project):
+    scope = ['docs/design.md', 'docs/other.md', 'parser_tidy/example.py']
+    calls, reviews, checks, doc_attempts = [], [], [], []
+    complete = 'Boundary: models read approved files; full verification is local.\n'
+    normal = runner_for(calls)
+    def repair(role, task, keys, **options):
+        result = normal(role, task, keys, **options)
+        if options['write']:
+            files = json.loads(re.search(r'Allowed edit files \(exact paths\): (.*)\n', task).group(1))
+            if 'docs/design.md' in files:
+                doc_attempts.append(files)
+                (options['workspace'] / 'docs/design.md').write_text(
+                    'Boundary: TODO\n' if len(doc_attempts) == 1 else complete)
+        if role == 'reviewer':
+            reviews.append(task)
+            review = json.loads(result['response'])
+            review['documentation'] = {'status': 'updated', 'files': ['docs/design.md'],
+                                      'reason': 'The design now describes the validation boundary.'}
+            if (options['workspace'] / 'docs/design.md').read_text() != complete:
+                review.update(verdict='changes_requested', findings=[
+                    {'file': 'docs/design.md', 'severity': 'high', 'message': 'Explain the boundary.'}])
+                review['documentation'].update(status='missing', reason='The boundary explanation is absent.')
+            result['response'] = json.dumps(review)
+        return result
+    def checker(*args):
+        checks.append(args[1])
+        return successful_check(*args)
+    report = run_fixture(scope, runner=repair, checker=checker)
+    assert report['status'] == 'passed', report.get('error')
+    assert report['round'] == 2 and len(reviews) == 2 and checks == ['doctor', 'check']
+    assert doc_attempts == [['docs/design.md']] * 2
+    assert (project / 'docs/design.md').read_text() == complete
+    repair_record = report['repairs'][0]
+    assert repair_record['target_files'] == ['docs/design.md']
+    assert repair_record['target_tasks'] == [0] and repair_record['assignments'][0]['sent']
+    assert [role for role, _, _ in calls] == [
+        'coordinator', 'coordinator', 'coordinator', 'parser', 'reviewer', 'coordinator', 'reviewer']
+    assert report['review']['documentation']['status'] == 'updated'

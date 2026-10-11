@@ -21,6 +21,19 @@ PHASES = {'prepare': '준비', 'triage': 'Jev 판단', 'plan': '작업 배정',
           'implement': '담당 에이전트 실행', 'review': 'Claude 검토',
           'validate': '하네스 검증', 'apply': '결과 반영', 'github': 'GitHub 게시와 병합'}
 CHECKS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pipeline')
+DOCUMENTATION_GUIDANCE = (
+    'Assess documentation impact at task start and in every review. Changes to structure, '
+    'responsibilities, data contracts, isolation, validation, failure recovery or GitHub publication '
+    'policy require updates to the relevant design/boundary documents; major decisions require a new '
+    'or replacement ADR. Use docs/harness-design.md, docs/adr/README.md and docs/workflow.md only '
+    'when explicitly approved for reading. A typo or local behavior-preserving change may need no '
+    'documentation update, but the review must record a concrete reason. Never automatically copy, '
+    'read or create documents outside the approved scope. If a required document is out of scope, '
+    'report its exact missing path; the reviewer must request changes with a finding attributed to '
+    'an existing approved file. The main coordinator must confirm scope and prepare a new run; '
+    'repair rounds do not expand approval. Documentation completeness is a semantic reviewer '
+    'judgment, not something proven by a Markdown extension check.'
+)
 
 
 def load_policy():
@@ -99,9 +112,9 @@ def parse_plan(response, scope, policy):
     return tasks
 
 
-def parse_review(response, scope):
+def parse_review(response, scope, changed_files=()):
     review = object_response(response)
-    if set(review) != {'verdict', 'summary', 'findings'} or \
+    if set(review) != {'verdict', 'summary', 'findings', 'documentation'} or \
             review['verdict'] not in ('approved', 'changes_requested') or \
             not isinstance(review['summary'], str) or not review['summary'].strip() or \
             not isinstance(review['findings'], list) or len(review['findings']) > 32:
@@ -113,6 +126,22 @@ def parse_review(response, scope):
             raise ValueError('Invalid reviewer finding.')
     if (review['verdict'] == 'approved') != (not review['findings']):
         raise ValueError('Reviewer verdict contradicts its findings.')
+    documentation = review['documentation']
+    if not isinstance(documentation, dict) or set(documentation) != {'status', 'files', 'reason'} or \
+            documentation['status'] not in ('updated', 'not_required', 'missing') or \
+            not isinstance(documentation['reason'], str) or not documentation['reason'].strip() or \
+            not isinstance(documentation['files'], list):
+        raise ValueError('Invalid reviewer documentation judgment.')
+    files = documentation['files']
+    if any(not isinstance(name, str) or name not in scope or Path(name).suffix != '.md'
+           for name in files) or len(set(files)) != len(files):
+        raise ValueError('Documentation files must be unique approved Markdown paths.')
+    if documentation['status'] == 'updated' and (not files or set(files) - set(changed_files)):
+        raise ValueError('Updated documentation must reference actual changed Markdown files.')
+    if documentation['status'] == 'not_required' and files:
+        raise ValueError('Unnecessary documentation must have an empty file list.')
+    if documentation['status'] == 'missing' and review['verdict'] != 'changes_requested':
+        raise ValueError('Missing documentation requires scoped findings and changes_requested.')
     return review
 
 
@@ -332,6 +361,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                       'Role must equal the supplied owner. Tasks execute sequentially in listed order. '
                       'Do not call agent-run or harness.workflow.\nOwners: {}\nTask: {}').format(
                           json.dumps({name: owner(name) for name in scope}, ensure_ascii=False), task)
+            prompt += '\n' + DOCUMENTATION_GUIDANCE
             original_prompt = prompt
             for plan_attempt in range(1, policy['max_plan_attempts'] + 1):
                 attempt = {'attempt': plan_attempt, 'status': 'running'}
@@ -391,6 +421,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                               task, assigned['task'], json.dumps(assigned['files'], ensure_ascii=False),
                               'Do not edit any files; this is analysis only.' if read_only else
                               'Implement the assigned change only in the allowed files.', feedback)
+                prompt += '\n' + DOCUMENTATION_GUIDANCE
                 if feedback:
                     assignment = next(item for item in report['repairs'][-1]['assignments']
                                       if item['task_id'] == index)
@@ -419,16 +450,24 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             report['changed_files'] = changes
             summaries = [agent['response'] for agent in report['agents'] if agent['phase'] == 'implement']
             prompt = ('Review the task outcome and candidate source against the original request. '
-                      'Return ONLY JSON with exactly verdict, summary, findings. '
+                      'Return ONLY JSON with exactly verdict, summary, findings, documentation. '
                       'verdict is approved or changes_requested. approved requires findings=[]. '
                       'Otherwise each finding has file (one of the scoped files), severity '
                       '(high/medium/low) and message. Inspect source as needed; do not edit files. '
+                      'documentation has exactly status, files, reason. status is updated, not_required '
+                      'or missing; reason is a nonempty string explaining the concrete impact judgment. '
+                      'files is a unique list of approved .md paths. updated requires at least one '
+                      'actual changed .md file and may reference only changed documents. not_required '
+                      'requires files=[] and a specific reason. missing requires changes_requested '
+                      'and nonempty findings attributed to approved files, even when the needed '
+                      'document itself is outside scope (name the missing path in reason/message). '
                       'No changes is acceptable for an analysis request or an already satisfied request, '
                       'but reject an unimplemented requested fix.\nRead only: {}\nScope: {}\n'
                       'Request: {}\nImplementation results: {}\nDiff:\n{}').format(
                           read_only, json.dumps(scope), task, json.dumps(summaries, ensure_ascii=False), diff)
+            prompt += '\nActual changed files: ' + json.dumps(changes) + '\n' + DOCUMENTATION_GUIDANCE
             response = model_step(progress, model_context, 'review', 'reviewer', prompt, keys, policy, runner)
-            review = parse_review(response, scope)
+            review = parse_review(response, scope, changes)
             report['review'] = review
             if review['verdict'] != 'approved':
                 progress.event('review', 'changes_requested', 'reviewer', round=round_number)
@@ -516,7 +555,10 @@ def plan(files):
 def demo():
     def fixture_runner(role, task, keys, **options):
         if role == 'reviewer':
-            response = {'verdict': 'approved', 'summary': 'Fixture review only.', 'findings': []}
+            response = {'verdict': 'approved', 'summary': 'Fixture review only.', 'findings': [],
+                        'documentation': {'status': 'not_required', 'files': [],
+                                          'reason': 'Only a private demonstration text file changes; '
+                                                    'harness behavior and design remain unchanged.'}}
         elif 'Plan this development task' in task:
             response = {'tasks': [{'role': 'coordinator', 'task': 'Write the demonstration file.',
                                    'files': ['harness/fixtures/workflow/example.txt']}]}
