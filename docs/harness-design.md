@@ -75,6 +75,32 @@ parser/export 실패의 공개 JSON·버전 보존, importer 적재 실패의 DB
 덮지 못하게 한다. `runner.py`의 EXCLUDED에 명시한 기존 local baseline 및 kTOS unpack 의존
 테스트만 기본 범위에서 제외하며 제외 사유·deselect를 기록한다. 제외 범위를 성공 근거에 포함하지 않는다.
 
+### fixture 준비·복원과 최적화 검토
+
+[parser_fixture.py](../harness/parser_fixture.py)는 호출자가 제공한 임시 프로젝트에 고정 입력을
+복사한다. world는 combat 입력에, regional은 world 입력에 지역별 입력을 더하며,
+지역 번역·보충 JSON·iTOS 드롭 소스 선택도 그 임시 프로젝트 안에서 준비한다.
+[fixture_inputs.py](../harness/fixture_inputs.py)는 필수 입력 경로를 선언하고,
+[contract_fixture.py](../harness/contract_fixture.py)는 직접 작성한 계약 경계 JSON을 더한다.
+기대값은 파서 출력으로 생성하지 않는다. 비교용 공개 bytes snapshot은 실패·재시도 때의
+보존 여부를 확인하는 자료이며 게임 값의 독립 기대값을 대신하지 않는다.
+
+`parse_workspace()`는 필요한 입력을 확인하고 호출마다 새 DB 데이터 컨테이너와 `file_dict`를
+준비한다. `isolated_parser_state()`는 기존 Lua runtime·함수/source 테이블, 아이템 계산 상태,
+스킬 EFFECTS와 몬스터 계산 테이블을 보관하고 새 상태로 파싱한 뒤 `finally`에서 기존 객체를
+복원한다. 선택 도메인의 파싱이 끝난 뒤에만 export한다. 이 fixture 준비·복원 정책을 유지하며,
+최적화의 임시 ID set·디렉터리 인덱스·검증 결과를 전역 복원 목록에 추가해 호출 간 공유하지 않는다.
+같은 객체를 직접 재호출하거나 입력을 수정하는 합성 회귀는 새 fixture만으로 상태 누출을
+가리지 않도록 별도로 작성한다.
+
+XML 빠른 경로, JSON 중복 유한성 순회 제거, 스킬 일괄 cleanup과 맵 디렉터리 인덱스의
+검토 기준은 [하네스 사용법](harness.md#최적화-회귀와-성능-근거)에 둔다. 실제 최종 내부 검증
+경계와 상태 수명은 [architecture](architecture.md)와 [data-contracts](data-contracts.md)에
+반영해야 하며, JSON 검증 분리 결정은 `docs/adr/0008-json-validation-single-pass.md`와
+[ADR 목록](adr/README.md)에 기록해야 한다. 하네스의 회귀 명세만으로 이 문서 작업을 대신하지 않는다.
+범위가 제한된 leaf worker는 검사를 실행하거나 재위임하지 않는다. 메인 오케스트레이터가
+최종 소스 검증·지역별 전체 실데이터 및 누적 성능 비교를 수행하고 실제 근거를 보고한다.
+
 ## 기본 경로와 선택 환경의 경계
 
 | 환경 | 입력·격리·검증 | 기본/CI와의 관계 |

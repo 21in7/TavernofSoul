@@ -59,6 +59,41 @@ dict 키의 `{!r}`·인덱스의 `[{}]` 표현과 `ContractError`의 path·code�
 기존 dict·list·tuple·float 하위 클래스 지원과 허용 값(유한 수치·정수·bool·None·문자열 `'NaN'` 등),
 입력 보존 및 JSON·도메인 계약 정책은 바뀌지 않는다.
 
+### 메모리 API와 파일 스냅샷의 검증 책임
+
+| 경계 | 책임과 순서 |
+| --- | --- |
+| 공개 `validate_release(data, require_version=True)` | private `_validate_release_structure`로 릴리스 객체·필수 컬렉션·version 검사 → `finite_tree(data, 'release')`로 전체 메모리 검사 → private `_validate_release_domain`으로 도메인 검사 |
+| `load_json(path)` | 엄격한 디코딩으로 문법·중복 키·NaN/±Infinity 거부 → 객체/배열 루트 확인 → 파일 경로를 기준으로 `finite_tree` 실행; `1e999` 오버플로도 거부 |
+| `load_release(directory, require_version=True)` | 필수 파일 존재 확인 → 정렬한 모든 `*.json`을 각각 `load_json`으로 검사 → 보관한 컬렉션에 같은 private 구조·도메인 검사 적용 |
+
+`load_release`에서 제거하는 것은 파일별 전체 유한성 검사 뒤의
+`finite_tree(data, 'release')` 중복 순회 하나다. 보조·알 수 없는 확장 JSON도 보관 여부와 무관하게
+엄격히 읽으며, 선택적 강화·진단 컬렉션과 기록된 `version.json`도 예외가 아니다.
+도메인 함수는 기존 필드·타입·범위·유일성·참조 검사를 담당하며 도메인 숫자의 유한성 검사도 유지한다.
+도메인 오류와 JSON 오류의 기존 `ContractError` path·code·message와 첫 오류 순서를 유지한다.
+이 분리는 [ADR 0008](adr/0008-json-validation-single-pass.md)의 내부 책임 결정이다.
+공개 API에 검사 우회 flag를 추가하지 않는다.
+
+파일별 검사 완료는 그 호출에서 디코딩한 값에만 적용한다. 스냅샷 bytes를 수정·보정하지 않으며
+파일·지역·호출 사이에 검증 결과를 캐시하지 않는다. 재시도 시 변경·추가 파일을 새로 읽는다.
+공개 메모리 API도 매번 보조 값과 dict/list/tuple의 중첩·공유 객체를 포함해 전체 입력을 검사하므로
+이전 성공 후 외부 mutation이 생겨도 재검사한다. 입력·alias를 바꾸지 않는다.
+
+`require_version=False`는 version의 부재만 허용하며 필수 데이터 컬렉션을 선택적으로 만들지 않는다.
+version이 제공되면 두 경계 모두 비어 있지 않은 최대 50자 문자열 계약을 계속 검사하며,
+파일은 엄격한 JSON 검사도 거친다.
+파일 로더는 기존처럼 version 객체 또는 부재 시 `None`을 반환하고 메모리 검사 API는 성공 시 `None`을 반환한다.
+
+직렬화 전 메모리 검사와 기록 후 staging 검사는 서로 다른 입력 경계이므로 둘 다 유지한다.
+메모리 실패는 staging 잔재·backup·복구 sentinel·공개 bytes·version을 건드리기 전에 중단한다.
+staging 실패는 임시 출력만 정리하고 백업·승급 전에 중단한다.
+유효한 staging 이후에도 기존 백업 copy·승급 전 `.promotion-in-progress` sentinel·파일별 `os.replace`,
+롤백 시 이전 파일 복원과 신규 파일 제거를 유지한다. 완전한 롤백 또는 전체 성공 후에는 백업을 정리하고,
+불완전한 롤백이면 백업을 보존해 다음 실행을 중단한다. 롤백 실패 marker 작성 실패도 이 정책을 바꾸지 않는다.
+기록된 version은 같은 승급·롤백 대상이고 별도 `parser_version.csv`의 불일치 재시도 정책은 유지한다.
+파일별 교체 중 독자의 신구 혼합 관찰과 정전 수준 내구성의 한계도 그대로다.
+
 `export(version_payload=None)`은 기존 호출 호환을 위해 버전 파일을 새로 만들지 않는다.
 이 경로도 15개 데이터 컬렉션은 검사한다. 실제 적재는 항상 유효한 버전 파일이 필요하다.
 
@@ -82,6 +117,18 @@ dict 키의 `{!r}`·인덱스의 `[{}]` 표현과 `ContractError`의 path·code�
 스킬 `TypeAttack`은 `ValueType=Buff` 후보 → `ClassType` 후보 → `AttackType` 후보 순서에서
 `None`과 `TOSAttackType.UNKNOWN`을 제외한 지원 값만 첫 등장 순서로 중복 없이 출력하는 배열이다.
 유효한 후보가 없으면 빈 배열이며, 지원하지 않는 입력 토큰의 기존 `KeyError`는 그대로 전파한다.
+
+`skills.parse_clean`의 비활성 판정은 `Link_Job is None`이다. `0`·빈 문자열을 같은 판정으로
+확장하지 않는다. 현재 skills 순서로 `skills[str($ID)]`와 `skills_by_name[$ID_NAME]`를 삭제하며,
+이름 키는 원래 타입으로 사용한다. 삭제한 원본 ID를 호출 내 set에 모아 속성·직업의
+`Link_Skills`에서 같은 값을 제거한다. 문자열 `'10'`과 정수 `10`을 임의 통합하지 않는다.
+이 cleanup의 원본 타입 비교와 릴리스 FK 검사의 정규화된 ID 비교는 서로 다른 책임이다.
+살아남은 링크의 타입·순서·중복을 유지하고 새 list를 할당해 외부가 참조하는 이전 list를 변경하지 않는다.
+숫자 키 인덱스와 대응 이름 인덱스가 별도 객체이면 각각 필터링하며, 공유 alias는
+컬렉션을 넘어 객체 identity 기준으로 한 번만 처리한다. 비활성 항목이 없으면 링크 접근·교체를 하지 않는다.
+삭제 ID와 처리 객체의 set은 해당 호출에서만 유효하다. 같은 객체 반복 호출, 다른 지역이나
+외부에서 스킬 활성 상태·링크를 수정한 뒤 재호출할 때도 현재 데이터에서 다시 계산한다.
+기존 `attributes.parse_clean`의 일괄 역방향 링크 정리와 같은 타입·순서·목록 보존 원칙을 따른다.
 
 일반 숫자는 문자열과 boolean을 허용하지 않으며 유한해야 한다.
 정수 필드는 소수 부분이 없어야 한다. 원본 문자열을 유지하는 몬스터 스킬 CD/AAR/SFR/HitCount,
@@ -219,6 +266,13 @@ AnvilATK/DEF는 원본 SCR_GET_GODDESS_REINFORCE로 계산한 단계별 누적�
 ## 스킬 엔진 XML의 제한된 확장
 
 `skill_bytool.parse()`만 `parser_tidy/game_xml.py`의 helper를 통해 엔진 XML을 읽는다.
+`fromstring(text)`는 `_CONTROLS`에 해당하는 literal 문자가 하나도 없으면
+`ET.fromstring(text)`를 직접 호출한다. legacy masker와 marker 충돌·복원 경로를 실행하지 않는다.
+이때 일반 노드 순서·속성·text·tail·표준 공백 정규화와 잘못된 XML의 `ParseError`
+code·position·message는 ElementTree와 같다. 문자 참조·DTD entity는 표준 파서가 처리하므로
+원문에 literal 제어문자가 없다는 이유로 `&#1;` 등을 허용하지 않는다.
+제어문자가 있으면 다음의 기존 제한적 마스킹·충돌 검사·복원 경로를 그대로 사용한다.
+
 허용하는 확장은 실제 시작 태그의 정확히 `ScriptName`이라는 속성에서,
 작은따옴표 또는 큰따옴표로 둘러싼 값 안에 직접 들어 있는 XML 1.0 불허 ASCII 제어문자뿐이다.
 범위는 U+0000..U+001F 중 tab(U+0009)·LF(U+000A)·CR(U+000D)을 제외한 문자다.
@@ -234,6 +288,26 @@ marker 충돌도 피하며, 따옴표 안의 `>`를 태그 끝으로 오인하�
 `&#1;` 같은 불허 문자 참조와 그 밖의 잘못된 markup은 계속 `ElementTree.ParseError`다.
 helper가 이를 복구하지 않으며, 호출자인 `skill_bytool.parse()`의 기존 ParseError 경고 처리도 유지한다.
 원본 파일이나 bytes는 쓰지 않는다. 기존 UTF-8 replacement 디코딩 동작과 Lua 함수 실행 의미는 확장하지 않는다.
+
+## 맵 생성점 파일 인덱스의 호출 내 수명
+
+`maps.parse_links_npcs`는 map CSV에 행이 있을 때 처음 필요한 시점에만
+현재 `PATH_INPUT_DATA/ies_mongen.ipf`를 `os.listdir`로 한 번 조회한다.
+소문자 이름을 원래 파일명에 매핑해 anchor/gentype 조회에 같은 인덱스를 사용한다.
+대소문자만 다른 이름이 겹치면 정렬 없이 listing의 마지막 항목을 선택한다.
+빈 directory 인덱스도 재사용하며 이름이 없으면 기존 literal 파일명으로 읽기를 시도한다.
+빈 map 입력에서는 생성점 directory를 조회하지 않아 새 조회 오류를 만들지 않는다.
+map 행이 있으면 directory 부재·권한 오류는 기존처럼 전파한다.
+
+인덱스는 함수 반환·오류 시 수명이 끝나며 전역·함수간 캐시를 두지 않는다.
+같은 객체 재호출, 지역·원본 경로 변경, 파일 추가·삭제·이름 변경 뒤 호출은 새 listing으로 구성한다.
+한 호출 중 directory 변경을 map마다 다시 조회하는 방식은 사용하지 않는다.
+map/NPC/item linkage, 아이템 canonical ID, 중심·MAP_SCALE·bbox 좌표 변환,
+동일 대상 생성점과 Population 병합·TimeRespawn 변환·원본 순서는 유지한다.
+없는 anchor/gentype 파일, 미해결 NPC/item과 anchor 없는 GenType의 기존 생략 동작도 유지한다.
+이 인덱스 변경이 미해결 항목을 새 관계나 진단으로 만들지는 않는다.
+직접 호출은 기존 관계 배열에 추가하며, 상위 `maps.parse_links`의 관계 초기화와
+지도 미해결 진단 재구성·몬스터 미해결 진단 보존 책임을 바꾸지 않는다.
 
 ## 실제 릴리스 호환과 명시적 보정
 
@@ -298,5 +372,24 @@ comments·CDATA·PI의 가짜 속성, 허용 범위 밖 제어문자의 ParseErr
 
 `make check` 전체, 현재 원본을 사용하는 별도 격리 세 지역 검증, Claude 검토, Git 작업,
 GitHub 앱 게시, 성공 CI 후 머지와 원격·로컬 병합 브랜치 정리는 main Codex의 후속 책임이다.
-이 문서 작업자는 승인 파일만 읽고 `docs/data-contracts.md`만 수정하며 기존 사용자 변경을 보존한다.
-검증 실행·최적화·네트워크·다운로드·cron·importAll·새 모델 사용·재위임은 수행하지 않는다.
+이번 네 최적화의 추가 회귀 명세도 문서 작업자는 실행하지 않았다.
+`test_game_xml.py`는 legacy masker를 호출하면 실패하는 fixture로 무control 직접 파싱을 구분하고,
+표준 트리와 오류의 동일성·문자 참조/DTD marker 충돌·ScriptName 경계를 비교한다.
+`test_release_contract.py`는 파일별 finite_tree 횟수와 마지막 재순회 부재,
+독립 메모리 API의 중첩·공유 객체 mutation 재검사, 모든 파일 역할의 엄격한 JSON 오류와
+정확한 도메인 path·code·message, memory-before-write·staged-before-promotion·version·수정 후 재시도를 명세한다.
+`test_atomic_release.py`의 기존 백업·sentinel·승급 실패·불완전 롤백·복구 경계도 유지 대상이다.
+`test_combat_source_fixture.py`의 독립 synthetic 기대값은 원본 ID 타입·삭제 순서·생존 중복,
+별도 이름 객체·컬렉션간 alias의 객체당 한 번 처리·외부 list 보존·비활성 0건·재호출·지역 격리를 다룬다.
+`test_world_source_fixture.py`는 독립 생성 관계·좌표·인구 기대값과 directory 조회 횟수,
+빈 map·빈 index·조회 오류·대소문자 충돌의 마지막 항목 우선·지역/경로/파일 변경 재조회,
+직접 호출의 추가와 상위 relink의 초기화를 구분한다.
+
+제공된 prototype/local diagnostic 수치와 기존 XML 테스트 통과 관측은
+최종 구현의 전체 회귀·전체 파서·CI 성공 또는 누적 개선율의 증거가 아니다.
+수치와 측정 조건의 한계는 [ADR 0008](adr/0008-json-validation-single-pass.md#진단-근거와-검증-상태)에 기록한다.
+최종 지역별 전체 실데이터 및 누적 성능 비교는 메인 `/root`가 별도로 수행한다.
+문서 작업자는 architecture·이 계약·ADR 0008·ADR 목록만 수정하며 기존 사용자 변경을 보존한다.
+검사·benchmark·네트워크·다운로드·cron·importAll·Git·workflow·재위임은 수행하지 않는다.
+기존 model/provider/effort/network/worker 설정과 기본 Git 역할,
+GitHub CI 성공 확인 후 SHA 고정 merge 정책은 유지한다. 문서 의미 검토는 실행·게시 완료의 증거가 아니다.

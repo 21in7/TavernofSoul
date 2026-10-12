@@ -205,6 +205,19 @@ importer는 복사한 스냅샷을 DB 쿼리 전에 검사한다.
 기존 공개 bytes와 버전을 보존하고 staging을 정리한다. 직렬화 전 메모리 검증과
 기존 백업·sentinel·파일별 승급·롤백·재시도 의미, 직렬화 bytes는 유지한다.
 
+공개 `validate_release(data, require_version=True)`는 독립적인 메모리 입력을 받는 경계다.
+private `_validate_release_structure`로 릴리스 객체·필수 컬렉션·version을 확인하고,
+`finite_tree(data, 'release')`로 보조 필드까지 전체 메모리를 검사한 뒤
+private `_validate_release_domain`으로 타입·범위·유일성·참조와 선택적 도메인 계약을 검사한다.
+`load_release`는 필수 파일 존재를 확인하고 정렬한 모든 `*.json`에 `load_json`을 적용한다.
+각 파일의 문법·중복 키·NaN/Infinity·오버플로(`1e999`)·루트 형식·전체 유한성 검사가
+끝난 후 보관한 데이터에 같은 private 구조·도메인 검사를 적용한다. 이 경로에서만
+이미 검사한 데이터에 대한 마지막 `finite_tree(..., 'release')` 재순회를 제거한다.
+도메인 수치 검사는 유지하며 공개 우회 flag를 추가하지 않는다.
+파일 검사 완료의 근거는 해당 호출에서 새로 디코딩한 값에만 유효하다.
+원본 스냅샷을 변경하거나 검사 결과를 캐시하지 않으며, 다음 파일 로드와 메모리 API 호출은
+수정된 입력을 다시 검사한다. 결정과 비교 대안은 [ADR 0008](adr/0008-json-validation-single-pass.md)에 둔다.
+
 ## 파서 초기화 비용과 상태 경계
 
 `iesutil.load()`는 한 호출에서 길이 128 이하 문자열 token의 변환 결과인 immutable scalar를
@@ -253,6 +266,46 @@ IES/Lua 결합 후보 약 3.002s였으며 매번 새 runtime을 생성했다.
 알려진 CSV quoting 오류 한 행은 명시된 로컬 diagnostic 복사본에서만 대체했다.
 원본 게임 데이터·진단 스크립트·전체 로그는 이번 승인 문맥에 제공되지 않았으며,
 최종 코드의 독립 benchmark는 `/root`가 별도로 확인한다.
+
+## XML·관계 정리·디렉터리 인덱스의 상태 경계
+
+`game_xml.fromstring`은 디코딩된 문자열에 `_CONTROLS`(XML 1.0 불허 ASCII 제어문자)가
+전혀 없으면 `ET.fromstring(text)`로 직접 파싱한다. legacy masker·marker 충돌 검사·복원 순회를
+생략하며 일반 노드·속성·text·tail과 표준 `ParseError`의 code·position·message를 유지한다.
+불허 문자 참조는 원문에 직접 제어문자가 없어도 표준 파서가 거부한다.
+제어문자가 있으면 기존 마스킹·문자 참조/DTD entity의 marker 충돌 검사·복원을 수행한다.
+확장은 실제 시작 태그의 정확히 `ScriptName`인 quoted 속성 안에 직접 들어 있는 제어문자에만
+적용한다. 다른 속성·text·tail·comments·CDATA·PI와 잘못된 markup을 복구하지 않는다.
+marker와 복원 상태는 한 파싱 호출 안에서만 유지하며 원본 파일을 쓰지 않는다.
+정확한 허용 문자·디코딩 경계는 [데이터 계약](data-contracts.md#스킬-엔진-xml의-제한된-확장)에 둔다.
+
+`skills.parse_clean`은 현재 `skills`의 순서로 `Link_Job is None`인 항목을 모아 기존처럼
+`skills[str($ID)]`와 `skills_by_name[$ID_NAME]`를 순서대로 삭제한다.
+삭제한 원래 ID의 호출 내 임시 set으로 속성·직업과 대응하는 이름 인덱스 객체의
+`Link_Skills`를 일괄 필터링한다. 객체 identity의 임시 set으로 별도 이름 객체와
+여러 키·컬렉션이 공유하는 alias를 포함해 각 객체를 한 번만 처리한다.
+문자열·정수 ID를 정규화하지 않고 기존 비교 의미와 생존 링크의 순서·중복을 유지한다.
+새 목록을 할당하므로 외부에서 참조하는 이전 목록의 내용도 유지한다.
+비활성 스킬이 없으면 링크나 이름 인덱스에 접근하지 않는다.
+두 set은 반환·오류 시 수명이 끝나며 같은 객체 재호출·외부 수정·다른 지역에서도 현재 데이터로 재구성한다.
+
+`maps.parse_links_npcs`는 map CSV의 첫 행에서 필요한 시점에 현재 `PATH_INPUT_DATA`의
+`ies_mongen.ipf`를 한 번만 조회해 lowercase 이름 → 원래 파일명 인덱스를 만든다.
+동일한 lowercase 이름은 `os.listdir` 반환 순서의 마지막 항목이 우선하며 정렬하지 않는다.
+빈 인덱스도 그 호출에서 재사용하고, map 행이 없으면 생성점 디렉터리를 조회하지 않는다.
+행이 있으면 기존 directory 조회 오류는 전파한다. anchor/gentype 조회 실패 시 기존 파일명 fallback과
+누락 파일·미해결 NPC/item을 생략하는 처리, 좌표·인구 병합·respawn·아이템 canonical ID 연결을 유지한다.
+인덱스는 호출 내 상태이며 다음 호출은 현재 지역·원본 경로·디렉터리 내용을 다시 조회한다.
+직접 `parse_links_npcs` 재호출은 기존처럼 관계 배열에 추가한다.
+상위 `maps.parse_links`가 관계와 지도 미해결 진단을 초기화하는 책임은 바뀌지 않는다.
+
+이 네 최적화의 회귀 명세는 `test_game_xml.py`, `test_release_contract.py`,
+`test_atomic_release.py`, `test_combat_source_fixture.py`, `test_world_source_fixture.py`에 있다.
+문서 작업자는 실행하지 않았다. 제공된 prototype/local diagnostic 수치는 최종 회귀·전체 파서·CI 성공이나
+누적 개선율의 증거가 아니며 [ADR 0008의 근거 한계](adr/0008-json-validation-single-pass.md#진단-근거와-검증-상태)에 구분해 기록한다.
+최종 소스의 지역별 전체 실데이터 검증과 여태 적용한 최적화의 누적 성능 비교는 메인 `/root`가 별도로 수행한다.
+모델·provider·effort·network·worker 설정과 기본 Git 역할은 유지한다.
+검토·필수 검증·GitHub CI 성공 확인 뒤 SHA를 고정해 merge하는 게시 책임과 정책도 유지한다.
 
 ## 첫 검증 경로
 
@@ -339,10 +392,11 @@ importer 실패 시 DB·이전 비교 기준·버전 복원과 재시도를 검�
 - 맵 직접 확률은 일반 맵에서 DropRatio/100, unknownsanctuary는 /10000이다.
   그룹은 같은 기준의 맵 확률에 그룹 내 가중치/합계를 곱한다. 음수 가중치는 실패한다.
   수량은 미제공 호환값 0이고 미해결 아이템은 드롭 관계 대신 문맥과 출처를 남긴다.
-- 지도 ID 연결의 미해결 원본은 실패한다. 추가 층 목록에는 2층 이상을 넣고 1층 자기 참조를 만들지 않는다.
+- 정상 지도 ID 연결은 릴리스의 기존 지도를 참조해야 한다. 추가 층 목록에는 2층 이상을 넣고 1층 자기 참조를 만들지 않는다.
   같은 WorldMap 묶음의 1층 좌표가 없으면 파일·지도 이름·해당 좌표를 경고하고 optional floor grouping만 생략한다.
   실제 지도·ID·WorldMap·물리 연결은 유지하며 다른 ground를 추측하거나 지도를 생성하지 않는다.
-  알 수 없는 PhysicalLinkZone 참조는 계속 실패한다.
+  알려진 PhysicalLinkZone 토큰은 원본 순서로 연결하고, 알 수 없는 토큰은 원문·출처와 함께
+  `unresolved_map_links`에 보존한다. 진단 존재가 잘못된 정상 `Link_Maps` FK를 허용하지는 않는다.
 - 생성 좌표는 지도 중심·MAP_SCALE·bbox로 변환하고 생성 수를 병합한다.
   RespawnTime(ms)은 JSON TimeRespawn(초)으로 변환한다. importer는 좌표를 평탄한 문자열 배열로 저장한다.
 - 버프 네 원본 파일을 정해진 순서로 읽고 같은 ID는 뒤 파일이 우선한다.

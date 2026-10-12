@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -258,3 +259,200 @@ def test_skill_fallback_uses_the_input_project(combat_workspace):
     skill = db.data['skills_by_name']['Harness_Fire']
     assert skill['Icon'] == 'fixture_fallback_icon'
     assert skill['Description'] == 'A Lua calculated skill'
+
+
+class _SkillCleanupLinks(list):
+    def __init__(self, values):
+        super().__init__(values)
+        self.iterations = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        return super().__iter__()
+
+
+class _SkillCleanupObject(dict):
+    def __init__(self, name, links):
+        super().__init__({'$ID_NAME': name, 'Link_Skills': _SkillCleanupLinks(links)})
+        self.link_reads = 0
+        self.link_writes = 0
+
+    def __getitem__(self, key):
+        if key == 'Link_Skills':
+            self.link_reads += 1
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        if key == 'Link_Skills':
+            self.link_writes += 1
+        super().__setitem__(key, value)
+
+
+class _SkillCleanupIndex(dict):
+    def __init__(self, label, entries, deletions):
+        super().__init__(entries)
+        self.label = label
+        self.deletions = deletions
+
+    def __delitem__(self, key):
+        self.deletions.append((self.label, key))
+        super().__delitem__(key)
+
+
+def _skill_cleanup_db(region, entries):
+    return SimpleNamespace(region=region, data={
+        'skills': {str(skill['$ID']): skill for skill in entries},
+        'skills_by_name': {skill['$ID_NAME']: skill for skill in entries},
+        'attributes': {}, 'attributes_by_name': {},
+        'jobs': {}, 'jobs_by_name': {},
+    })
+
+
+@pytest.mark.parametrize('shared_by_name', [True, False], ids=['shared', 'separate'])
+def test_skill_cleanup_preserves_typed_links_order_aliases_and_external_lists(shared_by_name):
+    inactive_string = {'$ID': '10', '$ID_NAME': 'GoneString', 'Link_Job': None}
+    active = {'$ID': '40', '$ID_NAME': 'Active', 'Link_Job': 0}
+    inactive_integer = {'$ID': 20, '$ID_NAME': 202, 'Link_Job': None}
+    inactive_other = {'$ID': 30, '$ID_NAME': 'GoneOther', 'Link_Job': None}
+    entries = [inactive_string, active, inactive_integer, inactive_other]
+    db = _skill_cleanup_db('itos', entries)
+    deletions = []
+    for collection in ('skills', 'skills_by_name'):
+        db.data[collection] = _SkillCleanupIndex(collection, db.data[collection], deletions)
+
+    attribute = _SkillCleanupObject(101, ['10', 10, 20, '20', 'keep', 30, '30', 'keep', 10])
+    job = _SkillCleanupObject('Job', [30, '30', '40', 20, '20', '10', '40', 10])
+    named_attribute = attribute if shared_by_name else _SkillCleanupObject(
+        101, [20, '20', 'name-only', '10', 'name-only', 30, 10])
+    named_job = job if shared_by_name else _SkillCleanupObject(
+        'Job', ['10', 'name-job', 30, '30', 'name-job', 20, '20'])
+    db.data['attributes'] = {'1': attribute, 'attribute-alias': attribute}
+    db.data['attributes_by_name'] = {101: named_attribute, 'alias': named_attribute}
+    db.data['jobs'] = {'2': job, 'job-alias': job}
+    db.data['jobs_by_name'] = {'Job': named_job, 'alias': named_job}
+    cases = [
+        (attribute, ['10', 10, 20, '20', 'keep', 30, '30', 'keep', 10],
+         [10, '20', 'keep', '30', 'keep', 10]),
+        (job, [30, '30', '40', 20, '20', '10', '40', 10],
+         ['30', '40', '20', '40', 10]),
+    ]
+    if not shared_by_name:
+        cases.extend([
+            (named_attribute, [20, '20', 'name-only', '10', 'name-only', 30, 10],
+             ['20', 'name-only', 'name-only', 10]),
+            (named_job, ['10', 'name-job', 30, '30', 'name-job', 20, '20'],
+             ['name-job', '30', 'name-job', '20']),
+        ])
+    old_lists = [dict.__getitem__(obj, 'Link_Skills') for obj, _, _ in cases]
+
+    skills.parse_clean(db)
+
+    assert deletions == [
+        ('skills', '10'), ('skills_by_name', 'GoneString'),
+        ('skills', '20'), ('skills_by_name', 202),
+        ('skills', '30'), ('skills_by_name', 'GoneOther'),
+    ]
+    assert db.data['skills'] == {'40': active}
+    assert db.data['skills_by_name'] == {'Active': active}
+    for (obj, original, expected), old_links in zip(cases, old_lists):
+        new_links = dict.__getitem__(obj, 'Link_Skills')
+        assert new_links == expected
+        assert new_links is not old_links
+        assert old_links == original
+        assert old_links.iterations == 1
+        assert (obj.link_reads, obj.link_writes) == (1, 1)
+
+
+def test_skill_cleanup_filters_objects_aliased_across_collections_once():
+    db = _skill_cleanup_db('ktos', [{'$ID': '10', '$ID_NAME': 'Gone', 'Link_Job': None}])
+    first = _SkillCleanupObject('First', ['10', 'keep', 'keep'])
+    second = _SkillCleanupObject('Second', ['other', '10', 'other'])
+    db.data['attributes'] = {'1': first, '2': second}
+    db.data['attributes_by_name'] = {'First': second, 'Second': first}
+    db.data['jobs'] = {'1': second, '2': first}
+    db.data['jobs_by_name'] = {'First': first, 'Second': second}
+    old_first = dict.__getitem__(first, 'Link_Skills')
+    old_second = dict.__getitem__(second, 'Link_Skills')
+
+    skills.parse_clean(db)
+
+    assert dict.__getitem__(first, 'Link_Skills') == ['keep', 'keep']
+    assert dict.__getitem__(second, 'Link_Skills') == ['other', 'other']
+    assert (first.link_reads, first.link_writes) == (1, 1)
+    assert (second.link_reads, second.link_writes) == (1, 1)
+    assert old_first.iterations == old_second.iterations == 1
+    assert old_first == ['10', 'keep', 'keep']
+    assert old_second == ['other', '10', 'other']
+
+
+@pytest.mark.parametrize('entries', [[], [
+    {'$ID': '10', '$ID_NAME': 'Active', 'Link_Job': 0},
+    {'$ID': '20', '$ID_NAME': 'OtherActive', 'Link_Job': ''},
+]], ids=['empty', 'all-active'])
+def test_skill_cleanup_without_inactive_skills_does_not_access_links(entries):
+    db = _skill_cleanup_db('itos', entries)
+    attribute = _SkillCleanupObject('Attribute', ['10', '10'])
+    job = _SkillCleanupObject('Job', ['20'])
+    db.data['attributes'] = {'1': attribute}
+    db.data['jobs'] = {'2': job}
+    # Absent name indexes must remain unobserved when no skill needs removal.
+    del db.data['attributes_by_name']
+    del db.data['jobs_by_name']
+    old_attribute = dict.__getitem__(attribute, 'Link_Skills')
+    old_job = dict.__getitem__(job, 'Link_Skills')
+
+    skills.parse_clean(db)
+
+    assert list(db.data['skills']) == [str(skill['$ID']) for skill in entries]
+    assert dict.__getitem__(attribute, 'Link_Skills') is old_attribute
+    assert dict.__getitem__(job, 'Link_Skills') is old_job
+    assert (attribute.link_reads, attribute.link_writes) == (0, 0)
+    assert (job.link_reads, job.link_writes) == (0, 0)
+    assert old_attribute.iterations == old_job.iterations == 0
+
+
+def test_skill_cleanup_recomputes_after_repeat_region_change_and_external_mutation():
+    first = _skill_cleanup_db('ktos', [
+        {'$ID': '10', '$ID_NAME': 'Gone', 'Link_Job': None},
+        {'$ID': '20', '$ID_NAME': 'Active', 'Link_Job': 'Job'},
+    ])
+    attribute = _SkillCleanupObject('Attribute', ['10', 10, '20', '20'])
+    first.data['attributes'] = {'1': attribute}
+    first.data['attributes_by_name'] = {'Attribute': attribute}
+    skills.parse_clean(first)
+    assert dict.__getitem__(attribute, 'Link_Skills') == [10, '20', '20']
+    first_links = dict.__getitem__(attribute, 'Link_Skills')
+
+    skills.parse_clean(first)
+    assert dict.__getitem__(attribute, 'Link_Skills') is first_links
+    assert (attribute.link_reads, attribute.link_writes) == (1, 1)
+
+    second = _skill_cleanup_db('jtos', [
+        {'$ID': 10, '$ID_NAME': 'GoneInteger', 'Link_Job': None},
+        {'$ID': '20', '$ID_NAME': 'StillActive', 'Link_Job': 'Job'},
+    ])
+    other_attribute = _SkillCleanupObject('OtherAttribute', ['10', 10, '20', '20'])
+    second.data['attributes'] = {'2': other_attribute}
+    second.data['attributes_by_name'] = {'OtherAttribute': other_attribute}
+    skills.parse_clean(second)
+    assert dict.__getitem__(other_attribute, 'Link_Skills') == ['10', '20', '20']
+    assert dict.__getitem__(attribute, 'Link_Skills') is first_links
+
+    # Reuse the first instance for another region after external source edits.
+    first.region = 'itos'
+    first.data['skills']['20']['Link_Job'] = None
+    restored = {'$ID': '10', '$ID_NAME': 'Restored', 'Link_Job': 'Job'}
+    first.data['skills']['10'] = restored
+    first.data['skills_by_name']['Restored'] = restored
+    first_links.extend(['10', '20', 20, 'tail', '10'])
+    skills.parse_clean(first)
+    assert dict.__getitem__(attribute, 'Link_Skills') == [10, '10', 20, 'tail', '10']
+    assert first_links == [10, '20', '20', '10', '20', 20, 'tail', '10']
+    assert first.data['skills'] == {'10': restored}
+    assert first.data['skills_by_name'] == {'Restored': restored}
+    assert (attribute.link_reads, attribute.link_writes) == (2, 2)
+
+    final_links = dict.__getitem__(attribute, 'Link_Skills')
+    skills.parse_clean(first)
+    assert dict.__getitem__(attribute, 'Link_Skills') is final_links
+    assert (attribute.link_reads, attribute.link_writes) == (2, 2)

@@ -12,6 +12,7 @@
 | [0005](0005-github-connector-delivery.md) | 메인 GitHub 앱 journal·3개 CI·SHA 고정 merge | 승인(accepted), 현 구현 복원 | 2026-10-11 |
 | [0006](0006-versioned-design-review.md) | Git 관리 설계·ADR와 매 검토의 문서 판단 | 승인(accepted), 이번 요청의 결정 | 2026-10-11 |
 | [0007](0007-codex-warning-success-boundary.md) | Codex 성공 증거 우선과 안전한 경고 metadata | 승인(accepted), 새 결정 | 2026-10-12 |
+| [0008](0008-json-validation-single-pass.md) | 모든 JSON 파일의 엄격한 검사 뒤 중복 finite_tree만 제거 | 승인(accepted), 새 결정 | 2026-10-12 |
 
 ## 상태와 근거의 의미
 
@@ -21,6 +22,8 @@
 0006은 이번 요청에 따른 문서 유지·검토 게이트 결정이며 승인 상태가 검사 통과를 뜻하지 않는다.
 0007은 Codex warning과 성공/실패 판정을 분리하는 새 결정이다. 0002의 격리 결정을 바꾸거나
 대체하지 않으며, 승인 상태는 수리 worker의 검사 실행·일반 workflow 성공·게시 완료를 뜻하지 않는다.
+0008은 공개 메모리 검사와 파일별 엄격한 검사를 유지하면서 내부 중복 순회만 제거하는 결정이다.
+승인 상태나 제공된 prototype/local diagnostic 수치는 최종 회귀·전체 파서·CI 성공·누적 개선율을 증명하지 않는다.
 
 상태는 제안(proposed), 승인(accepted), 대체됨(superseded)을 사용한다. 이후 결정 변경은
 기존 ADR를 삭제하거나 새 결론으로 재작성하지 않는다. 기존 상태를 superseded로 바꾸고

@@ -2,6 +2,7 @@
 
 Only literal XML 1.0 forbidden ASCII controls in quoted ScriptName attributes
 of start tags are masked. Other malformed XML still raises ET.ParseError.
+Inputs without those controls go directly to the standard ElementTree parser.
 The parsed attributes regain their original controls; input files are never
 written. Decoding remains the caller's responsibility.
 """
@@ -134,6 +135,9 @@ def _marker_collision(root, replacements):
 
 def fromstring(text):
     """Return the standard parsed root with original ScriptName values restored."""
+    if _CONTROLS.search(text) is None:
+        return ET.fromstring(text)
+
     prefix = '__TOS_SCRIPTNAME_CONTROL__'
     while True:
         while prefix in text:
