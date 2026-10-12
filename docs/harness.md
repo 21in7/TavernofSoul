@@ -456,6 +456,24 @@ ID 중복·참조·수치 범위·단위 담당 단계와 기존 optional/sentin
 출력 동등성·실행한 지역·반복 측정 여부를 함께 보고한다. 서로 다른 단계의 속도 배율을
 곱하거나 서로 다른 실험의 절감 시간을 더해 전체 개선율로 제시하지 않는다.
 
+장비 계산의 row별 local callable 참조 재사용은 별도의 국소 최적화다.
+`test_equipment_source_fixture.py`는 equipment fixture의 임시 복사본과 `isolated_parser_state`를
+사용하여 실제 Lupa 호출을 직접 작성한 분수·0·음수 기대 배열과 비교한다. legacy ATK/DEF/양쪽/없음,
+가격 fallback, 40단계·10단계 호출과 마지막 row 상태, default·타입·정밀도, 두 row의 RefreshScp 및
+계산 함수 교체, 반복 parse와 새 runtime·지역 전환을 다룬다. 계산 실패의 공개 bytes 보존·재시도는
+독립 수치 기대값과 함께 확인한다. `test_lua_module_loading.py`는 비활성 함수 누락·첫 사용 실패,
+RefreshScp 원인 예외·초월 부분 상태, tooltip 변경 뒤 분기 재판정을 확인한다.
+준비·init 이후 대상 parse에만 적용하는 lookup 계측은 `finally`에서 registry를 복원하고,
+fixture 격리도 기존 전역 상태를 복원한다. 양쪽 분기의 조회 기대값은 RefreshScp → DEF 함수 →
+선택한 price 함수 → ATK 함수 → 초월 함수이며, 실제 DEF → price → ATK → price의 40단계
+호출 순서·결과 assertion은 유지한다. 조회 횟수 감소는 실측 속도 개선율을 대신하지 않는다.
+
+실행기·메인 `/root`는 변경 전후 current407263 kTOS/iTOS/jTOS 전체 `main`을 격리 사본에서
+profiler 없이 반복 실행하여 장비 단계 및 전체 wall/CPU 시간과 지역별 JSON 41개 byte 동일성을
+확인한다. 검증 결과가 나오기 전 부모는 GitHub 게시를 보류하며, 검증·검토·기본 Git 역할 이후
+`awaiting_github`에서 앱 journal을 통해 게시·세 CI 성공·merge SHA 확인을 이어간다.
+이 문단은 회귀·측정·인계 요구사항이며 성능 개선·검사·CI·머지 완료 기록이 아니다.
+
 ## 파서 원본 검증
 
 [아이템 fixture 안내](../harness/fixtures/parser/README.md)의 작은 입력 7개 아이템으로

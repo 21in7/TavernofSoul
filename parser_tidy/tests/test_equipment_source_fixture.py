@@ -2,6 +2,7 @@
 import json
 import csv
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from lupa import LuaError
@@ -23,6 +24,216 @@ def parse(root, region='itos', version='equipment-v1'):
 
 def snapshot(release):
     return {path.name: path.read_bytes() for path in release.glob('*.json')}
+
+
+@pytest.fixture
+def legacy_equipment_case(tmp_path, monkeypatch):
+    # Only the temporary fixture copy changes. Exercise parse_equips directly;
+    # preparation and Lua initialization happen before any lookup accounting.
+    with isolated_parser_state():
+        def prepare(region='itos', props='ATK,DEF', count=1):
+            root = prepare_equipment_workspace(tmp_path / region, region)
+            path = root / (region + '_unpack') / 'ies.ipf/item_equip.ies'
+            with path.open(encoding='utf-8', newline='') as source:
+                reader = csv.DictReader(source)
+                fields, rows = reader.fieldnames, list(reader)[:count]
+            fields = fields + ['Reinforce_2', 'Transcend']
+            for row in rows:
+                row.update(ItemGrade='', BasicTooltipProp=props, Reinforce_2='007',
+                           Transcend='004', RefreshScp='SCR_FIXTURE_LEGACY_REFRESH')
+            with path.open('w', encoding='utf-8', newline='') as target:
+                writer = csv.DictWriter(target, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
+            db = ToS_DB()
+            db.data = {name: [] if isinstance(value, list) else {}
+                       for name, value in ToS_DB.data.items()}
+            db.file_dict = {}
+            db.build(region, str(root / 'parser_tidy'))
+            # Base-item translation/icons are outside these calculation tests.
+            # Seed only the identity fields consumed by parse_equips.
+            monkeypatch.setattr(db, 'translate', lambda value: value)
+            for row in rows:
+                obj = {'$ID': row['ClassID'], '$ID_NAME': row['ClassName']}
+                db.data['items'][obj['$ID']] = obj
+                db.data['items_by_name'][obj['$ID_NAME']] = obj
+            items.equipment_grade_ratios = {1: {'BasicRatio': '100'}}
+            items.EQUIPMENT_STAT_COLUMNS = []
+            luautil.init(db)
+            return SimpleNamespace(db=db, names=[row['ClassName'] for row in rows])
+
+        monkeypatch.setattr(items.parse_xac, 'eq_model_name', lambda row, db: 'fixture_legacy')
+        yield prepare
+
+
+def install_legacy_lupa_formulas():
+    # Hand-authored fractional/zero/negative values give independent expected
+    # vectors. These are real Lupa calls using the raw Python CSV dict bridge.
+    luautil.lua.execute('''
+function SCR_FIXTURE_LEGACY_REFRESH(item)
+    assert(type(item.UseLv) == 'string' and item.ItemGrade == '')
+    assert(item.Reinforce_2 == '007' and item.Transcend == '004')
+    item.MINATK = 123.875
+    item.MAXATK = nil
+    item.MATK = ''
+    item.DEF = 60.875
+    item.MDEF = 'invalid'
+end
+function GET_REINFORCE_ADD_VALUE(pc, item, zero, one)
+    assert(pc == nil and zero == 0 and one == 1)
+    assert(type(item.UseLv) == 'string')
+    item.fixture_branch = 'DEF'
+    local values = {0.25, 1.75, 2.5, -1.25}
+    return values[item.Reinforce_2 % 4 + 1]
+end
+function GET_REINFORCE_ADD_VALUE_ATK(item, zero, one, pc)
+    assert(pc == nil and zero == 0 and one == 1)
+    item.fixture_branch = 'ATK'
+    local values = {-2.5, 4.75, 0, 6.125}
+    return values[item.Reinforce_2 % 4 + 1]
+end
+function GET_REINFORCE_PRICE(item, materials, pc)
+    assert(pc == nil)
+    local values = {10.75, -1, 0.25, 20.875}
+    if item.fixture_branch == 'ATK' then values = {30.625, 40.75, 0, -2} end
+    return values[item.Reinforce_2 % 4 + 1]
+end
+function GET_TRANSCEND_MATERIAL_COUNT(item, level)
+    assert(item.Transcend == 0)
+    local values = {0, 0.75, 1.25, -1, 2.875, 3.5, 4.125, 5.75, 6, 7.875}
+    item.Transcend = 19
+    return values[level + 1]
+end
+''')
+    names = ('SCR_FIXTURE_LEGACY_REFRESH', 'GET_REINFORCE_ADD_VALUE',
+             'GET_REINFORCE_ADD_VALUE_ATK', 'GET_REINFORCE_PRICE',
+             'GET_TRANSCEND_MATERIAL_COUNT')
+    functions = {name: luautil.lua.globals()[name] for name in names}
+    luautil.LUA_RUNTIME.update(functions)
+    return functions
+
+
+@pytest.mark.parametrize('props,branches,defense,attack,prices', (
+    ('ATK', ('ATK',), [], [4, 6] * 10, [30, 40] * 10),
+    ('DEF', ('DEF',), [0, 1, 2] * 10, [], [10, 0, 20] * 10),
+    ('ATK,DEF', ('DEF', 'ATK'), [0, 1, 2] * 10, [4, 6] * 10,
+     [10, 30, 40, 0, 20] * 10),
+    ('', (), None, None, []),
+))
+@pytest.mark.parametrize('price_key', ('GET_REINFORCE_PRICE', 'GET_REINFORCE_131014_PRICE'))
+def test_legacy_real_lupa_stages_precision_order_and_final_row(
+        legacy_equipment_case, props, branches, defense, attack, prices, price_key):
+    case = legacy_equipment_case(props=props)
+    functions = install_legacy_lupa_formulas()
+    runtime = luautil.LUA_RUNTIME
+    price = functions.pop('GET_REINFORCE_PRICE')
+    del runtime['GET_REINFORCE_PRICE']
+    functions[price_key] = price
+    calls, rows, material_args = [], [], []
+    phases = {'GET_REINFORCE_ADD_VALUE': 'DEF', 'GET_REINFORCE_ADD_VALUE_ATK': 'ATK',
+              price_key: 'price', 'GET_TRANSCEND_MATERIAL_COUNT': 'transcend'}
+
+    def observe(name, function):
+        def call(*args):
+            row = args[1] if name == 'GET_REINFORCE_ADD_VALUE' else args[0]
+            if name == 'SCR_FIXTURE_LEGACY_REFRESH':
+                rows.append(row)
+            else:
+                assert row is rows[0]
+                assert type(row['UseLv']) is str and row['ItemGrade'] == ''
+                level = args[1] if phases[name] == 'transcend' else row['Reinforce_2']
+                calls.append((phases[name], level))
+                if phases[name] == 'price':
+                    assert args[1] == {} and args[2] is None
+                    material_args.append(args[1])
+            return function(*args)
+        return call
+
+    runtime.update({name: observe(name, function) for name, function in functions.items()})
+    assert items.parse_equips(case.db, 'item_equip.ies') is case.db
+    obj = case.db.data['items_by_name'][case.names[0]]
+    assert calls == [(phase, level) for level in range(40)
+                     for branch in branches for phase in (branch, 'price')] + [
+                         ('transcend', level) for level in range(10)]
+    assert obj['AnvilDEF'] == defense and obj['AnvilATK'] == attack
+    assert obj['AnvilPrice'] == prices
+    assert obj['TranscendPrice'] == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert all(type(value) is int for key in ('AnvilATK', 'AnvilDEF', 'AnvilPrice', 'TranscendPrice')
+               for value in (obj[key] or []))
+    assert len({id(arg) for arg in material_args}) == 40 * len(branches)
+    assert rows[0]['Reinforce_2'] == (39 if branches else '007')
+    assert rows[0]['Transcend'] == 19
+    assert obj['Grade'] == 1 and type(obj['Grade']) is int
+    assert (obj['Stat_ATTACK_PHYSICAL_MIN'], obj['Stat_ATTACK_PHYSICAL_MAX'],
+            obj['Stat_ATTACK_MAGICAL'], obj['Stat_DEFENSE_PHYSICAL'],
+            obj['Stat_DEFENSE_MAGICAL']) == (123, 0, 0, 60, 0)
+
+
+def test_legacy_refresh_replaces_functions_for_each_row_and_repeat(legacy_equipment_case):
+    case = legacy_equipment_case(count=2)
+    runtime = luautil.LUA_RUNTIME
+    rows, refreshes = [], []
+
+    def refresh_second(row):
+        refreshes.append(('second', row['ClassName']))
+        rows.append(row)
+        install_constants(102.875, 202.5, 302.75, 402.125)
+
+    def install_constants(attack, defense, price, transcend):
+        for name, value in (('GET_REINFORCE_ADD_VALUE_ATK', attack),
+                            ('GET_REINFORCE_ADD_VALUE', defense),
+                            ('GET_REINFORCE_PRICE', price),
+                            ('GET_TRANSCEND_MATERIAL_COUNT', transcend)):
+            runtime[name] = luautil.lua.eval('function(...) return ' + str(value) + ' end')
+
+    def refresh_first(row):
+        refreshes.append(('first', row['ClassName']))
+        rows.append(row)
+        install_constants(101.875, 201.5, 301.75, 401.125)
+        runtime['SCR_FIXTURE_LEGACY_REFRESH'] = refresh_second
+
+    for _ in range(2):
+        rows.clear()
+        refreshes.clear()
+        # Missing entries must be installed by the current row's refresh.
+        for name in ('GET_REINFORCE_ADD_VALUE_ATK', 'GET_REINFORCE_ADD_VALUE',
+                     'GET_REINFORCE_PRICE', 'GET_TRANSCEND_MATERIAL_COUNT'):
+            runtime.pop(name, None)
+        runtime['SCR_FIXTURE_LEGACY_REFRESH'] = refresh_first
+        assert items.parse_equips(case.db, 'item_equip.ies') is case.db
+        assert refreshes == [('first', case.names[0]), ('second', case.names[1])]
+        assert rows[0] is not rows[1]
+        for name, attack, defense, price, transcend in (
+                (case.names[0], 101, 201, 301, 401), (case.names[1], 102, 202, 302, 402)):
+            obj = case.db.data['items_by_name'][name]
+            assert obj['AnvilATK'] == [attack] * 40
+            assert obj['AnvilDEF'] == [defense] * 40
+            assert obj['AnvilPrice'] == [price] * 80
+            assert obj['TranscendPrice'] == [transcend] * 10
+        assert [(row['Reinforce_2'], row['Transcend']) for row in rows] == [(39, 0), (39, 0)]
+
+
+def test_legacy_reinitialization_and_region_switch_use_current_lupa_functions(legacy_equipment_case):
+    current = legacy_equipment_case(region='itos', props='ATK')
+    other = legacy_equipment_case(region='jtos', props='ATK')
+    for case, attack, price, transcend in ((current, 73, 11, 2), (current, 83, 12, 3),
+                                          (other, 93, 13, 4), (current, 103, 14, 5)):
+        previous_lua, previous_runtime = luautil.lua, luautil.LUA_RUNTIME
+        luautil.init(case.db)
+        assert luautil.lua is not previous_lua and luautil.LUA_RUNTIME is not previous_runtime
+        luautil.LUA_RUNTIME['SCR_FIXTURE_LEGACY_REFRESH'] = luautil.lua.eval('function(item) end')
+        for name, value in (('GET_REINFORCE_ADD_VALUE_ATK', attack),
+                            ('GET_REINFORCE_PRICE', price),
+                            ('GET_TRANSCEND_MATERIAL_COUNT', transcend)):
+            luautil.LUA_RUNTIME[name] = luautil.lua.eval(
+                'function(...) return ' + str(value + 0.875) + ' end')
+        # No DEF callable is needed in the current region's active ATK branch.
+        luautil.LUA_RUNTIME.pop('GET_REINFORCE_ADD_VALUE', None)
+        assert items.parse_equips(case.db, 'item_equip.ies') is case.db
+        obj = case.db.data['items_by_name'][case.names[0]]
+        assert obj['AnvilATK'] == [attack] * 40 and obj['AnvilDEF'] == []
+        assert obj['AnvilPrice'] == [price] * 40
+        assert obj['TranscendPrice'] == [transcend] * 10
 
 
 def test_equipment_names_preserve_seeded_list_duplicates_order_and_identity(tmp_path):
