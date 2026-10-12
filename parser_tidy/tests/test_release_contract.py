@@ -155,6 +155,128 @@ def release_db(good_release, tmp_path):
     return db
 
 
+@pytest.mark.parametrize('scalar_type', [str, int, bool, type(None)],
+                         ids=['pretends-str', 'pretends-int', 'pretends-bool', 'pretends-none'])
+@pytest.mark.parametrize('base,suffix', [
+    pytest.param(dict, "['entry']['metric']", id='dict-subclass'),
+    pytest.param(list, "[1]['metric']", id='list-subclass'),
+    pytest.param(tuple, "[1]['metric']", id='tuple-subclass'),
+    pytest.param(float, "['metric']", id='float-subclass'),
+])
+@pytest.mark.parametrize('number', [float('nan'), float('inf'), float('-inf')],
+                         ids=['nan', 'positive-infinity', 'negative-infinity'])
+def test_mixed_scalars_do_not_hide_subclass_errors_or_mutations(
+        release_db, scalar_type, base, suffix, number):
+    class ScalarEqual(type):
+        def __eq__(cls, other):
+            return cls is other or other is scalar_type
+
+        __hash__ = type.__hash__
+
+    Subclass = ScalarEqual('ExtensionSubclass', (base,), {})
+    primitives = (None, True, False, 0, -7, 10 ** 400, '', 'NaN',
+                  'Infinity', '-Infinity', -0.0, 1.5, sys.float_info.max)
+    metric_type = Subclass if base is float else float
+    entry = {'metric': metric_type(1.5)}
+    if base is dict:
+        branch = Subclass({'before': primitives, 'entry': entry, 'after': primitives})
+    elif base is list or base is tuple:
+        branch = Subclass((primitives, entry, primitives))
+    else:
+        branch = entry
+    tree = {'text': 'NaN', 'large': 10 ** 400, 'flag': True, 'empty': None,
+            'finite': sys.float_info.max,
+            'z-first': [primitives, (None, branch, primitives), primitives],
+            'a-later': 1.0, 'alias': entry}
+    data = release_db.data
+    data['version'] = {'version': 'contract-v1'}
+    data['RegressionExtra'] = tree
+
+    def check(error_suffix=None):
+        before = json.dumps(data)
+        metric_before = entry['metric']
+        for validate, prefix in [
+                (lambda: finite_tree(tree, 'payload'), 'payload'),
+                (lambda: validate_release(data), "release['RegressionExtra']")]:
+            if error_suffix is None:
+                assert validate() is None
+            else:
+                with pytest.raises(ContractError) as error:
+                    validate()
+                assert_nonfinite_error(error.value, prefix + error_suffix)
+            assert json.dumps(data) == before
+            assert entry['metric'] is metric_before
+            assert data['RegressionExtra'] is tree
+            assert tree['z-first'][1][1] is branch
+            assert tree['alias'] is entry
+            assert tree['z-first'][0] is tree['z-first'][1][2] is primitives
+            if base is dict:
+                assert branch['entry'] is entry
+            elif base is list or base is tuple:
+                assert branch[1] is entry
+
+    check()
+    entry['metric'] = metric_type(number)
+    tree['a-later'] = float('inf')
+    check("['z-first'][1][1]" + suffix)
+    if base is float:
+        with pytest.raises(ContractError) as error:
+            finite_tree(entry['metric'], 'scalar-root')
+        assert_nonfinite_error(error.value, 'scalar-root')
+    entry['metric'] = metric_type(2.0)
+    check("['a-later']")
+    tree['a-later'] = 2.0
+    check()
+
+
+def test_unknown_extension_objects_keep_existing_memory_behavior(release_db):
+    class ExtensionValue:
+        metric = float('inf')
+
+    value = ExtensionValue()
+    tree = {'entries': [None, (True, value, 'Infinity')], 'alias': value}
+    release_db.data['RegressionExtra'] = tree
+    assert finite_tree(value, 'payload') is None
+    assert finite_tree(tree, 'payload') is None
+    assert validate_release(release_db.data, require_version=False) is None
+    assert release_db.data['RegressionExtra'] is tree
+    assert tree['entries'][1][1] is tree['alias'] is value
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+def test_file_apis_recheck_replaced_mixed_scalar_trees_and_first_error(
+        release_db, tmp_path, require_version):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    target = directory / 'future.json'
+    replacement = tmp_path / 'replacement.json'
+    primitives = [None, True, False, 0, -7, 10 ** 400, '', 'NaN',
+                  'Infinity', '-Infinity', -0.0, sys.float_info.max]
+    # z precedes a: the nested overflow must win over the shallower one.
+    valid = json.dumps({'primitives': primitives, 'z': [None, {'metric': 'FIRST'}],
+                        'a': 'SECOND'})
+    for first, second, suffix in [
+            ('1.5', '2.5', None),
+            ('1e999', '-1e999', "['z'][1]['metric']"),
+            ('1.5', '-1e999', "['a']"),
+            ('1.5', '2.5', None)]:
+        content = valid.replace('"FIRST"', first).replace('"SECOND"', second)
+        replacement.write_text(content, encoding='utf-8')
+        replacement.replace(target)
+        before = snapshot(directory)
+        if suffix is None:
+            assert load_json(target) == {'primitives': primitives,
+                                         'z': [None, {'metric': 1.5}], 'a': 2.5}
+            assert load_release(directory, require_version=require_version) == {
+                'version': 'contract-v1'}
+        else:
+            for load in [lambda: load_json(target),
+                         lambda: load_release(directory, require_version=require_version)]:
+                with pytest.raises(ContractError) as error:
+                    load()
+                assert_nonfinite_error(error.value, str(target) + suffix)
+        assert snapshot(directory) == before
+
+
 def snapshot(directory):
     return {path.name: path.read_bytes() for path in Path(directory).glob('*.json')}
 
