@@ -682,19 +682,29 @@ def parse_clean(constants):
         if skill['Link_Job'] is None:
             skills_to_remove.append(skill)
 
+    if not skills_to_remove:
+        return
+
     # Remove all inactive skills
+    removed_skill_ids = set()
     for skill in skills_to_remove:
         del constants.data['skills'][str(skill['$ID'])]
         del constants.data['skills_by_name'][skill['$ID_NAME']]
+        removed_skill_ids.add(skill['$ID'])
 
-        skill_id = skill['$ID']
-
-        for attribute in constants.data['attributes'].values():
-            attr = constants.data['attributes_by_name'][attribute['$ID_NAME']]
-            attribute['Link_Skills'] = [link for link in attribute['Link_Skills'] if link != skill_id]
-            attr['Link_Skills'] = [link for link in attr['Link_Skills'] if link != skill_id]
-        for job in constants.data['jobs'].values():
-            job2= constants.data['jobs_by_name'][job['$ID_NAME']]
-            job['Link_Skills'] = [link for link in job['Link_Skills'] if link != skill_id]
-            job2['Link_Skills'] = [link for link in job2['Link_Skills'] if link != skill_id]
+    # Filter each object once, including separate name-index objects and aliases.
+    filtered_objects = set()
+    for collection in ('attributes', 'jobs'):
+        by_name = constants.data[collection + '_by_name']
+        for obj in constants.data[collection].values():
+            named_obj = by_name[obj['$ID_NAME']]
+            for linked_obj in (obj, named_obj):
+                identity = id(linked_obj)
+                if identity in filtered_objects:
+                    continue
+                linked_obj['Link_Skills'] = [
+                    link for link in linked_obj['Link_Skills']
+                    if link not in removed_skill_ids
+                ]
+                filtered_objects.add(identity)
     

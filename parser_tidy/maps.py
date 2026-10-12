@@ -421,6 +421,7 @@ def parse_links_maps(constants):
 def parse_links_npcs(constants):
     logging.debug('Parsing Maps <> NPCs...')
 
+    path_insensitive = None
     #ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'map.ies')
     ies_path = constants.file_dict['map.ies']['path']
     with open(ies_path, 'r', encoding = 'utf8') as ies_file:
@@ -433,10 +434,12 @@ def parse_links_npcs(constants):
             anchors = {}
 
             # Spawn Positions (aka Anchors)
-            mongen_dir = os.listdir(os.path.join(constants.PATH_INPUT_DATA, 'ies_mongen.ipf'))
-            path_insensitive= {}
-            for item in mongen_dir:
-                path_insensitive[item.lower()] = item
+            if path_insensitive is None:
+                # Reuse this call's listing; empty map inputs never need it.
+                mongen_dir = os.listdir(os.path.join(constants.PATH_INPUT_DATA, 'ies_mongen.ipf'))
+                path_insensitive = {}
+                for item in mongen_dir:
+                    path_insensitive[item.lower()] = item
                 
             ies_file = 'anchor_' + map['$ID_NAME'] + '.ies'
             try:

@@ -17,17 +17,60 @@ def tree_values(root):
     return [(node.tag, dict(node.attrib), node.text, node.tail) for node in root.iter()]
 
 
+@pytest.fixture
+def reject_legacy_masker(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        pytest.fail('Control-free XML must bypass the legacy ScriptName masker')
+
+    monkeypatch.setattr(game_xml, '_mask_script_names', fail_if_called)
+
+
 @pytest.mark.parametrize('xml', [
     '<Root/>',
     '<?xml version="1.0"?><Root ScriptName="plain &amp; valid"><Child/>tail</Root>',
     '<Root><!-- ScriptName="fake" --><![CDATA[<Fake ScriptName="fake"/>]]>'
     '<?engine ScriptName="fake"?><Child ScriptName=\'single\'/></Root>',
     '<Root xmlns:s="urn:test" s:ScriptName="valid" ScriptName="&gt;x}"/>',
+    '<Root Other="a\t b\n c\r d">leading<Child Value="&quot;&amp;">'
+    'inside<Leaf/>leaf tail</Child>child tail<Last/>last tail</Root>',
+    '<Root Other="__TOS_SCRIPTNAME_CONTROL__0__">'
+    '<Child ScriptName="&#95;_TOS_SCRIPTNAME_CONTROL__0__"/></Root>',
+    '<!DOCTYPE Root [<!ENTITY marker "&#95;_TOS_SCRIPTNAME_CONTROL__0__">]>'
+    '<Root Other="&marker;"><Child ScriptName="&marker;"/>&marker;</Root>',
 ])
-def test_normal_xml_matches_standard_elementtree(xml):
+def test_normal_xml_matches_standard_elementtree(xml, reject_legacy_masker):
     expected = tree_values(ET.fromstring(xml))
     assert tree_values(game_xml.fromstring(xml)) == expected
     assert tree_values(game_xml.parse(io.StringIO(xml)).getroot()) == expected
+
+
+@pytest.mark.parametrize('xml', [
+    '',
+    '<Root><Child></Root>',
+    '<Root>\n<Child></Root>',
+    '<Root Other=unquoted/>',
+    '<Root ScriptName="one" ScriptName="duplicate"/>',
+    '<Root ScriptName="unterminated/>',
+    '<Root s:ScriptName="unbound"/>',
+    '<Root>&undefined;</Root>',
+    '<Root ScriptName="&#1;"/>',
+    '<Root ScriptName="&#x01;"/>',
+    '<!DOCTYPE Root [<!ENTITY control "&#1;">]><Root ScriptName="&control;"/>',
+    '<Root/><Second/>',
+    '<Root><!-- unterminated</Root>',
+    '<Root><![CDATA[unterminated</Root>',
+    '<Root><?engine unterminated</Root>',
+    '<Root/>trailing text',
+])
+def test_control_free_parseerror_matches_elementtree_without_masking(xml, reject_legacy_masker):
+    with pytest.raises(ET.ParseError) as expected:
+        ET.fromstring(xml)
+    for parse in (game_xml.fromstring, lambda text: game_xml.parse(io.StringIO(text))):
+        with pytest.raises(ET.ParseError) as actual:
+            parse(xml)
+        assert actual.value.code == expected.value.code
+        assert actual.value.position == expected.value.position
+        assert str(actual.value) == str(expected.value)
 
 
 @pytest.mark.parametrize('control', FORBIDDEN_CONTROLS,
@@ -52,7 +95,15 @@ def test_allowed_attribute_whitespace_retains_standard_xml_normalization(whitesp
 
 
 @pytest.mark.parametrize('collision', ['literal', 'character-reference', 'dtd-entity'])
-def test_marker_collision_does_not_change_unrelated_values(collision):
+def test_marker_collision_does_not_change_unrelated_values(collision, monkeypatch):
+    mask_script_names = game_xml._mask_script_names
+    prefixes = []
+
+    def record_masking(text, prefix):
+        prefixes.append(prefix)
+        return mask_script_names(text, prefix)
+
+    monkeypatch.setattr(game_xml, '_mask_script_names', record_masking)
     marker = '__TOS_SCRIPTNAME_CONTROL__0__'
     encoded = ''.join('&#{};'.format(ord(char)) for char in marker)
     declaration = ''
@@ -70,6 +121,8 @@ def test_marker_collision_does_not_change_unrelated_values(collision):
     assert root[0].get('ScriptName') == 'a\x01b'
     assert root[1].get('ScriptName') == marker
     assert root[1].tail == marker
+    assert len(prefixes) == (1 if collision == 'literal' else 2)
+    assert len(set(prefixes)) == len(prefixes)
 
 
 @pytest.mark.parametrize('fragment', [

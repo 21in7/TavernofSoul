@@ -189,6 +189,13 @@ def package(contents, path, items):
 
 def validate_release(data, require_version=True):
     """Validate complete importer inputs in memory; raise the first located error."""
+    _validate_release_structure(data, require_version=require_version)
+    finite_tree(data, 'release')
+    _validate_release_domain(data)
+
+
+def _validate_release_structure(data, require_version=True):
+    """Check the release envelope before finiteness and domain validation."""
     if not isinstance(data, dict):
         fail('release', 'type', 'expected an object of collections')
     for name in REQUIRED_COLLECTIONS:
@@ -199,8 +206,10 @@ def validate_release(data, require_version=True):
         if not isinstance(version, dict) or 'version' not in version:
             fail('version.version', 'required', 'missing release version')
         text(version['version'], 'version.version', limit=50, nonempty=True)
-    finite_tree(data, 'release')
 
+
+def _validate_release_domain(data):
+    """Check domain rules after structure and whole-input finiteness checks."""
     item_type = data['item_type']
     if not isinstance(item_type, dict):
         fail('item_type', 'type', 'expected an object of item groups')
@@ -648,5 +657,11 @@ def load_release(directory, require_version=True):
         value = load_json(path)
         if path.stem in REQUIRED_COLLECTIONS + REINFORCEMENT_COLLECTIONS + DIAGNOSTIC_COLLECTIONS + ('version',):
             data[path.stem] = value
-    validate_release(data, require_version=require_version)
+    # Every file, including auxiliary files not retained in data, has already
+    # passed load_json's strict decoding, root and finite_tree checks. Keep the
+    # release structure/domain checks without repeating the whole-tree walk.
+    # This assurance belongs only to this call; do not cache it for later loads
+    # or use it for independently supplied (possibly mutated) memory inputs.
+    _validate_release_structure(data, require_version=require_version)
+    _validate_release_domain(data)
     return data.get('version')

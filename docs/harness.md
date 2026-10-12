@@ -423,6 +423,39 @@ ID 중복·참조·수치 범위·단위 담당 단계와 기존 optional/sentin
 맵·속성·버프 원본은 world, 카드·컬렉션 원본은 regional fixture에서 따로 검사한다.
 책·업적 계약의 현재 통합 입력은 고정 JSON이다.
 
+### 최적화 회귀와 성능 근거
+
+다음은 네 최적화의 검토·검사 요구사항이며 실행 성공 기록이 아니다. 작은 합성 입력과
+직접 작성한 기대값을 사용하고 기존 임시 프로젝트 준비·전역 상태 복원 정책을 유지한다.
+
+- `parser_tidy/tests/test_game_xml.py`: 금지 ASCII 제어문자가 없는 입력이 기존 masker를
+  호출하지 않고 일반 노드·속성·text·tail과 `ET.ParseError`를 보존하는지 확인한다.
+  제어문자가 있는 입력에는 기존 ScriptName 한정 허용과 문자참조·DTD marker 충돌 회귀를 유지한다.
+- `parser_tidy/tests/test_release_contract.py`: 파일별 `load_json`의 유한성 검사 이후
+  `load_release`의 전체 재순회만 제거하는지 확인한다. 보조·선택·version JSON까지 중복 키,
+  NaN/Inf·지수 overflow·잘못된 root를 거부하고 도메인 오류의 path/code/message를 유지해야 한다.
+  공개 `validate_release(data, require_version=True)`의 독립 메모리 검사는 엄격해야 하며
+  검증 우회 flag를 노출하지 않는다. 파일·메모리 수정 후 재호출과 실패 복구 후 재시도를 포함한다.
+  호출 횟수 계측은 fixture 준비가 끝난 뒤 대상 호출에만 적용하고 기존 함수로 복원한다.
+  `test_atomic_release.py`와 함께 메모리 검사 후 쓰기, staging 검사 후 승급,
+  백업·롤백·버전 보존 정책을 확인한다.
+- `parser_tidy/tests/test_combat_source_fixture.py`: 비활성 스킬의 기존 순서·삭제 동작,
+  원본 문자열/정수 ID 비교, 링크 순서와 남은 중복을 독립 기대값과 비교한다.
+  공유 객체·별도 by_name 객체·alias에서 객체당 한 번의 링크 필터링, 비활성 0개일 때
+  링크 목록 보존, 같은 객체·다른 지역·외부 수정 후 재호출을 확인한다.
+- `parser_tidy/tests/test_world_source_fixture.py`: 맵/NPC/item 관계·좌표·인구·미해결 동작을
+  유지하면서 필요한 호출마다 디렉터리를 한 번 조회하는지 계측한다. 빈 map 입력에서는
+  디렉터리를 조회하지 않으며, 대소문자 충돌은 제공한 디렉터리 순서의 마지막 항목을 선택해야 한다.
+  지역·원본 디렉터리 변경과 파일 수정 후 반복 호출에서 인덱스를 새로 만드는지도 확인한다.
+
+범위가 제한된 worker는 검사·benchmark·운영 데이터 파이프라인·CI·Git·workflow를 실행하지 않는다.
+실제 회귀와 전체 `make check`, 지역별 전체 실데이터 출력 및 누적 성능 비교는 메인
+오케스트레이터가 담당한다. XML prototype 단계 시간, 단일 JSON 순회 표본, 합성 cleanup과
+디렉터리 인덱스의 로컬 진단은 최종 구현 전체 파서·CI 통과나 누적 개선율의 근거가 아니다.
+누적 성능은 같은 입력·환경·측정 범위의 기준 소스와 최종 소스를 비교하고,
+출력 동등성·실행한 지역·반복 측정 여부를 함께 보고한다. 서로 다른 단계의 속도 배율을
+곱하거나 서로 다른 실험의 절감 시간을 더해 전체 개선율로 제시하지 않는다.
+
 ## 파서 원본 검증
 
 [아이템 fixture 안내](../harness/fixtures/parser/README.md)의 작은 입력 7개 아이템으로

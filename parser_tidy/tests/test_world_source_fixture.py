@@ -30,6 +30,235 @@ def snapshot(db):
     return {path.name: path.read_bytes() for path in Path(db.BASE_PATH_OUTPUT).glob('*.json')}
 
 
+def _npc_link_source(root, names=('alpha',)):
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / 'map.ies'
+    path.write_text('ClassName,Width,Height\n' + ''.join(
+        '{},200,100\n'.format(name) for name in names), encoding='utf-8')
+    objects = {str(index): {'$ID': str(index), '$ID_NAME': name, 'bbox': [3, 4, 0, 0]}
+               for index, name in enumerate(names, 900)}
+    npc = {'$ID': '700'}
+    monster = {'$ID': '701'}
+    lookup = {'vendor': (npc, 'NPC'), 'beast': (monster, 'Monster')}
+    return SimpleNamespace(
+        PATH_INPUT_DATA=str(root), region='itos',
+        file_dict={'map.ies': {'path': str(path)}},
+        data={'maps': objects, 'maps_by_name': {obj['$ID_NAME']: obj for obj in objects.values()},
+              'npcs_by_name': {'vendor': npc}, 'monsters_by_name': {'beast': monster},
+              'items_by_name': {'recipe_token': {'$ID': '100', '$ID_NAME': 'recipe_token'}},
+              'item_type': {'RECIPES': ['recipe_token']}, 'map_npc': [],
+              'map_item_spawn': [], 'map_item': [],
+              'unresolved_drops': [{'collection': 'monster', 'Token': 'keep'}]},
+        getNPCbyName=lookup.get,
+    )
+
+
+def _write_spawn_source(root, filename, body):
+    directory = root / 'ies_mongen.ipf'
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / filename).write_text(body, encoding='utf-8')
+
+
+def test_npc_directory_index_once_preserves_independent_multimap_relations(tmp_path, monkeypatch):
+    db = _npc_link_source(tmp_path, ('alpha', 'beta', 'missing_anchor', 'missing_gentype'))
+    _write_spawn_source(tmp_path, 'ANCHOR_ALPHA.IES',
+                        'GenType,PosX,PosZ\n'
+                        'a,10,4\na,-10,14\nb,0,0\nitem,4,-10\n'
+                        'unknown,0,0\nunknown_item,0,0\nunused,0,0\n')
+    _write_spawn_source(tmp_path, 'GenType_Alpha.Ies',
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\n'
+                        'a,vendor,,2,1500\nb,vendor,,3,9000\n'
+                        'item,vendor,ITEM:recipe_token:SPAWN,4,2500\n'
+                        'unknown,missing_npc,,99,1000\n'
+                        'unknown_item,vendor,ITEM:missing_item:SPAWN,99,1000\n'
+                        'no_anchor,vendor,,99,1000\n')
+    _write_spawn_source(tmp_path, 'anchor_beta.ies', 'GenType,PosX,PosZ\na,-6,8\n')
+    _write_spawn_source(tmp_path, 'gentype_beta.ies',
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,beast,,6,750\n')
+    _write_spawn_source(tmp_path, 'gentype_missing_anchor.ies',
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,vendor,,1,1000\n')
+    _write_spawn_source(tmp_path, 'anchor_missing_gentype.ies', 'GenType,PosX,PosZ\na,0,0\n')
+    Path(db.file_dict['map.ies']['path']).write_text(
+        'ClassName,Width,Height\nalpha,200,100\nbeta,80,60\n'
+        'missing_anchor,200,100\nmissing_gentype,200,100\n', encoding='utf-8')
+    db.data['maps']['901']['bbox'] = [1, 2, 0, 0]
+    listdir = maps.os.listdir
+    calls = []
+
+    def record_listing(path):
+        calls.append(path)
+        return listdir(path)
+
+    monkeypatch.setattr(maps.os, 'listdir', record_listing)
+    maps.parse_links_npcs(db)
+    assert calls == [str(tmp_path / 'ies_mongen.ipf')]
+    assert db.data['map_npc'] == [
+        {'NPC': '700', 'Map': '900', 'Type': 'NPC', 'Population': 5,
+         'Positions': [[52, 19], [42, 14], [47, 21]], 'TimeRespawn': 1.5},
+        {'NPC': '701', 'Map': '901', 'Type': 'Monster', 'Population': 6,
+         'Positions': [[16, 9]], 'TimeRespawn': 0.75},
+    ]
+    assert db.data['map_item_spawn'] == [
+        {'Item': 'recipe-100', 'Map': '900', 'Population': 4,
+         'Positions': [[49, 26]], 'TimeRespawn': 2.5},
+    ]
+    assert db.data['unresolved_drops'] == [{'collection': 'monster', 'Token': 'keep'}]
+
+
+def test_empty_maps_do_not_access_missing_spawn_directory(tmp_path, monkeypatch):
+    db = _npc_link_source(tmp_path, ())
+    calls = []
+    listdir = maps.os.listdir
+
+    def record_listing(path):
+        calls.append(path)
+        return listdir(path)
+
+    monkeypatch.setattr(maps.os, 'listdir', record_listing)
+    maps.parse_links_npcs(db)
+    assert calls == []
+    assert db.data['map_npc'] == []
+    assert db.data['map_item_spawn'] == []
+    assert not (tmp_path / 'ies_mongen.ipf').exists()
+
+
+@pytest.mark.parametrize('error', [FileNotFoundError, PermissionError])
+def test_nonempty_maps_preserve_spawn_directory_errors(tmp_path, monkeypatch, error):
+    db = _npc_link_source(tmp_path)
+    calls = []
+    listdir = maps.os.listdir
+
+    def failing_listing(path):
+        calls.append(path)
+        if error is FileNotFoundError:
+            return listdir(path)
+        raise PermissionError('spawn directory denied')
+
+    monkeypatch.setattr(maps.os, 'listdir', failing_listing)
+    with pytest.raises(error):
+        maps.parse_links_npcs(db)
+    assert calls == [str(tmp_path / 'ies_mongen.ipf')]
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_spawn_case_collisions_use_last_listing_entry(tmp_path, monkeypatch, reverse):
+    db = _npc_link_source(tmp_path)
+    names = ['anchor_alpha.ies', 'ANCHOR_ALPHA.IES', 'gentype_alpha.ies', 'GENTYPE_ALPHA.IES']
+    _write_spawn_source(tmp_path, names[0], 'GenType,PosX,PosZ\na,0,0\n')
+    _write_spawn_source(tmp_path, names[1], 'GenType,PosX,PosZ\na,20,-20\n')
+    _write_spawn_source(tmp_path, names[2],
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,vendor,,2,1000\n')
+    _write_spawn_source(tmp_path, names[3],
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,beast,,7,2500\n')
+    calls = []
+
+    def ordered_listing(path):
+        calls.append(path)
+        return names[::-1] if reverse else names[:]
+
+    monkeypatch.setattr(maps.os, 'listdir', ordered_listing)
+    maps.parse_links_npcs(db)
+    assert calls == [str(tmp_path / 'ies_mongen.ipf')]
+    expected = ({'NPC': '700', 'Map': '900', 'Type': 'NPC', 'Population': 2,
+                 'Positions': [[47, 21]], 'TimeRespawn': 1.0} if reverse else
+                {'NPC': '701', 'Map': '900', 'Type': 'Monster', 'Population': 7,
+                 'Positions': [[57, 31]], 'TimeRespawn': 2.5})
+    assert db.data['map_npc'] == [expected]
+
+
+def test_empty_directory_index_is_reused_and_missing_names_use_literal_fallback(tmp_path, monkeypatch):
+    db = _npc_link_source(tmp_path, ('alpha', 'beta'))
+    for name in ('alpha', 'beta'):
+        _write_spawn_source(tmp_path, 'anchor_{}.ies'.format(name), 'GenType,PosX,PosZ\na,0,0\n')
+        _write_spawn_source(tmp_path, 'gentype_{}.ies'.format(name),
+                            'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,vendor,,1,1000\n')
+    calls = []
+
+    def empty_listing(path):
+        calls.append(path)
+        return []
+
+    monkeypatch.setattr(maps.os, 'listdir', empty_listing)
+    maps.parse_links_npcs(db)
+    assert calls == [str(tmp_path / 'ies_mongen.ipf')]
+    assert db.data['map_npc'] == [
+        {'NPC': '700', 'Map': '900', 'Type': 'NPC', 'Population': 1,
+         'Positions': [[47, 21]], 'TimeRespawn': 1.0},
+        {'NPC': '700', 'Map': '901', 'Type': 'NPC', 'Population': 1,
+         'Positions': [[47, 21]], 'TimeRespawn': 1.0},
+    ]
+
+
+def test_spawn_index_refreshes_after_region_path_and_directory_changes(tmp_path, monkeypatch):
+    itos_root = tmp_path / 'itos'
+    jtos_root = tmp_path / 'jtos'
+    db = _npc_link_source(itos_root)
+    _write_spawn_source(itos_root, 'anchor_alpha.ies', 'GenType,PosX,PosZ\na,0,0\n')
+    _write_spawn_source(itos_root, 'gentype_alpha.ies',
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,vendor,,1,1000\n')
+    _write_spawn_source(jtos_root, 'ANCHOR_ALPHA.IES', 'GenType,PosX,PosZ\na,20,-20\n')
+    _write_spawn_source(jtos_root, 'GENTYPE_ALPHA.IES',
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,beast,,7,2500\n')
+    listdir = maps.os.listdir
+    calls = []
+
+    def record_listing(path):
+        calls.append(path)
+        return listdir(path)
+
+    monkeypatch.setattr(maps.os, 'listdir', record_listing)
+    maps.parse_links_npcs(db)
+    first = {'NPC': '700', 'Map': '900', 'Type': 'NPC', 'Population': 1,
+             'Positions': [[47, 21]], 'TimeRespawn': 1.0}
+    assert db.data['map_npc'] == [first]
+    db.region = 'jtos'
+    db.PATH_INPUT_DATA = str(jtos_root)
+    maps.parse_links_npcs(db)
+    second = {'NPC': '701', 'Map': '900', 'Type': 'Monster', 'Population': 7,
+              'Positions': [[57, 31]], 'TimeRespawn': 2.5}
+    assert db.data['map_npc'] == [first, second]
+    (jtos_root / 'ies_mongen.ipf/ANCHOR_ALPHA.IES').unlink()
+    (jtos_root / 'ies_mongen.ipf/GENTYPE_ALPHA.IES').unlink()
+    _write_spawn_source(jtos_root, 'Anchor_Alpha.Ies', 'GenType,PosX,PosZ\na,-20,20\n')
+    _write_spawn_source(jtos_root, 'Gentype_Alpha.Ies',
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\na,vendor,,4,750\n')
+    maps.parse_links_npcs(db)
+    third = {'NPC': '700', 'Map': '900', 'Type': 'NPC', 'Population': 4,
+             'Positions': [[37, 11]], 'TimeRespawn': 0.75}
+    assert db.data['map_npc'] == [first, second, third]
+    db.region = 'itos'
+    db.PATH_INPUT_DATA = str(itos_root)
+    maps.parse_links_npcs(db)
+    assert db.data['map_npc'] == [first, second, third, first]
+    assert calls == [str(root / 'ies_mongen.ipf')
+                     for root in (itos_root, jtos_root, jtos_root, itos_root)]
+
+
+def test_direct_spawn_links_append_but_parent_relink_resets_relations(tmp_path, monkeypatch):
+    db = _npc_link_source(tmp_path)
+    _write_spawn_source(tmp_path, 'anchor_alpha.ies', 'GenType,PosX,PosZ\na,0,0\nitem,4,-10\n')
+    _write_spawn_source(tmp_path, 'gentype_alpha.ies',
+                        'GenType,ClassType,ArgStr2,MaxPop,RespawnTime\n'
+                        'a,vendor,,1,1000\nitem,vendor,ITEM:recipe_token:SPAWN,4,2500\n')
+    expected_npcs = [{'NPC': '700', 'Map': '900', 'Type': 'NPC', 'Population': 1,
+                      'Positions': [[47, 21]], 'TimeRespawn': 1.0}]
+    expected_items = [{'Item': 'recipe-100', 'Map': '900', 'Population': 4,
+                       'Positions': [[49, 26]], 'TimeRespawn': 2.5}]
+    maps.parse_links_npcs(db)
+    maps.parse_links_npcs(db)
+    assert db.data['map_npc'] == expected_npcs * 2
+    assert db.data['map_item_spawn'] == expected_items * 2
+    # Isolate the parent's reset from unrelated item/drop/floor source parsing.
+    for name in ('parse_links_items', 'parse_links_items_rewards', 'parse_links_maps'):
+        monkeypatch.setattr(maps, name, lambda constants: None)
+    db.data['unresolved_drops'].append({'collection': 'map_item', 'Token': 'stale'})
+    for _ in range(2):
+        maps.parse_links(db)
+        assert db.data['map_npc'] == expected_npcs
+        assert db.data['map_item_spawn'] == expected_items
+        assert db.data['unresolved_drops'] == [{'collection': 'monster', 'Token': 'keep'}]
+
+
 @pytest.fixture
 def floor_source(tmp_path):
     path = tmp_path / 'map.ies'

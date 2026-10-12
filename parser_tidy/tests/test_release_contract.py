@@ -13,9 +13,15 @@ import pytest
 from DB import ToS_DB
 from harness.contract_fixture import add_contract_edges
 from harness.parser_fixture import parse_workspace, prepare_combat_workspace
+from ipfparser import contracts
 from ipfparser.contracts import ContractError, finite_tree, load_json, load_release, validate_release
 
 DELETE = object()
+
+
+def assert_contract_error(error, path, code, message):
+    assert (error.path, error.code, error.message) == (path, code, message)
+    assert str(error) == '{} [{}]: {}'.format(path, code, message)
 
 
 def assert_nonfinite_error(error, path):
@@ -153,6 +159,504 @@ def snapshot(directory):
     return {path.name: path.read_bytes() for path in Path(directory).glob('*.json')}
 
 
+@pytest.fixture
+def export_observation(release_db, monkeypatch):
+    """Observe the real export boundaries; never stub either validator."""
+    import DB
+    release = Path(release_db.BASE_PATH_OUTPUT)
+    staging = Path(str(release) + '.staging')
+    backup = Path(str(release) + '.backup')
+    observed = {name: [] for name in ('writes', 'staged', 'copies', 'promotions')}
+    real_write = DB._atomic_write_json
+    real_load = DB.load_release
+    real_copy = DB.shutil.copy2
+    real_replace = DB.os.replace
+
+    def record_write(filepath, value):
+        observed['writes'].append(Path(filepath))
+        return real_write(filepath, value)
+
+    def record_staged(directory, **kwargs):
+        observed['staged'].append(Path(directory))
+        return real_load(directory, **kwargs)
+
+    def record_copy(src, dst, *args, **kwargs):
+        if Path(dst).parent == backup:
+            observed['copies'].append(Path(dst))
+        return real_copy(src, dst, *args, **kwargs)
+
+    def record_replace(src, dst):
+        if Path(src).parent == staging and Path(dst).parent == release:
+            observed['promotions'].append(Path(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(DB, '_atomic_write_json', record_write)
+    monkeypatch.setattr(DB, 'load_release', record_staged)
+    monkeypatch.setattr(DB.shutil, 'copy2', record_copy)
+    monkeypatch.setattr(DB.os, 'replace', record_replace)
+    return observed
+
+
+def assert_failed_export_preserved_release(db, before, observed):
+    assert observed['copies'] == observed['promotions'] == []
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-v1'}
+    assert not Path(db.BASE_PATH_OUTPUT + '.staging').exists()
+    assert not Path(db.BASE_PATH_OUTPUT + '.backup').exists()
+
+
+@pytest.mark.parametrize('require_version,has_version', [(True, True), (False, True), (False, False)])
+def test_load_release_checks_each_json_once_and_rechecks_changed_snapshot(
+        release_db, monkeypatch, require_version, has_version):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    assert (directory / 'dictionary.json').is_file()
+    # Include both retained optional collections and an unknown auxiliary file.
+    for filename, content in [('goddess_reinf.json', '{}'), ('goddess_reinf_mat.json', '{}'),
+                              ('unresolved_map_links.json', '[]'), ('future.json', '{"metric": [1]}')]:
+        (directory / filename).write_text(content, encoding='utf-8')
+    if not has_version:
+        (directory / 'version.json').unlink()
+    calls = Counter()
+    real_finite = contracts.finite_tree
+
+    def record_finite(value, path):
+        calls[str(path)] += 1
+        return real_finite(value, path)
+
+    monkeypatch.setattr(contracts, 'finite_tree', record_finite)
+    before = snapshot(directory)
+    expected = Counter({str(directory / filename): 1 for filename in before})
+    assert load_release(directory, require_version=require_version) == (
+        {'version': 'contract-v1'} if has_version else None)
+    assert calls == expected  # No final finite_tree(..., 'release') call.
+    assert snapshot(directory) == before
+
+    # A later call must enumerate and read fresh files, including auxiliaries.
+    (directory / 'future.json').write_text('{"metric": [2]}', encoding='utf-8')
+    (directory / 'new_auxiliary.json').write_text('[{"metric": 3}]', encoding='utf-8')
+    (directory / 'version.json').write_text('{"version": "contract-v2"}', encoding='utf-8')
+    calls.clear()
+    before = snapshot(directory)
+    assert load_release(directory, require_version=require_version) == {'version': 'contract-v2'}
+    assert calls == Counter({str(directory / filename): 1 for filename in before})
+    assert snapshot(directory) == before
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+@pytest.mark.parametrize('location', ['auxiliary', 'extension-collection', 'extension-field', 'version'])
+def test_memory_api_rechecks_nested_shared_mutation_without_changing_input(
+        release_db, monkeypatch, require_version, location):
+    data = release_db.data
+    data['version'] = {'version': 'contract-v1'}
+    owners = {
+        'auxiliary': (data['dictionary'], "release['dictionary']"),
+        'extension-collection': (data, 'release'),
+        'extension-field': (data['items_by_name']['harness_ore'], "release['items_by_name']['harness_ore']"),
+        'version': (data['version'], "release['version']"),
+    }
+    owner, prefix = owners[location]
+    entry = {'metric': 1.0}
+    pair = ('NaN', entry)
+    entries = [pair]
+    owner['RegressionExtra'] = {'entries': entries, 'alias': entry}
+    calls = []
+    real_finite = contracts.finite_tree
+
+    def record_finite(value, path):
+        calls.append((value, path))
+        return real_finite(value, path)
+
+    monkeypatch.setattr(contracts, 'finite_tree', record_finite)
+
+    def check(value, invalid=False):
+        entry['metric'] = value
+        before = json.dumps(data)  # Stable even for NaN, whose equality is unusual.
+        calls.clear()
+        if invalid:
+            with pytest.raises(ContractError) as error:
+                validate_release(data, require_version=require_version)
+            assert_nonfinite_error(error.value, prefix + "['RegressionExtra']['entries'][0][1]['metric']")
+        else:
+            assert validate_release(data, require_version=require_version) is None
+        assert len(calls) == 1
+        assert calls[0][0] is data and calls[0][1] == 'release'
+        assert json.dumps(data) == before
+        assert owner['RegressionExtra']['entries'] is entries
+        assert entries[0] is pair
+        assert pair[1] is owner['RegressionExtra']['alias'] is entry
+
+    check(1.0)
+    for value in (float('nan'), float('inf'), float('-inf')):
+        check(value, invalid=True)
+        check(2.0)
+
+
+@pytest.mark.parametrize('with_version', [False, True])
+@pytest.mark.parametrize('failure', ['nonfinite-auxiliary', 'domain'])
+def test_real_export_rejects_memory_before_any_write_and_allows_retry(
+        release_db, export_observation, with_version, failure):
+    db = release_db
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    version = {'version': 'contract-v2'} if with_version else None
+    if failure == 'nonfinite-auxiliary':
+        shared = {'metric': float('inf')}
+        db.data['dictionary']['RegressionExtra'] = {'entries': [shared], 'alias': shared}
+        expected = ("release['dictionary']['RegressionExtra']['entries'][0]['metric']",
+                    'number', 'NaN and Infinity are not JSON numbers')
+    else:
+        original = db.data['items_by_name']['harness_ore']['Grade']
+        db.data['items_by_name']['harness_ore']['Grade'] = 7
+        expected = ("items_by_name['harness_ore'].Grade", 'range', 'expected a value in 0..6')
+    unchanged = json.dumps(db.data)
+    with pytest.raises(ContractError) as error:
+        db.export(version_payload=version)
+    assert_contract_error(error.value, *expected)
+    assert json.dumps(db.data) == unchanged
+    assert export_observation['writes'] == export_observation['staged'] == []
+    assert_failed_export_preserved_release(db, before, export_observation)
+
+    if failure == 'nonfinite-auxiliary':
+        shared['metric'] = 1.0  # Keep the same shared object for the retry.
+    else:
+        db.data['items_by_name']['harness_ore']['Grade'] = original
+    db.export(version_payload=version)
+    assert export_observation['promotions']
+    assert load_release(db.BASE_PATH_OUTPUT) == {
+        'version': 'contract-v2' if with_version else 'contract-v1'}
+    if not with_version:
+        assert snapshot(db.BASE_PATH_OUTPUT)['version.json'] == before['version.json']
+    assert not Path(db.BASE_PATH_OUTPUT + '.staging').exists()
+    assert not Path(db.BASE_PATH_OUTPUT + '.backup').exists()
+
+
+def test_memory_failure_preserves_existing_staging_and_recovery_sentinel(
+        release_db, export_observation):
+    db = release_db
+    staging = Path(db.BASE_PATH_OUTPUT + '.staging')
+    backup = Path(db.BASE_PATH_OUTPUT + '.backup')
+    staging.mkdir()
+    backup.mkdir()
+    stale = staging / 'stale.json'
+    sentinel = backup / '.promotion-in-progress'
+    stale_bytes = b'{"stale": true}\n'
+    sentinel_bytes = b'previous promotion requires manual recovery\n'
+    stale.write_bytes(stale_bytes)
+    sentinel.write_bytes(sentinel_bytes)
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    db.data['dictionary']['RegressionExtra'] = {'metric': float('-inf')}
+    with pytest.raises(ContractError) as error:
+        db.export(version_payload={'version': 'contract-v2'})
+    assert_nonfinite_error(error.value, "release['dictionary']['RegressionExtra']['metric']")
+    assert export_observation == {name: [] for name in ('writes', 'staged', 'copies', 'promotions')}
+    assert stale.read_bytes() == stale_bytes
+    assert sentinel.read_bytes() == sentinel_bytes
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+
+    db.data['dictionary']['RegressionExtra']['metric'] = 1.0
+    # Fixing the memory error does not bypass the existing recovery guard.
+    with pytest.raises(RuntimeError, match='non-empty backup dir exists'):
+        db.export(version_payload={'version': 'contract-v2'})
+    assert sentinel.read_bytes() == sentinel_bytes
+    assert snapshot(db.BASE_PATH_OUTPUT) == before
+    assert export_observation['writes'] == export_observation['staged'] == []
+    assert export_observation['copies'] == export_observation['promotions'] == []
+
+    # Model explicit recovery of the synthetic leftover, not automatic removal.
+    shutil.rmtree(backup)
+    db.export(version_payload={'version': 'contract-v2'})
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': 'contract-v2'}
+    assert export_observation['promotions']
+    assert not staging.exists()
+    assert not backup.exists()
+
+
+# Decoder errors name the file; exponent overflow is found by finite_tree and
+# retains its nested location. These expectations are independent of the reader.
+STRICT_FILE_CASES = [
+    pytest.param('{"value": 1, "value": 2}', '', 'duplicate_key',
+                 "duplicate JSON key 'value'", id='duplicate-root-key'),
+    pytest.param('{"rows": [{"metric": 1, "metric": 2}]}', '', 'duplicate_key',
+                 "duplicate JSON key 'metric'", id='duplicate-nested-key'),
+    pytest.param('{"rows": [{"metric": NaN}]}', '', 'number',
+                 'NaN is not a JSON number', id='nested-nan'),
+    pytest.param('{"rows": [{"metric": Infinity}]}', '', 'number',
+                 'Infinity is not a JSON number', id='nested-positive-infinity'),
+    pytest.param('{"rows": [{"metric": -Infinity}]}', '', 'number',
+                 '-Infinity is not a JSON number', id='nested-negative-infinity'),
+    pytest.param('{"rows": [{"metric": 1e999}]}', "['rows'][0]['metric']", 'number',
+                 'NaN and Infinity are not JSON numbers', id='nested-exponent-overflow'),
+    pytest.param('{"value":', '', 'json',
+                 'cannot load JSON: Expecting value: line 1 column 10 (char 9)', id='malformed'),
+] + [pytest.param(content, '', 'type', 'expected a JSON object or array', id='root-' + name)
+     for name, content in [('null', 'null'), ('number', '42'), ('string', '"NaN"'), ('boolean', 'true')]]
+STRICT_FILES = ['items_by_name.json', 'dictionary.json', 'unresolved_map_links.json',
+                'version.json', 'future.json']
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+@pytest.mark.parametrize('filename', STRICT_FILES)
+@pytest.mark.parametrize('content,suffix,code,message', STRICT_FILE_CASES)
+def test_load_release_strictly_checks_all_file_roles_and_retries_after_repair(
+        release_db, require_version, filename, content, suffix, code, message):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    # Optional/extension files are included even when this fixture omits them.
+    (directory / 'unresolved_map_links.json').write_text('[]', encoding='utf-8')
+    (directory / 'future.json').write_text('{}', encoding='utf-8')
+    target = directory / filename
+    original = target.read_bytes()
+    before = snapshot(directory)
+    target.write_text(content, encoding='utf-8')
+    corrupted = snapshot(directory)
+    with pytest.raises(ContractError) as error:
+        load_release(directory, require_version=require_version)
+    assert_contract_error(error.value, str(target) + suffix, code, message)
+    assert snapshot(directory) == corrupted  # Validator never repairs snapshots.
+    target.write_bytes(original)
+    assert load_release(directory, require_version=require_version) == {'version': 'contract-v1'}
+    assert snapshot(directory) == before
+
+
+@pytest.mark.parametrize('with_version', [False, True])
+@pytest.mark.parametrize('filename', STRICT_FILES)
+@pytest.mark.parametrize('content,suffix,code,message', STRICT_FILE_CASES)
+def test_real_staging_strict_errors_preserve_public_bytes_and_allow_retry(
+        release_db, export_observation, monkeypatch, with_version, filename,
+        content, suffix, code, message):
+    import DB
+    db = release_db
+    db.data['unresolved_map_links'] = []
+    db.data['future'] = {}
+    # With no explicit payload, a version already present in data is still a
+    # written JSON file and must be validated under require_version=False.
+    if filename == 'version.json' and not with_version:
+        db.data['version'] = {'version': 'contract-v2'}
+    version = {'version': 'contract-v2'} if with_version else None
+    staging = Path(db.BASE_PATH_OUTPUT + '.staging')
+    target = staging / filename
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    memory_before = copy.deepcopy(db.data)
+    real_write = DB._atomic_write_json
+    corrupted = []
+
+    def corrupt_after_write(filepath, value):
+        real_write(filepath, value)
+        if Path(filepath) == target:
+            target.write_text(content, encoding='utf-8')
+            corrupted.append(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DB, '_atomic_write_json', corrupt_after_write)
+        with pytest.raises(ContractError) as error:
+            db.export(version_payload=version)
+    assert_contract_error(error.value, str(target) + suffix, code, message)
+    assert corrupted == [target]
+    assert db.data == memory_before
+    assert export_observation['writes']
+    assert export_observation['staged'] == [staging]
+    assert_failed_export_preserved_release(db, before, export_observation)
+
+    db.export(version_payload=version)
+    expected_version = 'contract-v2' if with_version or filename == 'version.json' else 'contract-v1'
+    assert load_release(db.BASE_PATH_OUTPUT) == {'version': expected_version}
+    assert export_observation['promotions']
+    if expected_version == 'contract-v1':
+        assert snapshot(db.BASE_PATH_OUTPUT)['version.json'] == before['version.json']
+    assert not staging.exists()
+    assert not Path(db.BASE_PATH_OUTPUT + '.backup').exists()
+
+
+DOMAIN_BOUNDARY_CASES = [
+    pytest.param('items_by_name', (), [], 'items_by_name', 'type',
+                 'expected an object index', id='required-index-root'),
+    pytest.param('map_npc', (), {}, 'map_npc', 'type',
+                 'expected an array of relations', id='required-relation-root'),
+    pytest.param('items_by_name', ('harness_ore', 'Grade'), DELETE,
+                 "items_by_name['harness_ore'].Grade", 'required', 'missing required field', id='missing-field'),
+    pytest.param('items_by_name', ('harness_ore', 'Grade'), 7,
+                 "items_by_name['harness_ore'].Grade", 'range', 'expected a value in 0..6', id='grade-range'),
+    pytest.param('skills', ('400', 'Link_Job'), 'absent-job',
+                 "skills['400'].Link_Job", 'reference', 'target absent-job not found in release', id='reference'),
+    pytest.param('unresolved_map_links', (), {}, 'unresolved_map_links', 'type',
+                 'expected an array of diagnostic rows', id='optional-diagnostic-root'),
+    pytest.param('unresolved_map_links', (), [{}], 'unresolved_map_links[0].Map', 'required',
+                 'missing diagnostic context', id='optional-diagnostic-field'),
+    pytest.param('goddess_reinf', (), [], 'goddess_reinf', 'type',
+                 'expected reinforcement objects keyed by level', id='optional-table-root'),
+    pytest.param('goddess_reinf_mat', (), [], 'goddess_reinf', 'type',
+                 'expected reinforcement objects keyed by level', id='optional-material-root'),
+]
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+@pytest.mark.parametrize('boundary', ['memory-export', 'load-release', 'staging'])
+@pytest.mark.parametrize('collection,keys,value,path,code,message', DOMAIN_BOUNDARY_CASES)
+def test_exact_domain_errors_remain_strict_at_real_release_boundaries(
+        release_db, export_observation, monkeypatch, tmp_path, require_version,
+        boundary, collection, keys, value, path, code, message):
+    import DB
+    db = release_db
+    optional = {'goddess_reinf': {}, 'goddess_reinf_mat': {}, 'unresolved_map_links': []}
+    db.data.update(copy.deepcopy(optional))
+    original = db.data[collection]
+    invalid = copy.deepcopy(original)
+    if keys:
+        target = invalid
+        for key in keys[:-1]:
+            target = target[key]
+        if value is DELETE:
+            del target[keys[-1]]
+        else:
+            target[keys[-1]] = value
+    else:
+        invalid = copy.deepcopy(value)
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    version = {'version': 'contract-v2'} if require_version else None
+
+    if boundary == 'load-release':
+        incoming = tmp_path / 'incoming-domain-release'
+        shutil.copytree(db.BASE_PATH_OUTPUT, incoming)
+        for name, payload in optional.items():
+            (incoming / (name + '.json')).write_text(json.dumps(payload), encoding='utf-8')
+        target = incoming / (collection + '.json')
+        original_bytes = target.read_bytes()
+        target.write_text(json.dumps(invalid), encoding='utf-8')
+        unchanged = snapshot(incoming)
+        with pytest.raises(ContractError) as error:
+            load_release(incoming, require_version=require_version)
+        assert_contract_error(error.value, path, code, message)
+        assert snapshot(incoming) == unchanged
+        target.write_bytes(original_bytes)
+        assert load_release(incoming, require_version=require_version) == {'version': 'contract-v1'}
+        assert export_observation['writes'] == export_observation['staged'] == []
+    elif boundary == 'memory-export':
+        db.data[collection] = invalid
+        memory = dict(db.data)
+        if require_version:
+            memory['version'] = version
+        unchanged = copy.deepcopy(memory)
+        with pytest.raises(ContractError) as error:
+            validate_release(memory, require_version=require_version)
+        assert_contract_error(error.value, path, code, message)
+        assert memory == unchanged
+        with pytest.raises(ContractError) as error:
+            db.export(version_payload=version)
+        assert_contract_error(error.value, path, code, message)
+        assert memory == unchanged
+        assert export_observation['writes'] == export_observation['staged'] == []
+        assert_failed_export_preserved_release(db, before, export_observation)
+        db.data[collection] = original
+    else:
+        real_write = DB._atomic_write_json
+        corrupted = []
+
+        def corrupt_after_write(filepath, payload):
+            real_write(filepath, payload)
+            if Path(filepath).name == collection + '.json':
+                Path(filepath).write_text(json.dumps(invalid), encoding='utf-8')
+                corrupted.append(Path(filepath))
+
+        unchanged = copy.deepcopy(db.data)
+        with monkeypatch.context() as patch:
+            patch.setattr(DB, '_atomic_write_json', corrupt_after_write)
+            with pytest.raises(ContractError) as error:
+                db.export(version_payload=version)
+        assert_contract_error(error.value, path, code, message)
+        assert corrupted == [Path(db.BASE_PATH_OUTPUT + '.staging') / (collection + '.json')]
+        assert db.data == unchanged
+        assert export_observation['staged'] == [Path(db.BASE_PATH_OUTPUT + '.staging')]
+
+    assert_failed_export_preserved_release(db, before, export_observation)
+    if boundary != 'load-release':
+        db.export(version_payload=version)
+        assert export_observation['promotions']
+        assert load_release(db.BASE_PATH_OUTPUT) == {
+            'version': 'contract-v2' if require_version else 'contract-v1'}
+        if not require_version:
+            assert snapshot(db.BASE_PATH_OUTPUT)['version.json'] == before['version.json']
+        assert not Path(db.BASE_PATH_OUTPUT + '.staging').exists()
+        assert not Path(db.BASE_PATH_OUTPUT + '.backup').exists()
+
+
+VERSION_DOMAIN_CASES = [
+    pytest.param({}, 'required', 'missing release version', id='missing-version-value'),
+    pytest.param([], 'required', 'missing release version', id='array-version-root'),
+    pytest.param({'version': ''}, 'empty', 'expected a nonempty string', id='empty-version'),
+    pytest.param({'version': 1}, 'type', 'expected a string', id='numeric-version'),
+    pytest.param({'version': 'v' * 51}, 'length', 'maximum length is 50', id='long-version'),
+]
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+@pytest.mark.parametrize('payload,code,message', VERSION_DOMAIN_CASES)
+def test_present_version_domain_is_strict_even_when_optional_and_retry_is_fresh(
+        release_db, require_version, payload, code, message):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    memory = dict(release_db.data, version=payload)
+    memory_before = copy.deepcopy(memory)
+    with pytest.raises(ContractError) as error:
+        validate_release(memory, require_version=require_version)
+    assert_contract_error(error.value, 'version.version', code, message)
+    assert memory == memory_before
+    target = directory / 'version.json'
+    before = snapshot(directory)
+    original = target.read_bytes()
+    target.write_text(json.dumps(payload), encoding='utf-8')
+    corrupted = snapshot(directory)
+    with pytest.raises(ContractError) as error:
+        load_release(directory, require_version=require_version)
+    assert_contract_error(error.value, 'version.version', code, message)
+    assert snapshot(directory) == corrupted
+    target.write_bytes(original)
+    memory['version'] = {'version': 'contract-v1'}
+    assert validate_release(memory, require_version=require_version) is None
+    assert load_release(directory, require_version=require_version) == {'version': 'contract-v1'}
+    assert snapshot(directory) == before
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+def test_absent_version_policy_and_missing_required_file_are_unchanged(release_db, require_version):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    version_path = directory / 'version.json'
+    version_bytes = version_path.read_bytes()
+    version_path.unlink()
+    memory = dict(release_db.data)
+    memory.pop('version', None)
+    unchanged = copy.deepcopy(memory)
+    before = snapshot(directory)
+    if require_version:
+        with pytest.raises(ContractError) as error:
+            validate_release(memory, require_version=True)
+        assert_contract_error(error.value, 'version.version', 'required', 'missing release version')
+        with pytest.raises(ContractError) as error:
+            load_release(directory, require_version=True)
+        assert_contract_error(error.value, 'version.json', 'required', 'missing release file')
+    else:
+        assert validate_release(memory, require_version=False) is None
+        assert load_release(directory, require_version=False) is None
+    assert memory == unchanged
+    assert snapshot(directory) == before
+    version_path.write_bytes(version_bytes)
+    memory['version'] = {'version': 'contract-v1'}
+    assert validate_release(memory, require_version=require_version) is None
+    assert load_release(directory, require_version=require_version) == {'version': 'contract-v1'}
+
+    # require_version=False only makes version optional, never data collections.
+    target = directory / 'buff.json'
+    original = target.read_bytes()
+    target.unlink()
+    with pytest.raises(ContractError) as error:
+        load_release(directory, require_version=require_version)
+    assert_contract_error(error.value, 'buff.json', 'required', 'missing release file')
+    missing = memory.pop('buff')
+    with pytest.raises(ContractError) as error:
+        validate_release(memory, require_version=require_version)
+    assert_contract_error(error.value, 'buff', 'required', 'missing release collection')
+    target.write_bytes(original)
+    memory['buff'] = missing
+    assert validate_release(memory, require_version=require_version) is None
+    assert load_release(directory, require_version=require_version) == {'version': 'contract-v1'}
+
+
 def test_export_deserializes_each_staging_json_once_including_version(release_db, monkeypatch):
     staging = Path(release_db.BASE_PATH_OUTPUT + '.staging')
     # Derive the expected files from the output collections, independently of
@@ -160,7 +664,13 @@ def test_export_deserializes_each_staging_json_once_including_version(release_db
     expected = {staging / (name + '.json') for name in release_db.data}
     expected.add(staging / 'version.json')
     reads = Counter()
+    finite_checks = Counter()
     real_load = json.load
+    real_finite = contracts.finite_tree
+
+    def count_finite(value, path):
+        finite_checks[str(path)] += 1
+        return real_finite(value, path)
 
     def count_staging_load(stream, *args, **kwargs):
         path = Path(stream.name)
@@ -171,9 +681,13 @@ def test_export_deserializes_each_staging_json_once_including_version(release_db
     # Fixture parsing and publication assertions must not affect this count.
     with monkeypatch.context() as patch:
         patch.setattr(json, 'load', count_staging_load)
+        patch.setattr(contracts, 'finite_tree', count_finite)
         release_db.export(version_payload={'version': 'contract-v2'})
 
     assert reads == Counter({path: 1 for path in expected})
+    # The real export still validates independent memory before writing. Each
+    # decoded staging file is then checked once, without a release-wide rewalk.
+    assert finite_checks == Counter({'release': 1, **{str(path): 1 for path in expected}})
     assert load_release(release_db.BASE_PATH_OUTPUT) == {'version': 'contract-v2'}
 
 
@@ -369,12 +883,54 @@ def test_duplicate_names_and_swapped_name_indexes(release_db):
         validate_release(data, require_version=False)
 
 
-@pytest.mark.parametrize('version', [{}, {'version': ''}, {'version': 1}, {'version': 'v' * 51}])
-def test_invalid_version_cannot_advance_release(release_db, version):
-    before = snapshot(release_db.BASE_PATH_OUTPUT)
-    with pytest.raises(ContractError, match='version.version'):
-        release_db.export(version_payload=version)
-    assert snapshot(release_db.BASE_PATH_OUTPUT) == before
+@pytest.mark.parametrize('with_version', [False, True])
+@pytest.mark.parametrize('boundary', ['memory-export', 'staging'])
+@pytest.mark.parametrize('payload,code,message', VERSION_DOMAIN_CASES)
+def test_invalid_version_cannot_advance_release(
+        release_db, export_observation, monkeypatch, with_version, boundary,
+        payload, code, message):
+    import DB
+    db = release_db
+    before = snapshot(db.BASE_PATH_OUTPUT)
+    staging = Path(db.BASE_PATH_OUTPUT + '.staging')
+    valid_version = {'version': 'contract-v2'}
+    if not with_version:
+        db.data['version'] = copy.deepcopy(payload if boundary == 'memory-export' else valid_version)
+    version = payload if with_version and boundary == 'memory-export' else (
+        valid_version if with_version else None)
+    memory_before = copy.deepcopy(db.data)
+    payload_before = copy.deepcopy(payload)
+    real_write = DB._atomic_write_json
+    corrupted = []
+
+    def corrupt_after_write(filepath, value):
+        real_write(filepath, value)
+        if Path(filepath) == staging / 'version.json':
+            Path(filepath).write_text(json.dumps(payload), encoding='utf-8')
+            corrupted.append(Path(filepath))
+
+    with monkeypatch.context() as patch:
+        if boundary == 'staging':
+            patch.setattr(DB, '_atomic_write_json', corrupt_after_write)
+        with pytest.raises(ContractError) as error:
+            db.export(version_payload=version)
+    assert_contract_error(error.value, 'version.version', code, message)
+    assert db.data == memory_before
+    assert payload == payload_before
+    if boundary == 'memory-export':
+        assert export_observation['writes'] == export_observation['staged'] == []
+    else:
+        assert corrupted == [staging / 'version.json']
+        assert export_observation['staged'] == [staging]
+    assert_failed_export_preserved_release(db, before, export_observation)
+
+    if not with_version:
+        db.data['version'] = valid_version
+    db.export(version_payload=valid_version if with_version else None)
+    assert export_observation['promotions']
+    assert load_release(db.BASE_PATH_OUTPUT) == valid_version
+    assert not staging.exists()
+    assert not Path(db.BASE_PATH_OUTPUT + '.backup').exists()
 
 
 @pytest.mark.parametrize('content,code', [
