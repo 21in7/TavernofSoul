@@ -60,17 +60,57 @@ GitHub 허용 목록과 비교하며, 도구 인자를 셸 명령으로 실행�
 사용자 터미널에 출력하지 않는다. 새 PR URL은 생성 직후 `codex_app.attach_artifact`로 반드시 연결한다.
 커넥터 오류는 `isError=true` 응답으로 실행기에 전달하고, `needs_reconciliation`이나 결과가 모호한
 쓰기는 재시도하지 않는다. 원래 요청 ID로 실제 결과를 확인할 때만 이어 실행한다.
-`merged`와 merge SHA 확인이 완료 기준이다. CI 실패·누락·skip/neutral, 충돌, 권한 부족은 PR을 유지하고
+세 CI(`Offline harness (SQLite)`, `MySQL harness`, `Chromium browser harness`)의 실제 success와
+GitHub `merged=true`·merge SHA 확인이 게시·머지 완료 기준이다. CI 실패·누락·skip/neutral, 충돌, 권한 부족은 PR을 유지하고
 실제 상태를 보고한다. 30분 제한에서 `awaiting_ci`이면 기존 PR을 `agent-git-resume`으로 이어갈 수 있다.
 실행 파일이나 서버 CLI만으로 GitHub 앱 도구를 호출할 수 없으므로 메인 Codex가 없는 단독 실행은
-`awaiting_github`에서 대기한다. `READ_ONLY=1`·데모·사용자가 로컬만 요청한 `GIT=0`에서는 게시하지 않는다.
+`awaiting_github`에서 대기한다. `READ_ONLY=1`·데모·사용자가 로컬만 요청한 `GIT=0`에서는
+원격 게시·삭제나 로컬 refs 정리를 자동 실행하지 않는다.
 기존 사용자 변경을 포함하는 전체 `git add`, 강제 push, 규칙 우회, 임의 CI 생략은 하지 않는다.
 작업 시작 파일과 원격 기준 파일이 다르면 GitHub 쓰기 전에 중단한다. 초기 하네스 등 기존 변경을
 처음 게시하려면 그 변경의 구체적인 파일 목록과 게시 범위를 별도 확인한다.
 
+[ADR 0009](docs/adr/0009-post-merge-branch-cleanup.md)에 따라 기존 `codex/<run_id>` → `master`
+squash PR을 유지한다. 별도 릴리스 통합 요구가 없으므로 `dev`는 도입하지 않는다. 매 작업의
+머지 뒤 메인 `/root`가 해당 원격·로컬 작업 브랜치와 사라진 원격 추적 ref를 정리한다.
+이번 사용자 요청으로 확인된 누적 작업 브랜치도 PR별로 같은 조건을 적용할 수 있다.
+대상별 repository/origin/base/head/PR 관계, PR merged 상태·확정 merge SHA·머지 당시 PR head SHA를
+확인하고, fetch한 `origin/master` 이력에 merge SHA가 포함돼야 한다. 삭제 직전 원격·로컬 tip을
+각각 머지 당시 head SHA와 대조한다. 이후 커밋·로컬 전용 커밋·증거 불명확이면 해당 대상을 보존한다.
+`git branch --merged`만으로 squash 머지를 판단하거나 prefix만으로 일괄 삭제하지 않는다.
+기본 `master`/`main`, 이미 있는 `dev`, 보호 브랜치, 작업 중·미머지 PR 브랜치,
+다른 worktree에서 사용하는 브랜치는 보존한다.
+
+원격 자동 삭제를 가정하지 않고 정확한 ref의 부재를 확인한다. 남아 있으면 안전 조건을 충족한
+정확한 브랜치만 기존에 인증된 지원 도구로 삭제한 뒤 재조회한다. 도구·권한 부족, 모호한 결과,
+ref 잔존은 `cleanup_pending`과 구체적 사유로 보고한다. 앱 게시·merge journal은 계속 사용하되
+브랜치 삭제는 현재 구현돼 있지 않다. 저장소 보호 변경·강제 push·자격증명 수집은 하지 않는다.
+
+로컬 변경·staged·untracked, 로컬 전용 커밋과 모든 worktree 상태를 먼저 확인하며 무조건
+checkout/reset/clean/stash하지 않는다. 깨끗한 작업 트리에서 기준 이력·worktree 사용이 안전하면
+`master`로 전환하여 `git fetch --prune origin`, `git pull --ff-only origin master`로 동기화한다.
+앱에서 게시된 변경만 미커밋으로 남았으면 승인·검증된 manifest와 확정 머지 결과, 현재 파일의
+bytes·권한 및 추가·삭제 파일의 존재 여부·index 상태를 개별 대조한 파일만 동기화할 수 있다.
+다른 사용자 변경·로컬 전용 커밋·충돌·불명확한 상태는 보존하고 해당 정리·동기화를 보류한다.
+로컬 브랜치가 없으면 `없음`으로 기록한다. 안전 조건을 충족하고 해당 브랜치에서 벗어난 뒤
+`git branch -d <정확한 작업 브랜치>`를 우선한다. squash 이력 때문에 거부될 때만 PR merged·
+merge SHA의 기준 이력 포함·tip 동일성·추가 커밋 없음·모든 worktree에서 미사용을 재확인하여
+그 정확한 브랜치에 한해 `-D`를 허용한다. blanket `-D`는 금지한다.
+
+머지와 정리 결과는 분리한다. 별도 private cleanup 기록과 메인 최종 결과에 PR URL·merge SHA,
+원격 삭제/이미 없음, 로컬 삭제/없음, prune·기준 브랜치 동기화 결과 및 대상별 보류 이유를 남긴다.
+`harness/git_publish.py`의 `report.status=passed`는 머지 확인 결과이며 cleanup을 구현하지 않는다.
+이 정책은 JSON 상태 schema나 실행기 동작을 바꾸지 않는다. `cleanup_pending`이면 정리까지
+전체 완료했다고 주장하지 않는다. 상세 절차는 [workflow](docs/workflow.md#머지-후-브랜치-정리)에 둔다.
+2026-10-12 메인이 제공한 clean `master`·로컬 `master`만 존재, `delete_branch_on_merge=false`,
+앱 삭제·설정 수정 도구 부재 및 `/root`의 `make doctor` 통과는 초기 관측일 뿐 자동 삭제 활성화나
+실제 정리·check·CI 성공의 증거가 아니다. 실행 시 재확인하며 기본 check·CI는 실행기 책임이다.
+private 작업·로그·응답 원문을 공개 문서에 복사하지 않는다.
+
 `TAVERN_WORKFLOW_CHILD=1`인 작업자·검토 세션은 자동 실행기를 호출하지 않는다.
 작업자는 배정받은 파일만 다루고 다른 에이전트를 재실행하거나 재위임하지 않는다.
-검증은 실행기가 담당한다. 설명·진단 질문에는 유료 구현 흐름을 자동 실행하지 않는다.
+작업자·검토자는 검사·Git·브랜치 정리를 실행하지 않는다. 검증은 실행기, 게시·머지 후 정리는
+메인 `/root`가 담당한다. 설명·진단 질문에는 유료 구현 흐름을 자동 실행하지 않는다.
 
 1. 변경 전 작업 트리 상태를 확인하고 기존 사용자 변경을 보존한다.
 2. `make doctor`로 하네스 환경을 확인한다. 필요하면 `PYTHON=/path/to/python`을 지정한다.
