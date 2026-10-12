@@ -1,6 +1,7 @@
 # 전체 하네스 설계
 
-기록일: 2026-10-11. Codex 경고·성공 판정 갱신: 2026-10-12. 이 문서는 현재 소스의 설계와 검토 기준을 Git에 남긴다.
+기록일: 2026-10-11. Codex 경고·성공 판정과 머지 후 정리 정책 갱신: 2026-10-12.
+이 문서는 현재 소스의 설계와 검토 기준을 Git에 남긴다.
 명령·설치 절차는 [하네스 사용법](harness.md), [자동 작업 실행](workflow.md),
 [모델 연결](agent-models.md), [접수 판단](triage.md), [대화 압축](compaction.md)에 둔다.
 서비스의 데이터 책임은 [프로젝트 지도](architecture.md), 계약은 [데이터 계약](data-contracts.md),
@@ -24,7 +25,7 @@ Opus escalation·다른 유료 공급자 전환도 제공하지 않는다. 기�
 
 | 구성 | 책임 | 실제 진입점 |
 | --- | --- | --- |
-| 메인 Codex `/root` | 요청·개별 읽기 범위 준비, 부족 범위 확인, 앱 요청 실행과 최종 결과 보고 | [AGENTS.md](../AGENTS.md), [workflow 사용법](workflow.md) |
+| 메인 Codex `/root` | 요청·개별 읽기 범위 준비, 부족 범위 확인, 앱 요청 실행, 머지 후 증거 기반 브랜치 정리와 최종 결과 보고 | [AGENTS.md](../AGENTS.md), [workflow 사용법](workflow.md) |
 | 접수 판단 | 경로 규칙에 Jev 영역·복잡도·계약 영향 추가, 보수적 fallback | [triage.py](../harness/triage.py), [triage-config.json](../harness/triage-config.json) |
 | 실행기 | 두 사본 생성, 순차 역할 실행, schema·수정 한도·검토·필수 검사·반영 게이트 | [workflow.py](../harness/workflow.py), [workflow-config.json](../harness/workflow-config.json) |
 | 모델 연결 | 역할별 CLI·인증·파일 도구·예산·환경 분리, 고정 압축 연결 | [agent_models.py](../harness/agent_models.py), [agent-models.json](../harness/agent-models.json), [compaction.py](../harness/compaction.py) |
@@ -135,6 +136,8 @@ flowchart TD
     A --> G[git 역할 설명]
     G --> H[메인 앱 · journal · PR]
     H --> I[3개 required CI · SHA 고정 merge]
+    I --> K[메인 · PR 증거와 현재 상태 확인]
+    K --> L[브랜치 정리 · 동기화 결과 또는 보류 별도 보고]
 ```
 
 메인은 요청과 외부 모델이 읽을 소스·테스트·문서·예정 신규 파일의 개별 경로를 준비한다.
@@ -277,7 +280,7 @@ symlink와 디렉터리 scope를 거부하며 빈 일회용 Git 저장소만 만
 
 git 모델은 읽기 전용으로 commit_message/pr_title/pr_body만 작성한다. 메인은 허용 앱 도구와
 request_id로 journal을 이어 실행한다. 대상은 현재 `21in7/TavernofSoul`, base master, squash다.
-로컬 index·refs·기존 staged 변경은 건드리지 않고 원격 기준 tree와 시작 파일 blob SHA/권한을
+앱 게시 단계는 로컬 index·refs·기존 staged 변경을 건드리지 않고 원격 기준 tree와 시작 파일 blob SHA/권한을
 대조한다. 기준 불일치나 초기 미게시 변경은 쓰기 전에 중단하고 별도 게시 범위를 확인한다.
 승인 파일만 새 tree·commit·codex/run_id branch·PR에 넣는다.
 github-approved.json은 검토·검증된 hash/권한/정책을 고정하고 github.json journal을 매 요청 대조한다.
@@ -288,9 +291,62 @@ github-actions의 실제 success를 요구한다. check-runs 페이지·최신 I
 확인한다. test merge SHA에 검사 결과가 있으면 사용하고 없으면 head 검사로 판단한다.
 head/base 변경·충돌·실패·skip·neutral·누락·미완료는 merge 성공이 아니다. 최종 test merge SHA가
 바뀌면 재확인하고 clean일 때 expected_head_sha를 지정해 merge한다. 앱의 merged=true와 merge SHA를
-확인해야 게시 완료다. 브랜치 보호의 required 설정 자체는 관리자 설정이며 CI YAML만으로 설정되지 않는다.
+확인해야 게시·머지 완료다. 정리 완료는 아래 메인의 별도 책임이다.
+브랜치 보호의 required 설정 자체는 관리자 설정이며 CI YAML만으로 설정되지 않는다.
 30분 대기는 awaiting_ci로 남겨 기존 PR을 resume하며 보호 규칙 우회·강제 push·자동 배포는 없다.
 로컬 반영 후 git 모델/앱/CI가 실패할 수 있으며 그 실패를 로컬 반영 취소나 전체 완료로 표현하지 않는다.
+
+### 머지 후 정리 책임과 보존 경계
+
+[ADR 0009](adr/0009-post-merge-branch-cleanup.md)는 기존 `codex/<run_id>` → `master` squash PR을
+유지하고 별도 릴리스 통합 요구가 없는 이번에는 `dev`를 도입하지 않는다. `dev` 통합도 브랜치 정리를
+없애지 못하며 추가 PR·CI·통합 책임이 생긴다. 세 CI success, GitHub `merged=true`와 확정 merge SHA
+확인 후 메인 `/root`가 매 작업의 원격·동일한 로컬 작업 브랜치 및 사라진 원격 추적 ref를 정리한다.
+이번 사용자 요청으로 확인된 누적 작업 브랜치도 PR별로 같은 조건을 적용한다.
+작업자·검토자는 Git·정리·workflow를 실행하거나 재위임하지 않는다.
+
+삭제 대상별 repository/origin/base/head/PR 관계, CI 성공·PR merged·merge SHA·머지 당시 PR head SHA를
+확인하고 fetch한 `origin/master` 이력에 확정 merge SHA가 포함돼야 한다. 삭제 직전 원격·로컬 tip을
+각각 당시 head SHA와 대조하고 재조회에서 변경되면 보류한다. 이후 커밋·로컬 전용 커밋·증거 누락이나
+불일치·fetch 실패·이력 미포함은 해당 대상의 보존과 사유 보고를 요구한다. 한쪽의 부재나 tip 일치로
+다른 쪽의 안전을 판단하지 않는다. squash는 head의 조상 관계를 보존하지 않으므로
+`git branch --merged`만으로 판단하지 않고 GitHub PR 증거와 정확한 tip 동일성을 근거로 한다.
+prefix 일괄 삭제를 금지하며 기본 `master`/`main`, 기존 `dev`, 보호 브랜치, 작업 중·미머지 PR 브랜치,
+다른 worktree에서 사용하는 브랜치를 보존한다.
+
+원격 자동 삭제를 가정하지 않고 정확한 ref의 부재를 조회한다. 남으면 안전 조건을 충족한 정확한
+브랜치만 기존 인증된 지원 도구로 삭제하고 재조회로 부재를 확인한다. 도구·권한 부족, 모호한 결과,
+ref 잔존은 대상별 `cleanup_pending`과 구체적 사유로 기록하며 불명확한 쓰기를 반복하지 않는다.
+앱 게시·merge journal은 유지하지만 현재 브랜치 삭제는 구현돼 있지 않다. 저장소 보호 변경·
+강제 push·자격증명 수집으로 우회하지 않는다.
+
+로컬 변경·staged·untracked, 로컬 전용 커밋과 모든 worktree 상태를 먼저 확인한다. 앱에서 게시한
+변경만 미커밋으로 남을 수 있으므로 무조건 checkout/reset/clean/stash하지 않는다. 깨끗한 작업 트리에서
+기준 이력·worktree 사용이 안전하면 `master`로 전환해 `git fetch --prune origin` 및
+`git pull --ff-only origin master`로 동기화하고 사라진 추적 ref의 prune 결과를 확인한다.
+게시된 변경만 남았으면 승인·검증된 manifest, 확정 머지 결과와 현재 bytes·권한을 파일별로 대조하고,
+추가·삭제 파일의 존재 여부·staged·untracked 상태까지 확인한 해당 파일만 동기화할 수 있다.
+다른 사용자 편집·로컬 전용 커밋·충돌·불명확한 상태는 보존하고 해당 정리·동기화를 보류한다.
+manifest 밖 파일은 포함하지 않으며 fast-forward 불가 시 강제 동기화하지 않는다.
+
+로컬 브랜치가 없으면 `없음`으로 기록한다. 있으면 안전 조건을 충족하고 해당 브랜치에서 벗어난 뒤
+`git branch -d <정확한 작업 브랜치>`를 우선한다. squash 이력으로 거부될 때만 PR merged·merge SHA의
+기준 이력 포함·tip 동일성·추가 커밋 없음·모든 worktree에서 미사용을 재확인한 정확한 브랜치에
+`-D`를 허용한다. 다른 거부 사유에는 적용하지 않으며 blanket `-D`는 금지한다.
+원격·로컬 정리 결과는 독립적으로 판단하며 prune은 남아 있는 원격 브랜치를 삭제하지 않는다.
+
+머지와 정리 결과를 분리하여 별도 private cleanup 기록과 메인 최종 결과에 PR URL·merge SHA,
+원격 삭제/이미 없음, 로컬 삭제/없음, prune·기준 브랜치 동기화 결과와 대상별 보류 사유를 남긴다.
+미확인·실패·보류를 삭제/없음으로 기록하지 않는다. 현재 `harness/git_publish.py`의 merged →
+`report.status=passed`는 게시·머지 게이트 결과이며 cleanup을 구현하지 않는다. JSON 상태 schema나
+실행기 동작을 바꾸지 않고 별도 기록으로 보완한다. `cleanup_pending`이면 정리까지 전체 완료라고
+주장하지 않는다. `READ_ONLY`·demo·`GIT=0`에서는 원격 게시·삭제 및 로컬 refs 정리를 자동 실행하지 않는다.
+
+2026-10-12 메인이 제공한 clean `master`·로컬 `master`만 존재, `delete_branch_on_merge=false`,
+앱 삭제·설정 수정 도구 부재 및 `/root`의 `make doctor` 통과는 초기 관측이다. 자동 삭제 활성화·
+원격 ref 부재·실제 정리나 이번 check/CI 성공을 증명하지 않는다. 실행 시 재확인하며 기본 check·CI는
+실행기 책임이다. private 작업·로그·응답 원문을 공개 문서에 복사하지 않는다.
+구체적인 절차는 [workflow](workflow.md#머지-후-브랜치-정리)에 둔다.
 
 ## 실행 상태·운영·문서 유지
 
@@ -300,8 +356,10 @@ backup·journal을 남긴다. 디렉터리 0700, 통합 JSON·이벤트·로그 
 모델 사본 경로와 model_read_scope도 남긴다. 계획·응답은 Git 제외 private 운영 기록이고
 Git 관리 설계서·ADR가 장기 결정 기록이다. 둘은 서로 대체하지 않는다.
 
-passed는 해당 모드의 완료다. GitHub 활성 작업은 awaiting_github에서 메인 앱을 기다리며 merge 확인
-이후 passed가 된다. awaiting_ci·needs_reconciliation은 미완료, failed/interrupted는 실패,
+passed는 기존 실행기의 해당 모드 완료 상태다. GitHub 활성 작업은 awaiting_github에서 메인 앱을 기다리며
+merge 확인 이후 passed가 된다. 이 상태만으로 정리 완료를 증명하지 않으며 별도 private cleanup 기록과
+메인 최종 결과를 함께 보고한다. cleanup_pending은 머지 완료와 구분하며 전체 완료를 주장하지 않는다.
+awaiting_ci·needs_reconciliation은 미완료, failed/interrupted는 실패,
 demonstrated는 fixture 시연이다. 강제 종료 뒤 PID가 없으면 상태 조회에서 abandoned를 표시하며
 저장 기록을 성공으로 덮어쓰지 않는다. 실패 사본은 조사에 남기고 운영자가 프로세스 종료를 확인한 뒤
 로그·검증 사본·보고서의 모델 사본 경로를 함께 정리한다. 운영 cron·DB·JSON을 정리 대상으로 삼지 않는다.
