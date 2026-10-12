@@ -2,7 +2,8 @@
 
 The local CLI prepares and validates requests. The parent executes only the named
 GitHub tools and returns their responses. No credentials or Git writes reach a
-model; the real checkout, index, refs and staged user changes are never modified.
+model. After merge the trusted parent reconciles exactly the approved task branch
+and synchronizes the checkout through the separate cleanup completion gate.
 """
 import argparse
 import copy
@@ -10,13 +11,15 @@ from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import subprocess
 import time
+from urllib.parse import quote
 
-from harness import agent_models, workspace
+from harness import agent_models, git_cleanup, workspace
 
 ROOT = agent_models.ROOT
 REPORTS = ROOT / 'logs/harness/workflows'
@@ -85,7 +88,7 @@ def mode(item):
 
 def prepare(root, directory, report, baseline, validated, changes, policy, details):
     cfg = load_config()
-    if not cfg['enabled'] or report.get('read_only') or report.get('simulated') or not changes:
+    if not git_cleanup.enabled({**report, 'changed_files': changes}, cfg):
         return {'status': 'skipped'}
     if not origin_matches(root, cfg['repository']):
         raise ValueError('Configured GitHub repository does not match the credential-free origin URL.')
@@ -135,12 +138,16 @@ def prepare(root, directory, report, baseline, validated, changes, policy, detai
 
 def summary(ledger):
     keys = ('status', 'step', 'branch', 'base_sha', 'head_sha', 'pr_number', 'pr_url',
-            'merge_sha', 'error', 'checks')
+            'merge_sha', 'merge_status', 'cleanup', 'error', 'checks')
     return {key: ledger[key] for key in keys if key in ledger}
 
 
 def next_request(ledger):
-    if ledger['status'] not in ('awaiting_connector', 'waiting_for_ci'):
+    if ledger['status'] not in ('awaiting_connector', 'waiting_for_ci', 'merged'):
+        return None
+    if ledger.get('merge_sha') and ledger['step'].startswith('cleanup_'):
+        return cleanup_request(ledger)
+    if ledger['status'] == 'merged':
         return None
     if time.time() >= ledger['deadline']:
         ledger['status'] = 'awaiting_ci' if ledger.get('pr_number') else 'failed'
@@ -204,6 +211,8 @@ def request(ledger):
 
 
 def response_data(result):
+    if isinstance(result, list):
+        return result
     if not isinstance(result, dict) or result.get('isError'):
         raise ValueError('GitHub connector reported an unsuccessful request.')
     data = result.get('structuredContent', result)
@@ -211,8 +220,8 @@ def response_data(result):
         data = json.loads(data['content'])
     if isinstance(data, dict) and isinstance(data.get('pull_request'), dict):
         data = data['pull_request']
-    if not isinstance(data, dict):
-        raise ValueError('GitHub connector must return one JSON object.')
+    if not isinstance(data, (dict, list)):
+        raise ValueError('GitHub connector must return JSON objects or collections.')
     return data
 
 
@@ -264,6 +273,14 @@ def checks_gate(records, cfg, sha):
 def accept(ledger, result):
     data = response_data(result)
     step, cfg = ledger['step'], ledger['config']
+    if step.startswith('cleanup_'):
+        accept_cleanup(ledger, data)
+        ledger['events'].append({'step': step, 'time': time.time()})
+        ledger.pop('pending_request_id', None)
+        ledger.pop('pending_write', None)
+        ledger.pop('error', None)
+        return ledger
+    data = object_data(data)
     ledger['status'] = 'awaiting_connector'
     event = {'step': step, 'time': time.time()}
     if step == 'repository':
@@ -400,7 +417,8 @@ def accept(ledger, result):
     elif step == 'merge':
         if data.get('merged') is not True:
             raise ValueError('GitHub did not confirm a successful merge.')
-        ledger.update(status='merged', step='done', merge_sha=valid_sha(data['sha']))
+        ledger.update(status='merged', merge_status='merged', merge_sha=valid_sha(data['sha']))
+        begin_cleanup(ledger)
     else:
         raise ValueError('Unknown GitHub delivery response step.')
     ledger['events'].append(event)
@@ -408,6 +426,194 @@ def accept(ledger, result):
     ledger.pop('pending_write', None)
     ledger.pop('error', None)
     return ledger
+
+
+def begin_cleanup(ledger):
+    """Explicit migration of github-v1 merged journals; never sends merge again."""
+    valid_sha(ledger['merge_sha'])
+    valid_sha(ledger['head_sha'])
+    if type(ledger.get('pr_number')) is not int or ledger['pr_number'] <= 0:
+        raise ValueError('Merged PR identity is required for cleanup.')
+    ledger.update(status='merged', merge_status='merged', step='cleanup_pr',
+                  cleanup={**ledger.get('cleanup', {}), 'version': 'cleanup-v1', 'status': 'awaiting_github'},
+                  cleanup_proof={}, cleanup_page=1, cleanup_rows=[],
+                  deadline=time.time() + ledger['config']['wait_seconds'])
+    ledger.pop('pending_request_id', None)
+    ledger.pop('pending_write', None)
+    ledger.pop('error', None)
+    for key in ('cleanup_check_sha', 'cleanup_head_rows', 'cleanup_test_checked'):
+        ledger.pop(key, None)
+
+
+def cleanup_request(ledger):
+    if time.time() >= ledger['deadline']:
+        ledger.update(status='cleanup_pending', error='Cleanup proof deadline reached; merge remains recorded.')
+        ledger['cleanup']['status'] = 'cleanup_pending'
+        ledger['cleanup']['proof'] = {'status': 'pending', 'reason': 'github_proof_deadline'}
+        return None
+    cfg, step = ledger['config'], ledger['step']
+    prefix = 'https://api.github.com/repos/' + cfg['repository']
+    page = str(ledger.get('cleanup_page', 1))
+    if step == 'cleanup_pr':
+        path = '/pulls/' + str(ledger['pr_number'])
+    elif step == 'cleanup_checks':
+        path = '/commits/' + ledger.get('cleanup_check_sha', ledger['head_sha']) + '/check-runs?filter=latest&per_page=100&page=' + page
+    elif step == 'cleanup_statuses':
+        path = '/commits/' + ledger['cleanup_status_queue'][0] + '/status'
+    elif step == 'cleanup_repository':
+        path = ''
+    elif step == 'cleanup_branches':
+        path = '/branches?per_page=100&page=' + page
+    elif step == 'cleanup_open_prs':
+        head = cfg['repository'].split('/')[0] + ':' + ledger['branch']
+        path = '/pulls?state=open&head=' + quote(head, safe='') + '&per_page=100&page=' + page
+    elif step == 'cleanup_execute':
+        return None
+    else:
+        raise ValueError('Unknown cleanup proof step.')
+    return {'tool': TOOLS['fetch'], 'arguments': {'url': prefix + path}}
+
+
+def cleanup_collection(ledger, data):
+    # GitHub REST arrays are complete pages of the explicit per_page=100 query.
+    # Wrappers must certify equivalent coverage, never guess from an empty object.
+    if isinstance(data, dict):
+        if data.get('complete') is not True or data.get('page') != ledger.get('cleanup_page', 1) or \
+                data.get('per_page') != 100 or data.get('truncated') is not False:
+            raise ValueError('Cleanup collection coverage is unproven.')
+        data = data.get('items')
+    if not isinstance(data, list) or len(data) > 100 or any(not isinstance(row, dict) for row in data):
+        raise ValueError('Invalid cleanup collection.')
+    ledger['cleanup_rows'].extend(data)
+    if len(data) == 100:
+        if ledger['cleanup_page'] >= 100:
+            raise ValueError('Cleanup pagination limit reached.')
+        ledger['cleanup_page'] += 1
+        return None
+    return ledger['cleanup_rows']
+
+
+def accept_cleanup(ledger, data):
+    step, cfg = ledger['step'], ledger['config']
+    proof = ledger['cleanup_proof']
+    if step == 'cleanup_pr':
+        data = object_data(data)
+        head, base = object_data(data.get('head')), object_data(data.get('base'))
+        if data.get('number') != ledger['pr_number'] or data.get('merged') is not True or \
+                data.get('state') != 'closed' or data.get('merge_commit_sha') != ledger['merge_sha'] or \
+                head.get('sha') != ledger['head_sha'] or head.get('ref') != ledger['branch'] or \
+                object_data(head.get('repo')).get('full_name') != cfg['repository'] or \
+                base.get('ref') != cfg['base'] or object_data(base.get('repo')).get('full_name') != cfg['repository']:
+            raise ValueError('Merged PR identity or pinned SHAs changed.')
+        valid_sha(base.get('sha'))  # base advances after merge; equality is deliberately not required.
+        proof.update(head_sha=ledger['head_sha'], merge_sha=ledger['merge_sha'])
+        ledger.update(step='cleanup_checks', cleanup_page=1, cleanup_rows=[], cleanup_total=None)
+    elif step == 'cleanup_checks':
+        data = object_data(data)
+        rows, total = data.get('check_runs'), data.get('total_count')
+        if not isinstance(rows, list) or type(total) is not int or total < 0 or len(rows) > 100 or \
+                (ledger.get('cleanup_total') is not None and ledger['cleanup_total'] != total):
+            raise ValueError('Incomplete cleanup CI coverage.')
+        ledger['cleanup_total'] = total
+        ledger['cleanup_rows'].extend(rows)
+        ids = [row.get('id') for row in ledger['cleanup_rows'] if isinstance(row, dict)]
+        if len(ids) != len(ledger['cleanup_rows']) or any(type(x) is not int or x <= 0 for x in ids) or \
+                len(set(ids)) != len(ids) or len(ids) > total:
+            raise ValueError('Duplicate or malformed cleanup checks.')
+        if len(ids) < total:
+            if not rows or ledger['cleanup_page'] >= 100:
+                raise ValueError('Incomplete cleanup check pages.')
+            ledger['cleanup_page'] += 1
+            return
+        sha = ledger.get('cleanup_check_sha', ledger['head_sha'])
+        # Retain the original gate: test merge checks when present, otherwise head.
+        if sha == ledger['head_sha'] and ledger.get('test_merge_sha') and not ledger.get('cleanup_test_checked'):
+            checks_gate(ledger['cleanup_rows'], cfg, ledger['head_sha'])
+            ledger['cleanup_head_rows'] = ledger['cleanup_rows']
+            ledger.update(cleanup_check_sha=valid_sha(ledger['test_merge_sha']),
+                          cleanup_test_checked=True, cleanup_page=1, cleanup_rows=[], cleanup_total=None)
+            return
+        rows = ledger['cleanup_rows']
+        if sha != ledger['head_sha'] and not rows:
+            sha, rows = ledger['head_sha'], ledger['cleanup_head_rows']
+        passed, states = checks_gate(rows, cfg, sha)
+        if not passed:
+            raise ValueError('Fresh pinned CI success is required for cleanup.')
+        proof['checks'] = states
+        proof['check_sha'] = sha
+        shas = [ledger['head_sha']]
+        if ledger.get('test_merge_sha') and ledger['test_merge_sha'] not in shas:
+            shas.append(valid_sha(ledger['test_merge_sha']))
+        ledger.update(step='cleanup_statuses', cleanup_status_queue=shas)
+    elif step == 'cleanup_statuses':
+        data = object_data(data)
+        if data.get('sha') != ledger['cleanup_status_queue'][0] or type(data.get('total_count')) is not int or \
+                data['total_count'] < 0 or (data['total_count'] and data.get('state') != 'success'):
+            raise ValueError('Cleanup commit status is not successful.')
+        ledger['cleanup_status_queue'].pop(0)
+        if not ledger['cleanup_status_queue']:
+            ledger['step'] = 'cleanup_repository'
+    elif step == 'cleanup_repository':
+        data = object_data(data)
+        default = data.get('default_branch')
+        if data.get('full_name') != cfg['repository'] or not isinstance(default, str) or not default:
+            raise ValueError('Fresh repository and default branch identity are required.')
+        if default == ledger['branch']:
+            raise ValueError('The repository default branch must be preserved.')
+        proof['default_branch'] = default
+        ledger.update(step='cleanup_branches', cleanup_page=1, cleanup_rows=[])
+    elif step in ('cleanup_branches', 'cleanup_open_prs'):
+        rows = cleanup_collection(ledger, data)
+        if rows is None:
+            return
+        if step == 'cleanup_branches':
+            names = [row.get('name') for row in rows]
+            if any(not isinstance(name, str) for name in names) or len(set(names)) != len(names):
+                raise ValueError('Ambiguous branch collection.')
+            target = [row for row in rows if row['name'] == ledger['branch']]
+            proof['branch'] = None
+            if target:
+                row = target[0]
+                if type(row.get('protected')) is not bool:
+                    raise ValueError('Branch protection metadata is required.')
+                proof['branch'] = {'protected': row['protected'],
+                                   'sha': valid_sha(object_data(row.get('commit')).get('sha'))}
+            ledger.update(step='cleanup_open_prs', cleanup_page=1, cleanup_rows=[])
+        else:
+            for row in rows:
+                head = object_data(row.get('head'))
+                if row.get('state') != 'open' or head.get('ref') != ledger['branch'] or \
+                        object_data(head.get('repo')).get('full_name') != cfg['repository']:
+                    raise ValueError('Open PR query coverage or identity is ambiguous.')
+            proof.update(open_prs=rows, verified=True)
+            ledger['step'] = 'cleanup_execute'
+    else:
+        raise ValueError('Unexpected cleanup response.')
+    ledger['status'] = 'merged'
+
+
+def execute_cleanup(directory, ledger):
+    try:
+        report = json.loads((directory / 'report.json').read_text(encoding='utf-8'))
+        approval = json.loads((directory / 'github-approved.json').read_text(encoding='utf-8'))
+        result = git_cleanup.execute(ROOT, directory, ledger, report, approval)
+    except (ValueError, OSError, KeyError, TypeError, UnicodeError):
+        result = {'status': 'cleanup_pending', 'proof': {'status': 'pending', 'reason': 'cleanup_state_invalid'}}
+    ledger['cleanup'] = {key: result[key] for key in ('version', 'status', 'remote', 'prune', 'sync', 'local', 'proof', 'fetch', 'completion')
+                         if key in result}
+    if cleanup_complete(ledger):
+        ledger.update(status='merged', step='done')
+    else:
+        ledger['cleanup']['status'] = 'cleanup_pending'
+        ledger.update(status='cleanup_pending', step='cleanup_execute')
+
+
+def cleanup_complete(ledger):
+    cleanup = ledger.get('cleanup', {})
+    return bool(ledger.get('merge_sha')) and ledger.get('merge_status') == 'merged' and \
+        cleanup.get('version') == 'cleanup-v1' and cleanup.get('status') == 'complete' and \
+        all(cleanup.get(key, {}).get('status') in ('deleted', 'absent') for key in ('remote', 'local')) and \
+        all(cleanup.get(key, {}).get('status') == 'complete' for key in ('prune', 'sync', 'completion'))
 
 
 def directory_for(run_id):
@@ -461,15 +667,18 @@ def validate_journal(directory, ledger):
 
 
 def save(directory, ledger):
-    agent_models.private_json(directory / 'github.json', ledger)
+    git_cleanup.durable_json(directory / 'github.json', ledger)
     path = directory / 'report.json'
     report = json.loads(path.read_text(encoding='utf-8'))
     previous = report.get('github')
     report['github'] = summary(ledger)
-    report['status'] = {'merged': 'passed', 'failed': 'failed', 'awaiting_ci': 'awaiting_ci',
+    report['status'] = {'merged': ('passed' if cleanup_complete(ledger)
+                                  else 'awaiting_github'),
+                        'cleanup_pending': 'cleanup_pending', 'failed': 'failed', 'awaiting_ci': 'awaiting_ci',
                         'needs_reconciliation': 'needs_reconciliation'}.get(
         ledger['status'], 'awaiting_github')
     event = {'phase': 'github', 'stage': 8, 'state': ledger['status'], 'step': ledger['step'],
+             'merge_status': ledger.get('merge_status'), 'cleanup': ledger.get('cleanup'),
              'role': None, 'provider': 'github', 'model': None,
              'time': datetime.now(timezone.utc).isoformat()}
     if previous != report['github'] or report.get('current', {}).get('provider') != 'github':
@@ -478,19 +687,21 @@ def save(directory, ledger):
         with (directory / 'events.jsonl').open('a', encoding='utf-8') as handle:
             handle.write(json.dumps(event) + '\n')
         (directory / 'events.jsonl').chmod(0o600)
-    agent_models.private_json(path, report)
+    git_cleanup.durable_json(path, report)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('request', 'accept', 'resume', 'doctor'))
+    parser.add_argument('command', choices=('request', 'accept', 'resume', 'cleanup', 'doctor'))
     parser.add_argument('--run-id')
     parser.add_argument('--response-json')
     parser.add_argument('--response-file', type=Path)
     parser.add_argument('--request-id')
     args = parser.parse_args(argv)
-    lock = None
+    lock = project_lock = None
     try:
+        if os.environ.get('TAVERN_WORKFLOW_CHILD'):
+            raise ValueError('GitHub delivery and cleanup require the trusted parent.')
         if args.command == 'doctor':
             cfg = load_config()
             ready = origin_matches(ROOT, cfg['repository'])
@@ -500,6 +711,16 @@ def main(argv=None):
                               'api_called': False, 'note': 'Parent must verify connector write permission.'}))
             return 0 if ready else 1
         directory = directory_for(args.run_id or '')
+        # Same ordering as workflow/apply: project lock, then GitHub journal lock.
+        project_lock_path = REPORTS / '.lock'
+        if project_lock_path.is_symlink():
+            raise ValueError('Invalid project lock.')
+        project_lock = project_lock_path.open('a')
+        project_lock_path.chmod(0o600)
+        try:
+            fcntl.flock(project_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another workflow or cleanup controller is running.') from None
         lock_path = directory / 'github.lock'
         if lock_path.is_symlink():
             raise ValueError('Invalid journal lock.')
@@ -515,13 +736,30 @@ def main(argv=None):
             raise ValueError('GitHub journal must be a regular private file.')
         ledger = json.loads(path.read_text(encoding='utf-8'))
         validate_journal(directory, ledger)
-        if args.command == 'resume':
-            if ledger['status'] != 'awaiting_ci' or not ledger.get('pr_number'):
-                raise ValueError('Only an existing PR waiting for CI can resume.')
-            ledger.update(step='pr', status='awaiting_connector', deadline=time.time() + ledger['config']['wait_seconds'])
-            ledger.pop('error', None)
+        report = json.loads((directory / 'report.json').read_text(encoding='utf-8'))
+        if not git_cleanup.enabled(report, ledger['config']) or not load_config()['enabled']:
+            if ledger.get('merge_sha'):
+                ledger.update(status='cleanup_pending', merge_status='merged',
+                              cleanup={'status': 'cleanup_pending', 'proof': {
+                                  'status': 'pending', 'reason': 'cleanup_side_effects_disabled'}})
+                save(directory, ledger)
+            raise ValueError('Publication and cleanup side effects are disabled.')
+        if args.command in ('resume', 'cleanup'):
+            if ledger.get('merge_sha'):
+                begin_cleanup(ledger)
+            elif args.command == 'resume' and ledger['status'] == 'awaiting_ci' and ledger.get('pr_number'):
+                ledger.update(step='pr', status='awaiting_connector', deadline=time.time() + ledger['config']['wait_seconds'])
+                ledger.pop('error', None)
+            else:
+                raise ValueError('Only an existing CI wait or confirmed merged PR can resume.')
+        elif ledger.get('merge_sha') and ledger['step'] == 'done' and \
+                not cleanup_complete(ledger):
+            # request is also an explicit safe migration boundary for an old journal.
+            begin_cleanup(ledger)
+        elif args.command == 'request' and ledger.get('merge_sha') and ledger['step'] == 'cleanup_execute':
+            begin_cleanup(ledger)
         elif args.command == 'accept':
-            if ledger['status'] not in ('awaiting_connector', 'waiting_for_ci', 'needs_reconciliation') or \
+            if ledger['status'] not in ('awaiting_connector', 'waiting_for_ci', 'needs_reconciliation', 'merged') or \
                     bool(args.response_json) == bool(args.response_file) or \
                     not args.request_id or args.request_id != ledger.get('pending_request_id'):
                 raise ValueError('No pending GitHub connector response is expected.')
@@ -531,19 +769,30 @@ def main(argv=None):
                 accept(accepted, json.loads(raw))
                 ledger = accepted
             except (ValueError, KeyError, TypeError, OSError) as exc:
-                ledger.update(status='needs_reconciliation' if ledger.get('pending_write') else 'failed',
+                ledger.update(status='cleanup_pending' if ledger.get('merge_sha') else
+                              ('needs_reconciliation' if ledger.get('pending_write') else 'failed'),
                               error='Connector response could not be verified: ' + type(exc).__name__)
+                if ledger.get('merge_sha'):
+                    ledger['cleanup'] = {**ledger.get('cleanup', {}), 'status': 'cleanup_pending',
+                                         'proof': {'status': 'pending', 'reason': 'github_read_not_verified'}}
+        # Persist confirmed merge and cleanup intent before any Git operation.
+        if ledger.get('merge_sha'):
+            save(directory, ledger)
+        if ledger['step'] == 'cleanup_execute' and ledger['status'] == 'merged':
+            execute_cleanup(directory, ledger)
         job = request(ledger)
         save(directory, ledger)
         print(json.dumps({'run_id': ledger['run_id'], 'github': summary(ledger), 'request': job,
                           'poll_after_seconds': 10 if ledger['status'] == 'waiting_for_ci' else 0}, ensure_ascii=False))
-        return 1 if ledger['status'] in ('failed', 'needs_reconciliation') else 0
+        return 1 if ledger['status'] in ('failed', 'needs_reconciliation', 'cleanup_pending') else 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__}))
         return 1
     finally:
         if lock is not None:
             lock.close()
+        if project_lock is not None:
+            project_lock.close()
 
 
 if __name__ == '__main__':

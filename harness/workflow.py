@@ -19,7 +19,7 @@ CONFIG = ROOT / 'harness/workflow-config.json'
 REPORTS = ROOT / 'logs/harness/workflows'
 PHASES = {'prepare': '준비', 'triage': 'Jev 판단', 'plan': '작업 배정',
           'implement': '담당 에이전트 실행', 'review': 'Claude 검토',
-          'validate': '하네스 검증', 'apply': '결과 반영', 'github': 'GitHub 게시와 병합'}
+          'validate': '하네스 검증', 'apply': '결과 반영', 'github': 'GitHub 게시·병합·정리'}
 CHECKS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pipeline')
 DOCUMENTATION_GUIDANCE = (
     'Assess documentation impact at task start and in every review. Changes to structure, '
@@ -296,6 +296,8 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
     runner, checker = runner or agent_models.run, checker or run_check
     REPORTS.mkdir(parents=True, exist_ok=True)
     REPORTS.chmod(0o700)
+    if (REPORTS / '.lock').is_symlink():
+        raise ValueError('Invalid project lock.')
     lock = (REPORTS / '.lock').open('a')
     (REPORTS / '.lock').chmod(0o600)
     try:
@@ -315,6 +317,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
               'implementation_attempts': [], 'repairs': [],
               'applied': [], 'report': str(directory / 'report.json')}
     report['github_enabled'] = github_enabled
+    report['no_git'] = no_git
     progress = Progress(directory, report, keys)
     try:
         progress.event('prepare', 'running', detail='승인 파일 모델 사본과 로컬 검증 사본을 분리해 생성')
@@ -505,7 +508,8 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             if not read_only and not simulated:
                 report['applied'] = workspace.publish(ROOT, candidate, baseline, candidate_manifest, changes,
                                                       scope, directory / 'backup', policy)
-            report['status'] = 'demonstrated' if simulated else 'passed'
+            report['status'] = ('running' if github_enabled and changes else
+                                ('demonstrated' if simulated else 'passed'))
             progress.event('apply', 'passed', detail='반영된 파일: ' + str(len(report['applied'])))
             if github_enabled and changes:
                 # The model writes bounded descriptions only. The parent connector
@@ -601,6 +605,15 @@ def main(argv=None):
             if not re.fullmatch(r'[0-9]+-[a-f0-9]{6}', run_id):
                 raise ValueError('Invalid run ID.')
             report = json.loads((REPORTS / run_id / 'report.json').read_text())
+            if report.get('status') == 'passed' and report.get('github', {}).get('merge_sha') and \
+                    not git_publish.cleanup_complete(report['github']):
+                # Old reports prove merge only. Display the explicit migration
+                # boundary without rewriting historical evidence during status.
+                report['status'] = 'cleanup_pending'
+                report['github'] = {**report['github'], 'merge_status': 'merged',
+                                    'cleanup': {**report['github'].get('cleanup', {}),
+                                                'status': 'cleanup_pending', 'proof': {
+                                                    'status': 'pending', 'reason': 'legacy_cleanup_required'}}}
             if report['status'] == 'running':
                 try:
                     os.kill(report['pid'], 0)

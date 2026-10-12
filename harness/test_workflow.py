@@ -12,6 +12,17 @@ from harness import agent_models, git_publish, triage, workflow, workspace
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
+    for key in list(os.environ):
+        if key.startswith(('GIT_', 'SSH_', 'GCM_')) or key in ('GH_TOKEN', 'GITHUB_TOKEN', 'EMAIL'):
+            monkeypatch.delenv(key, raising=False)
+    home = tmp_path / 'git-home'
+    home.mkdir()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(home))
+    monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', os.devnull)
+    monkeypatch.setenv('GIT_TERMINAL_PROMPT', '0')
+    monkeypatch.setenv('GIT_ALLOW_PROTOCOL', 'file')
     root = tmp_path / 'project'
     root.mkdir()
     for name, text in {
@@ -26,7 +37,9 @@ def project(tmp_path, monkeypatch):
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding='utf-8')
-    subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
+    subprocess.run(['git', 'init', '--template=', '-q', str(root)], check=True, capture_output=True)
+    subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/master'], cwd=str(root),
+                   check=True, capture_output=True)
     monkeypatch.setattr(workflow, 'ROOT', root)
     monkeypatch.setattr(workflow, 'REPORTS', root / 'logs/harness/workflows')
     monkeypatch.setattr(agent_models, 'KEY_FILE', root / '.agent-keys.json')
@@ -1067,3 +1080,35 @@ def test_documentation_finding_repairs_only_its_task_then_requires_fresh_review(
     assert [role for role, _, _ in calls] == [
         'coordinator', 'coordinator', 'coordinator', 'parser', 'reviewer', 'coordinator', 'reviewer']
     assert report['review']['documentation']['status'] == 'updated'
+
+
+def test_github_enabled_apply_never_persists_overall_passed_before_delivery(project, monkeypatch):
+    enable_github(project, monkeypatch)
+    delegate = runner_for([])
+    observed = []
+    def runner(role, task, keys, **options):
+        if role == 'git':
+            reports = list(workflow.REPORTS.glob('*/report.json'))
+            assert len(reports) == 1
+            saved = json.loads(reports[0].read_text())
+            observed.append(saved['status'])
+            assert saved['status'] == 'running'
+        return delegate(role, task, keys, **options)
+    report = workflow.execute('Fix parser behavior', ['parser_tidy/example.py'],
+                              rules_only=True, runner=runner, checker=successful_check, keys={})
+    assert observed == ['running']
+    assert report['status'] == 'awaiting_github'
+
+
+def test_status_exposes_legacy_merge_cleanup_boundary_without_rewriting(project, monkeypatch, capsys):
+    directory = workflow.REPORTS / '123456-abcdef'
+    directory.mkdir(parents=True)
+    report = {'run_id': directory.name, 'status': 'passed', 'github': {
+        'status': 'merged', 'step': 'done', 'merge_sha': 'a' * 40}}
+    agent_models.private_json(directory / 'report.json', report)
+    assert workflow.main(['status', '--run-id', directory.name]) == 1
+    shown = json.loads(capsys.readouterr().out)
+    assert shown['status'] == 'cleanup_pending'
+    assert shown['github']['merge_sha'] == 'a' * 40
+    assert shown['github']['cleanup']['proof']['reason'] == 'legacy_cleanup_required'
+    assert json.loads((directory / 'report.json').read_text()) == report

@@ -291,11 +291,12 @@ Jev 직접 배정에서는 계획 단계가 `direct`, Jev 실패에서는 판단
 private 계획·응답·로그는 설계 문서나 ADR를 대신하지 않으며 그대로 공개 문서에 복사하지 않는다.
 실패한 작업 사본은 조사를 위해 남는다. 저장 공간 관리는 사용자가 끝난 실행 디렉터리와
 보고서에 기록한 `/tmp/tavern-model-context-*` 디렉터리를 함께 정리한다.
-`passed`는 기존 실행기의 해당 모드 완료 상태이고 `failed`/`interrupted`는 실패다.
-GitHub 활성 작업에서 `harness/git_publish.py`는 merged 확인 후 `report.status=passed`로 바꾸지만
-cleanup을 구현하지 않는다. 따라서 이 값만으로 브랜치 정리까지 완료했다고 보고하지 않는다.
-정리 결과는 별도 private cleanup 기록과 메인 최종 결과로 보완하며 JSON 상태 schema·실행기 동작을
-바꾸지 않는다. `cleanup_pending`이면 머지 완료와 정리 보류를 분리해 보고한다.
+`passed`는 해당 모드의 완료 상태이고 `failed`/`interrupted`는 실패다.
+GitHub 활성 작업은 merge 응답과 확정 SHA를 보존한 뒤 cleanup까지 완료해야 passed다.
+report.github의 merge_status/merge_sha와 cleanup의 remote/local/prune/sync/completion 결과를 함께 확인한다.
+정리 proof 대기는 step=cleanup_*의 awaiting_github이며 실패·보류는 cleanup_pending이다.
+이전 merged → passed 보고서는 새 status 조회에서 legacy_cleanup_required로 표시하며 기록을 덮어쓰지 않는다.
+명시적 request/resume/cleanup으로 새 proof를 얻고 실제 정리를 수행해야 새 완료 기준을 만족한다.
 `awaiting_github`는 앱 실행 대기,
 `awaiting_ci`는 이미 생성한 PR의 CI 대기다. 프로세스를 강제 종료해 마지막
 `running` 기록이 남았어도 상태 조회에서 PID가 더 이상 존재하지 않으면 `abandoned`로 표시한다.
@@ -303,7 +304,7 @@ cleanup을 구현하지 않는다. 따라서 이 값만으로 브랜치 정리�
 ## GitHub에 자동 반영
 
 이 저장소의 기본 대상은 `21in7/TavernofSoul`, 기준 브랜치는 `master`다.
-기존 `codex/<run_id>` → `master` squash PR 정책을 유지한다. [ADR 0009](adr/0009-post-merge-branch-cleanup.md)에
+기존 `codex/<run_id>` → `master` squash PR 정책을 유지한다. [ADR 0010](adr/0010-automatic-post-merge-cleanup.md)에
 따라 별도 릴리스 통합 요구가 없는 이번에는 `dev`를 만들지 않는다. `dev` 통합도 작업 브랜치 정리는
 필요하며 추가 PR·CI·통합 책임을 만든다.
 `harness/git-publish-config.json`에 대상과 필수 검사를 명시한다. 서버 GitHub 토큰을 새로 요구하지 않고
@@ -322,7 +323,8 @@ make agent-git-doctor
 make agent-git-request RUN_ID=보고서의_run_id
 # 메인 Codex가 반환된 request.tool(request.arguments)을 GitHub 앱으로 실행한 뒤:
 make agent-git-accept RUN_ID=보고서의_run_id REQUEST_ID=요청_id RESPONSE_FILE=/private/path/response.json
-make agent-git-resume RUN_ID=CI_대기중인_run_id
+make agent-git-resume RUN_ID=CI_또는_cleanup_대기중인_run_id
+make agent-git-cleanup RUN_ID=이미_merged된_run_id
 ```
 
 `github.json`은 대상·변경 내용·기준 SHA·단계·CI 결과를 private 로그에 기록한다. 별도 private
@@ -357,74 +359,97 @@ head와 테스트 merge 양쪽 SHA의 commit status 실패를 차단하고, 최�
 달라졌으면 새 SHA의 CI를 다시 확인한다.
 필수 리뷰나 저장소 규칙이 남아 있으면 `mergeable_state=clean`까지 대기한다. 충돌·기준 변경은 중단하며
 force·관리자 우회·저장소 보호 설정 변경은 하지 않는다. 머지 API에도 expected_head_sha를 전달한다.
-API가 `merged=true`와 유효한 merge SHA를 반환한 뒤에만 실행기의 게시·머지 상태를 `passed`로 바꾼다.
-이는 머지 완료의 증거이며 정리 완료의 증거는 아니다. 확정 merge SHA를 테스트 merge SHA와 구분한다.
+API가 `merged=true`와 유효한 merge SHA를 반환하면 merge_status=merged와 확정 merge SHA를
+먼저 durable journal에 기록하고 아래 cleanup proof를 자동 요청한다. 정리 완료 전 passed가 될 수 없다.
+확정 merge SHA를 테스트 merge SHA와 구분한다.
 30분 동안 검사와 규칙이 완료되지 않으면 PR을 보존하고 `awaiting_ci`로 기록한다.
 `agent-git-resume`은 새 모델 호출·새 커밋·새 PR 없이 그 PR을 다시 확인한다.
 
 ## 머지 후 브랜치 정리
 
-세 required CI의 실제 success, GitHub `merged=true`와 확정 merge SHA 확인 후 메인 `/root`가
-매 작업의 원격 `codex/<run_id>` 브랜치, 동일한 로컬 브랜치, 사라진 원격 추적 ref를 정리한다.
-이번 사용자 요청으로 확인된 누적 작업 브랜치도 PR별로 같은 조건을 충족하면 정리할 수 있다.
-prefix는 후보 식별만 돕고 삭제 근거가 아니다. 작업자·검토자는 정리를 실행하지 않는다.
+merge accept는 다음 fetch 요청을 반환한다. 메인은 게시 때처럼 기존 GitHub 앱 읽기 요청을 계속 실행한다.
+PR을 재조회해 merged=true/closed, PR 번호·repository·base.ref·head.ref/head SHA·확정 merge SHA를
+확인한다. base.sha는 머지 이후 바뀔 수 있다. 고정 head/test merge의 세 required CI와 commit statuses를
+다시 확인한 뒤 repository를 새로 조회해 default_branch를 확인하고 branch 전체 페이지와 정확한
+head query의 열린 PR 페이지를 조회한다. 현재 default_branch가 작업 브랜치이면 정리를 보류한다.
+REST 배열은 per_page=100의 명시적 query 응답으로 처리하며 100개 페이지는 다음 페이지를 요구한다.
+wrapper는 complete/page/per_page/truncated coverage를 증명해야 한다. 중복 branch, 잘린 응답,
+페이지 한도, malformed/실패 응답은 fail closed이며 빈 object/읽기 실패를 ref 부재로 해석하지 않는다.
 
-대상별로 repository와 origin, base(`master`), head 저장소·정확한 브랜치명, PR 번호·URL의 관계를
-확인한다. 해당 PR의 CI 성공, merged 상태·확정 merge SHA·머지 당시 PR head SHA를 확인하고,
-fetch한 `origin/master` 이력에 merge SHA가 포함되는지 확인한다. 누적 PR에도 같은 게이트를 적용한다.
-조회·fetch 실패, 이력 미포함, 증거 불일치·누락이면 관련 삭제를 보류한다.
-삭제 직전 존재하는 원격·로컬 ref의 tip을 각각 머지 당시 PR head SHA와 비교하고 재조회에서
-변경되면 보류한다. 원격 부재나 tip 일치가 로컬의 안전을 대신 증명하지 않으며 반대도 같다.
-tip 차이·이후 커밋·로컬 전용 커밋이 있거나 상태가 불명확하면 해당 브랜치를 보존하고 이유를 보고한다.
+마지막 proof accept가 신뢰한 parent의 `git_cleanup.execute`를 자동 호출한다. 별도 수동 명령이
+기본 흐름의 필수 단계는 아니다. 정리 대상은 그 run의 codex/<run_id> 하나이며 기본/base/main/dev,
+protected·열린 PR·tip 전진·다른 worktree 사용 브랜치는 보존한다. branch가 이미 없는 경우에도 실제
+Git ref 부재를 확인한다. GitHub 앱의 쓰기 도구는 기존 게시·PR·merge 허용 목록 그대로다.
 
-기본 `master`/`main`, 이미 존재하는 `dev`, 보호 브랜치, 작업 중·미머지 PR 브랜치,
-다른 worktree에서 사용하는 브랜치는 보존한다. 열린 PR이나 다른 진행 중 작업의 사용 여부도 확인한다.
-`codex/*` 일괄 삭제를 금지한다. squash merge는 head의 조상 관계를 보존하지 않으므로
-`git branch --merged` 결과만으로 판단하지 않고 GitHub PR 머지 증거와 정확한 tip 동일성을 근거로 한다.
+### 원격 전송과 prune
 
-### 원격 ref 확인과 삭제
+origin의 raw URL/pushurl과 Git URL rewrite 후 실제 fetch/push URL 모두 승인 repository의
+credential-free URL 하나여야 한다. 새 계정·token·credential 파일을 요구하거나 수집하지 않는다.
+Git 인자 배열(shell=False), 60초 timeout, GIT_TERMINAL_PROMPT=0와 명시적 submodule recursion 차단을
+사용한다. 첫 fetch부터 모든 fetch/prune 전에 origin heads → origin tracking의 표준 mapping을 검증한다.
+명시적 fetch refspec도 configured refmap의 추가 목적지를 갱신할 수 있으므로 다른 mapping은 전송·삭제
+전에 prune.reason=unsafe_prune_refspec의 cleanup_pending으로 보류한다.
+fetch는 base의 정확한 remote-tracking 목적지만 갱신하며 확정 merge가 그 이력에 있어야 한다.
+원격 ref를 조회한 뒤 `git push --recurse-submodules=no --force-with-lease=refs/heads/<branch>:<head_sha>
+origin :refs/heads/<branch>`로 삭제한다. 이는 정확한 ref의 compare-and-delete이며 내용 강제 push,
+--force/--no-verify/광범위 push·보호 변경을 허용하지 않는다.
 
-원격 자동 삭제가 실제 활성화됐다고 가정하지 않고 정확한 ref를 조회한다. 이미 없으면 `이미 없음`으로
-기록한다. 남아 있으면 위 조건을 충족한 정확한 브랜치만 기존에 인증된 지원 도구로 삭제하고,
-다시 원격을 조회해 부재를 확인한다. 삭제 응답만으로 성공 처리하지 않는다.
-도구·권한이 없거나 응답이 모호하거나 ref가 남으면 `cleanup_pending`과 대상·구체적 사유를 기록한다.
-불명확한 쓰기를 무조건 반복하지 않는다. 저장소 보호 변경·강제 push·자격증명 수집은 금지한다.
-GitHub 앱의 게시·merge journal은 계속 사용하지만 현재 브랜치 삭제는 구현돼 있지 않다.
-이 문서 변경으로 삭제 도구가 추가되거나 자동 삭제 설정이 활성화되지 않는다.
+삭제 시도는 보내기 전에 checkpoint에 기록한다. 성공 응답·실패·timeout 모두 실제 ref를 재조회한다.
+resume은 먼저 부재/동일 SHA/변경 SHA로 재조정한다. 모호한 시도 뒤 동일 SHA가 남으면
+remote_delete_unresolved_same_sha로 보류하고 자동 재전송하지 않는다. 변경 SHA는 보존한다.
+인증/조회 실패도 부재가 아니다. parent가 실제 삭제를 별도로 확정하면 다음 resume에서 부재로 이어갈 수 있다.
+원격 부재 후 fetch/prune 및 remote prune을 수행하고 정확한 tracking ref 부재를 확인한다.
+prune mapping은 origin의 heads를 origin tracking으로만 매핑하는 표준 refspec이어야 하며 다른 mapping은 보류한다.
 
-### 로컬 보존·동기화와 삭제
+### 로컬 보존과 승인 변경
 
-로컬 변경·staged·untracked 파일, 로컬 전용 커밋과 모든 worktree 상태를 먼저 확인한다.
-앱이 원격 커밋을 만들고 로컬에는 게시된 변경만 미커밋으로 남을 수 있으므로 무조건
-checkout/reset/clean/stash하지 않는다. 다른 사용자 변경·로컬 전용 커밋·충돌·불명확한 상태는
-모두 보존하고 영향받는 정리·동기화를 보류한다. 안전한 원격 정리 여부는 별도로 판단한다.
+worktree list는 Git 2.25의 --porcelain을 사용한다. C-quoted 특수 경로는 바이트로 해석하고
+불명확·locked/prunable 기록은 보류한다. 모든 worktree의 operation 조회와 다른 worktree status는
+읽기만 수행한다(GIT_OPTIONAL_LOCKS=0). base 점유, staged/untracked·사용자 편집, local-only commit,
+다른 checkout/detached, diverged base와 operation 중인 상태는 해당 로컬 단계를 보류한다.
+ignored 파일/디렉터리나 symlink 부모가 target tree 경로와 충돌해도 보존한다. 운영/보호 경로 변경을
+동기화 부수 작업으로 적용하지 않는다. 안전한 원격 삭제의 부분 결과는 남는다.
 
-일반적인 깨끗한 작업 트리에서 기준 이력과 worktree 사용이 안전하면 `master`로 전환한 뒤
-`git fetch --prune origin`, `git pull --ff-only origin master`로 동기화한다. 원격 삭제 후 사라진
-추적 ref의 prune 결과도 확인한다. 원격 ref가 남으면 prune은 삭제를 대신하지 않는다.
-fast-forward가 불가능하면 강제로 동기화하지 않고 보류 이유를 기록한다.
+clean한 승인 checkout은 base 전환 → submodule recursion 없는 fetch/prune → merge --ff-only →
+정확한 작업 ref 삭제로 진행한다. squash에서도 GitHub proof, 동일 tip·추가 commit 없음·merge 이력·
+worktree 미사용을 재확인하고 update-ref -d <ref> <expected SHA>로 원자적 비교 삭제한다.
+branch -D·generic reset --hard·clean·전체 add·자동 stash는 사용하지 않는다.
+로컬 작업 ref가 없으면 absent로 기록한다. 최신 clean master에 해당 merge가 포함되면 재실행도 완료할 수 있다.
 
-게시된 변경만 로컬에 남았으면 승인·검증된 manifest, 확정 머지 결과의 파일 상태와 현재 파일
-bytes·권한을 개별 대조한 파일만 동기화할 수 있다. 추가·삭제 파일의 존재 여부와 staged·untracked
-상태도 대조한다. manifest 밖 파일이나 사용자 편집을 포함하지 않는다. 머지 결과와 게시 내용이
-다르거나 같은 파일의 다른 편집·index 상태를 구분할 수 없으면 보존하고 보류한다.
+앱이 반영한 edit/add/delete/executable 변경만 미커밋으로 남는 경우 github-approved.json의
+before/after fingerprint·정책·index 상태, baseline과 local HEAD 관계, merge 및 fetched base tree의
+blob/mode와 ROOT의 현재 bytes/POSIX permissions를 파일별로 대조한다. Git 100644/100755는 POSIX
+전체 mode가 아니라 실행 비트로 비교한다. approved 밖 변경·같은 파일 사용자 편집·symlink·remote
+bytes/mode 차이는 보존한다. 승인 additions만 ordinary untracked 상태로 예외 처리할 수 있다.
 
-로컬 작업 브랜치가 없으면 `없음`으로 기록한다. 있으면 PR 증거·tip·추가 커밋·worktree 미사용을
-확인하고, 현재 그 브랜치에 있다면 안전하게 `master`로 전환한 뒤 `git branch -d <정확한 작업 브랜치>`를
-우선한다. squash 이력 때문에 `-d`가 거부될 때만 PR merged·merge SHA의 `origin/master` 이력 포함,
-머지 당시 head와 로컬 tip 동일성·추가 커밋 없음·모든 worktree에서 미사용을 다시 확인하여
-그 정확한 브랜치에 한해 `git branch -D`를 허용한다. 다른 거부 사유나 blanket `-D`에는 적용하지 않는다.
+### 체크포인트·복구·완료
 
-### 결과와 관측의 경계
+프로젝트 .lock → GitHub journal lock 순서로 apply/cleanup 동시 실행을 막는다. github.json에 merged와
+확정 SHA를 먼저 fsync/atomic replace로 보존한 뒤 cleanup.json과 cleanup-backup/에 단계·시도·승인
+snapshot을 private durable 기록으로 남긴다(디렉터리 0700, 파일 0600). 승인 변경을 일시 baseline으로
+되돌리는 경우 파일별 before/after 상태를 재확인하고 baseline 복원 → ff-only → synced checkpoint로 진행한다.
+중단 시 backup을 지우거나 generic rollback을 실행하지 않는다. restore.phase와 snapshot hash를 확인하고
+현재 파일이 승인 after 또는 이미 복원된 before인 경우만 이어간다. ff-only 직후 crash는 실제 HEAD/tree로
+재조정한다. 동기화 전 baseline 복원 재개는 새 fetched base의 승인 파일 blob/mode도 다시 대조한다.
+사용자 편집·snapshot 불일치·권한 실패는 보류하고 복구 근거를 남긴다. 로그에는 Git
+stdout/stderr나 credential을 공개하지 않으며 고정 이유 코드만 report에 노출한다.
 
-메인은 머지와 정리 결과를 분리하여 별도 private cleanup 기록과 최종 결과에 PR URL·merge SHA,
-원격 삭제/이미 없음, 로컬 삭제/없음, prune·기준 브랜치 동기화 결과와 대상별 보류 이유를 보고한다.
-미확인·실패·보류를 삭제/없음으로 표현하지 않으며 `cleanup_pending`이면 정리까지 전체 완료라고
-주장하지 않는다. 누적 브랜치도 PR별 결과를 기록하고 재개 시 남은 대상의 현재 상태를 다시 확인한다.
-기존 `report.status=passed`와 이 정리 기록은 별개이며 JSON 상태 schema나 실행기 동작은 변경하지 않는다.
+원격/로컬 deleted 또는 absent, prune/sync/completion complete와 마지막 clean base/ref 재확인이 모두
+있어야 cleanup=complete 및 report.status=passed다. 실패·부분 정리·보존은 cleanup_pending과 non-success다.
+cleanup 실행 진입의 report/approval 읽기 실패도 merged 사실과 SHA를 유지한 cleanup_pending으로 처리한다.
+외부 편집/프로세스 경쟁은 완전히 잠기지 않으므로 각 위험 단계와 완료 직전에 다시 검사한다.
 
-2026-10-12 메인 `/root`가 제공한 초기 관측은 clean `master`, 로컬 브랜치 `master`만 존재,
-repository 응답 `delete_branch_on_merge=false`, GitHub 앱의 삭제·설정 수정 도구 부재 및 메인의
-`make doctor` 통과다. 이는 자동 삭제 활성화·원격 ref 부재·실제 정리·이번 check/CI 성공의 증거가 아니다.
-실행 시 상태를 재확인한다. 기본 check·CI는 실행기가 담당하고 scoped worker는 실행하지 않는다.
-private 작업·로그·응답 원문을 공개 문서에 복사하지 않는다.
+agent-git-resume은 awaiting_ci이면 기존 PR의 CI를 이어 확인하고, merge_sha가 있으면 새 proof부터
+정리를 재개한다. 새 모델/commit/branch/PR/merge 요청을 만들지 않는다. agent-git-cleanup은 이미 merged된
+run을 명시적으로 재확인한다. github-v1 설정과 journal format은 유지하며 cleanup-v1 필드를 추가한다.
+이전 모듈로 prepare됐거나 merged/done/passed인 journal도 request/resume/cleanup에서 새 proof로 이행하며
+이전 passed 자체는 새 완료 증거가 아니다. 기존 승인 snapshot과 journal identity 검사는 계속 필요하다.
+READ_ONLY/demo/GIT=0/게시 비활성/변경 없음/child에서는 정리 side effect를 실행하지 않는다.
+
+[실제 Git 회귀](../harness/test_git_cleanup.py)는 임시 저장소/bare origin과 synthetic GitHub proof로
+삭제/fetch/prune/ff-only·승인 변경·복구·경쟁·권한 실패를 검증한다. file transport는 Python test seam에만
+허용되며 production URL 검증은 완화하지 않는다. 호스트 config/identity/auth/hooks/template 및 외부망을
+차단한다. scoped worker는 이 테스트를 실행하지 않는다. 새 Claude의 documentation.updated 의미 검토,
+full check·실제 PR/세 CI/merge 및 이번 run의 실제 cleanup/clean 동기화 확인은 orchestrator 책임이다.
+문서와 fixture 성공은 실제 정리 완료의 증거를 대신하지 않는다. 결정·대안·비용은
+[ADR 0010](adr/0010-automatic-post-merge-cleanup.md)에 둔다.
