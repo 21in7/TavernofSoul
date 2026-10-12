@@ -7,7 +7,7 @@ PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(i
 .PHONY: agent-triage agent-triage-demo triage-smoke
 .PHONY: compaction-doctor compaction-demo compaction-smoke check-compaction-engine
 .PHONY: agent-workflow agent-workflow-plan agent-workflow-demo agent-workflow-status
-.PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume
+.PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume agent-git-cleanup
 
 help:
 	@echo "doctor          Check the offline harness environment"
@@ -44,7 +44,8 @@ help:
 	@echo "agent-git-doctor Inspect GitHub delivery policy without API calls"
 	@echo "agent-git-request Prepare the parent's next GitHub tool call: RUN_ID=..."
 	@echo "agent-git-accept Validate a connector response: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=..."
-	@echo "agent-git-resume Continue an existing PR waiting for CI: RUN_ID=..."
+	@echo "agent-git-resume Continue existing CI wait or post-merge cleanup: RUN_ID=..."
+	@echo "agent-git-cleanup Recheck a merged PR and resume cleanup: RUN_ID=..."
 	@echo "Override the interpreter with: make check PYTHON=/path/to/python"
 
 prepare-ipf-unpacker:
@@ -104,7 +105,7 @@ agent-workflow-status:
 agent-git-doctor:
 	$(PYTHON) -m harness.git_publish doctor
 
-agent-git-request agent-git-resume:
+agent-git-request agent-git-resume agent-git-cleanup:
 	$(PYTHON) -m harness.git_publish $(patsubst agent-git-%,%,$@) --run-id "$(RUN_ID)"
 
 agent-git-accept:

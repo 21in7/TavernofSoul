@@ -13,7 +13,8 @@
 | [0006](0006-versioned-design-review.md) | Git 관리 설계·ADR와 매 검토의 문서 판단 | 승인(accepted), 이번 요청의 결정 | 2026-10-11 |
 | [0007](0007-codex-warning-success-boundary.md) | Codex 성공 증거 우선과 안전한 경고 metadata | 승인(accepted), 새 결정 | 2026-10-12 |
 | [0008](0008-json-validation-single-pass.md) | 모든 JSON 파일의 엄격한 검사 뒤 중복 finite_tree만 제거 | 승인(accepted), 새 결정 | 2026-10-12 |
-| [0009](0009-post-merge-branch-cleanup.md) | master squash PR 유지와 메인의 증거 기반 머지 후 브랜치 정리 | 승인(accepted), 새 정책 결정 | 2026-10-12 |
+| [0009](0009-post-merge-branch-cleanup.md) | master squash PR 유지와 메인의 증거 기반 머지 후 브랜치 정리 | 대체됨(superseded), 0010 | 2026-10-12 |
+| [0010](0010-automatic-post-merge-cleanup.md) | 자동 parent Git cleanup·lease 비교 삭제·durable 복구·전체 완료 게이트 | 승인(accepted), 새 구현 결정 | 2026-10-12 |
 
 ## 상태와 근거의 의미
 
@@ -25,10 +26,11 @@
 대체하지 않으며, 승인 상태는 수리 worker의 검사 실행·일반 workflow 성공·게시 완료를 뜻하지 않는다.
 0008은 공개 메모리 검사와 파일별 엄격한 검사를 유지하면서 내부 중복 순회만 제거하는 결정이다.
 승인 상태나 제공된 prototype/local diagnostic 수치는 최종 회귀·전체 파서·CI 성공·누적 개선율을 증명하지 않는다.
-0009는 별도 릴리스 통합 요구 없이 dev를 추가하지 않고 기존 squash PR 후 원격·로컬 작업 브랜치를
-메인이 PR별 증거로 정리하는 정책 결정이다. 기존 게시 journal의 merged → passed 동작을 바꾸지 않으며
-정리 결과는 별도 private 기록과 메인 최종 결과로 보완한다. 승인 상태나 초기 관측은 원격 자동 삭제
-활성화·실제 정리 완료·검사/CI 성공을 뜻하지 않고 cleanup_pending을 전체 완료로 보고하지 않는다.
+0009는 당시 별도 메인 정리 정책의 역사적 기록이며 본문을 보존한다. 0010이 자동 정리와 전체 완료
+게이트로 대체한다. merge 성공/SHA를 보존하고 fresh proof·exact ref 삭제·prune·clean ff-only까지
+complete여야 passed다. 새 repository/default_branch proof로 현재 기본 브랜치를 보존한다.
+기존 github-v1/merged run은 명시적 request/resume/cleanup에서 재검증한다.
+0010의 승인 상태는 worker의 검사 실행, 실제 PR/CI/merge 또는 이번 run의 cleanup 성공을 증명하지 않는다.
 
 상태는 제안(proposed), 승인(accepted), 대체됨(superseded)을 사용한다. 이후 결정 변경은
 기존 ADR를 삭제하거나 새 결론으로 재작성하지 않는다. 기존 상태를 superseded로 바꾸고

@@ -1,9 +1,9 @@
 # 0009. Squash PR 머지 후 작업 브랜치 정리
 
-- 상태: 승인(accepted)
+- 상태: 대체됨(superseded) — [ADR 0010](0010-automatic-post-merge-cleanup.md)
 - 기록일: 2026-10-12
 - 기록 성격: 이번 사용자 요청에 따른 새 정책 결정; 정리 실행 성공 기록이 아님
-- 대체 관계: 없음; 기존 GitHub 앱 게시·journal·CI·SHA 고정 squash merge 정책 유지
+- 대체 관계: [ADR 0010](0010-automatic-post-merge-cleanup.md)이 자동 정리와 전체 완료 게이트를 추가한다. 아래 본문은 당시 정책 기록으로 보존한다.
 
 ## 문맥
 

@@ -98,8 +98,23 @@ main의 공식 current407263 격리 입력 관측에서 실제 kTOS/iTOS/jTOS �
 새 Claude 검토와 전체 `make check`는 오케스트레이터가, Git 작업은 git 역할이 담당한다.
 main은 수정 후 세 전체 파싱에 사용한 기존 IES 경로 9239개 모두에 게이트를 재실행하여
 오류 0개를 머지 전에 확인해야 한다. 이 수정 후 실데이터 게이트는 아직 통과로 기록하지 않는다.
-main은 GitHub 앱 journal과 오프라인·MySQL·브라우저 CI 3개 성공 확인 후 머지,
-원격·로컬 브랜치 정리를 담당한다. 이 문서 변경 자체는 검증·검토·CI 성공이나 머지 완료의 증거가 아니다.
+main은 GitHub 앱 journal과 오프라인·MySQL·브라우저 CI 3개 성공 확인 후 머지하고,
+신뢰한 parent의 자동 Git cleanup까지 이어간다. merge는 보존하며 cleanup complete 전 passed가 될 수 없다. 이 문서 변경 자체는 검증·검토·CI 성공이나 머지 완료의 증거가 아니다.
+
+자동 정리 회귀는 [test_git_cleanup.py](../harness/test_git_cleanup.py)에 있다. 기존 parser check 그룹이
+harness/test_*.py를 발견하므로 registry를 확장하지 않는다. 임시 Git 작업 저장소/bare origin에서 실제
+fetch·lease 삭제·prune·ff-only·local ref 삭제, 승인 edit/add/delete/executable 변경, squash/이미 없음/재실행,
+timeout·중단·권한 실패·사용자 편집·ignored collision·tip 경쟁과 완료 게이트를 확인한다.
+새 repository/default_branch proof가 없거나 작업 브랜치가 현재 기본 브랜치인 경우도 삭제를 차단한다.
+GitHub proof만 합성이며 전송/허용 origin은 Python test seam으로 주입한다. production URL 검증은 유지한다.
+fixture는 --template= init 후 symbolic-ref로 master를 명시해 Git 2.25에서도 동작하도록 작성한다.
+ignored collision 회귀는 빈 template에서도 exclude의 부모 디렉터리를 직접 준비한다.
+잘못된 fetch mapping 회귀는 첫 fetch 전에 보류하고 remote/task tracking tip을 보존하는지 확인한다.
+호스트 Git config/identity/auth/hooks/template과 외부망을 사용하지 않는다. worker는 회귀를 실행하지 않으며
+실제 성공은 orchestrator의 full check와 PR/세 CI/merge/cleanup 확인으로 판단한다.
+`make agent-git-resume RUN_ID=...`는 CI 또는 cleanup을 재개하고 `make agent-git-cleanup RUN_ID=...`는
+merged run의 명시적 재확인이다. 단계별 private snapshot/checkpoint와 대상별 보류 이유·복구는
+[workflow](workflow.md#머지-후-브랜치-정리), 완료·전송 정책은 [ADR 0010](adr/0010-automatic-post-merge-cleanup.md)에 둔다.
 
 ## Python 환경
 

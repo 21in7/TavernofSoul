@@ -1,6 +1,7 @@
 """GitHub delivery gates and real checkout preservation, without network calls."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -20,9 +21,22 @@ def git(root, *args):
 
 @pytest.fixture
 def prepared(tmp_path, monkeypatch):
+    for key in list(os.environ):
+        if key.startswith(('GIT_', 'SSH_', 'GCM_')) or key in (
+                'READ_ONLY', 'GIT', 'TAVERN_WORKFLOW_CHILD', 'GH_TOKEN', 'GITHUB_TOKEN', 'EMAIL'):
+            monkeypatch.delenv(key, raising=False)
+    home = tmp_path / 'git-home'
+    home.mkdir()
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(home))
+    monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', os.devnull)
+    monkeypatch.setenv('GIT_TERMINAL_PROMPT', '0')
+    monkeypatch.setenv('GIT_ALLOW_PROTOCOL', 'file')
     root = tmp_path / 'project'
     root.mkdir()
     git(root, 'init', '--template=', '-q')
+    git(root, 'symbolic-ref', 'HEAD', 'refs/heads/master')
     git(root, 'remote', 'add', 'origin', 'https://github.com/21in7/TavernofSoul.git')
     for name, content in {'edit.py': 'before\n', 'delete.py': 'delete before\n',
                           'unrelated.py': 'user change\n', '.gitignore': '/logs/\n'}.items():
@@ -128,8 +142,12 @@ def test_full_connector_flow_requires_ci_and_pins_merge_head(prepared):
     assert job['arguments']['merge_method'] == 'squash'
     delivery.accept(ledger, {'merged': True, 'sha': MERGE})
     delivery.save(prepared['directory'], ledger)
-    assert delivery.request(ledger) is None
-    assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'passed'
+    job = delivery.request(ledger)
+    assert job['tool'] == delivery.TOOLS['fetch']
+    assert job['arguments']['url'].endswith('/pulls/11')
+    assert ledger['merge_status'] == 'merged' and ledger['merge_sha'] == MERGE
+    assert ledger['step'] == 'cleanup_pr'
+    assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'awaiting_github'
 
 
 def test_native_branch_snapshot_requires_a_pinned_ref_read_before_pr(prepared):
@@ -646,3 +664,165 @@ def test_other_malformed_nested_objects_fail_closed(prepared, kind):
             data = check_response(rows)
     with pytest.raises(ValueError, match='malformed object'):
         delivery.accept(ledger, data)
+
+
+def start_cleanup(ledger):
+    to_pr(ledger)
+    ledger.update(step='merge')
+    delivery.accept(ledger, {'merged': True, 'sha': MERGE})
+
+
+def cleanup_pr_data(ledger, **extra):
+    return pr_data(ledger, number=11, state='closed', merged=True,
+                   merge_commit_sha=MERGE, **extra)
+
+
+def cleanup_to_repository(ledger):
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    delivery.accept(ledger, check_response(rows_for(ledger)))
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    assert ledger['step'] == 'cleanup_repository'
+
+
+def cleanup_to_branches(ledger):
+    cleanup_to_repository(ledger)
+    delivery.accept(ledger, {'full_name': ledger['config']['repository'], 'default_branch': 'master'})
+    assert ledger['step'] == 'cleanup_branches'
+
+
+@pytest.mark.parametrize('data', [
+    {'full_name': 'other/repository', 'default_branch': 'master'},
+    {'full_name': '21in7/TavernofSoul'},
+    {'full_name': '21in7/TavernofSoul', 'default_branch': 'codex/123456-abcdef'},
+])
+def test_cleanup_requires_fresh_repository_and_preserves_default_branch(prepared, data):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    cleanup_to_repository(ledger)
+    assert delivery.request(ledger)['arguments']['url'] == \
+        'https://api.github.com/repos/' + ledger['config']['repository']
+    with pytest.raises(ValueError):
+        delivery.accept(ledger, data)
+    assert ledger['merge_sha'] == MERGE and ledger['step'] == 'cleanup_repository'
+
+
+@pytest.mark.parametrize('name', ['report.json', 'github-approved.json'])
+def test_cleanup_input_read_failure_keeps_confirmed_merge_pending(prepared, name):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    ledger['step'] = 'cleanup_execute'
+    (prepared['directory'] / name).write_text('{invalid')
+    delivery.execute_cleanup(prepared['directory'], ledger)
+    assert ledger['merge_sha'] == MERGE and ledger['merge_status'] == 'merged'
+    assert ledger['status'] == ledger['cleanup']['status'] == 'cleanup_pending'
+    assert not delivery.cleanup_complete(ledger)
+
+
+def test_post_merge_base_advancement_is_normal_and_identity_is_pinned(prepared):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    data = cleanup_pr_data(ledger)
+    data['base']['sha'] = MERGE
+    delivery.accept(ledger, data)
+    assert ledger['step'] == 'cleanup_checks'
+    assert ledger['cleanup_proof']['merge_sha'] == MERGE
+
+
+@pytest.mark.parametrize('field', ['head_sha', 'head_ref', 'head_repo', 'base_ref', 'base_repo', 'merge_sha', 'merged'])
+def test_post_merge_identity_changes_fail_closed(prepared, field):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    data = cleanup_pr_data(ledger)
+    if field == 'merge_sha':
+        data['merge_commit_sha'] = HEAD
+    elif field == 'merged':
+        data['merged'] = False
+    else:
+        part, key = field.split('_')
+        data[part][{'sha': 'sha', 'ref': 'ref', 'repo': 'repo'}[key]] = \
+            {'full_name': 'other/repo'} if key == 'repo' else (BASE if key == 'sha' else 'other')
+    with pytest.raises(ValueError):
+        delivery.accept(ledger, data)
+    assert ledger['merge_sha'] == MERGE
+
+
+@pytest.mark.parametrize('data', [{}, {'items': []}, {'items': [], 'complete': True}, {'isError': True}])
+def test_empty_or_failed_collection_does_not_prove_ref_absence(prepared, data):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    cleanup_to_branches(ledger)
+    with pytest.raises(ValueError):
+        delivery.accept(ledger, data)
+    assert ledger['step'] == 'cleanup_branches'
+    assert 'branch' not in ledger['cleanup_proof']
+
+
+def test_array_collections_and_exact_open_pr_query_coverage(prepared):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    cleanup_to_branches(ledger)
+    first = [{'name': 'other' + str(i)} for i in range(100)]
+    delivery.accept(ledger, first)
+    assert delivery.request(ledger)['arguments']['url'].endswith('page=2')
+    delivery.accept(ledger, [{'name': ledger['branch'], 'protected': False, 'commit': {'sha': HEAD}}])
+    job = delivery.request(ledger)
+    assert 'state=open&head=21in7%3Acodex%2F' in job['arguments']['url']
+    delivery.accept(ledger, [])
+    assert ledger['step'] == 'cleanup_execute' and ledger['cleanup_proof']['verified'] is True
+
+
+def test_legacy_merged_passed_requires_explicit_cleanup_and_never_remerges(prepared, capsys):
+    ledger = prepared['ledger']
+    to_pr(ledger)
+    ledger.update(status='merged', step='done', merge_sha=MERGE)
+    agent_models.private_json(prepared['directory'] / 'github.json', ledger)
+    report = {**prepared['report'], 'status': 'passed'}
+    agent_models.private_json(prepared['directory'] / 'report.json', report)
+    assert delivery.main(['resume', '--run-id', ledger['run_id']]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['request']['tool'] == delivery.TOOLS['fetch']
+    assert output['github']['step'] == 'cleanup_pr'
+    assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'awaiting_github'
+
+
+def test_cleanup_read_error_preserves_merge_and_returns_non_success(prepared, capsys):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    delivery.save(prepared['directory'], ledger)
+    assert delivery.main(['request', '--run-id', ledger['run_id']]) == 0
+    job = json.loads(capsys.readouterr().out)['request']
+    assert delivery.main(['accept', '--run-id', ledger['run_id'], '--request-id', job['request_id'],
+                          '--response-json', json.dumps({'isError': True})]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output['request'] is None and output['github']['merge_sha'] == MERGE
+    assert output['github']['status'] == 'cleanup_pending'
+    assert json.loads((prepared['directory'] / 'report.json').read_text())['status'] == 'cleanup_pending'
+    assert delivery.main(['resume', '--run-id', ledger['run_id']]) == 0
+    assert json.loads(capsys.readouterr().out)['request']['tool'] == delivery.TOOLS['fetch']
+
+
+def test_cleanup_pagination_limit_and_duplicate_branch_names_fail_closed(prepared):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    cleanup_to_branches(ledger)
+    ledger['cleanup_page'] = 100
+    with pytest.raises(ValueError, match='pagination limit'):
+        delivery.accept(ledger, [{'name': 'other' + str(i)} for i in range(100)])
+    ledger.update(cleanup_page=1, cleanup_rows=[])
+    with pytest.raises(ValueError, match='Ambiguous'):
+        delivery.accept(ledger, [{'name': 'duplicate'}, {'name': 'duplicate'}])
+
+
+def test_post_merge_test_merge_ci_gate_is_retained(prepared):
+    ledger = prepared['ledger']
+    start_cleanup(ledger)
+    ledger['test_merge_sha'] = TEST_MERGE
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    delivery.accept(ledger, check_response([]))
+    assert TEST_MERGE in delivery.request(ledger)['arguments']['url']
+    delivery.accept(ledger, check_response(rows_for(ledger, sha=TEST_MERGE)))
+    assert ledger['cleanup_proof']['check_sha'] == TEST_MERGE
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    delivery.accept(ledger, {'sha': TEST_MERGE, 'total_count': 0})
+    delivery.accept(ledger, {'full_name': ledger['config']['repository'], 'default_branch': 'master'})
+    assert ledger['step'] == 'cleanup_branches'

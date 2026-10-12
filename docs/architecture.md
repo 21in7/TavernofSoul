@@ -145,8 +145,25 @@ geometry 정확성을 검증하지는 않는다.
 새 Claude 검토와 전체 `make check`는 오케스트레이터가, Git 작업은 git 역할이 담당한다.
 main은 수정 후 세 전체 파싱에 사용한 기존 IES 경로 9239개 모두에 게이트를 재실행하여
 오류 0개를 머지 조건으로 확인해야 한다. 이 수정 후 실데이터 게이트는 아직 통과로 기록하지 않는다.
-main은 GitHub 앱 journal과 오프라인·MySQL·브라우저 CI 3개 성공 확인 후 머지,
-원격·로컬 브랜치 정리를 담당한다. 검증·검토·CI·머지 완료는 담당자의 결과 확인 전까지 주장하지 않는다.
+main은 GitHub 앱 journal과 오프라인·MySQL·브라우저 CI 3개 성공 확인 후 머지하고,
+신뢰한 parent의 자동 Git cleanup까지 담당한다. 검증·검토·CI·머지 완료는 담당자의 결과 확인 전까지 주장하지 않는다.
+
+GitHub 게시와 Git cleanup은 권한·완료 경계를 나눈다. git_publish는 기존 앱의 쓰기 journal을 유지하고
+merge 성공/SHA를 durable 기록한 뒤 새 읽기 proof와 git_cleanup을 자동 연결한다. git_cleanup만 인증된
+parent Git으로 해당 run의 정확한 ref 삭제·tracking prune·clean base ff-only 동기화를 수행한다.
+새 repository/default_branch 읽기 proof로 현재 기본 브랜치도 삭제 대상에서 제외한다.
+expected SHA lease와 update-ref 비교 삭제는 추가 commit 경쟁을 보존하며 내용/이력 강제 push를 허용하지 않는다.
+origin의 raw/effective fetch/push URL 및 rewrite를 승인 저장소와 대조하고 recursion을 명시적으로 끈다.
+첫 fetch부터 모든 fetch/prune 전에 표준 origin heads → origin tracking mapping을 검증해 다른 목적지의
+ref 갱신을 차단한다. 불일치는 전송·삭제 전에 prune.reason=unsafe_prune_refspec으로 보류한다.
+게임 데이터·submodule/unpack·운영 설정/cron/DB는 정리 대상이 아니며 ignored/보호 경로 collision은 보류한다.
+앱 반영 승인 파일만 hash/POSIX mode·Git blob/executable mode·index·baseline HEAD를 대조해 private
+snapshot/checkpoint 뒤 일시 복원할 수 있다. 사용자 편집·불명확한 상태는 보존한다.
+프로젝트 lock → journal lock 순서와 실제 상태 재조정으로 apply/cleanup을 직렬화하지만 외부 경쟁은 남는다.
+merge 완료와 cleanup 결과는 분리하고 최종 ref 부재·prune·sync·clean 확인까지 complete여야 passed다.
+cleanup_pending은 non-success이며 이전 merged/passed journal은 새 명시적 cleanup 경계에서 재검증한다.
+책임·복구·검증 경로는 [하네스 설계](harness-design.md#머지-후-자동-정리와-완료-계약),
+[workflow](workflow.md#머지-후-브랜치-정리), [ADR 0010](adr/0010-automatic-post-merge-cleanup.md)에 둔다.
 
 ## 다운로더 → 파서 계약
 
