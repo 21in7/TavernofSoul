@@ -796,12 +796,113 @@ def test_anvil_keeps_runtime_lookup_order(anvil_equipment, price_key):
     runtime = Runtime(luautil.LUA_RUNTIME)
     price = runtime.pop('GET_REINFORCE_PRICE')
     runtime[price_key] = price
-    luautil.LUA_RUNTIME = runtime
-    items.parse_equips(case.c, 'item_equip.ies')
-    assert lookups == ['SCR_REFRESH_ARMOR'] + [
-        name for _ in range(40) for name in
-        ('GET_REINFORCE_ADD_VALUE', price_key, 'GET_REINFORCE_ADD_VALUE_ATK', price_key)
-    ] + ['GET_TRANSCEND_MATERIAL_COUNT'] * 10
+    previous_runtime = luautil.LUA_RUNTIME
+    try:
+        luautil.LUA_RUNTIME = runtime
+        items.parse_equips(case.c, 'item_equip.ies')
+    finally:
+        luautil.LUA_RUNTIME = previous_runtime
+    assert lookups == ['SCR_REFRESH_ARMOR', 'GET_REINFORCE_ADD_VALUE', price_key,
+                       'GET_REINFORCE_ADD_VALUE_ATK', 'GET_TRANSCEND_MATERIAL_COUNT']
+    assert case.calls == [(name, lv) for lv in range(40)
+                          for name in ('DEF', 'price', 'ATK', 'price')]
+    assert case.obj['AnvilDEF'] == list(range(200, 318, 3))
+    assert case.obj['AnvilATK'] == list(range(100, 179, 2))
+    assert case.obj['AnvilPrice'] == [1000 + 5 * lv for lv in range(40) for _ in range(2)]
+
+
+@pytest.mark.parametrize('props,missing,branches', (
+    ('ATK', ('GET_REINFORCE_ADD_VALUE',), ('ATK',)),
+    ('DEF', ('GET_REINFORCE_ADD_VALUE_ATK',), ('DEF',)),
+    ('', ('GET_REINFORCE_ADD_VALUE', 'GET_REINFORCE_ADD_VALUE_ATK',
+          'GET_REINFORCE_PRICE'), ()),
+))
+def test_anvil_inactive_functions_are_not_required(anvil_equipment, props, missing, branches):
+    case = anvil_equipment(props)
+    for name in missing:
+        del luautil.LUA_RUNTIME[name]
+    assert items.parse_equips(case.c, 'item_equip.ies') is case.c
+    assert case.calls == [(name, lv) for lv in range(40)
+                          for branch in branches for name in (branch, 'price')]
+    assert case.obj['AnvilATK'] == (list(range(100, 179, 2)) if 'ATK' in branches
+                                    else [] if branches else None)
+    assert case.obj['AnvilDEF'] == (list(range(200, 318, 3)) if 'DEF' in branches
+                                    else [] if branches else None)
+    assert case.obj['AnvilPrice'] == [1000 + 5 * lv for lv in range(40) for _ in branches]
+    assert case.obj['TranscendPrice'] == list(range(1, 11))
+    assert case.rows[0]['Reinforce_2'] == (39 if branches else '2')
+    assert case.rows[0]['Transcend'] == 0
+
+
+@pytest.mark.parametrize('missing,expected_calls,defense,prices', (
+    ('GET_REINFORCE_ADD_VALUE', [], [], []),
+    ('GET_REINFORCE_PRICE', [('DEF', 0)], [200.75], []),
+    ('GET_REINFORCE_ADD_VALUE_ATK', [('DEF', 0), ('price', 0)], [200.75], [1000.25]),
+    ('GET_TRANSCEND_MATERIAL_COUNT',
+     [(name, lv) for lv in range(40) for name in ('DEF', 'price', 'ATK', 'price')],
+     list(range(200, 318, 3)), [1000 + 5 * lv for lv in range(40) for _ in range(2)]),
+))
+def test_anvil_missing_active_function_fails_at_first_use(
+        anvil_equipment, missing, expected_calls, defense, prices):
+    case = anvil_equipment('DEF,ATK')
+    del luautil.LUA_RUNTIME[missing]
+    with pytest.raises(KeyError) as failure:
+        items.parse_equips(case.c, 'item_equip.ies')
+    assert failure.value.args == (missing,)
+    assert case.calls == expected_calls
+    assert case.obj['AnvilDEF'] == defense
+    assert case.obj['AnvilPrice'] == prices
+    if missing == 'GET_TRANSCEND_MATERIAL_COUNT':
+        assert case.obj['AnvilATK'] == list(range(100, 179, 2))
+        assert case.obj['TranscendPrice'] == []
+        assert case.rows[0]['Reinforce_2'] == 39
+        assert case.rows[0]['Transcend'] == 0
+    else:
+        assert case.obj['AnvilATK'] == []
+        assert 'TranscendPrice' not in case.obj
+        assert case.rows[0]['Reinforce_2'] == 0
+
+
+def test_refresh_failure_precedes_calculation_lookups(anvil_equipment):
+    error = RuntimeError('fixture refresh failed before calculation')
+
+    def refresh(row):
+        assert row['Reinforce_2'] == '2'
+        raise error
+
+    case = anvil_equipment('DEF,ATK', refresh)
+    for name in ('GET_REINFORCE_ADD_VALUE', 'GET_REINFORCE_ADD_VALUE_ATK',
+                 'GET_REINFORCE_PRICE', 'GET_TRANSCEND_MATERIAL_COUNT'):
+        del luautil.LUA_RUNTIME[name]
+    with pytest.raises(ValueError, match='FixtureArmor using SCR_REFRESH_ARMOR') as failure:
+        items.parse_equips(case.c, 'item_equip.ies')
+    assert failure.value.__cause__ is error
+    assert case.calls == []
+    assert 'AnvilDEF' not in case.obj and 'TranscendPrice' not in case.obj
+    assert case.rows[0]['Reinforce_2'] == '2'
+
+
+def test_transcend_failure_keeps_calls_and_partial_row_state(anvil_equipment):
+    case = anvil_equipment('DEF,ATK')
+    calls = []
+    error = RuntimeError('fixture transcend failure at level 4')
+
+    def transcend(row, level):
+        assert row is case.rows[0]
+        assert row['Reinforce_2'] == 39 and row['Transcend'] == 0
+        calls.append(level)
+        row['Transcend'] = 27
+        if level == 4:
+            raise error
+        return level + 0.75
+
+    luautil.LUA_RUNTIME['GET_TRANSCEND_MATERIAL_COUNT'] = transcend
+    with pytest.raises(RuntimeError) as failure:
+        items.parse_equips(case.c, 'item_equip.ies')
+    assert failure.value is error
+    assert calls == [0, 1, 2, 3, 4]
+    assert case.obj['TranscendPrice'] == [0.75, 1.75, 2.75, 3.75]
+    assert case.rows[0]['Transcend'] == 27
     assert case.calls == [(name, lv) for lv in range(40)
                           for name in ('DEF', 'price', 'ATK', 'price')]
 

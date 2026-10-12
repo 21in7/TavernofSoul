@@ -237,6 +237,19 @@ NaN·누락 셀의 `None`·초과 필드의 mutable list는 캐시에 넣지 않
 호출·파일·지역 사이에 공유하지 않는다.
 이름이 이미 있어도 모든 장비 행과 Lua 수식 처리를 계속 수행하며 후속 행의 값 덮어쓰기를 유지한다.
 
+`items.parse_equips`의 legacy 강화 40단계·초월 10단계는 각 row의 RefreshScp 실행 뒤
+활성 분기의 첫 사용 시 Python `LUA_RUNTIME` registry에서 callable을 조회하고 해당 루프에서만
+local 참조를 재사용한다. 강화 호출은 DEF → price → ATK → price 순서를 유지하며,
+양쪽 분기에서는 같은 price 참조를 두 번 호출한다. 기존 ATK/DEF 바깥 guard를 유지하므로 비활성 row의
+`Reinforce_2` 원값은 보존하고, 활성 row는 단계마다 0..39를 대입한다. 초월은 각 호출 전에
+`Transcend=0`을 대입하며 마지막 callable의 row 변경도 보존한다.
+참조는 루프 종료 시 해제하고 다음 row·parse·init·지역으로 공유하지 않는다.
+RefreshScp가 바꾼 registry 항목은 현재 row의 첫 조회에 반영하며, 루프 내부 계산 callable이
+registry를 직접 교체하는 임의 동작까지 보존한다고 주장하지 않는다. 원본 CSV 문자열의 사전 변환,
+Lua 함수 재컴파일·전역 alias·결과 캐시는 추가하지 않는다. 기존 인자·호출 순서·가격 fallback,
+수치 필터·타입·정밀도, 비활성 분기의 lazy 조회와 RefreshScp 실패 전파·반환값을 유지한다.
+회귀 경계와 실데이터 측정 책임은 [최적화 회귀와 성능 근거](harness.md#최적화-회귀와-성능-근거)에 둔다.
+
 legacy Lua 줄 전처리는 quoted index → require 제거 → method 변환 순서와 기존 regex/replacement를
 유지한다. private compiled regex를 재사용하고 각 단계의 현재 줄에 literal substring guard를
 적용해 매칭이 불가능한 경우에만 치환 호출을 생략한다. 이는 전처리 비용만 줄이며,

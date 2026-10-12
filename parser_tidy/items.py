@@ -576,18 +576,30 @@ def parse_equips(constants, filename, _seen_paths=None):
             props = row['BasicTooltipProp']
             if (('ATK' in props or 'DEF' in props) if type(props) is str else
                     any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'DEF', 'MATK', 'MDEF'])):
+                # Resolve only at the first use, after this row's RefreshScp.
+                # Inactive branches must not require a registered function.
+                reinforce_def = reinforce_atk = reinforce_price = None
                 for lv in range(40):
                     row['Reinforce_2'] = lv
                     props = row['BasicTooltipProp']
                     if ('DEF' in props if type(props) is str else
                             any(prop in row['BasicTooltipProp'] for prop in ['DEF', 'MDEF'])):
-                        obj['AnvilDEF'].append(LUA_RUNTIME['GET_REINFORCE_ADD_VALUE'](None, row, 0, 1))
-                        obj['AnvilPrice'].append(LUA_RUNTIME[reinf](row, {}, None))
+                        if reinforce_def is None:
+                            reinforce_def = LUA_RUNTIME['GET_REINFORCE_ADD_VALUE']
+                        obj['AnvilDEF'].append(reinforce_def(None, row, 0, 1))
+                        if reinforce_price is None:
+                            reinforce_price = LUA_RUNTIME[reinf]
+                        obj['AnvilPrice'].append(reinforce_price(row, {}, None))
                     props = row['BasicTooltipProp']
                     if ('ATK' in props if type(props) is str else
                             any(prop in row['BasicTooltipProp'] for prop in ['ATK', 'MATK'])):
-                        obj['AnvilATK'].append(LUA_RUNTIME['GET_REINFORCE_ADD_VALUE_ATK'](row, 0, 1, None))
-                        obj['AnvilPrice'].append(LUA_RUNTIME[reinf](row, {}, None))
+                        if reinforce_atk is None:
+                            reinforce_atk = LUA_RUNTIME['GET_REINFORCE_ADD_VALUE_ATK']
+                        obj['AnvilATK'].append(reinforce_atk(row, 0, 1, None))
+                        if reinforce_price is None:
+                            reinforce_price = LUA_RUNTIME[reinf]
+                        obj['AnvilPrice'].append(reinforce_price(row, {}, None))
+                del reinforce_def, reinforce_atk, reinforce_price
                
     
             obj['AnvilPrice'] = [int(value) for value in obj['AnvilPrice'] if value > 0]
@@ -600,7 +612,10 @@ def parse_equips(constants, filename, _seen_paths=None):
         obj['TranscendPrice'] = []
         for lv in range(10):
             row['Transcend'] = 0
-            obj['TranscendPrice'].append(LUA_RUNTIME['GET_TRANSCEND_MATERIAL_COUNT'](row, lv))
+            if lv == 0:
+                transcend_material_count = LUA_RUNTIME['GET_TRANSCEND_MATERIAL_COUNT']
+            obj['TranscendPrice'].append(transcend_material_count(row, lv))
+        del transcend_material_count
         #somehow it wont contain tc 10 =w=
         if (obj['Grade'] == 6):
             obj['TranscendPrice'].append(lua.execute('return get_TC_goddess')(int(row['UseLv']), row['ClassType'], 0,10))
