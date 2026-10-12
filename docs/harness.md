@@ -454,6 +454,16 @@ ID 중복·참조·수치 범위·단위 담당 단계와 기존 optional/sentin
   호출 횟수 계측은 fixture 준비가 끝난 뒤 대상 호출에만 적용하고 기존 함수로 복원한다.
   `test_atomic_release.py`와 함께 메모리 검사 후 쓰기, staging 검사 후 승급,
   백업·롤백·버전 보존 정책을 확인한다.
+  scalar fast path는 정확한 내장 `str`·`int`·`bool`와 `None` 자식만 재귀를 생략하고,
+  정확한 내장 float는 부모에서 `math.isfinite`로 검사한다. `is` 기반 판별과 기존 재귀·
+  `isinstance` fallback이 dict/list/tuple/float 하위 클래스 및 알 수 없는 객체의 동작을 보존해야 한다.
+  primitive 잎 옆의 중첩 실패와 scalar 루트·float 하위 클래스의 비유한 값,
+  내장 scalar 타입과 같다고 주장하는 metaclass의 `__eq__`, 임의 크기 정수·bool·None·
+  문자열 NaN/Infinity 허용을 기존 테스트와 추가 gap 회귀로 확인한다.
+  dict 삽입 순서·배열 인덱스 순서에 따른 깊이 우선 첫 오류와 key repr·인덱스 표현,
+  정확한 `ContractError` path/code/message/문자열·정상 반환값·원본 identity·alias를 검증한다.
+  공유 컨테이너 identity 캐시·전역 결과 캐시·호출/build/지역 간 상태 없이 공개 메모리 API의
+  mutation 재검사와 두 파일 API의 교체 후 재검사·수정 재시도·bytes 보존을 확인한다.
 - `parser_tidy/tests/test_combat_source_fixture.py`: 비활성 스킬의 기존 순서·삭제 동작,
   원본 문자열/정수 ID 비교, 링크 순서와 남은 중복을 독립 기대값과 비교한다.
   공유 객체·별도 by_name 객체·alias에서 객체당 한 번의 링크 필터링, 비활성 0개일 때
@@ -471,6 +481,11 @@ ID 중복·참조·수치 범위·단위 담당 단계와 기존 optional/sentin
 출력 동등성·실행한 지역·반복 측정 여부를 함께 보고한다. 서로 다른 단계의 속도 배율을
 곱하거나 서로 다른 실험의 절감 시간을 더해 전체 개선율로 제시하지 않는다.
 
+메인이 제공한 current407263 kTOS JSON의 기존 finite-tree 순회 중앙값 2.985s와
+scalar 재귀를 줄인 후보 1.392s는 private in-memory prototype 진단이다. 각각 세 표본이며
+profiler를 사용하지 않았다. 이 문서 작업자는 원본 측정 로그를 받거나 재측정하지 않았다.
+최종 구현 시간·전체 파서 성능·회귀 테스트 통과의 증거로 사용하지 않는다.
+
 장비 계산의 row별 local callable 참조 재사용은 별도의 국소 최적화다.
 `test_equipment_source_fixture.py`는 equipment fixture의 임시 복사본과 `isolated_parser_state`를
 사용하여 실제 Lupa 호출을 직접 작성한 분수·0·음수 기대 배열과 비교한다. legacy ATK/DEF/양쪽/없음,
@@ -485,9 +500,21 @@ fixture 격리도 기존 전역 상태를 복원한다. 양쪽 분기의 조회 
 
 실행기·메인 `/root`는 변경 전후 current407263 kTOS/iTOS/jTOS 전체 `main`을 격리 사본에서
 profiler 없이 반복 실행하여 장비 단계 및 전체 wall/CPU 시간과 지역별 JSON 41개 byte 동일성을
-확인한다. 검증 결과가 나오기 전 부모는 GitHub 게시를 보류하며, 검증·검토·기본 Git 역할 이후
-`awaiting_github`에서 앱 journal을 통해 게시·세 CI 성공·merge SHA 확인을 이어간다.
+확인한다. JSON scalar 변경은 반영한 최종 소스로 유한성 순회와 JSON 출력·검증의 전후 시간을
+같은 입력·환경에서 별도로 측정하고, 전체 파서 시간과 측정 범위를 구분해 보고한다.
+지역별 byte 비교는 직렬화된 모든 출력 파일과 version을 포함하며 JSON 객체의 의미 비교로 대체하지 않는다.
+오케스트레이터의 전체 `make check`와 메인의 반영 후 최종 실데이터 시간·지역별 bytes 비교 결과가
+확인되기 전에는 어떤 GitHub 게시 도구도 호출하지 않는다. 기본 `git` 역할은 부모 흐름에서 필수이며,
+메인 `/root`가 `awaiting_github`의 앱 journal 게시·세 CI의 실제 success·SHA 고정 merge·자동 정리를 맡는다.
 이 문단은 회귀·측정·인계 요구사항이며 성능 개선·검사·CI·머지 완료 기록이 아니다.
+
+이번 scalar fast path의 문서 영향은 [데이터 계약](data-contracts.md)·[architecture](architecture.md)·
+이 문서의 구현·회귀·측정 근거 설명이다. ADR 0008의 엄격한 파일별 디코딩·공개 메모리 검사·
+도메인 검사와 별개의 직렬화 전/후 책임을 유지하므로 새 ADR이나 기존 결정 변경은 필요하지 않다.
+오케스트레이터의 독립 의미 검토는 매번 `documentation={status,files,reason}`을 반환하고
+ADR 변경 필요성도 판단해야 한다. 필요한 문서가 승인 범위 밖이면 정확한 누락 경로를 보고하고
+기존 승인 파일에 finding을 귀속하여 수정 요청한다. 수정 라운드에서 범위를 자동 확장하지 않는다.
+문서 형식 검사와 회귀 명세의 존재만으로 의미적 완전성이나 실행 성공을 주장하지 않는다.
 
 ## 파서 원본 검증
 

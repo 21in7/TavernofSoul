@@ -112,16 +112,35 @@ def finite_tree(value, path):
 
 def _nonfinite_suffix(value):
     # Build diagnostic strings only while unwinding the first invalid branch.
+    # Only exact built-in scalar children bypass recursion. Identity checks
+    # keep subclasses (including those with metaclass equality) on the legacy
+    # isinstance path below.
     if isinstance(value, float) and not math.isfinite(value):
         return ''
     if isinstance(value, dict):
         for key, child in value.items():
-            suffix = _nonfinite_suffix(child)
+            child_type = type(child)
+            if child_type is str or child_type is int or child_type is bool or child is None:
+                continue
+            if child_type is float:
+                if math.isfinite(child):
+                    continue
+                suffix = ''
+            else:
+                suffix = _nonfinite_suffix(child)
             if suffix is not None:
                 return '[{!r}]{}'.format(key, suffix)
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
-            suffix = _nonfinite_suffix(child)
+            child_type = type(child)
+            if child_type is str or child_type is int or child_type is bool or child is None:
+                continue
+            if child_type is float:
+                if math.isfinite(child):
+                    continue
+                suffix = ''
+            else:
+                suffix = _nonfinite_suffix(child)
             if suffix is not None:
                 return '[{}]{}'.format(index, suffix)
     return None

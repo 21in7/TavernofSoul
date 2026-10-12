@@ -53,11 +53,20 @@ ORM 유형 행을 만드는 EQUIPMENT·CARD·RECIPES·COLLECTION·BOOKS 간 중�
 `1e999`처럼 읽을 때 무한대로 넘치는 값도 거부한다.
 명시한 선택적 계약 컬렉션 외의 lookup·자산·provenance 파일은 JSON 형식을 검사하며 별도 도메인 schema를 강제하지 않는다.
 
-`finite_tree`는 정상 순회 중 진단 경로 문자열을 만들지 않고, 비유한 float를 발견할 때만 구성한다.
-정상 입력의 모든 값을 검사하며, dict 삽입 순서와 list·tuple 인덱스 순서에 따른 첫 오류 위치를 유지한다.
+`finite_tree`의 private `_nonfinite_suffix`는 dict·list·tuple의 자식이 정확한 내장
+`str`·`int`·`bool` 또는 `None`이면 재귀 호출을 생략한다. 정확한 내장 `float` 자식은
+부모에서 `math.isfinite`로 검사한다. 타입 판별은 `type(child) is ...`와 `child is None`을
+사용하며, 동등성 기반 타입 membership을 사용하지 않는다. 사용자 metaclass의 `__eq__`가
+하위 클래스를 내장 scalar 타입과 같다고 주장해도 잘못된 값을 숨길 수 없어야 한다.
+컨테이너·하위 클래스·알 수 없는 객체는 재귀하여 기존 `isinstance` 처리로 돌아간다.
+dict·list·tuple 하위 클래스는 순회하고 float 하위 클래스와 scalar 루트의 비유한 float도 거부한다.
+알 수 없는 객체의 속성을 새로 순회하거나 새 타입 거부 정책을 추가하지 않는다.
+
+정상 순회 중 진단 경로 문자열을 만들지 않고, 첫 비유한 float의 분기를 되짚을 때만 구성한다.
+dict 삽입 순서와 list·tuple 인덱스 순서에 따른 깊이 우선 첫 오류 위치를 유지한다.
 dict 키의 `{!r}`·인덱스의 `[{}]` 표현과 `ContractError`의 path·code·message·문자열 표현도 동일하다.
-기존 dict·list·tuple·float 하위 클래스 지원과 허용 값(유한 수치·정수·bool·None·문자열 `'NaN'` 등),
-입력 보존 및 JSON·도메인 계약 정책은 바뀌지 않는다.
+유한 float·임의 크기 정수·bool·None·문자열 `'NaN'`·`'Infinity'`의 기존 허용을 유지한다.
+공개 API·정상 반환값·입력 객체 identity와 alias·직렬화 bytes 및 JSON·도메인 계약 정책은 바뀌지 않는다.
 
 ### 메모리 API와 파일 스냅샷의 검증 책임
 
@@ -79,6 +88,7 @@ dict 키의 `{!r}`·인덱스의 `[{}]` 표현과 `ContractError`의 path·code�
 파일·지역·호출 사이에 검증 결과를 캐시하지 않는다. 재시도 시 변경·추가 파일을 새로 읽는다.
 공개 메모리 API도 매번 보조 값과 dict/list/tuple의 중첩·공유 객체를 포함해 전체 입력을 검사하므로
 이전 성공 후 외부 mutation이 생겨도 재검사한다. 입력·alias를 바꾸지 않는다.
+scalar fast path에도 공유 컨테이너 identity 캐시·전역 결과 캐시·호출/build/지역 간 상태는 없다.
 
 `require_version=False`는 version의 부재만 허용하며 필수 데이터 컬렉션을 선택적으로 만들지 않는다.
 version이 제공되면 두 경계 모두 비어 있지 않은 최대 50자 문자열 계약을 계속 검사하며,
@@ -378,6 +388,11 @@ GitHub 앱 게시, 성공 CI 후 머지와 원격·로컬 병합 브랜치 정�
 `test_release_contract.py`는 파일별 finite_tree 횟수와 마지막 재순회 부재,
 독립 메모리 API의 중첩·공유 객체 mutation 재검사, 모든 파일 역할의 엄격한 JSON 오류와
 정확한 도메인 path·code·message, memory-before-write·staged-before-promotion·version·수정 후 재시도를 명세한다.
+scalar fast path의 회귀 근거는 primitive 잎 사이의 중첩·하위 클래스 실패,
+내장 scalar와 같다고 주장하는 metaclass, scalar 루트와 정확한 float 잎의 비유한 값,
+알 수 없는 객체의 기존 동작 및 정확한 첫 오류 path·code·message·문자열을 포함해야 한다.
+공개 `validate_release`의 공유 객체 mutation과 `load_json`·`load_release`의 파일 교체 후
+성공→실패→수정 재시도에서 반환값·원본·alias·파일 bytes 보존을 확인한다. 이 명세의 존재는 통과 증거가 아니다.
 `test_atomic_release.py`의 기존 백업·sentinel·승급 실패·불완전 롤백·복구 경계도 유지 대상이다.
 `test_combat_source_fixture.py`의 독립 synthetic 기대값은 원본 ID 타입·삭제 순서·생존 중복,
 별도 이름 객체·컬렉션간 alias의 객체당 한 번 처리·외부 list 보존·비활성 0건·재호출·지역 격리를 다룬다.
@@ -389,7 +404,11 @@ GitHub 앱 게시, 성공 CI 후 머지와 원격·로컬 병합 브랜치 정�
 최종 구현의 전체 회귀·전체 파서·CI 성공 또는 누적 개선율의 증거가 아니다.
 수치와 측정 조건의 한계는 [ADR 0008](adr/0008-json-validation-single-pass.md#진단-근거와-검증-상태)에 기록한다.
 최종 지역별 전체 실데이터 및 누적 성능 비교는 메인 `/root`가 별도로 수행한다.
-문서 작업자는 architecture·이 계약·ADR 0008·ADR 목록만 수정하며 기존 사용자 변경을 보존한다.
+이번 scalar 순회 변경의 문서 작업자는 architecture·이 계약·harness만 수정하며 기존 사용자 변경을 보존한다.
+ADR 0008의 책임을 유지하는 국소 구현 개선이므로 새 ADR이나 기존 ADR 변경은 필요하지 않다.
+독립 의미 검토·오케스트레이터의 전체 `make check`와 반영 후 메인의 최종 전후 실데이터 시간·지역별
+JSON bytes 비교는 아직 필요한 증거이며, 어떤 GitHub 게시 도구 호출보다 먼저 확인해야 한다.
+측정·검토 인계의 조건은 [하네스 안내](harness.md#최적화-회귀와-성능-근거)에 둔다.
 검사·benchmark·네트워크·다운로드·cron·importAll·Git·workflow·재위임은 수행하지 않는다.
 기존 model/provider/effort/network/worker 설정과 기본 Git 역할,
 GitHub CI 성공 확인 후 SHA 고정 merge 정책은 유지한다. 문서 의미 검토는 실행·게시 완료의 증거가 아니다.

@@ -235,6 +235,25 @@ private `_validate_release_domain`으로 타입·범위·유일성·참조와 �
 원본 스냅샷을 변경하거나 검사 결과를 캐시하지 않으며, 다음 파일 로드와 메모리 API 호출은
 수정된 입력을 다시 검사한다. 결정과 비교 대안은 [ADR 0008](adr/0008-json-validation-single-pass.md)에 둔다.
 
+유한성 순회 내부의 scalar fast path는 정확한 내장 `str`·`int`·`bool`와 `None` 자식의
+재귀 호출만 생략하고, 정확한 내장 `float` 자식은 부모에서 `math.isfinite`로 검사한다.
+타입은 `is`로 판별하여 metaclass의 `__eq__`에 의한 동등성 주장이 우회 근거가 되지 않게 한다.
+컨테이너·하위 클래스·알 수 없는 객체는 기존 재귀와 `isinstance` 처리로 돌아가며,
+dict·list·tuple·float 하위 클래스 지원과 알 수 없는 객체의 기존 동작을 유지한다.
+scalar 루트의 비유한 float도 계속 실패한다. dict 삽입 순서·list/tuple 인덱스 순서와 깊이 우선
+첫 오류 선택, key repr·인덱스 표현, `ContractError`의 path·code·message·문자열은 동일하다.
+진단 경로는 첫 실패 분기에만 구성하며 정상 반환값·입력 identity·alias를 보존한다.
+공유 컨테이너 identity 캐시나 전역 결과 캐시, 호출/build/지역 간 상태를 추가하지 않아
+mutation·파일 교체·재시도는 현재 입력을 다시 검사한다.
+
+이 국소 구현 개선은 ADR 0008의 책임을 바꾸지 않으며 새 ADR을 요구하지 않는다.
+공개 메모리 검사와 모든 staging·보조·version 파일의 엄격한 디코딩, schema·도메인·참조·범위·
+유일성 검사 및 기존 오류 순서를 유지한다. memory-before-serialization과 file-after-serialization은
+별개 경계로 남고 `DB.export`의 안전 검사·직렬화 bytes·backup·sentinel·승급·롤백·version 재시도는 유지한다.
+독립 의미 검토, 오케스트레이터의 전체 `make check`, 반영 후 메인의 최종 전후 실데이터 시간과
+지역별 JSON bytes 동일성 확인이 필요하며 어떤 GitHub 게시 도구보다 먼저 완료해야 한다.
+회귀·측정·문서 판단 요구사항은 [하네스 안내](harness.md#최적화-회귀와-성능-근거)에 둔다.
+
 ## 파서 초기화 비용과 상태 경계
 
 `iesutil.load()`는 한 호출에서 길이 128 이하 문자열 token의 변환 결과인 immutable scalar를
