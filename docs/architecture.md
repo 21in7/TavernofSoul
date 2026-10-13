@@ -306,6 +306,37 @@ legacy Lua 줄 전처리는 quoted index → require 제거 → method 변환 �
 테스트의 전역 상태·patch·변환 wrapper는 `finally`에서 복원한다.
 이 helper 검증과 원본 IES를 사용하는 전체 실데이터·지역별 JSON 출력 검증은 별개다.
 
+장비·몬스터가 공유하는 `luautil.attr_getter`는 여섯 정수 속성 이름
+`Blockable`, `HPCount`, `ReinforceArmor`, `TranscendArmor`, `ReinforceWeapon`,
+`TranscendWeapon`의 membership을 모듈에서 한 번 만든 immutable `frozenset`으로 조회한다.
+Lua가 전달하는 문자열 이름마다 목록을 선형 탐색하던 비용을 줄이는 국소 구현 변경이다.
+먼저 `name in obj`를 실행하고, 존재할 때만 `obj[name]`을 한 번 읽는 매핑 순서를 유지한다.
+dict 하위 클래스의 `__contains__`·`__getitem__`도 그대로 사용하며 `dict.get`으로 우회하지 않는다.
+없는 필드는 `0`, 있는 여섯 속성은 기존 `int` 변환, 그 외 속성은 raw CSV 문자열을 포함한
+현재 원값을 반환한다. 존재하는 `None`·`False`·빈 문자열을 누락 값으로 취급하지 않는다.
+정수 속성의 `False`는 `0`이며 `None`의 `TypeError`, 빈 문자열·잘못된 숫자 문자열의
+`ValueError`, 무한대 숫자의 `OverflowError` 등 기존 변환 예외를 그대로 전파한다.
+membership의 `TypeError` fallback만 이름 판정에 한정하고 매핑 접근·변환 예외는 잡거나 재시도하지 않는다.
+`attr_setter`는 기존 `obj[name] = value`로 쓰며 Lua·Python의 mutation 이후 조회는 즉시 현재 행을 읽는다.
+
+일반적인 비문자열 직접 Python 이름은 기존 원값·누락 처리를 유지한다.
+해시할 수 없는 이름을 허용하는 custom mapping에서는 membership 실패 시 기존 순서의 이름 tuple로
+판정하는 cold fallback을 사용한다. 일반 dict의 비해시 키 오류는 그 앞의 매핑 membership에서 그대로 발생한다.
+임의 직접 Python 객체의 custom hash/equality 호출 순서·부작용까지 목록 탐색과 같다고 보장하지 않는다.
+이는 문자열 이름을 전달하는 공개 Lua 프로토콜의 범위를 확장하는 변경이 아니다.
+상수 이름 집합만 공유하며 행 값·테이블·계산 결과·Lua 전역·함수를 build·행·지역 사이에 캐시하지 않는다.
+반복 `init()`의 새 runtime·registry reset과 fixture 상태 복원 경계는 유지한다.
+
+장비의 RefreshScp 이후 lazy callable 조회와 분기 변화, 40단계 DEF → price → ATK → price
+호출(두 price 호출 포함), 비활성 행의 기존 mutation, 10회 초월 및 grade-6 처리는 유지한다.
+몬스터도 두 번의 순서 있는 상수 주입·현재 의존 값 읽기·최종 getter 호출을 유지하며,
+지역 override의 EXP/JOBEXP 의미와 `All`에 내보내는 Python 행·raw 필드 순서는 바꾸지 않는다.
+게임 Lua 수식·등록 방식·행 표현·수치·직렬화 정책은 유지한다.
+기존 callable 참조 재사용 측정은 일관된 속도 개선을 보이지 않았으므로 성능 근거로 삼지 않는다.
+이번 변경의 회귀·전체 `make check`·지역별 최종 실데이터 시간 중앙값·모든 JSON bytes 비교는
+결과가 제공되기 전까지 **대기(pending)**다. 요구 증거와 문서 영향 판단은
+[하네스 안내](harness.md#최적화-회귀와-성능-근거)에 둔다.
+
 제공된 로컬 kTOS 진단에서 cProfile의 초기화 내 `iesutil.load` 41회는 self 2.84s/total 3.43s,
 `init_runtime`은 total 3.99s였다. 이는 profiler를 켠 부분 실행 시간이다.
 별도의 profiler 없는 fresh 6-worker 초기화 측정은 기존 중앙값 약 6.008s,

@@ -498,15 +498,54 @@ fixture 격리도 기존 전역 상태를 복원한다. 양쪽 분기의 조회 
 선택한 price 함수 → ATK 함수 → 초월 함수이며, 실제 DEF → price → ATK → price의 40단계
 호출 순서·결과 assertion은 유지한다. 조회 횟수 감소는 실측 속도 개선율을 대신하지 않는다.
 
+이번 공유 `attr_getter` 변경은 여섯 정수 속성 이름의 immutable `frozenset` membership만
+최적화한다. `test_lua_attribute_handlers.py`는 실제 Lupa와 독립적으로 작성한 기대값으로
+여섯 속성 각각의 정수 변환·raw 행 보존, 다른 필드의 문자열·숫자·`None`·`False`·빈 문자열,
+누락 값 `0`을 확인하도록 작성되어 있다. 부호·공백·밑줄·Unicode 숫자와
+`7.0`·`1e2`·`0x10`·`NaN`·`+Inf`·`1e309`·잘못된 밑줄·NUL 등 변환 실패,
+숫자 NaN/무한대의 기존 예외도 다룬다. 상수 집합이나 소스 텍스트 자체를 기대값으로 삼지 않는다.
+Lua setter 뒤 재조회·Python mutation·독립 행·반복 `init()`의 runtime/registry 격리,
+매핑의 `__contains__` → 존재 시 `__getitem__` 순서·dict 하위 클래스 override·예외의 재시도 없는
+전파를 확인한다. ordinary 비문자열 직접 Python 이름과 비해시 이름용 cold fallback도 다루되,
+임의 custom hash/equality의 호출 순서·부작용 동등성은 공개 Lua 프로토콜의 보장으로 주장하지 않는다.
+기존 equipment/combat·지역 fixture 검증도 유지한다. 이 브리지는 여러 파서 도메인이 공유하므로
+오케스트레이터/runner의 **전체 `make check`가 필수**이며 일부 parser 검사만으로 대체하지 않는다.
+테스트 작성 상태는 통과 기록이 아니다.
+
+제공된 private CPython 3.8 진단은 일반 문자열 이름으로 helper를 300만 번 호출한
+microbenchmark 중앙값 목록 0.697s, immutable frozenset 0.618s다.
+이는 후보 함수의 국소 측정이며 최종 구현·전체 파서·장비/몬스터 단계의 개선 증거가 아니다.
+기존 callable 참조 재사용 측정에서도 일관된 개선이 없었으므로 별도의 성능 주장으로 재사용하지 않는다.
+
 실행기·메인 `/root`는 변경 전후 current407263 kTOS/iTOS/jTOS 전체 `main`을 격리 사본에서
-profiler 없이 반복 실행하여 장비 단계 및 전체 wall/CPU 시간과 지역별 JSON 41개 byte 동일성을
-확인한다. JSON scalar 변경은 반영한 최종 소스로 유한성 순회와 JSON 출력·검증의 전후 시간을
+동일한 지역별 입력·환경·측정 범위로 맞춘 기준 소스와 최종 소스를 각각 fresh 전체 실데이터 파서
+프로세스에서 profiler 없이 독립 반복 실행한다. 지역별 반복 횟수와 장비 단계·몬스터 단계·전체 파서의
+전후 wall/CPU 시간 중앙값을 보고한다. 함수 microbenchmark나 warm runtime 재사용 측정으로
+대체하지 않는다. 기존 입력의 지역별 JSON 41개 비교에 한정하지 않고 실제 출력 파일 목록의 동일성과
+모든 지역 JSON 파일의 정확한 bytes를 확인한다. JSON scalar 변경은 반영한 최종 소스로 유한성 순회와 JSON 출력·검증의 전후 시간을
 같은 입력·환경에서 별도로 측정하고, 전체 파서 시간과 측정 범위를 구분해 보고한다.
 지역별 byte 비교는 직렬화된 모든 출력 파일과 version을 포함하며 JSON 객체의 의미 비교로 대체하지 않는다.
 오케스트레이터의 전체 `make check`와 메인의 반영 후 최종 실데이터 시간·지역별 bytes 비교 결과가
 확인되기 전에는 어떤 GitHub 게시 도구도 호출하지 않는다. 기본 `git` 역할은 부모 흐름에서 필수이며,
 메인 `/root`가 `awaiting_github`의 앱 journal 게시·세 CI의 실제 success·SHA 고정 merge·자동 정리를 맡는다.
 이 문단은 회귀·측정·인계 요구사항이며 성능 개선·검사·CI·머지 완료 기록이 아니다.
+
+이번 이름 조회 변경의 회귀 실행·전체 `make check`·최종 지역별 장비/몬스터/전체 파서 시간 중앙값·
+모든 JSON bytes 비교는 실제 결과가 제공되지 않아 **대기(pending)**다.
+기존 역할·모델 설정을 유지한 reviewer/runner와 기본 `git` 역할에 인계하며 worker는 호출하지 않는다.
+메인은 위 증거를 확인한 뒤 정확한 GitHub 앱 journal 요청, 오프라인·MySQL·브라우저 CI 세 개의
+실제 success, 확정된 merge 및 자동 cleanup 완료까지 담당한다. 이 인계는 기존 게시 정책을 변경하지 않는다.
+
+업무 시작과 매 검토에서 이번 국소 이름 조회의 문서 영향을 재평가한다. 이번 변경의 실제 갱신 문서는
+`docs/architecture.md`와 `docs/harness.md`다. JSON schema·수치·직렬화·실패 복구를 유지하므로
+`docs/data-contracts.md`는 변경하지 않는다. runtime/build/지역 격리와 역할·검증·게시 책임도 유지하므로
+`docs/harness-design.md`·`docs/workflow.md`는 변경하지 않는다. 새 책임·계약·주요 정책 결정이 없고
+ADR 0008의 JSON 검사 경계도 유지하므로 `docs/adr/README.md`·
+`docs/adr/0008-json-validation-single-pass.md` 변경이나 새 ADR은 필요하지 않다.
+모든 reviewer 보고는 `documentation={status,files,reason}`을 반환하고 실제 수정된 두 `.md` 경로와
+이 생략 근거를 명시해야 한다. 추가로 필요한 문서 경로가 승인되지 않았다면 정확한 경로를 보고하고
+기존 승인 파일에 finding을 귀속해 `changes_requested`와 `documentation.status=missing`으로 요청한다.
+메인이 범위를 확인해 새 run을 준비하며 repair 라운드에서 읽기·편집 범위를 확장하지 않는다.
 
 이번 scalar fast path의 문서 영향은 [데이터 계약](data-contracts.md)·[architecture](architecture.md)·
 이 문서의 구현·회귀·측정 근거 설명이다. ADR 0008의 엄격한 파일별 디코딩·공개 메모리 검사·
