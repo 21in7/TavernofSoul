@@ -8,9 +8,12 @@ PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(i
 .PHONY: compaction-doctor compaction-demo compaction-smoke check-compaction-engine
 .PHONY: agent-workflow agent-workflow-plan agent-workflow-demo agent-workflow-status
 .PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume agent-git-cleanup
+.PHONY: storage-status storage-doctor
 
 help:
 	@echo "doctor          Check the offline harness environment"
+	@echo "storage-status  Inspect artifact/temp paths and local locks (read-only, no models)"
+	@echo "storage-doctor  Check mounts/free space [PROBE=1: probe existing private directories]"
 	@echo "prepare-ipf-unpacker Force a native release build directly to IPFUnpacker/ipf_unpack"
 	@echo "check-downloader Run local patch, failure, and retry checks"
 	@echo "check-parser    Run parser regressions without game data"
@@ -50,6 +53,12 @@ help:
 
 prepare-ipf-unpacker:
 	$(MAKE) -C IPFUnpacker/src/ipf_unpack -B release
+
+storage-status:
+	$(PYTHON) -m harness.storage status
+
+storage-doctor:
+	$(PYTHON) -m harness.storage doctor $(if $(filter 1,$(PROBE)),--probe)
 
 doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql doctor-browser check-browser check-live check-site:
 	$(PYTHON) -m harness $@

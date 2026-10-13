@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Browser engine only: never mount operating JSON, source trees, credentials or DBs.
 set -euo pipefail
+umask 077
 python="${1:-python3}"
 mode="${2:-check-browser}"
 case "$mode" in check-browser|check-site) ;; *) exit 2 ;; esac
 suite="${mode#check-}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-report_dir="${HARNESS_REPORT_DIR:-$root/logs/harness}"
+# --prepare checks/probes BOTH artifact and non-credential temporary storage.
+# Resolve before traps: a config/mount failure must not write fallback status.
+# Runner children own their scoped temporary policy; never export global TMPDIR.
+report_dir="$("$python" -m harness.storage resolve reports --root "$root" --prepare)"
 phase=environment
 container_id=''
 removed=false
@@ -33,7 +37,17 @@ cleanup() {
     local status=$?
     trap - EXIT
     if [[ -n "$container_id" ]]; then
-        "${docker_command[@]}" logs "$container_id" > "$report_dir/$suite-container.log" 2>&1 || true
+        "$python" - "$report_dir/$suite-container.log" "${docker_command[@]}" logs "$container_id" <<'PY' || status=1
+import subprocess, sys
+from pathlib import Path
+from harness.runner import write_private_text
+from harness.storage import resolve_storage
+storage = resolve_storage()
+path = Path(sys.argv[1])
+storage.ensure_directory(path.parent)
+result = subprocess.run(sys.argv[2:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+write_private_text(path, result.stdout, storage=storage)
+PY
         if "${docker_command[@]}" rm --force "$container_id" >/dev/null; then
             removed=true
         else

@@ -7,11 +7,12 @@ import re
 import sys
 import time
 
-from harness import agent_models, jev_client
+from harness import agent_models, jev_client, storage
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness' / 'triage-config.json'
 REPORTS = ROOT / 'logs' / 'harness' / 'triage'
+_DEFAULT_REPORTS = REPORTS
 DOMAINS = ('downloader', 'parser', 'django')
 
 
@@ -213,11 +214,16 @@ def main(argv=None):
     parser.add_argument('--files-file', type=Path)
     parser.add_argument('--file', action='append', default=[])
     parser.add_argument('--expected-role', choices=tuple(agent_models.load_config()['roles']))
+    parser.add_argument('--report-dir', type=Path)
     source = parser.add_mutually_exclusive_group()
     source.add_argument('--live', action='store_true')
     source.add_argument('--fixture-response', type=Path)
     args = parser.parse_args(argv)
     try:
+        local_default = REPORTS if REPORTS != _DEFAULT_REPORTS else ROOT / 'logs/harness/triage'
+        storage_policy, reports = agent_models.report_directory(args.report_dir, category='triage',
+                                                                root=ROOT, local_default=local_default)
+        storage_policy.ensure_directory(reports)
         if args.command == 'smoke':
             if args.fixture_response or args.task_file or args.file or args.files_file or args.expected_role:
                 parser.error('smoke accepts only --live')
@@ -243,12 +249,15 @@ def main(argv=None):
                 raise ValueError('Response fixture is too large.')
             fixture = json.loads(args.fixture_response.read_text(encoding='utf-8'))
         report = observe(task, files, args.live, fixture, args.expected_role)
-        path = REPORTS / '{}-{}.json'.format(args.command, time.time_ns())
-        agent_models.private_json(path, report)
+        path = reports / '{}-{}.json'.format(args.command, time.time_ns())
+        agent_models.private_json(path, report, policy=storage_policy)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         print('Report: {}'.format(path))
         # A usable fallback is still distinct from a successful Jev evaluation.
         return 0 if report['status'] == 'passed' or (not args.live and fixture is None) else 1
+    except storage.StorageError as exc:
+        print('Triage storage unavailable: {}'.format(exc), file=sys.stderr)
+        return 1
     except (OSError, ValueError):
         print('Triage failed: invalid input or configuration; no agent was started.', file=sys.stderr)
         return 1

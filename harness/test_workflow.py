@@ -7,7 +7,23 @@ import subprocess
 
 import pytest
 
-from harness import agent_models, git_publish, triage, workflow, workspace
+from harness import agent_models, git_publish, storage, triage, workflow, workspace
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(monkeypatch):
+    # Even tests using the real source snapshot must not consume the operator's
+    # private config or touch real mounts. Configured tests inject a fake seam.
+    monkeypatch.delenv(storage.CONFIG_ENV, raising=False)
+    monkeypatch.delenv(storage.REPORT_ENV, raising=False)
+    original_root = workflow.ROOT
+    resolve = storage.resolve_storage
+    def isolated_resolve(project_root=None, *, env=None, fs=None):
+        root = original_root if project_root is None else Path(project_root)
+        if root == original_root:
+            return storage.Storage(root=root, env={}, fs=fs or storage.FileSystem())
+        return resolve(root, env=env, fs=fs)
+    monkeypatch.setattr(storage, 'resolve_storage', isolated_resolve)
 
 
 @pytest.fixture
@@ -984,7 +1000,10 @@ def test_out_of_scope_required_document_never_expands_scope_or_delivers(project,
     assert [role for role, _, _ in calls].count('reviewer') == (1 if read_only else cap)
     assert not any(role == 'git' for role, _, _ in calls)
     assert not (Path(report['report']).parent / 'github.json').exists()
-    assert set(workspace.manifest(Path(report['model_workspace']), policy)) == {'parser_tidy/example.py'}
+    context_manifest = workflow.json.loads(Path(report['model_context_manifest']).read_text())
+    assert context_manifest['approved_files'] == ['parser_tidy/example.py']
+    assert set(context_manifest['copied_files']) == {'parser_tidy/example.py'}
+    assert not Path(report['model_workspace']).exists()
     assert all(record['target_files'] == ['parser_tidy/example.py'] for record in report['repairs'])
     assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
 
@@ -1112,3 +1131,388 @@ def test_status_exposes_legacy_merge_cleanup_boundary_without_rewriting(project,
     assert shown['github']['merge_sha'] == 'a' * 40
     assert shown['github']['cleanup']['proof']['reason'] == 'legacy_cleanup_required'
     assert json.loads((directory / 'report.json').read_text()) == report
+
+
+class WorkflowStorageFS(storage.FileSystem):
+    """Only the declared tmp_path directory is a mount; never inspect host mounts."""
+    def __init__(self, mount):
+        self.mount = mount
+        self.ready = True
+
+    def mount_ready(self, path):
+        return self.ready and path == self.mount
+
+    def free_bytes(self, path):
+        return 10 ** 9
+
+
+@pytest.fixture
+def configured_storage(project, tmp_path, monkeypatch):
+    mount = tmp_path / 'fake-mount'
+    mount.mkdir()
+    fs = WorkflowStorageFS(mount)
+    config = project / 'logs/harness/storage-local.json'
+    document = {'version': 1,
+                'artifacts': {'path': str(mount / 'artifacts'), 'required_mount': str(mount),
+                              'min_free_bytes': 1000},
+                'temporary': {'path': str(mount / 'temporary'), 'required_mount': str(mount),
+                              'min_free_bytes': 1000}}
+    agent_models.private_json(config, document)
+    selected = storage.resolve_storage(project, env={}, fs=fs)
+    resolve = storage.resolve_storage
+    def fake_mount_resolve(project_root=None, *, env=None, fs=None):
+        return resolve(project_root, env=env, fs=fs or selected.fs)
+    monkeypatch.setattr(storage, 'resolve_storage', fake_mount_resolve)
+    monkeypatch.setattr(workflow, 'storage_policy', lambda: selected)
+    return selected
+
+
+@pytest.mark.parametrize('outcome', ['success', 'awaiting_github', 'failed_review',
+                                     'checker_exception', 'interrupted'])
+def test_owned_model_context_cleanup_preserves_permanent_evidence(
+        project, configured_storage, monkeypatch, outcome):
+    selected = configured_storage
+    sibling = selected.mkdtemp(prefix='unrelated-context-', purpose='context')
+    marker = sibling / 'keep.txt'
+    marker.write_text('unrelated temporary context\n')
+    if outcome == 'awaiting_github':
+        enable_github(project, monkeypatch)
+    if outcome == 'failed_review':
+        policy = workflow.load_policy()
+        monkeypatch.setattr(workflow, 'load_policy', lambda: {**policy, 'max_rounds': 1})
+    observed = []
+    def inspect_sources(model_workspace):
+        model_workspace = Path(model_workspace)
+        assert model_workspace.exists()
+        assert set(workspace.manifest(model_workspace, workflow.load_policy())) == {
+            'parser_tidy/example.py'}
+        observed.append(model_workspace)
+    def checker(candidate, command, report_dir, keys, policy):
+        if command == 'doctor' and outcome == 'checker_exception':
+            raise RuntimeError('isolated checker failure')
+        if command == 'doctor' and outcome == 'interrupted':
+            raise KeyboardInterrupt('isolated interruption')
+        return successful_check(candidate, command, report_dir, keys, policy)
+    calls = []
+    verdict = 'changes_requested' if outcome == 'failed_review' else 'approved'
+    report = run_fixture(runner=runner_for(calls, mutate=inspect_sources, verdict=verdict),
+                         checker=checker)
+    expected = {'success': 'passed', 'awaiting_github': 'awaiting_github',
+                'failed_review': 'failed', 'checker_exception': 'failed',
+                'interrupted': 'interrupted'}
+    assert report['status'] == expected[outcome]
+    assert report['model_context_cleanup'] == {'status': 'passed'}
+    assert not Path(report['model_workspace']).exists()
+    if outcome in {'success', 'awaiting_github', 'failed_review'}:
+        assert observed
+        assert all(not model_workspace.exists() for model_workspace in observed)
+    permanent_report = Path(report['report'])
+    permanent_workspace = Path(report['workspace'])
+    permanent_manifest = Path(report['model_context_manifest'])
+    assert selected.artifact_root in permanent_report.parents
+    assert permanent_report.is_file() and permanent_workspace.is_dir()
+    assert (permanent_workspace / 'parser_tidy/example.py').is_file()
+    manifest = workflow.json.loads(permanent_manifest.read_text())
+    assert manifest['approved_files'] == ['parser_tidy/example.py']
+    assert set(manifest['copied_files']) == {'parser_tidy/example.py'}
+    assert workflow.json.loads(permanent_report.read_text())['status'] == expected[outcome]
+    assert marker.read_text() == 'unrelated temporary context\n'
+    # A fresh invocation must reacquire the same stable local project lock.
+    following = run_fixture(runner=runner_for([]))
+    assert following['status'] == 'passed'
+    assert not Path(following['model_workspace']).exists()
+    assert permanent_report.is_file() and permanent_workspace.is_dir()
+    assert permanent_manifest.is_file() and marker.is_file()
+
+
+def test_context_cleanup_failure_is_saved_and_releases_project_lock(
+        project, configured_storage, monkeypatch):
+    selected = configured_storage
+    sibling = selected.mkdtemp(prefix='unrelated-context-', purpose='context')
+    marker = sibling / 'keep.txt'
+    marker.write_text('keep sibling\n')
+    real_temporary_directory = type(selected).temporary_directory
+    managers = []
+    @workflow.contextlib.contextmanager
+    def failing_cleanup(self, *args, **kwargs):
+        manager = real_temporary_directory(self, *args, **kwargs)
+        owned = manager.__enter__()
+        # Retain the manager so finalization cannot mask the injected failure.
+        managers.append(manager)
+        try:
+            yield owned
+        finally:
+            raise OSError('isolated context cleanup failure')
+    monkeypatch.setattr(type(selected), 'temporary_directory', failing_cleanup)
+    try:
+        report = run_fixture(runner=runner_for([]))
+        assert report['status'] == 'failed'
+        cleanup = report['model_context_cleanup']
+        assert cleanup['status'] == 'failed' and cleanup['error_type'] == 'OSError'
+        assert cleanup['error'] == 'isolated context cleanup failure'
+        assert Path(report['model_workspace']).is_dir()
+        permanent_report = Path(report['report'])
+        assert workflow.json.loads(permanent_report.read_text())['status'] == 'failed'
+        assert workflow.json.loads(permanent_report.read_text())['model_context_cleanup'] == cleanup
+        assert Path(report['workspace']).is_dir()
+        assert Path(report['model_context_manifest']).is_file()
+        assert marker.read_text() == 'keep sibling\n'
+        monkeypatch.setattr(type(selected), 'temporary_directory', real_temporary_directory)
+        following = run_fixture(runner=runner_for([]))
+        assert following['status'] == 'passed'
+        assert not Path(following['model_workspace']).exists()
+        assert permanent_report.is_file() and Path(report['workspace']).is_dir()
+        assert Path(report['model_context_manifest']).is_file() and marker.is_file()
+    finally:
+        for manager in managers:
+            manager.__exit__(None, None, None)
+
+
+def test_report_persistence_failure_still_cleans_context_and_releases_lock(
+        project, configured_storage, monkeypatch):
+    selected = configured_storage
+    sibling = selected.mkdtemp(prefix='unrelated-context-', purpose='context')
+    marker = sibling / 'keep.txt'
+    marker.write_text('keep sibling\n')
+    real_save = workflow.Progress.save
+    fail_save = False
+    contexts = []
+    real_temporary_directory = type(selected).temporary_directory
+    @workflow.contextlib.contextmanager
+    def observed_context(self, *args, **kwargs):
+        with real_temporary_directory(self, *args, **kwargs) as owned:
+            contexts.append(owned)
+            yield owned
+    def save(progress):
+        if fail_save:
+            raise OSError('isolated report persistence failure')
+        return real_save(progress)
+    candidates = []
+    def checker(candidate, command, report_dir, keys, policy):
+        nonlocal fail_save
+        candidates.append(candidate)
+        fail_save = True
+        raise RuntimeError('isolated checker failure')
+    monkeypatch.setattr(type(selected), 'temporary_directory', observed_context)
+    monkeypatch.setattr(workflow.Progress, 'save', save)
+    with pytest.raises(OSError, match='isolated report persistence failure'):
+        run_fixture(runner=runner_for([]), checker=checker)
+    assert contexts and all(not context.exists() for context in contexts)
+    assert candidates and all(candidate.is_dir() for candidate in candidates)
+    assert (candidates[0].parent / 'report.json').is_file()
+    assert (candidates[0].parent / 'model-context.json').is_file()
+    assert marker.read_text() == 'keep sibling\n'
+    fail_save = False
+    following = run_fixture(runner=runner_for([]))
+    assert following['status'] == 'passed'
+    assert not Path(following['model_workspace']).exists()
+
+
+def test_configured_workflow_places_all_new_artifacts_and_context_privately(
+        project, configured_storage, monkeypatch):
+    selected = configured_storage
+    enable_github(project, monkeypatch)
+    seen = []
+    def checker(candidate, command, report_dir, keys, policy):
+        assert selected.artifact_root in candidate.parents
+        assert selected.artifact_root in report_dir.parents
+        assert report_dir.stat().st_mode & 0o777 == 0o700
+        seen.append(report_dir)
+        return successful_check(candidate, command, report_dir, keys, policy)
+    normal = runner_for([])
+    def runner(role, task, keys, **options):
+        context = options['workspace']
+        assert selected.temp_root in context.parents
+        assert project not in context.parents and context not in project.parents
+        assert context.stat().st_mode & 0o777 == 0o700
+        assert set(workspace.manifest(context, workflow.load_policy())) == {'parser_tidy/example.py'}
+        assert not (context / 'logs/harness/storage-local.json').exists()
+        assert str(selected.config_path) not in task
+        return normal(role, task, keys, **options)
+    report = run_fixture(runner=runner, checker=checker)
+    assert report['status'] == 'awaiting_github', report.get('error')
+    directory = Path(report['report']).parent
+    assert directory.parent == selected.artifact_root / 'workflows'
+    assert json.loads((directory.parent / 'latest.json').read_text()) == {'run_id': directory.name}
+    for name in ('baseline.json', 'model-context.json', 'report.json', 'events.jsonl',
+                 'github.json', 'github-approved.json'):
+        assert (directory / name).stat().st_mode & 0o777 == 0o600
+    for name in ('workspace', 'backup', 'prepare', 'checks-1/check'):
+        assert (directory / name).stat().st_mode & 0o777 == 0o700
+    assert seen == [directory / 'prepare', directory / 'checks-1/check']
+    assert selected.project_lock_path == project / 'logs/harness/workflows/.lock'
+    assert not list(workflow.REPORTS.glob('*/report.json'))
+
+
+def storage_report(directory, status='passed', time_ns=1000, **extra):
+    report = {'run_id': directory.name, 'status': status,
+              'workspace': str(directory / 'workspace'), **extra}
+    agent_models.private_json(directory / 'report.json', report)
+    os.utime(directory / 'report.json', ns=(time_ns, time_ns))
+    return report
+
+
+def test_configured_status_finds_legacy_and_new_latest_without_rewriting(
+        project, configured_storage, capsys):
+    selected = configured_storage
+    selected.prepare()
+    old = workflow.REPORTS / '100-abcdef'
+    new = selected.workflow_root() / '200-abcdef'
+    old_report = storage_report(old, time_ns=3000)
+    storage_report(new, time_ns=2000)
+    old_bytes = (old / 'report.json').read_bytes()
+    assert workflow.main(['status', '--run-id', old.name]) == 0
+    assert json.loads(capsys.readouterr().out)['run_id'] == old.name
+    assert workflow.main(['status']) == 0
+    assert json.loads(capsys.readouterr().out)['run_id'] == old.name
+    assert (old / 'report.json').read_bytes() == old_bytes
+    assert json.loads(old_bytes)['workspace'] == old_report['workspace']
+    os.utime(new / 'report.json', ns=(4000, 4000))
+    assert workflow.main(['status']) == 0
+    assert json.loads(capsys.readouterr().out)['run_id'] == new.name
+
+
+@pytest.mark.parametrize('explicit', [True, False])
+def test_status_rejects_duplicate_run_ids_across_storage_roots(
+        project, configured_storage, capsys, explicit):
+    selected = configured_storage
+    selected.prepare()
+    run_id = '100-abcdef'
+    storage_report(workflow.REPORTS / run_id)
+    storage_report(selected.workflow_root() / run_id)
+    assert workflow.main(['status'] + (['--run-id', run_id] if explicit else [])) == 1
+    assert 'Workflow failed: StorageError' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('kind', ['run_symlink', 'report_symlink', 'pointer_escape',
+                                 'wrong_record_id', 'invalid_pid', 'invalid_github', 'duplicate_metadata'])
+def test_status_rejects_unsafe_paths_and_metadata(project, configured_storage, tmp_path,
+                                                 capsys, kind):
+    selected = configured_storage
+    selected.prepare()
+    root = selected.ensure_directory(selected.workflow_root())
+    directory = root / '100-abcdef'
+    storage_report(directory)
+    if kind == 'run_symlink':
+        outside = tmp_path / 'outside'
+        directory.rename(outside)
+        directory.symlink_to(outside, target_is_directory=True)
+    elif kind == 'report_symlink':
+        outside = tmp_path / 'outside.json'
+        (directory / 'report.json').rename(outside)
+        (directory / 'report.json').symlink_to(outside)
+    elif kind == 'pointer_escape':
+        agent_models.private_json(root / 'latest.json', {'run_id': '../100-abcdef'})
+    elif kind == 'wrong_record_id':
+        agent_models.private_json(directory / 'report.json', {'run_id': '200-abcdef', 'status': 'passed'})
+    elif kind == 'invalid_pid':
+        storage_report(directory, status='running', pid=-1)
+    elif kind == 'duplicate_metadata':
+        (directory / 'report.json').write_text(
+            '{"run_id":"100-abcdef","status":"failed","status":"passed"}')
+    else:
+        storage_report(directory, github=[])
+    options = ['status'] if kind == 'pointer_escape' else ['status', '--run-id', directory.name]
+    assert workflow.main(options) == 1
+    assert 'Workflow failed:' in capsys.readouterr().err
+
+
+def test_workflow_stable_local_lock_serializes_configured_runs(project, configured_storage):
+    import fcntl
+    selected = configured_storage
+    selected.fs.create_directory(selected.project_lock_path.parent)
+    with selected.project_lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match='Another workflow'):
+            run_fixture(runner=lambda *a, **kw: pytest.fail('Model started despite project lock'))
+    assert not list(selected.workflow_root().glob('*/report.json'))
+    assert storage.Storage(root=project, env={}).project_lock_path == selected.project_lock_path
+    assert selected.project_lock_path.stat().st_mode & 0o777 == 0o600
+    assert not (selected.workflow_root() / '.lock').exists()
+
+
+def test_missing_mount_fails_before_workflow_directories_or_models(project, configured_storage):
+    selected = configured_storage
+    selected.fs.ready = False
+    with pytest.raises(storage.StorageError, match='mount is absent'):
+        run_fixture(runner=lambda *a, **kw: pytest.fail('Model started without mount'))
+    assert not selected.artifact_root.exists()
+    assert not selected.temp_root.exists()
+    assert not workflow.REPORTS.exists()
+
+
+def test_trusted_validation_receives_disjoint_private_policy_and_child_only_tmp(
+        project, configured_storage, monkeypatch):
+    selected = configured_storage
+    directory = selected.ensure_directory(selected.workflow_root() / '100-abcdef')
+    candidate = selected.ensure_directory(directory / 'workspace')
+    report_dir = directory / 'checks-1/check'
+    before = {name: os.environ.get(name) for name in ('TMPDIR', 'TMP', 'TEMP', storage.CONFIG_ENV)}
+    observed = []
+    def fake(command, **options):
+        env = options['env']
+        config = Path(env[storage.CONFIG_ENV])
+        assert candidate not in config.parents
+        assert config != selected.config_path
+        assert config.stat().st_mode & 0o777 == 0o600
+        child = storage.resolve_storage(candidate, env=env, fs=selected.fs)
+        child.check_ready()
+        assert child.artifact_root == report_dir
+        assert child.temp_root.parent == selected.temp_root
+        assert env['TMPDIR'] == env['TMP'] == env['TEMP'] == str(child.temp_root)
+        assert child.credential_runtime_root == candidate / 'logs/harness/agents/runtime'
+        assert child.credential_temp_root == Path('/tmp')
+        observed.append(child.temp_root)
+        agent_models.private_json(report_dir / 'check.json', {
+            'status': 'passed', 'checks': successful_check(None, None, None, None, None)['checks']})
+        return subprocess.CompletedProcess(command, 0, 'checked', '')
+    monkeypatch.setattr(workflow.subprocess, 'run', fake)
+    result = workflow.run_check(candidate, 'check', report_dir, {}, workflow.load_policy())
+    assert result['status'] == 'passed'
+    assert observed and not observed[0].exists()
+    assert {name: os.environ.get(name) for name in before} == before
+    assert Path(result['log']).stat().st_mode & 0o777 == 0o600
+
+
+def test_explicit_private_config_cannot_enter_approved_source_context(project, configured_storage,
+                                                                    monkeypatch):
+    config = project / 'harness/private-storage.json'
+    config.write_bytes(configured_storage.config_path.read_bytes())
+    monkeypatch.setenv(storage.CONFIG_ENV, str(config))
+    with pytest.raises(ValueError, match='Private storage config'):
+        workflow.scoped_files(project, ['harness/private-storage.json'])
+
+
+def test_model_environment_does_not_inherit_actionable_storage_paths(project, monkeypatch):
+    # Integration contract for the agent_models owner: validation's explicit
+    # private policy must never become a model subprocess environment setting.
+    monkeypatch.setenv(storage.CONFIG_ENV, str(project / 'private-storage.json'))
+    monkeypatch.setenv(storage.REPORT_ENV, str(project / 'private-reports'))
+    env = agent_models.child_environment('codex', {})
+    assert storage.CONFIG_ENV not in env
+    assert storage.REPORT_ENV not in env
+
+
+def test_workflow_report_override_retains_shared_lookup_and_local_lock(
+        project, configured_storage, tmp_path, capsys):
+    selected = configured_storage
+    selected.env[storage.REPORT_ENV] = str(tmp_path / 'chosen-reports')
+    report = run_fixture(runner=runner_for([]))
+    assert report['status'] == 'passed', report.get('error')
+    directory = Path(report['report']).parent
+    assert directory.parent == tmp_path / 'chosen-reports'
+    assert selected.find_run(report['run_id'], local_default=workflow.REPORTS) == directory
+    assert selected.project_lock_path == project / 'logs/harness/workflows/.lock'
+    assert selected.temp_root in Path(report['model_workspace']).parents
+    capsys.readouterr()
+    assert workflow.main(['status']) == 0
+    assert json.loads(capsys.readouterr().out)['run_id'] == report['run_id']
+
+
+def test_root_only_test_seam_keeps_local_reports_inside_isolated_project(project, monkeypatch):
+    monkeypatch.setattr(workflow, 'REPORTS', workflow._DEFAULT_REPORTS)
+    assert workflow.local_reports() == project / 'logs/harness/workflows'
+    report = run_fixture(runner=runner_for([]))
+    assert report['status'] == 'passed'
+    assert Path(report['report']).parent.parent == project / 'logs/harness/workflows'
+    assert Path(report['model_workspace']).parent.parent == Path('/tmp')

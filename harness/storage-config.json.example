@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "artifacts": {
+    "path": "/mnt/example-fast/tavern/harness-artifacts",
+    "required_mount": "/mnt/example-fast",
+    "min_free_bytes": 10737418240
+  },
+  "temporary": {
+    "path": "/mnt/example-fast/tavern/harness-temporary",
+    "required_mount": "/mnt/example-fast",
+    "min_free_bytes": 10737418240
+  }
+}

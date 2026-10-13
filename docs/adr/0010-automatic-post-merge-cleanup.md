@@ -126,6 +126,36 @@ worktree 경로 또는 보호/운영 tree가 불명확하면 안전하게 보류
 복구 기록이 더 이상 필요 없는지 확인한 운영자가 맡는다. 이 흐름은 게임 데이터·cron·DB·다운로드·
 importAll을 실행하거나 submodule/unpack을 정리하지 않는다.
 
+## 후속 저장 경로 통합 (2026-10-13)
+
+이 절은 [0011의 저장 경로 결정](0011-configurable-harness-storage.md)에 따른 구현 경계를
+기록하며 위의 삭제·승인·복구·전체 완료 정책과 이 ADR의 역사적 결정을 바꾸지 않는다.
+GitHub request/accept/resume/cleanup은 `harness/storage.py`의 공통 resolver로 현재 report override,
+설정된 artifact root의 `workflows/`, 이전 `ROOT/logs/harness/workflows/`를 함께 조회한다.
+서로 다른 root에 같은 run ID가 있으면 선택을 중단하고, run/root/record의 symlink나 경로 이탈도
+거부한다. 선택한 run root 아래의 기존 absolute workspace·승인 hash·backup·journal identity를
+다시 검사하며 과거 승인 JSON·snapshot을 새 위치로 재작성하거나 자동 이전하지 않는다.
+
+프로젝트 lock은 artifact root와 report override가 바뀌어도 로컬
+`ROOT/logs/harness/workflows/.lock`의 같은 inode를 사용한다. 그 뒤 선택된 journal 옆의
+`github.lock`을 획득한다. 새 artifact root에 별도 프로젝트 lock을 만들어 기존 workflow/cleanup의
+직렬화를 우회하지 않는다. 잠금은 private `0600`, run 디렉터리는 `0700`, 승인·journal·report·
+이벤트·복구 checkpoint는 `0600`을 유지한다. mount root나 무관한 기존 디렉터리를 chmod하지 않는다.
+
+명시한 저장 설정이 없거나 잘못됐거나 required mount·free-space floor·private 쓰기 probe가
+실패하면 로컬 journal이 있어도 fallback하지 않고 중단한다. Git cleanup의 snapshot 생성과 durable
+checkpoint 쓰기 직전에도 readiness를 다시 검사하므로 느린 Git 조회 뒤 mount 실패를 무시하지 않는다.
+실패는 승인 snapshot과 확정 merge SHA를 보존하며 cleanup 완료나 새 성공을 주장하지 않는다.
+실제 운영 데이터·기존 인증 runtime·mount 자체는 이 통합의 변경 대상이 아니다.
+
+기존 `agent-git-request`, `agent-git-accept`, `agent-git-resume`, `agent-git-cleanup` 명령의 run ID와
+connector 응답 계약은 유지한다. 저장 readiness는 별도 `python -m harness.storage doctor`로
+모델을 실행하지 않고 조회한다. private config의 형식·우선순위·설정 명령과 수동 이전의 경계는
+0011 및 현재 설계/운영 문서가 설명해야 한다. `test_git_publish.py`에 fake mount와 격리된
+tmp_path로 legacy/configured lookup, ambiguous ID, 경로 안전성, 두 잠금, readiness 실패,
+승인 위치와 SHA/CI 보호를 확인하는 offline 회귀 정의를 추가했다. 실행 검증은 orchestrator가 맡으며
+이 절은 테스트 실행이나 운영 mount 활성화의 증거가 아니다.
+
 ## 관련 코드·검증·문서
 
 - [git_publish.py](../../harness/git_publish.py), [git_cleanup.py](../../harness/git_cleanup.py),

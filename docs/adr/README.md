@@ -15,6 +15,7 @@
 | [0008](0008-json-validation-single-pass.md) | 모든 JSON 파일의 엄격한 검사 뒤 중복 finite_tree만 제거 | 승인(accepted), 새 결정 | 2026-10-12 |
 | [0009](0009-post-merge-branch-cleanup.md) | master squash PR 유지와 메인의 증거 기반 머지 후 브랜치 정리 | 대체됨(superseded), 0010 | 2026-10-12 |
 | [0010](0010-automatic-post-merge-cleanup.md) | 자동 parent Git cleanup·lease 비교 삭제·durable 복구·전체 완료 게이트 | 승인(accepted), 새 구현 결정 | 2026-10-12 |
+| [0011](0011-configurable-harness-storage.md) | 설정 가능한 산출물·비인증 임시 저장, 고정 로컬 lock·인증 runtime, legacy 조회와 fallback 금지 | 제안(proposed), 구현안 검토·검증·전달 대기 | 2026-10-13 |
 
 ## 상태와 근거의 의미
 
@@ -31,6 +32,11 @@
 complete여야 passed다. 새 repository/default_branch proof로 현재 기본 브랜치를 보존한다.
 기존 github-v1/merged run은 명시적 request/resume/cleanup에서 재검증한다.
 0010의 승인 상태는 worker의 검사 실행, 실제 PR/CI/merge 또는 이번 run의 cleanup 성공을 증명하지 않는다.
+0011은 외부 artifacts/temp와 고정 로컬 project lock·credential runtime을 분리하는 저장 결정이다.
+0010을 대체하지 않으며 기존 approved hash·expected SHA·durable snapshot·정확한 cleanup·전체 완료
+게이트는 유지한다. legacy absolute 경로는 재작성하지 않고 status/latest·Git 재개에서 함께 조회한다.
+proposed는 구현안의 독립 의미 검토·full checks·GitHub 전달이 대기 중임을 나타내며 main은 그 뒤에만
+호스트 private 설정을 활성화한다. ADR 존재·회귀 정의·draft 복구가 승인이나 activation 증거는 아니다.
 
 상태는 제안(proposed), 승인(accepted), 대체됨(superseded)을 사용한다. 이후 결정 변경은
 기존 ADR를 삭제하거나 새 결론으로 재작성하지 않는다. 기존 상태를 superseded로 바꾸고
@@ -44,6 +50,10 @@ complete여야 passed다. 새 repository/default_branch proof로 현재 기본 �
 문서 생략 이유를 reviewer의 documentation.not_required에 구체적으로 기록할 수 있다.
 필요 문서가 승인 읽기 scope 밖이면 자동 열람·복사·생성하지 않는다. 누락 경로를 보고하고
 기존 승인 파일 finding과 documentation.missing으로 승인을 거부한다. 메인이 범위 확인 후 새 실행을 준비한다.
+이번 저장 정책 변경의 매 orchestrator review는 `documentation={status,files,reason}`을 반환하고
+`status=updated`를 실제 변경된 승인 Markdown 목록과 구조·격리·실패 복구·운영 명령의 의미적
+완전성 판단으로 뒷받침한다. Markdown 확장자 확인은 완전성 증거가 아니다. tests/full `make check`는
+orchestrator, connector 게시·필수 CI 확인·merge·정확한 cleanup은 main의 책임이다.
 
 번호는 목록의 다음 번호를 사용하고 한 ADR에는 한 주요 결정을 둔다. 문맥·결정·비교 대안·선택 이유·
 결과/비용/제약을 구분한다. 소스·설정·검증 경로·문서의 실제 링크를 포함하되 검증 경로가 있다는 것과

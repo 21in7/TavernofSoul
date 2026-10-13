@@ -437,9 +437,10 @@ def cli_fixture(repo, monkeypatch):
     monkeypatch.setattr(publication, 'ROOT', root)
     monkeypatch.setattr(publication, 'REPORTS', directory.parent)
     monkeypatch.setattr(publication, 'origin_matches', lambda where, repository: where == root and repository == repo['cfg']['repository'])
-    monkeypatch.setattr(cleanup, 'execute', lambda where, target, journal, saved, approved:
+    monkeypatch.setattr(cleanup, 'execute', lambda where, target, journal, saved, approved, *, storage_guard=None:
                         cleanup.Cleanup(where, target, journal, saved, approved,
-                                        origin_validator=repo['origin_validator']).run())
+                                        origin_validator=repo['origin_validator'],
+                                        storage_guard=storage_guard).run())
     return ledger
 
 
