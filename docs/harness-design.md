@@ -1,6 +1,7 @@
 # 전체 하네스 설계
 
 기록일: 2026-10-11. Codex 경고·성공 판정과 머지 후 정리 정책 갱신: 2026-10-12.
+설정 가능한 저장 경계 갱신: 2026-10-13.
 이 문서는 현재 소스의 설계와 검토 기준을 Git에 남긴다.
 명령·설치 절차는 [하네스 사용법](harness.md), [자동 작업 실행](workflow.md),
 [모델 연결](agent-models.md), [접수 판단](triage.md), [대화 압축](compaction.md)에 둔다.
@@ -30,6 +31,7 @@ Opus escalation·다른 유료 공급자 전환도 제공하지 않는다. 기�
 | 실행기 | 두 사본 생성, 순차 역할 실행, schema·수정 한도·검토·필수 검사·반영 게이트 | [workflow.py](../harness/workflow.py), [workflow-config.json](../harness/workflow-config.json) |
 | 모델 연결 | 역할별 CLI·인증·파일 도구·예산·환경 분리, 고정 압축 연결 | [agent_models.py](../harness/agent_models.py), [agent-models.json](../harness/agent-models.json), [compaction.py](../harness/compaction.py) |
 | 작업 사본 | 승인 소스 복사, 로컬 검증 사본, 범위 동기화·hash 충돌 검사·백업·교체 | [workspace.py](../harness/workspace.py) |
+| 저장 정책 | 산출물·비인증 임시 경로, mount·공간·private 검사, 기존 실행 조회와 고정 로컬 lock 경로 제공 | [storage.py](../harness/storage.py), [설정 예제](../harness/storage-config.json.example) |
 | 검증 실행 | 새 프로세스·임시 파일·실제 Django 테스트 DB/migrations, 구조화된 coverage | [runner.py](../harness/runner.py), [django_runner.py](../harness/django_runner.py), [Makefile](../Makefile) |
 | 실패 피드백 | 로컬 실패 위치를 승인 소스에 귀속하고 안전한 제한 진단만 재수정에 전달 | [failure_feedback.py](../harness/failure_feedback.py) |
 | GitHub 게시·정리 | 모델 설명과 별개로 journal·정책·SHA·앱 응답·CI·merge 및 cleanup 완료 검사 | [git_publish.py](../harness/git_publish.py), [git_cleanup.py](../harness/git_cleanup.py), [git-publish-config.json](../harness/git-publish-config.json) |
@@ -118,6 +120,66 @@ XML 빠른 경로, JSON 중복 유한성 순회 제거, 스킬 일괄 cleanup과
 설치·Docker·외부 site 요청은 선택 경로의 명시적 운영 준비/실행이지 기본 오프라인 검사 부작용이 아니다.
 CI는 현재 Ubuntu 22.04·Python 3.8·Node 22를 사용하고 의존성/브라우저 설치 뒤 검사한다.
 따라서 오프라인이라는 말은 고정 입력 검증의 데이터 경계를 뜻하며 CI 환경 설치까지 무통신이라는 뜻은 아니다.
+
+## 공유 저장 정책과 실패 경계
+
+`resolve_storage(ROOT, env=..., fs=...)`는 호출 시점에만 정책을 읽는 단일 진입점이다.
+workflow·git_publish와 cleanup guard·agent_models 보고서·triage·compaction·runner·컨테이너 wrapper가
+이를 공유하며 import 단계에 설정 읽기·mkdir·mount 검사를 수행하지 않는다.
+호출자의 현재 ROOT와 기존 REPORTS를 전달하여 테스트에서 바꾼 root가 원본 프로젝트의 private 설정을
+읽지 않게 한다. 오프라인 회귀는 `tmp_path`와 `FileSystem`의 mount/공간/probe seam을 사용하며
+실제 NFS·인증·운영 자료를 필요로 하지 않아야 한다. CI와 기존 필수 검사 범위를 축소하지 않는다.
+
+설정은 다음 순서로 하나를 선택하며 병합하지 않는다.
+
+1. `HARNESS_STORAGE_CONFIG`가 있으면 그 정규화된 절대 경로의 JSON을 반드시 사용한다.
+2. 없으면 무시되는 `ROOT/logs/harness/storage-local.json`이 존재할 때 사용한다.
+3. 선택적 기본 설정 파일도 없으면 기존 로컬 정책을 사용한다.
+
+명시적 파일 누락·빈/상대 경로, 존재하는 설정의 malformed JSON·중복/알 수 없는 필드·잘못된
+version/타입·symlink는 오류다. 설정 실패나 mount·공간·권한 실패에서 로컬로 fallback하지 않는다.
+오류는 고정 진단만 제공하며 설정 원문·임의 OS 오류·secret 값을 보고서에 넣지 않는다.
+version 1 schema는 정확히 `{version: 1, artifacts: {...}, temporary: {...}}`이며 각 객체는
+정확히 `path`, `required_mount`, `min_free_bytes`를 갖는다. 두 application path는 정규화된 절대 경로,
+서로 겹치지 않는 저장소 상위·하위 밖의 경로, required mount의 엄격한 하위 경로여야 한다.
+공유 mount는 허용하며 하한은 bool이 아닌 0 이상의 정수 byte 수다.
+[추적 예제](../harness/storage-config.json.example)만 배포하고 실제 호스트의 private 설정은 추적하지 않는다.
+
+| 용도 | 설정 없음 | 설정 있음 |
+| --- | --- | --- |
+| 일반 보고서 | 기존 `ROOT/logs/harness` 및 호출자별 category | `artifacts.path` 및 category |
+| 새 workflow run·검증 소스 사본·checks·backup·journal | `ROOT/logs/harness/workflows/<run_id>` | `artifacts.path/workflows/<run_id>` |
+| 승인 파일 모델 context | `/tmp/tavern-model-context-*/sources` | `temporary.path/tavern-model-context-*/sources` |
+| 비인증 검증 임시 | 기존 `tempfile` 기본 동작 | `temporary.path`의 고유 private 작업 디렉터리 |
+| 프로젝트 lock | 로컬 `ROOT/logs/harness/workflows/.lock` | 같은 로컬 경로 |
+| 인증·키·공급자 runtime | 기존 로컬/private 위치 | 같은 로컬/private 위치 |
+
+`report_dir(category, explicit=..., local_default=...)`와 `workflow_root()`는 경로를 선택하고,
+쓰기 호출자는 `ensure_directory()`/`prepare()`를 사용한다. 보고서 우선순위는 명시적 `--report-dir` →
+`HARNESS_REPORT_DIR` → 설정 artifact/category → 호출자의 기존 local default다.
+override는 인증 home을 선택하지 않으며 설정의 readiness 검사도 우회하지 않는다.
+`mkdtemp(purpose='context'|'validation')`와 `temporary_directory()`는 비인증 용도에만 사용한다.
+임시 context manager는 자신이 만든 고유 디렉터리만 정리하며 과거 실행 자료는 관리하지 않는다.
+
+`check_ready()`는 모든 configured mount가 실제 mount인지, 공간이 각 하한 이상인지 확인한다.
+이를 mkdir·probe·산출물 쓰기 전에 수행하고 각 쓰기 경계에서 재확인한다. required mount가 없는
+디렉터리를 로컬 출력 디렉터리로 만드는 것을 금지하며 application과 출력까지의 symlink·다른
+nested mount도 거부한다. 준비 상태는 이후 쓰기를 보장하는 lease가 아니다.
+application 디렉터리는 프로세스 소유·0700을 요구하며 새 디렉터리만 private mode로 만든다.
+기존 mount root나 unrelated 디렉터리를 chmod해 준비를 통과시키지 않는다.
+실제 writeability probe는 application 안의 고유한 0600 파일을 쓰고 fsync·읽기·삭제한다.
+JSON·이벤트·로그 0600과 실행 디렉터리 0700 정책을 유지한다.
+MySQL/Chromium wrapper는 초기 상태 쓰기·trap의 결과 쓰기·Docker 시작 전에 이 정책을 해석/준비한다.
+Docker 데이터베이스·운영 저장소·컨테이너의 기존 tmpfs 정책은 이 설정으로 옮기지 않는다.
+
+유료 모델 없이 `make storage-status`, `make storage-doctor` 또는
+`python -m harness.storage status|doctor`로 유효 artifact/temp/context/local lock 경로와 mount·공간
+하한을 조회한다. 기본 조회는 읽기 전용이며 application이 아직 없어도 쓰기 가능성을 증명하지 않는다.
+`doctor --probe`/`make storage-doctor PROBE=1`은 이미 존재하는 private application 안에서만 probe하고,
+`python -m harness.storage resolve artifacts --prepare`는 준비 검사를 거쳐 application을 만들고 probe한다.
+명령 성공은 모델·검증·게시 성공이 아니다. 설정 준비/복구 절차는 [하네스 사용법](harness.md)과
+[workflow](workflow.md), 외부 저장·로컬 lock·인증 유지 결정은 예정
+[ADR 0011](adr/0011-configurable-harness-storage.md)에 기록한다.
 
 ## 개발 요청에서 GitHub 완료까지
 
@@ -253,8 +315,10 @@ fixture로 검사하도록 작성되어 있다. 실제 검사 결과는 실행�
 
 ## 두 작업 사본과 보호 범위
 
-[workspace.py](../harness/workspace.py)의 모델용 사본은 저장소 부모 밖 `/tmp/tavern-model-context-*/sources`에
-승인된 개별 파일만 복사한다. 미승인 AGENTS·설계서·부모 지침·다른 소스는 자동 제공하지 않는다.
+[workspace.py](../harness/workspace.py)의 모델용 사본은 공유 정책의 context root 아래
+`tavern-model-context-*/sources`에 승인된 개별 파일만 복사한다. 기본 context root는 `/tmp`이고
+설정 사용 시 `temporary.path`다. 항상 저장소의 상위·하위 밖에 두며 미승인 AGENTS·설계서·
+부모 지침·다른 소스는 자동 제공하지 않는다.
 예정 신규 파일은 경로만 승인하고 아직 없으면 복사하지 않는다. 읽기 전용도 같은 읽기 범위다.
 Codex는 root deny·minimal read·승인 workspace read/write와 CLI/셸 실행 파일만 허용하는 프로필,
 도구 network=false·자동 지침/skill/apps 로딩 비활성화를 사용한다. 인증은 CLI의 private 임시
@@ -267,6 +331,17 @@ CLI 설정이 지원되지 않으면 넓은 권한으로 fallback하지 않는�
 커밋되지 않은 사용자 수정·삭제를 포함해 검사하며 이 사본을 모델 cwd/추가 읽기 범위로 주지 않는다.
 API 키·.env·인증·운영 INI·지역 가상환경·patch/unpack·Translation·운영 JSON·버전 CSV·backups·
 Git metadata 등 protected 경로는 제외한다. 인증 없는 harness/pytest.ini와 추적 fixture는 포함한다.
+`logs/harness/storage-local.json`은 보호된 logs 아래에 두고 모델 scope에 넣지 않는다.
+환경 override로 선택한 private 설정도 승인 소스로 배정하면 거부한다.
+신뢰한 workflow 검증은 모델 사본 밖에 0600 파생 `storage-validation.json`을 만들고 검증 자식에만
+그 경로를 전달한다. 검증 소스 사본을 포함하는 원래 artifact root를 자식의 application root로
+재사용하지 않고 검증 root와 겹치지 않는 출력·임시 경로에 같은 required mount·공간 하한을 전달한다.
+모델 자식의 `HARNESS_STORAGE_CONFIG`·`HARNESS_REPORT_DIR` 제거는 모델 연결 계층의 책임이며,
+private 설정을 모델 사본에 복사하거나 읽기 scope를 넓혀 검증에 전달해서는 안 된다.
+runner의 `HARNESS_WORK_DIR`, 검증 자식 전용 `TMPDIR/TMP/TEMP`, pytest `--basetemp`는 configured
+비인증 임시 경로를 사용한다. 전역 환경·실제 `HOME`/`CODEX_HOME`·원본 구독 로그인·키 home은 바꾸지 않는다.
+인증을 복사하는 Codex runtime은 로컬 `/tmp/tavern-codex-runtime-*`, Claude/GLM과 압축 runtime은
+로컬 `ROOT/logs/harness/{agents,compaction}/runtime`에 유지하고 자식 인증 임시도 그 local runtime에 둔다.
 symlink와 디렉터리 scope를 거부하며 빈 일회용 Git 저장소만 만들고 host template를 복사하지 않는다.
 등록 키는 프롬프트·보고서에서 치환하고 공급자/GitHub 토큰 환경도 자식에서 제거한다.
 보호 경로 필터와 키 치환은 임의 소스/로그에 모든 비밀이 없음을 보증하는 일반 탐지기가 아니다.
@@ -278,6 +353,10 @@ symlink와 디렉터리 scope를 거부하며 빈 일회용 Git 저장소만 만
 동시 사용자 편집이 있으면 새 편집을 보존하고 중단한다. 범위 변경만 private backup 뒤 파일별
 임시 쓰기·os.replace로 반영한다. 도중 실패는 자신의 반영 내용이 그대로인 파일만 역순 복구한다.
 프로젝트 lock은 workflow 동시 실행을 막지만 외부 편집기와의 완전한 잠금은 아니다.
+workflow와 GitHub request/accept/resume/cleanup은 artifact 설정과 무관하게 로컬
+`ROOT/logs/harness/workflows/.lock`을 공유한다. journal lock은 선택된 run의 `github.lock`에 유지하고
+프로젝트 lock → journal lock 순서를 지킨다. 저장 위치 변경이나 legacy journal 접근으로 직렬화를
+우회하지 않으며 lock을 얻은 뒤 run 위치를 재검증한다.
 여러 파일은 저장소 단위 원자 트랜잭션이 아니며 hash 검사와 교체 사이의 경쟁도 완전히 제거하지 못한다.
 
 git 모델은 읽기 전용으로 commit_message/pr_title/pr_body만 작성한다. 메인은 허용 앱 도구와
@@ -358,10 +437,23 @@ fixture 성공이나 문서 판단은 실제 GitHub/Git 완료 증거를 대신�
 ## 실행 상태·운영·문서 유지
 
 단계별 current/events는 실제 역할·provider·model과 running/responded/approved/failed 등을 구분한다.
-private `logs/harness/workflows/run_id/`에 baseline·diff·모델 응답·review.documentation·검증·복구·
-backup·journal을 남긴다. 디렉터리 0700, 통합 JSON·이벤트·로그 0600이며 원문 작업은 hash로 기록한다.
+공유 정책이 선택한 private workflow root의 `<run_id>/`에 baseline·diff·모델 응답·review.documentation·
+검증·복구·backup·journal을 남긴다. 기본은 `ROOT/logs/harness/workflows`, 설정 사용 시 artifact root의
+`workflows`이며 보고서 override가 우선한다. 디렉터리 0700, 통합 JSON·이벤트·로그 0600이며
+원문 작업은 hash로 기록한다.
 모델 사본 경로와 model_read_scope도 남긴다. 계획·응답은 Git 제외 private 운영 기록이고
 Git 관리 설계서·ADR가 장기 결정 기록이다. 둘은 서로 대체하지 않는다.
+
+`workflow_roots()`/`find_run()`/`latest_run()`은 현재 보고서 root·configured workflows·호출자의
+legacy REPORTS·기존 `ROOT/logs/harness/workflows`를 중복 경로 없이 함께 조회한다.
+status/latest와 Git request/accept/resume/cleanup은 이 조회를 공유하며 서로 다른 root에 같은
+run ID가 있으면 임의로 선택하지 않고 실패한다. run/기록/latest pointer의 symlink·root 탈출을 거부한다.
+latest는 각 root의 유효 pointer와 report 수정 시각을 함께 비교하고 기존 기록을 쓰지 않는다.
+configured readiness 실패도 legacy 로컬 fallback으로 회피하지 않는다.
+선택된 journal root에 대한 `validate_run_directory()`/`record_path()` 검사와 기존 승인 workspace·
+hash·mode·SHA·durable snapshot 계약을 유지한다. 기존 journal/report가 가리키는 절대 workspace는
+그 선택된 run의 `workspace`여야 하며 새 artifact root로 재결합하거나 승인 snapshot을 재작성하지 않는다.
+설정 활성화는 새 실행의 위치만 바꾸며 과거 자료의 자동 이전·복사·archive·삭제를 수행하지 않는다.
 
 passed는 해당 모드 완료 상태다. GitHub 활성 작업은 merge 증거를 보존한 뒤 cleanup complete까지
 요구한다. cleanup proof 대기는 awaiting_github/cleanup_*이며 실패·부분 정리는 cleanup_pending이다.
@@ -370,6 +462,11 @@ awaiting_ci·needs_reconciliation은 미완료, failed/interrupted는 실패,
 demonstrated는 fixture 시연이다. 강제 종료 뒤 PID가 없으면 상태 조회에서 abandoned를 표시하며
 저장 기록을 성공으로 덮어쓰지 않는다. 실패 사본은 조사에 남기고 운영자가 프로세스 종료를 확인한 뒤
 로그·검증 사본·보고서의 모델 사본 경로를 함께 정리한다. 운영 cron·DB·JSON을 정리 대상으로 삼지 않는다.
+이 저장 정책 작업의 leaf worker는 승인 파일만 읽고 수정하며 checks·Git·workflow·모델·재위임·
+운영 작업을 실행하지 않는다. 기존 사용자 편집과 cron·unpack·JSON·DB를 보존한다.
+검토와 full `make check`는 orchestrator, connector 게시·세 required CI·merge·정확한 Git cleanup은
+main의 책임이다. main은 그 전달 이후 실제 호스트 private 설정을 활성화한다.
+문서 갱신이나 draft 존재를 검토·검증·GitHub 전달·호스트 활성화 완료의 증거로 표현하지 않는다.
 
 업무 시작과 매 검토에서 문서 영향을 판단한다. 구조·책임·데이터 계약·격리·검증·실패 복구·GitHub
 게시 정책 변경은 관련 설계·경계 문서를 갱신하고 주요 선택은 신규/대체 ADR로 남긴다.

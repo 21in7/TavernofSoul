@@ -48,6 +48,7 @@ Ubuntu 20.04 ARM 호스트에서는 엔진만 지원 Ubuntu 컨테이너로 실�
 | Django importer | JSON 차이 계산·ID 정규화·DB 적재·비교 기준 갱신 | `importAll.py` |
 | Django 서빙 | 검색·관계 조회·화면/API 제공 | `TavernofSoul/urls.py`, 각 앱 |
 | 개발 하네스 | 격리 환경·검증 실행·기계가 읽을 수 있는 결과 | `Makefile`, `harness/runner.py` |
+| 하네스 저장 정책 | 산출물·비인증 임시 경로 해석, 쓰기 전 mount·공간·private 검사, 기존 실행 조회와 고정 로컬 lock 경로 | `harness/storage.py` |
 
 운영에서는 로컬 파일인 `cron_<region>.sh`가 다운로드, 파싱, 적재를 순서대로 호출한다.
 Git 추적 대상은 5개 지역(`itos`, `jtos`, `ktos`, `ktest`, `twtos`)의
@@ -60,6 +61,50 @@ Git 추적 대상은 5개 지역(`itos`, `jtos`, `ktos`, `ktest`, `twtos`)의
 검사하고 파서 실패 가드와 지역 명령 순서를 읽어 확인하므로 운영 파일 없이도 검증할 수 있다.
 
 ## 추적되는 설정과 로컬 운영 환경
+
+### 하네스 저장 경계
+
+`harness/storage.py`의 `resolve_storage(ROOT, env=..., fs=...)`가 workflow·GitHub 게시/정리,
+모델 보고서·triage·compaction·runner·컨테이너 wrapper의 공통 저장 정책이다.
+import 시에는 저장소를 읽거나 만들지 않고 각 작업 시점의 프로젝트 root로 해석한다.
+설정 우선순위는 절대 경로 `HARNESS_STORAGE_CONFIG` → 선택적 private
+`ROOT/logs/harness/storage-local.json` → 기존 로컬 기본값이며 설정을 병합하지 않는다.
+기본 파일이 없을 때만 `ROOT/logs/harness`, 그 아래 `workflows/<run_id>`와 기존 임시 동작을 유지한다.
+모델 소스는 기본 `/tmp/tavern-model-context-*/sources`, 일반 검증 임시는 기존 `tempfile` 기본값이다.
+명시한 설정의 누락, 존재하는 설정의 오류나 준비되지 않은 mount는 실패이며 로컬 fallback을 금지한다.
+
+version 1 JSON은 정확히 `version: 1`, `artifacts`, `temporary`를 갖고 두 디렉터리 객체는 각각
+`path`, `required_mount`, `min_free_bytes`를 갖는다. 경로는 정규화된 절대 경로이고 symlink를 거부한다.
+두 application root는 서로 겹치지 않고 저장소의 상위·하위 밖에 있으며 각각 required mount의
+엄격한 하위 디렉터리다. mount는 공유할 수 있고 공간 하한은 0 이상의 정수 byte 수다.
+추적되는 [설정 예제](../harness/storage-config.json.example)는 실제 호스트 설정이 아니다.
+메인은 검토·검사·GitHub 전달 뒤 private 설정을 활성화하며 mount나 운영 저장소를 변경하지 않는다.
+
+설정 사용 시 새 실행 사본·checks·backup·journal과 일반 보고서는 artifact root에,
+비인증 검증 임시와 모델 소스 사본은 temporary root에 둔다.
+보고서 선택은 명시적 `--report-dir` → `HARNESS_REPORT_DIR` → 설정 artifact/category → 기존 로컬
+기본 경로 순서다. 명시적 보고서 override도 설정의 준비 검사를 우회하지 않는다.
+모든 configured mount와 공간 하한을 mkdir·probe·출력 전에 확인하고 쓰기마다 다시 확인한다.
+다른 mount를 가로지르는 출력은 거부하고 application 디렉터리는 소유자 일치·0700을 요구한다.
+실제 쓰기·fsync·읽기·삭제 probe는 해당 private 디렉터리 안의 고유한 0600 파일만 사용한다.
+mount root나 무관한 기존 디렉터리를 chmod하지 않으며 private JSON·이벤트·로그는 0600을 유지한다.
+
+원본 로그인·키 home과 인증을 담은 Codex `/tmp/tavern-codex-runtime-*`, 로컬 공급자/압축 runtime은
+보고서 override나 외부 temporary 정책으로 옮기지 않는다. 실제 `HOME`·`CODEX_HOME`과 전역
+`TMPDIR`는 바꾸지 않고 검증 자식의 비인증 임시 환경과 pytest basetemp만 별도로 지정한다.
+private 설정은 모델 승인 소스에서 제외하며 신뢰한 검증 실행기는 모델 사본 밖의 private 파생 설정으로
+mount·공간 정책을 전달한다. 모델 자식에 private 설정 경로나 보고서 override 환경이 노출되지 않도록
+분리하는 것은 모델 연결 계층의 책임이다.
+
+프로젝트 직렬화 lock은 artifact 위치와 무관하게 로컬 `ROOT/logs/harness/workflows/.lock`에 유지하며,
+workflow와 GitHub cleanup이 공유한다. 프로젝트 lock 다음 journal 옆 `github.lock` 순서로 잠근다.
+status/latest와 Git request/accept/resume/cleanup은 현재 root와 기존 로컬 workflows root를 함께 조회한다.
+서로 다른 root의 동일 run ID, symlink·탈출 경로는 거부하고 선택된 run별 containment와 승인
+hash·SHA·snapshot 검사를 유지한다. 저장 정책 활성화는 과거 journal/snapshot의 절대 workspace 경로를
+재작성하거나 자료를 자동 복사·이전·삭제하지 않는다. 운영 cron·unpack·JSON·DB와 사용자 편집은 보존한다.
+정책의 상세 책임은 [전체 설계](harness-design.md#공유-저장-정책과-실패-경계),
+운영 명령은 [하네스 사용법](harness.md)과 [workflow](workflow.md),
+주요 선택은 예정 [ADR 0011](adr/0011-configurable-harness-storage.md)에 둔다.
 
 `TavernofSoul/TavernofSoul/settings_common.py`는 공통 Django 앱·미들웨어·템플릿 등
 소스에 포함할 기본 설정을 제공한다. 운영 DB·비밀값·지역 설정 파일은 읽지 않는다.

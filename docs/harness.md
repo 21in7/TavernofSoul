@@ -144,6 +144,139 @@ CI는 Node.js 22를 별도로 준비한다.
 자동 설치, 버전 CSV 초기화, 운영 DB 접속을 수행하지 않는다.
 Make 없이 실행하려면 동일 인터프리터로 `python -m harness check`를 사용한다.
 
+## 하네스 저장 경로 설정과 진단
+
+`harness/storage.py`는 workflow·GitHub journal/cleanup·모델 보고서·triage·compaction·runner·
+MySQL/Chromium wrapper가 사용하는 하나의 저장 정책이다. 설정 없는 checkout은 기존 로컬 동작을
+유지한다. [전체 설계](harness-design.md#공유-저장-정책과-실패-경계)와
+[ADR 0011](adr/0011-configurable-harness-storage.md)은 격리·잠금·복구 경계를 설명한다.
+
+설정 파일은 다음 순서로 **하나만** 선택하며 필드를 병합하지 않는다.
+
+1. `HARNESS_STORAGE_CONFIG`가 설정되어 있으면 그 정규화된 절대 경로의 JSON을 사용한다.
+2. 환경 변수가 없으면 `ROOT/logs/harness/storage-local.json`이 존재할 때 사용한다.
+3. 그 선택적 파일도 없으면 기존 로컬 기본값을 사용한다.
+
+`ROOT`는 명령이 대상으로 삼는 프로젝트 root다. 명시적 파일 누락, 빈/상대 환경 경로,
+존재하는 설정의 잘못된 JSON·타입·version·중복/추가/누락 필드는 오류다. 선택적 파일이 **없을 때만**
+기본값으로 돌아간다. 설정 오류·mount 부재·공간/권한 실패에는 로컬 fallback이 없다.
+추적되는 [storage-config.json.example](../harness/storage-config.json.example)는 설명용이며 자동으로
+활성화되지 않는다. 실제 설정은 Git 제외·보호된 logs 아래에 private 파일로 두고 모델 승인 소스에
+넣지 않는다. 환경 override로 선택한 private 설정도 모델 입력으로 배정하지 않는다.
+
+version 1의 완전한 JSON 예제는 다음과 같다. 경로는 실제 호스트에 맞춰 변경해야 한다.
+
+```json
+{
+  "version": 1,
+  "artifacts": {
+    "path": "/mnt/example-fast/tavern/harness-artifacts",
+    "required_mount": "/mnt/example-fast",
+    "min_free_bytes": 10737418240
+  },
+  "temporary": {
+    "path": "/mnt/example-fast/tavern/harness-temporary",
+    "required_mount": "/mnt/example-fast",
+    "min_free_bytes": 10737418240
+  }
+}
+```
+
+최상위 필드는 정확히 `version`, `artifacts`, `temporary`이며 두 디렉터리 객체는 정확히 `path`,
+`required_mount`, `min_free_bytes`를 갖는다. `version`은 정수 1, 공간 하한은 bool이 아닌 0 이상의
+정수 byte 수다. 위의 10737418240은 10 GiB 예시이며 고정 호스트 기본값이 아니다.
+경로는 절대·정규화 경로여야 하며 `~`/환경 변수 확장, `.`/`..`, 중복/끝 구분자, symlink를 사용하지
+않는다. 두 application root는 서로 같거나 포함 관계일 수 없고, 저장소 내부·저장소 자체·저장소를
+포함하는 상위 경로도 안 된다. 각 root는 자신의 `required_mount`의 엄격한 하위 디렉터리여야 하며
+다른 required mount를 포함할 수 없다. 두 용도가 같은 mount를 공유하는 것은 허용한다.
+
+| 용도 | 설정 없음 | 설정 있음, 보고서 override 없음 |
+| --- | --- | --- |
+| 일반 검증 보고서·로그 | `ROOT/logs/harness` | `artifacts.path` |
+| 모델·triage·compaction 보고서 | 기존 `logs/harness/{agents,triage,compaction}` | `artifacts.path/{agents,triage,compaction}` |
+| 새 workflow 사본·checks·backup·journal | `ROOT/logs/harness/workflows/<run_id>` | `artifacts.path/workflows/<run_id>` |
+| 승인 모델 소스 context | `/tmp/tavern-model-context-*/sources` | `temporary.path/tavern-model-context-*/sources` |
+| 비인증 검증 임시 작업 | 기존 `tempfile` 기본 동작 | `temporary.path`의 고유 private 디렉터리 |
+| 프로젝트 직렬화 lock | `ROOT/logs/harness/workflows/.lock` | 같은 로컬 경로 |
+| 인증 home·키·credential runtime | 기존 로컬/private 위치 | 같은 로컬/private 위치 |
+
+보고서 위치는 명시적 `--report-dir` → `HARNESS_REPORT_DIR` → configured artifact/category →
+호출자의 기존 로컬 기본값 순이다. override는 category를 자동으로 덧붙이지 않는 최종 보고서
+디렉터리다. workflow와 GitHub CLI에는 `--report-dir`가 없으므로 `HARNESS_REPORT_DIR`를 사용한다.
+override는 temporary root·인증 home·로컬 project lock을 바꾸거나 configured readiness를 우회하지
+않는다. 절대 경로를 사용한다. 일반 검증과 컨테이너 wrapper의 예는 다음과 같다.
+
+```bash
+python -m harness check --report-dir /absolute/private/reports
+HARNESS_REPORT_DIR=/absolute/private/reports make check-mysql-container
+HARNESS_REPORT_DIR=/absolute/private/reports make check-browser-container
+```
+
+다음은 검토·full checks·GitHub 전달 **이후 main이 수행할 설정 절차**다. scoped worker가 실행하는
+명령이 아니다. 기존 설정을 보존하도록 예제를 복사하고, 두 application 경로·실제 mount·공간 하한을
+편집한 뒤 준비한다. `python`은 Make의 `PYTHON`과 같은 하네스 인터프리터를 사용한다.
+
+```bash
+mkdir -p logs/harness
+(umask 077; cp -n harness/storage-config.json.example logs/harness/storage-local.json)
+# logs/harness/storage-local.json의 설명용 경로와 하한을 먼저 편집한다.
+make storage-status
+make storage-doctor
+python -m harness.storage resolve artifacts --prepare
+make storage-doctor PROBE=1
+```
+
+별도 private 파일을 사용할 때는 `export HARNESS_STORAGE_CONFIG=/absolute/private/storage.json`으로
+선택한다. CLI의 `--root /absolute/project`는 대상 프로젝트를 명시한다. 읽기 전용 명령은
+`python -m harness.storage status`, `python -m harness.storage doctor`다. 경로만 얻으려면
+`python -m harness.storage resolve workflows` 또는 `resolve reports --category agents`를 사용한다.
+`resolve reports --report-dir /absolute/private/reports --prepare`는 명시적 출력 준비도 지원한다.
+쉘에서 경로를 받을 때는 `report_dir="$(python -m harness.storage resolve reports --prepare)"`처럼
+인용하고 결과를 `eval`하지 않는다. 저장 명령은 모델·Docker·운영 작업을 시작하지 않는다.
+
+status/doctor는 effective artifact/temp/context/local lock과 로컬 credential runtime 경로,
+각 configured mount의 readiness·free bytes·`min_free_bytes`·private 디렉터리 상태를 JSON으로
+표시한다. 기본 조회는 mkdir/probe 없이 읽기만 한다. application이 아직 없을 때 `ready`여도
+쓰기 가능성을 증명하지 않는다. local 모드의 `temp_root=null`은 기존 `tempfile` 기본 선택을 뜻한다.
+설정/준비 실패는 0이 아닌 종료 코드와 고정된 유용한 오류를 반환하며 설정 원문·비밀값·임의 OS
+오류를 출력하지 않는다. `doctor --probe`와 `PROBE=1`은 이미 존재하는 private application만
+probe한다. `resolve artifacts --prepare`는 모든 prerequisites를 검사한 뒤 **두** configured
+application을 만들고 probe하며 요청한 경로를 출력한다.
+
+모든 configured mount는 단순히 존재하는 디렉터리가 아니라 정확한 경로의 실제 mount여야 한다.
+공간 하한은 각 required mount의 실제 free bytes와 비교한다. 모든 mount·공간·기존 application
+mode를 mkdir/probe/출력 전에 확인하고 쓰기 경계마다 재확인한다. 출력까지의 symlink와 configured
+mount 아래의 다른 nested mount를 거부한다. mount 부재 시 로컬 mountpoint 아래를 만들지 않는다.
+application은 실행 사용자 소유의 `0700`, probe 파일은 고유 이름의 `0600`이며 실제
+write·fsync·readback·delete를 수행한다. private JSON·이벤트·로그도 `0600`을 유지한다.
+기존 application mode가 다르면 실패하며 mount root나 무관한 기존 디렉터리를 chmod하지 않는다.
+
+실패 시 명령을 중단하고 올바른 mount의 복구, 해당 사용자 권한 또는 공간 하한을 확인한 뒤
+doctor와 probe를 다시 수행한다. 설정을 지우거나 다른 로컬 디렉터리로 바꿔 실패를 자동 회피하지
+않는다. 기존 디렉터리는 소유자·용도를 확인해 운영자가 복구하거나 별도의 private application을
+선택한다. 공간 확보도 별도 승인된 운영 작업이며 cron·unpack·JSON·DB를 정리 대상으로 삼지 않는다.
+MySQL/Chromium wrapper는 초기 status 쓰기와 Docker 시작 전에 저장 준비를 수행한다.
+Docker 데이터베이스·운영 볼륨·컨테이너 tmpfs를 이 설정으로 이동하지 않는다.
+
+runner의 비인증 검증 자식은 configured 임시 경로의 `HARNESS_WORK_DIR`, 자식 전용
+`TMPDIR/TMP/TEMP`, pytest `--basetemp`를 사용한다. 부모의 전역 임시 환경은 바꾸지 않는다.
+원본 구독 인증·키 home·실제 `HOME`/`CODEX_HOME`은 유지한다. 인증을 담은
+`/tmp/tavern-codex-runtime-*`와 `ROOT/logs/harness/{agents,compaction}/runtime`은 로컬/private다.
+보고서 override가 credential runtime을 NFS로 옮기지 않는다.
+
+새 위치 활성화는 과거 실행을 이전하지 않는다. status/latest 및 Git request/accept/resume/cleanup은
+현재 root와 기존 로컬 workflows를 함께 조회하고 duplicate run ID·symlink·탈출 경로를 거부한다.
+과거 absolute workspace·승인 journal·snapshot은 재작성하지 않는다. 상세 lookup·재개·수동 복구
+경계는 [workflow](workflow.md#저장-위치와-기존-실행-조회)를 따른다. 자동 migration·archive·
+역사적 산출물 삭제나 cron 등록은 없다. 임시 context manager는 자신이 만든 고유 작업만 정리한다.
+main이 제공한 호스트의 `/mnt/nfs-2tb`·`/mnt/nfs-hdd`는 활성화할 private 설정의 후보이며 소스
+기본값이 아니다. 이 문서는 mount 확인·호스트 활성화·검토·검증·GitHub 전달 완료를 주장하지 않는다.
+
+이 변경의 매 orchestrator review는 `documentation={status,files,reason}`을 반환하며
+`status=updated`는 실제 변경된 승인 Markdown 목록과 저장·격리·복구 설명의 의미적 판단으로
+뒷받침한다. 파일 확장자 확인만으로 완전성을 증명하지 않는다. tests/full `make check`는
+orchestrator, connector 게시·필수 CI 확인·merge·정확한 cleanup은 main이 담당한다.
+
 ## 신규 서버의 로컬 운영 파일
 
 Git에 추적하는 cron은 `cron_itos.sh.example`, `cron_jtos.sh.example`, `cron_ktos.sh.example`,
@@ -234,12 +367,14 @@ Django test runner로 `Items.tests`를 실행한다. 디렉터리 위치와 검�
   5개 지역의 `cron_<region>.sh.example`을 읽는다. 예제가 없으면 실패하며 로컬 운영 cron으로
   대체하지 않는다. 다운로드·import 반환 코드 가드만 분리해 검사하고 파서 실패 가드와
   지역 명령 순서를 확인하므로 전체 cron·다운로드·웹훅·운영 import는 실행하지 않는다.
-- 결과는 Git에서 제외된 `logs/harness/`에 JSON으로 남는다.
+- 결과는 공유 저장 정책이 선택한 private 보고서 디렉터리에 JSON으로 남는다.
+  설정이 없으면 Git에서 제외된 `logs/harness/`, 설정이 있으면 artifact root를 사용한다.
   `doctor.json`, `downloader.json`, `parser.json`, `django-regressions.json`, `django.json`, `pipeline.json` 및
   실행 명령별 집계 파일에서 성공 수·실패·오류·skip·제외 목록을 확인한다.
 - 같은 명령의 다음 실행은 해당 결과 파일을 갱신한다. 실패나 프로세스 종료가 이전 성공을 재사용하지 않는다.
 - 각 검증의 전체 출력은 같은 디렉터리의 `.log`에 저장한다. 실패 시 터미널에도 출력한다.
-- 보고서 위치를 바꾸려면 `python -m harness check --report-dir /tmp/tavern-reports`를 사용한다.
+- 보고서 위치를 바꾸려면 `python -m harness check --report-dir /absolute/private/reports`를 사용한다.
+  전체 우선순위와 mount/권한 prerequisites는 위의 저장 경로 설정 절을 따른다.
 
 ## MySQL 검증과 CI
 

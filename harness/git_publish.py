@@ -15,14 +15,16 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
 import time
 from urllib.parse import quote
 
-from harness import agent_models, git_cleanup, workspace
+from harness import agent_models, git_cleanup, storage, workspace
 
 ROOT = agent_models.ROOT
 REPORTS = ROOT / 'logs/harness/workflows'
+_DEFAULT_REPORTS = REPORTS
 CONFIG = ROOT / 'harness/git-publish-config.json'
 SHA = re.compile(r'^[a-f0-9]{40}$')
 RUN_ID = re.compile(r'^[0-9]+-[a-f0-9]{6}$')
@@ -30,6 +32,42 @@ REQUIRED = {'Offline harness (SQLite)', 'MySQL harness', 'Chromium browser harne
 TOOLS = {name: 'mcp__codex_apps__github_' + name for name in
          ('fetch', 'create_tree', 'create_commit', 'create_branch', 'create_pull_request',
           'merge_pull_request')}
+
+
+def storage_policy():
+    return storage.resolve_storage(ROOT)
+
+
+def local_reports():
+    # Keep ROOT-only and ROOT/REPORTS test overrides isolated from the real project.
+    return REPORTS if REPORTS != _DEFAULT_REPORTS else ROOT / 'logs/harness/workflows'
+
+
+def private_record(selected, directory, name):
+    path = selected.record_path(directory, name, local_default=local_reports())
+    if not path.is_file() or path.stat().st_mode & 0o077:
+        raise ValueError('GitHub recovery record must be a regular private file.')
+    return path
+
+
+def open_lock(selected, path):
+    """Pin a no-follow parent and retain the historical lock inode."""
+    selected.check_ready()
+    parent = selected.fs.open_directory(path.parent)
+    try:
+        fd = os.open(path.name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                     0o600, dir_fd=parent)
+    finally:
+        os.close(parent)
+    handle = os.fdopen(fd, 'a')
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('GitHub lock must be a regular file.')
+        os.fchmod(fd, 0o600)
+    except BaseException:
+        handle.close()
+        raise
+    return handle
 
 
 def validate_config(cfg):
@@ -92,14 +130,19 @@ def prepare(root, directory, report, baseline, validated, changes, policy, detai
         return {'status': 'skipped'}
     if not origin_matches(root, cfg['repository']):
         raise ValueError('Configured GitHub repository does not match the credential-free origin URL.')
-    if not RUN_ID.fullmatch(report['run_id']):
+    if not RUN_ID.fullmatch(report['run_id']) or report['run_id'] != directory.name:
         raise ValueError('Invalid GitHub run ID.')
+    selected = storage.resolve_storage(root)
+    selected.validate_run_directory(directory, local_default=(
+        local_reports() if Path(root) == ROOT else Path(root) / 'logs/harness/workflows'))
     final_checks = report.get('delivery_validation', report.get('validation'))
     if report.get('review', {}).get('verdict') != 'approved' or not final_checks or \
             any(item.get('status') != 'passed' for item in final_checks):
         raise ValueError('Approved review and successful local checks are required.')
     workspace.enforce_scope(baseline, validated, report['scope'])
     candidate = Path(report['workspace'])
+    if report['workspace'] != str(directory / 'workspace'):
+        raise ValueError('Publication workspace escapes its selected journal directory.')
     if workspace.manifest(candidate, policy) != validated or set(changes) != set(workspace.changed(baseline, validated)):
         raise ValueError('Only the reviewed and validated candidate may be published.')
     entries = {}
@@ -126,13 +169,17 @@ def prepare(root, directory, report, baseline, validated, changes, policy, detai
               'metadata': metadata(json.dumps(details)), 'branch': 'codex/' + report['run_id'],
               'status': 'awaiting_connector', 'step': 'repository', 'files': entries,
               'events': [], 'deadline': time.time() + cfg['wait_seconds'], 'checks': {}}
+    selected.ensure_directory(directory)
     directory.chmod(0o700)
     approval = {'config': cfg, 'run_id': report['run_id'], 'workspace': str(candidate),
                 'max_file_bytes': policy['max_file_bytes'],
                 'files': {name: {'before': baseline.get(name), 'after': validated.get(name)}
                           for name in changes}}
-    agent_models.private_json(directory / 'github-approved.json', approval)
-    agent_models.private_json(directory / 'github.json', ledger)
+    for name, data in (('github-approved.json', approval), ('github.json', ledger)):
+        selected.check_ready()
+        path = selected.record_path(directory, name, local_default=(
+            local_reports() if Path(root) == ROOT else Path(root) / 'logs/harness/workflows'))
+        agent_models.private_json(path, data)
     return summary(ledger)
 
 
@@ -594,9 +641,15 @@ def accept_cleanup(ledger, data):
 
 def execute_cleanup(directory, ledger):
     try:
-        report = json.loads((directory / 'report.json').read_text(encoding='utf-8'))
-        approval = json.loads((directory / 'github-approved.json').read_text(encoding='utf-8'))
-        result = git_cleanup.execute(ROOT, directory, ledger, report, approval)
+        selected = storage_policy()
+        selected.ensure_directory(selected.validate_run_directory(
+            directory, local_default=local_reports()))
+        report = json.loads(private_record(selected, directory, 'report.json').read_text(encoding='utf-8'))
+        approval = json.loads(private_record(selected, directory, 'github-approved.json').read_text(encoding='utf-8'))
+        def storage_guard():
+            selected.record_path(directory, 'cleanup.json', local_default=local_reports())
+        result = git_cleanup.execute(ROOT, directory, ledger, report, approval,
+                                     storage_guard=storage_guard)
     except (ValueError, OSError, KeyError, TypeError, UnicodeError):
         result = {'status': 'cleanup_pending', 'proof': {'status': 'pending', 'reason': 'cleanup_state_invalid'}}
     ledger['cleanup'] = {key: result[key] for key in ('version', 'status', 'remote', 'prune', 'sync', 'local', 'proof', 'fetch', 'completion')
@@ -616,33 +669,35 @@ def cleanup_complete(ledger):
         all(cleanup.get(key, {}).get('status') == 'complete' for key in ('prune', 'sync', 'completion'))
 
 
-def directory_for(run_id):
+def directory_for(run_id, *, selected=None):
     if not RUN_ID.fullmatch(run_id):
         raise ValueError('Invalid workflow run ID.')
-    directory = REPORTS / run_id
-    if directory.is_symlink() or directory.resolve().parent != REPORTS.resolve():
-        raise ValueError('Unsafe GitHub journal directory.')
-    return directory
+    return (selected or storage_policy()).find_run(run_id, local_default=local_reports())
 
 
-def validate_journal(directory, ledger):
+def validate_journal(directory, ledger, *, selected=None):
+    selected = selected or storage_policy()
+    selected.validate_run_directory(directory, local_default=local_reports())
     cfg = validate_config(ledger['config'])
     if ledger['run_id'] != directory.name or ledger['version'] != 'github-v1' or \
             ledger['branch'] != 'codex/' + directory.name or not origin_matches(ROOT, cfg['repository']):
         raise ValueError('GitHub journal identity or origin changed.')
-    report = json.loads((directory / 'report.json').read_text(encoding='utf-8'))
-    if not isinstance(ledger['files'], dict) or not ledger['files'] or \
+    report = json.loads(private_record(selected, directory, 'report.json').read_text(encoding='utf-8'))
+    if report.get('run_id') != directory.name or \
+            not isinstance(ledger['files'], dict) or not ledger['files'] or \
             set(ledger['files']) != set(report['changed_files']) or \
             set(ledger['files']) - set(report['scope']) or report.get('read_only') or report.get('simulated'):
         raise ValueError('GitHub journal differs from the approved task scope.')
     metadata(json.dumps(ledger['metadata']))
-    approval_path = directory / 'github-approved.json'
-    if approval_path.is_symlink() or not approval_path.is_file() or approval_path.stat().st_mode & 0o077:
-        raise ValueError('Publication approval must be a private regular file.')
+    approval_path = private_record(selected, directory, 'github-approved.json')
     approval = json.loads(approval_path.read_text(encoding='utf-8'))
     if approval['config'] != cfg or approval['run_id'] != ledger['run_id'] or \
             approval['workspace'] != report['workspace'] or set(approval['files']) != set(ledger['files']):
         raise ValueError('Journal differs from the publication approval.')
+    # Validate the original absolute workspace without migrating/rebinding it to
+    # the new artifact root. Every source is checked against this selected run.
+    if approval['workspace'] != str(directory / 'workspace'):
+        raise ValueError('Approved workspace escapes its selected journal directory.')
     for name, entry in ledger['files'].items():
         if workspace.protected(name):
             raise ValueError('Protected journal path.')
@@ -659,16 +714,21 @@ def validate_journal(directory, ledger):
                 if version == 'after' and (not isinstance(item['content'], str) or
                                           blob_sha(item['content'].encode('utf-8')) != item['sha']):
                     raise ValueError('Journal source hash does not match.')
-                base = directory / 'backup' if version == 'before' else Path(approval['workspace'])
-                source = workspace.safe_path(base, name)
+                source = selected.record_path(directory,
+                                              ('backup/' if version == 'before' else 'workspace/') + name,
+                                              local_default=local_reports())
                 if workspace.fingerprint(source, approval['max_file_bytes']) != approved or \
                         mode(approved) != item['mode'] or blob_sha(source.read_bytes()) != item['sha']:
                     raise ValueError('Journal differs from the reviewed and validated snapshot.')
 
 
 def save(directory, ledger):
-    git_cleanup.durable_json(directory / 'github.json', ledger)
-    path = directory / 'report.json'
+    selected = storage_policy()
+    selected.check_ready()
+    journal = selected.record_path(directory, 'github.json', local_default=local_reports())
+    path = private_record(selected, directory, 'report.json')
+    events = selected.record_path(directory, 'events.jsonl', local_default=local_reports())
+    git_cleanup.durable_json(journal, ledger)
     report = json.loads(path.read_text(encoding='utf-8'))
     previous = report.get('github')
     report['github'] = summary(ledger)
@@ -684,9 +744,10 @@ def save(directory, ledger):
     if previous != report['github'] or report.get('current', {}).get('provider') != 'github':
         report['current'] = event
         report.setdefault('events', []).append(event)
-        with (directory / 'events.jsonl').open('a', encoding='utf-8') as handle:
+        selected.check_ready()
+        with open_lock(selected, events) as handle:
             handle.write(json.dumps(event) + '\n')
-        (directory / 'events.jsonl').chmod(0o600)
+    selected.check_ready()
     git_cleanup.durable_json(path, report)
 
 
@@ -702,6 +763,8 @@ def main(argv=None):
     try:
         if os.environ.get('TAVERN_WORKFLOW_CHILD'):
             raise ValueError('GitHub delivery and cleanup require the trusted parent.')
+        selected = storage_policy()
+        selected.check_ready()
         if args.command == 'doctor':
             cfg = load_config()
             ready = origin_matches(ROOT, cfg['repository'])
@@ -710,33 +773,30 @@ def main(argv=None):
                               'transport': 'parent_codex_github_connector', 'enabled': cfg['enabled'],
                               'api_called': False, 'note': 'Parent must verify connector write permission.'}))
             return 0 if ready else 1
-        directory = directory_for(args.run_id or '')
+        directory = directory_for(args.run_id or '', selected=selected)
+        selected.ensure_directory(directory)
         # Same ordering as workflow/apply: project lock, then GitHub journal lock.
-        project_lock_path = REPORTS / '.lock'
-        if project_lock_path.is_symlink():
-            raise ValueError('Invalid project lock.')
-        project_lock = project_lock_path.open('a')
-        project_lock_path.chmod(0o600)
+        project_lock_path = selected.project_lock_path
+        selected.check_ready()
+        selected.fs.create_directory(project_lock_path.parent)
+        project_lock = open_lock(selected, project_lock_path)
         try:
             fcntl.flock(project_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('Another workflow or cleanup controller is running.') from None
-        lock_path = directory / 'github.lock'
-        if lock_path.is_symlink():
-            raise ValueError('Invalid journal lock.')
-        lock = lock_path.open('a')
-        lock_path.chmod(0o600)
+        # Recheck lookup under the project lock before touching a journal.
+        selected.validate_run_directory(directory, local_default=local_reports())
+        lock_path = selected.record_path(directory, 'github.lock', local_default=local_reports())
+        lock = open_lock(selected, lock_path)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             lock.close()
             raise ValueError('Another GitHub delivery controller is running.') from None
-        path = directory / 'github.json'
-        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
-            raise ValueError('GitHub journal must be a regular private file.')
+        path = private_record(selected, directory, 'github.json')
         ledger = json.loads(path.read_text(encoding='utf-8'))
-        validate_journal(directory, ledger)
-        report = json.loads((directory / 'report.json').read_text(encoding='utf-8'))
+        validate_journal(directory, ledger, selected=selected)
+        report = json.loads(private_record(selected, directory, 'report.json').read_text(encoding='utf-8'))
         if not git_cleanup.enabled(report, ledger['config']) or not load_config()['enabled']:
             if ledger.get('merge_sha'):
                 ledger.update(status='cleanup_pending', merge_status='merged',
@@ -786,7 +846,8 @@ def main(argv=None):
                           'poll_after_seconds': 10 if ledger['status'] == 'waiting_for_ci' else 0}, ensure_ascii=False))
         return 1 if ledger['status'] in ('failed', 'needs_reconciliation', 'cleanup_pending') else 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
-        print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__}))
+        print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__,
+                          **({'error': str(exc)} if isinstance(exc, storage.StorageError) else {})}))
         return 1
     finally:
         if lock is not None:

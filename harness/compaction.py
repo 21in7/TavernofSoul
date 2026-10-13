@@ -6,12 +6,14 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 
-from harness import agent_models
+from harness import agent_models, storage
 
 PLUGIN = agent_models.ROOT / 'harness' / 'compaction'
 REPORTS = agent_models.ROOT / 'logs' / 'harness' / 'compaction'
+_DEFAULT_REPORTS = REPORTS
 
 
 def verify_vendor():
@@ -32,7 +34,9 @@ def verify_vendor():
 
 def diagnostic_environment():
     env = agent_models.child_environment('codex', {})
-    env['CLAUDE_CONFIG_DIR'] = str(REPORTS / 'runtime')
+    runtime = agent_models.credential_runtime_directory('compaction')
+    env['CLAUDE_CONFIG_DIR'] = str(runtime)
+    env['TMPDIR'] = env['TMP'] = env['TEMP'] = str(runtime / 'tmp')
     return env
 
 
@@ -108,9 +112,19 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=('doctor', 'demo', 'smoke', 'engine'))
     parser.add_argument('--live', action='store_true')
+    parser.add_argument('--report-dir', type=Path)
     args = parser.parse_args(argv)
     if args.live != (args.command == 'smoke'):
         parser.error('Only smoke uses --live; it sends the synthetic transcript to TypeSafe.')
+    try:
+        local_default = (REPORTS if REPORTS != _DEFAULT_REPORTS else
+                         agent_models.ROOT / 'logs/harness/compaction')
+        policy, reports = agent_models.report_directory(args.report_dir, category='compaction',
+                                                        local_default=local_default)
+        policy.ensure_directory(reports)
+    except storage.StorageError as exc:
+        print('Compaction storage unavailable: {}'.format(exc), file=sys.stderr)
+        return 1
     keys = {}
     try:
         keys = agent_models.load_keys() if args.command in ('doctor', 'smoke') else {}
@@ -120,11 +134,18 @@ def main(argv=None):
             report = engine_check()
         else:
             report = probe(live=args.live, keys=keys)
+    except storage.StorageError as exc:
+        print('Compaction storage unavailable: {}'.format(exc), file=sys.stderr)
+        return 1
     except (OSError, ValueError, subprocess.SubprocessError):
         report = {'status': 'failed', 'reason': 'Compaction inspection or probe failed; check configuration.'}
     report = json.loads(agent_models.redact(json.dumps(report, ensure_ascii=False), keys))
-    path = REPORTS / '{}-{}.json'.format(args.command, time.time_ns())
-    agent_models.private_json(path, report)
+    path = reports / '{}-{}.json'.format(args.command, time.time_ns())
+    try:
+        agent_models.private_json(path, report, policy=policy)
+    except storage.StorageError as exc:
+        print('Compaction storage unavailable: {}'.format(exc), file=sys.stderr)
+        return 1
     print(json.dumps(report, ensure_ascii=False, indent=2))
     print('Report: {}'.format(path))
     return 0 if report['status'] == 'passed' else 1

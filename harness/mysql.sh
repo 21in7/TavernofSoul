@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Create a disposable server; never use existing containers or host DB services.
 set -euo pipefail
+umask 077
 python="${1:-python3}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-report_dir="${HARNESS_REPORT_DIR:-$root/logs/harness}"
+# This prepares/checks both configured application roots before traps or Docker.
+# Runner children apply non-credential temp policy without global TMPDIR changes.
+report_dir="$("$python" -m harness.storage resolve reports --root "$root" --prepare)"
 phase=environment
 container_id=''
 removed=false

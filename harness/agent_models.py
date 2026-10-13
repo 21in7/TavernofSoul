@@ -13,10 +13,13 @@ import sys
 import tempfile
 import time
 
+from harness import storage
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'harness' / 'agent-models.json'
 KEY_FILE = ROOT / '.agent-keys.json'
 REPORTS = ROOT / 'logs' / 'harness' / 'agents'
+_DEFAULT_REPORTS = REPORTS
 KEY_NAMES = ('ANTHROPIC_API_KEY', 'ZAI_API_KEY', 'TYPESAFE_API_KEY')
 
 
@@ -42,13 +45,58 @@ def load_keys(include_environment=True):
     return keys
 
 
-def private_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
+def report_directory(explicit=None, *, category='agents', root=None, local_default=None):
+    """Resolve at use time; report overrides never select authentication homes."""
+    root = ROOT if root is None else root
+    if local_default is None:
+        local_default = REPORTS if REPORTS != _DEFAULT_REPORTS else root / 'logs/harness/agents'
+    policy = storage.resolve_storage(root)
+    return policy, policy.report_dir(category, explicit=explicit, local_default=local_default)
+
+
+def credential_runtime_directory(category='agents', provider=None, *, root=None):
+    """Create only local private provider state, without chmodding existing paths."""
+    policy = storage.resolve_storage(ROOT if root is None else root)
+    policy.check_ready()
+    if category not in ('agents', 'compaction') or provider not in (None, 'claude', 'zai'):
+        raise ValueError('Invalid local runtime category or provider.')
+    path = (policy.credential_runtime_root if category == 'agents' else
+            policy.root / 'logs/harness/compaction/runtime')
+    runtime = path if provider is None else path / provider
+    directories = [path] if provider is None else [path, runtime]
+    directories.append(runtime / 'tmp')
+    try:
+        for directory in directories:
+            policy.check_ready()
+            policy.fs.create_directory(directory)
+            fd = policy.fs.open_directory(directory)
+            try:
+                info = os.fstat(fd)
+                if stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != os.geteuid():
+                    raise ValueError('Local credential runtime requires an owned private 0700 directory.')
+            finally:
+                os.close(fd)
+    except OSError:
+        raise ValueError('Cannot prepare private local credential runtime; check directory access.') from None
+    return runtime
+
+
+def private_json(path, data, *, policy=None):
+    # Keys and durable callers retain their local/caller-selected destination.
+    # Report writers supply the policy so readiness is rechecked before output.
+    path = Path(path)
+    if policy is not None:
+        policy.ensure_directory(path.parent)
+    else:
+        storage.FileSystem().create_directory(path.parent.absolute())
     fd, name = tempfile.mkstemp(prefix='.' + path.name, dir=str(path.parent))
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            os.fchmod(handle.fileno(), 0o600)
             json.dump(data, handle, ensure_ascii=False, indent=2)
             handle.write('\n')
+        if policy is not None:
+            policy.check_ready()
         os.replace(name, path)
     finally:
         if os.path.exists(name):
@@ -75,6 +123,7 @@ def child_environment(provider, keys, compaction=False):
         if name.startswith('ANTHROPIC_') or name.startswith('CLAUDE_CODE_') or name in (
                 'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'ZAI_API_KEY',
                 'Z_AI_API_KEY', 'TYPESAFE_API_KEY', 'CLAUDE_CONFIG_DIR',
+                storage.CONFIG_ENV, storage.REPORT_ENV,
                 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
             env.pop(name, None)
     if provider == 'codex':
@@ -85,7 +134,9 @@ def child_environment(provider, keys, compaction=False):
         raise ValueError('Missing {}; run configure --provider {} in your terminal.'.format(
             spec['key_env'], provider))
     # Different local state directories prevent API and Coding Lite auth from mixing.
-    env['CLAUDE_CONFIG_DIR'] = str(REPORTS / 'runtime' / provider)
+    runtime = credential_runtime_directory(provider=provider)
+    env['CLAUDE_CONFIG_DIR'] = str(runtime)
+    env['TMPDIR'] = env['TMP'] = env['TEMP'] = str(runtime / 'tmp')
     env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1'
     env['ANTHROPIC_BASE_URL'] = spec['base_url']
     env['API_TIMEOUT_MS'] = '120000'
@@ -167,9 +218,12 @@ def codex_runtime(keys, cli, compaction=False):
     TemporaryDirectory also cleans up on subprocess errors and timeouts.
     """
     try:
+        policy = storage.resolve_storage(ROOT)
+        policy.check_ready()
         executable, shell = codex_paths(cli)
         source_home = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').resolve()
-        with tempfile.TemporaryDirectory(prefix='tavern-codex-runtime-') as name:
+        with tempfile.TemporaryDirectory(prefix='tavern-codex-runtime-',
+                                         dir=str(policy.credential_temp_root)) as name:
             root = Path(name)
             root.chmod(0o700)
             env = child_environment('codex', keys, compaction=compaction)
@@ -239,6 +293,7 @@ def codex_login_status(runtime):
 
 
 def connection_status(provider, keys):
+    storage.resolve_storage(ROOT).check_ready()
     spec = load_config()['providers'][provider]
     if spec.get('transport') == 'http':
         ready = bool(keys.get(spec['key_env']))
@@ -430,6 +485,7 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
     report['compaction'] = {'requested': enabled, 'key_registered': bool(keys.get('TYPESAFE_API_KEY')),
                             'status': 'requested' if enabled else 'disabled'}
     try:
+        storage.resolve_storage(ROOT).check_ready()
         if enabled:
             from harness.compaction import verify_vendor
             verify_vendor()
@@ -493,6 +549,11 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             if cost is not None:
                 report['cli_estimated_cost_usd'] = cost
             report['status'] = 'passed'
+    except storage.StorageError as exc:
+        report['status'] = 'failed'
+        report.pop('response', None)
+        report['diagnostic'] = {'stage': 'storage', 'category': 'storage_unavailable'}
+        report['error'] = str(exc)
     except CodexFailure as exc:
         report['status'] = 'failed'
         report.pop('response', None)
@@ -518,6 +579,7 @@ def main(argv=None):
     parser.add_argument('--write', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--timeout', type=int, default=300)
+    parser.add_argument('--report-dir', type=Path)
     compaction = parser.add_mutually_exclusive_group()
     compaction.add_argument('--compaction', dest='compaction', action='store_true')
     compaction.add_argument('--no-compaction', dest='compaction', action='store_false')
@@ -550,6 +612,8 @@ def main(argv=None):
             print(json.dumps({'role': role, 'command': command_for(role, args.write, args.command == 'smoke', args.compaction)},
                              ensure_ascii=False, indent=2))
             return 0
+        policy, reports = report_directory(args.report_dir)
+        policy.ensure_directory(reports)
         keys = load_keys()
         if args.command == 'doctor':
             providers = [args.provider] if args.provider else list(load_config()['providers'])
@@ -557,17 +621,20 @@ def main(argv=None):
             report = {'status': 'passed' if all(check['status'] == 'ready' for check in checks)
                       else 'not_configured', 'checks': checks,
                       'note': 'Local configuration check only; no inference request was sent.'}
-            path = REPORTS / ('doctor-' + (args.provider or 'all') + '.json')
+            path = reports / ('doctor-' + (args.provider or 'all') + '.json')
         else:
             task = args.task_file.read_text(encoding='utf-8') if args.task_file else ''
             if args.command == 'run' and not task.strip():
                 parser.error('run requires a non-empty --task-file')
             report = run(role, task, keys, args.write, args.command == 'smoke', args.timeout, args.compaction)
-            path = REPORTS / '{}-{}-{}.json'.format(args.command, role, time.time_ns())
-        private_json(path, report)
+            path = reports / '{}-{}-{}.json'.format(args.command, role, time.time_ns())
+        private_json(path, report, policy=policy)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         print('Report: {}'.format(path))
         return 0 if report['status'] == 'passed' else 1
+    except storage.StorageError as exc:
+        print('Model storage unavailable: {}'.format(exc), file=sys.stderr)
+        return 1
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         # Do not include credential values or untrusted key-file contents in errors.
         print('Model connection failed: {}'.format(type(exc).__name__), file=sys.stderr)

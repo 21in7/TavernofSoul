@@ -7,9 +7,27 @@ import subprocess
 import pytest
 
 from harness import agent_models as models
+from harness import compaction, storage, triage
 
 
 PATH_ALIASES_WARNING = 'PATH aliases: Read-only file system (os error 30)'
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(tmp_path, monkeypatch):
+    """Keep legacy tests' trusted source ROOT without reading its private storage config."""
+    source_root = models.ROOT
+    project = tmp_path / 'storage-project'
+    project.mkdir()
+    resolve = storage.resolve_storage
+
+    def isolated(root=None, **kwargs):
+        return resolve(project if root is None or root == source_root else root, **kwargs)
+
+    monkeypatch.setattr(storage, 'resolve_storage', isolated)
+    monkeypatch.delenv('HARNESS_STORAGE_CONFIG', raising=False)
+    monkeypatch.delenv('HARNESS_REPORT_DIR', raising=False)
+    return project
 
 
 @pytest.fixture
@@ -372,6 +390,7 @@ def codex_login(tmp_path, monkeypatch):
     (workspace / 'approved.py').write_text('user_edit = True\n', encoding='utf-8')
     # Do not let tempfile selection or inherited login locations reach the host.
     monkeypatch.setattr(models.tempfile, 'tempdir', str(base))
+    monkeypatch.setattr(storage.Storage, 'credential_temp_root', property(lambda self: base))
     monkeypatch.setenv('CODEX_HOME', str(source))
     monkeypatch.setenv('TMPDIR', str(source))
     monkeypatch.setenv('TMP', str(source))
@@ -857,3 +876,279 @@ def test_codex_nonzero_with_warning_and_success_output_still_fails(codex_login, 
     assert len(roots) == (1 if stage == 'authentication' else 2)
     assert all(not root.exists() for root in roots)
     assert_codex_source_unchanged(codex_login)
+
+
+class ReportStorageFS(storage.FileSystem):
+    """Real disposable directories, fake mount readiness and capacity only."""
+    def __init__(self, mount):
+        self.mount = mount
+        self.ready = True
+        self.free = 10000
+        self.created = []
+        self.probes = []
+        self.writable = True
+
+    def mount_ready(self, path):
+        return self.ready and path == self.mount
+
+    def free_bytes(self, path):
+        return self.free
+
+    def create_directory(self, path):
+        self.created.append(path)
+        super().create_directory(path)
+
+    def probe(self, path):
+        self.probes.append(path)
+        if not self.writable:
+            raise PermissionError('fixture-storage-secret')
+        super().probe(path)
+
+
+@pytest.fixture
+def external_reports(isolated_storage, tmp_path, monkeypatch):
+    project = isolated_storage
+    mount = tmp_path / 'fake-report-mount'
+    mount.mkdir()
+    document = {'version': 1, 'artifacts': {
+        'path': str(mount / 'artifacts'), 'required_mount': str(mount), 'min_free_bytes': 1000},
+        'temporary': {'path': str(mount / 'temporary'),
+                      'required_mount': str(mount), 'min_free_bytes': 1000}}
+    config = project / 'logs/harness/storage-local.json'
+    config.parent.mkdir(parents=True, mode=0o700)
+    config.write_text(json.dumps(document), encoding='utf-8')
+    config.chmod(0o600)
+    fs = ReportStorageFS(mount)
+    monkeypatch.setattr(storage, 'FileSystem', lambda: fs)
+    monkeypatch.setattr(models, 'ROOT', project)
+    monkeypatch.setattr(triage, 'ROOT', project)
+    return storage.resolve_storage(project), fs
+
+
+def invoke_report_cli(module, tmp_path, monkeypatch, report_dir=None):
+    """Exercise CLI path selection and output, with all paid/diagnostic work stubbed."""
+    if module is models:
+        monkeypatch.setattr(models, 'connection_status',
+                            lambda *args: {'provider': 'zai', 'status': 'ready'})
+        argv = ['doctor', '--provider', 'zai']
+    elif module is triage:
+        task = tmp_path / 'triage-task.txt'
+        task.write_text('Inspect an approved source.', encoding='utf-8')
+        monkeypatch.setattr(triage, 'load_policy', lambda: {'max_task_bytes': 1000})
+        monkeypatch.setattr(triage, 'observe', lambda *args: {'status': 'passed', 'api_called': False})
+        argv = ['recommend', '--task-file', str(task)]
+    else:
+        monkeypatch.setattr(compaction, 'probe', lambda **kwargs: {'status': 'passed'})
+        argv = ['demo']
+    if report_dir is not None:
+        argv += ['--report-dir', str(report_dir)]
+    return module.main(argv)
+
+
+@pytest.mark.parametrize('module,category', [
+    (models, 'agents'), (triage, 'triage'), (compaction, 'compaction'),
+])
+@pytest.mark.parametrize('override', ['configured', 'environment', 'explicit'])
+def test_report_clis_use_shared_precedence_and_private_output(external_reports, local_keys,
+                                                            tmp_path, monkeypatch, module,
+                                                            category, override):
+    policy, fs = external_reports
+    environment = policy.artifact_root / 'environment-reports'
+    explicit = policy.artifact_root / 'explicit-reports'
+    if override != 'configured':
+        monkeypatch.setenv('HARNESS_REPORT_DIR', str(environment))
+    parent_env = dict(os.environ)
+    assert invoke_report_cli(module, tmp_path, monkeypatch,
+                             explicit if override == 'explicit' else None) == 0
+    expected = {'configured': policy.artifact_root / category,
+                'environment': environment, 'explicit': explicit}[override]
+    paths = list(expected.glob('*.json'))
+    assert len(paths) == 1
+    assert paths[0].stat().st_mode & 0o777 == 0o600
+    assert expected.stat().st_mode & 0o777 == 0o700
+    assert policy.temp_root.stat().st_mode & 0o777 == 0o700
+    assert fs.probes and os.environ == parent_env
+    assert not (models.ROOT / 'logs/harness/agents/runtime').exists()
+    assert not models.REPORTS.exists()
+
+
+def test_report_resolution_tracks_current_root_and_reports_without_cached_config(
+        isolated_storage, tmp_path, monkeypatch):
+    root = tmp_path / 'other-project'
+    root.mkdir()
+    monkeypatch.setattr(models, 'ROOT', root)
+    policy, directory = models.report_directory()
+    assert policy.root == root and directory == root / 'logs/harness/agents'
+    assert not directory.exists()
+    reports = tmp_path / 'isolated-reports'
+    monkeypatch.setattr(models, 'REPORTS', reports)
+    assert models.report_directory()[1] == reports
+    monkeypatch.setenv('HARNESS_REPORT_DIR', str(tmp_path / 'environment-reports'))
+    assert models.report_directory()[1] == tmp_path / 'environment-reports'
+    assert models.report_directory(tmp_path / 'explicit-reports')[1] == tmp_path / 'explicit-reports'
+
+
+@pytest.mark.parametrize('module,category', [
+    (models, 'agents'), (triage, 'triage'), (compaction, 'compaction'),
+])
+@pytest.mark.parametrize('override_reports', [False, True])
+def test_local_report_clis_remain_isolated_with_root_and_reports_monkeypatches(
+        isolated_storage, local_keys, tmp_path, monkeypatch, module, category, override_reports):
+    monkeypatch.setattr(models, 'ROOT', isolated_storage)
+    monkeypatch.setattr(triage, 'ROOT', isolated_storage)
+    expected = (tmp_path / 'custom-local-reports' if override_reports else
+                isolated_storage / 'logs/harness' / category)
+    monkeypatch.setattr(module, 'REPORTS', expected if override_reports else module._DEFAULT_REPORTS)
+    assert invoke_report_cli(module, tmp_path, monkeypatch) == 0
+    assert len(list(expected.glob('*.json'))) == 1
+    assert expected.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize('provider', ['codex', 'claude', 'zai'])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_model_children_do_not_inherit_storage_overrides(external_reports, local_keys,
+                                                       monkeypatch, provider, enabled):
+    policy, _ = external_reports
+    monkeypatch.setenv(storage.CONFIG_ENV, str(models.ROOT / 'logs/harness/storage-local.json'))
+    monkeypatch.setenv(storage.REPORT_ENV, str(policy.artifact_root / 'override'))
+    parent_env = dict(os.environ)
+
+    env = models.child_environment(provider, local_keys, compaction=enabled)
+
+    assert storage.CONFIG_ENV not in env
+    assert storage.REPORT_ENV not in env
+    assert os.environ == parent_env
+
+
+def test_external_reports_never_select_provider_or_diagnostic_state(external_reports, local_keys,
+                                                                  tmp_path, monkeypatch):
+    policy, fs = external_reports
+    monkeypatch.setenv(storage.CONFIG_ENV, str(models.ROOT / 'logs/harness/storage-local.json'))
+    monkeypatch.setenv('HARNESS_REPORT_DIR', str(policy.artifact_root / 'override'))
+    monkeypatch.setenv('TMPDIR', str(policy.temp_root))
+    monkeypatch.setenv('TMP', str(policy.temp_root))
+    monkeypatch.setenv('TEMP', str(policy.temp_root))
+    parent_env = dict(os.environ)
+    for provider in ('claude', 'zai'):
+        env = models.child_environment(provider, local_keys)
+        runtime = Path(env['CLAUDE_CONFIG_DIR'])
+        assert runtime == models.ROOT / 'logs/harness/agents/runtime' / provider
+        assert runtime.stat().st_mode & 0o777 == 0o700
+        assert env['TMPDIR'] == env['TMP'] == env['TEMP'] == str(runtime / 'tmp')
+        assert (runtime / 'tmp').stat().st_mode & 0o777 == 0o700
+        for name in ('HOME', 'CODEX_HOME'):
+            assert env.get(name) == parent_env.get(name)
+    env = compaction.diagnostic_environment()
+    assert storage.CONFIG_ENV not in env
+    assert storage.REPORT_ENV not in env
+    runtime = Path(env['CLAUDE_CONFIG_DIR'])
+    assert runtime == models.ROOT / 'logs/harness/compaction/runtime'
+    assert runtime.stat().st_mode & 0o777 == 0o700
+    assert env['TMPDIR'] == env['TMP'] == env['TEMP'] == str(runtime / 'tmp')
+    assert not set(models.KEY_NAMES) & set(env)
+    models.private_json(models.KEY_FILE, local_keys)
+    assert models.KEY_FILE.stat().st_mode & 0o777 == 0o600
+    assert models.KEY_FILE.parent == tmp_path
+    assert os.environ == parent_env
+    assert not policy.artifact_root.exists() and not policy.temp_root.exists()
+    assert not fs.probes
+
+
+def test_external_reports_keep_codex_auth_and_child_temp_local(external_reports, codex_login,
+                                                            local_keys, monkeypatch):
+    policy, _ = external_reports
+    # Even an inherited/cached external tempfile default must not place auth there.
+    monkeypatch.setattr(models.tempfile, 'tempdir', str(policy.temp_root))
+    monkeypatch.setenv('TMPDIR', str(policy.temp_root))
+    parent_env = dict(os.environ)
+    roots = []
+
+    def cli(command, **options):
+        root = inspect_codex_runtime(command, options, codex_login)
+        assert policy.temp_root not in root.parents
+        assert policy.artifact_root not in root.parents
+        roots.append(root)
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        return codex_completed(command, 'Approved source inspected.')
+
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    assert models.main(['doctor', '--provider', 'codex']) == 0
+    assert (policy.artifact_root / 'agents/doctor-codex.json').is_file()
+    report = models.run('parser', 'Inspect source.', local_keys,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert report['status'] == 'passed'
+    assert all(not root.exists() for root in roots)
+    assert os.environ == parent_env
+    assert_codex_source_unchanged(codex_login)
+
+
+@pytest.mark.parametrize('module', [models, triage, compaction])
+@pytest.mark.parametrize('failure', ['missing_mount', 'below_floor', 'unwritable', 'missing_config',
+                                   'malformed_config'])
+def test_report_storage_failures_prevent_cli_activity_and_fallback(external_reports, local_keys,
+                                                                 tmp_path, monkeypatch, capsys,
+                                                                 module, failure):
+    policy, fs = external_reports
+    if failure == 'missing_mount':
+        fs.ready = False
+    elif failure == 'below_floor':
+        fs.free = 999
+    elif failure == 'unwritable':
+        fs.writable = False
+    elif failure == 'missing_config':
+        monkeypatch.setenv('HARNESS_STORAGE_CONFIG', str(tmp_path / 'missing-private-config.json'))
+    else:
+        policy.config_path.write_text('{fixture-storage-secret', encoding='utf-8')
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **kw: pytest.fail('CLI ran before readiness'))
+    monkeypatch.setattr(models, 'connection_status', lambda *a: pytest.fail('Auth ran before readiness'))
+    monkeypatch.setattr(triage, 'observe', lambda *a: pytest.fail('Triage ran before readiness'))
+    monkeypatch.setattr(compaction, 'probe', lambda **kw: pytest.fail('Probe ran before readiness'))
+    if module is models:
+        argv = ['doctor', '--provider', 'zai']
+    elif module is triage:
+        argv = ['recommend', '--task-file', str(tmp_path / 'not-read.txt')]
+    else:
+        argv = ['demo']
+    parent_env = dict(os.environ)
+    assert module.main(argv) == 1
+    output = capsys.readouterr()
+    assert 'storage unavailable' in output.err.lower()
+    assert 'fixture-storage-secret' not in output.err + output.out
+    assert not list(policy.artifact_root.glob('**/*.json'))
+    assert not models.REPORTS.exists()
+    assert os.environ == parent_env
+    if failure != 'unwritable':
+        assert not fs.created and not policy.artifact_root.exists() and not policy.temp_root.exists()
+
+
+def test_direct_codex_storage_failure_never_copies_auth_or_runs_cli(external_reports, codex_login,
+                                                                 local_keys, monkeypatch):
+    policy, fs = external_reports
+    fs.ready = False
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **kw: pytest.fail('CLI ran with absent mount'))
+    report = models.run('parser', 'Inspect source.', local_keys,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert report['status'] == 'failed'
+    assert report['diagnostic'] == {'stage': 'storage', 'category': 'storage_unavailable'}
+    assert 'required mount is absent' in report['error']
+    assert not fs.created and not list(codex_login['base'].iterdir())
+    assert not policy.artifact_root.exists()
+    assert_codex_source_unchanged(codex_login)
+
+
+def test_local_runtime_symlinks_and_public_modes_are_rejected(external_reports, local_keys,
+                                                           tmp_path, monkeypatch):
+    runtime = models.ROOT / 'logs/harness/agents/runtime'
+    runtime.mkdir(parents=True, mode=0o700)
+    unrelated = tmp_path / 'unrelated-state'
+    unrelated.mkdir(mode=0o755)
+    (runtime / 'claude').symlink_to(unrelated, target_is_directory=True)
+    with pytest.raises(ValueError, match='private local credential runtime'):
+        models.child_environment('claude', local_keys)
+    assert not list(unrelated.iterdir()) and unrelated.stat().st_mode & 0o777 == 0o755
+    (runtime / 'claude').unlink()
+    (runtime / 'claude').mkdir(mode=0o755)
+    with pytest.raises(ValueError, match='0700'):
+        models.child_environment('claude', local_keys)
+    assert (runtime / 'claude').stat().st_mode & 0o777 == 0o755

@@ -1,13 +1,15 @@
 """Run checks in fresh processes and publish explicit coverage/results as JSON."""
 import argparse
+from contextlib import nullcontext
 import importlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
-import tempfile
 from harness.fixture_inputs import required_fixture_files
+from harness.storage import StorageError, resolve_storage
 
 ROOT = Path(__file__).resolve().parents[1]
 DJANGO_TESTS = (
@@ -25,10 +27,33 @@ DEPENDENCIES = ('pytest', 'django', 'django_mysql', 'pymysql', 'rest_framework',
                 'mathfilters', 'lupa', 'PIL', 'pandas', 'numpy', 'pytz', 'cryptography')
 
 
-def write_report(path, report):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n',
-                    encoding='utf-8')
+def write_private_text(path, text, *, storage=None):
+    """Recheck storage and pin the parent before creating a private record."""
+    storage = storage or resolve_storage(ROOT)
+    path = Path(path).absolute()
+    storage.ensure_directory(path.parent)
+    directory = None
+    try:
+        directory = storage.fs.open_directory(path.parent)
+        fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     0o600, dir_fd=directory)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+                raise StorageError('Runner report/log must be an owned regular file without hard links.')
+            os.fchmod(handle.fileno(), 0o600)
+            os.ftruncate(handle.fileno(), 0)
+            handle.write(text)
+    except OSError:
+        raise StorageError('Cannot write private runner report/log; check storage access.') from None
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+def write_report(path, report, *, storage=None):
+    write_private_text(path, json.dumps(report, ensure_ascii=False, indent=2) + '\n',
+                       storage=storage)
 
 
 def doctor():
@@ -103,6 +128,16 @@ class PytestResults:
 
 
 def run_pytest(group):
+    storage = resolve_storage(ROOT)
+    storage.prepare()
+    # Pytest owns/removes basetemp. Only hand it a child of our unique directory.
+    temporary = (storage.temporary_directory(prefix='tavern-harness-pytest-')
+                 if storage.configured else nullcontext(None))
+    with temporary as work_dir:
+        return _run_pytest(group, basetemp=work_dir / 'pytest' if work_dir else None)
+
+
+def _run_pytest(group, *, basetemp=None):
     import pytest
     plugin = PytestResults()
     test_dir = ROOT / 'parser_tidy' / 'tests'
@@ -116,6 +151,8 @@ def run_pytest(group):
         paths = [str(test_dir / name) for name in DJANGO_TESTS]
     args = ['-c', str(ROOT / 'harness' / 'pytest.ini'), '--rootdir', str(ROOT),
             '-ra', '--tb=short', '-p', 'no:cacheprovider'] + paths
+    if basetemp is not None:
+        args += ['--basetemp', str(basetemp)]
     if group == 'parser':
         args += ['--deselect=' + name for name in EXCLUDED if '::' in name]
         plugin.report['excluded'] = EXCLUDED
@@ -175,9 +212,21 @@ def run_django(group):
 
 
 def child_check(kind, group, path):
-    with tempfile.TemporaryDirectory(prefix='tavern-harness-') as work_dir:
+    storage = resolve_storage(ROOT)
+    path = Path(path).absolute()
+    storage.ensure_directory(path.parent)
+    # Also protect direct callers from a previous success masking a crash.
+    if path.is_symlink():
+        raise StorageError('Unsafe runner result path: symlink.')
+    path.unlink(missing_ok=True)
+    with storage.temporary_directory(prefix='tavern-harness-') as work_dir:
         env = dict(os.environ)
-        env['HARNESS_WORK_DIR'] = work_dir
+        env['HARNESS_WORK_DIR'] = str(work_dir)
+        if storage.configured:
+            child_tmp = storage.ensure_directory(work_dir / 'tmp')
+            # This environment belongs only to the validation child. Authentication
+            # runtimes retain their separate local policy; never change os.environ.
+            env.update(TMPDIR=str(child_tmp), TMP=str(child_tmp), TEMP=str(child_tmp))
         if group == 'browser':
             env['HARNESS_BROWSER_REPORT_DIR'] = str(path.parent)
             (path.parent / 'browser-engine.json').unlink(missing_ok=True)
@@ -189,16 +238,19 @@ def child_check(kind, group, path):
         env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
         env.pop('PYTEST_ADDOPTS', None)
         env.pop('PYTEST_PLUGINS', None)
+        storage.check_ready()
         result = subprocess.run([sys.executable, '-m', 'harness', kind, group,
                                  '--report-dir', str(path.parent)], cwd=str(ROOT), env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         log_path = path.with_suffix('.log')
-        log_path.write_text(result.stdout, encoding='utf-8')
+        write_private_text(log_path, result.stdout, storage=storage)
         if result.returncode:
             print(result.stdout, end='')
     if not path.exists():
         write_report(path, {'status': 'failed', 'exit_code': result.returncode,
-                            'errors': ['Check process ended without a result report.']})
+                            'errors': ['Check process ended without a result report.']}, storage=storage)
+    if path.is_symlink():
+        raise StorageError('Unsafe runner result path: symlink.')
     try:
         report = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError) as exc:
@@ -207,7 +259,7 @@ def child_check(kind, group, path):
     if result.returncode:
         report.update(status='failed', exit_code=result.returncode)
     report['log'] = str(log_path)
-    write_report(path, report)
+    write_report(path, report, storage=storage)
     return report
 
 
@@ -218,9 +270,17 @@ def main():
                                            'check-mysql', 'doctor-browser', 'check-browser', 'check-site', 'check-live', '_pytest', '_django'))
     parser.add_argument('group', nargs='?', choices=('downloader', 'parser', 'django', 'pipeline',
                                                     'mysql', 'mysql-doctor', 'browser', 'live'))
-    parser.add_argument('--report-dir', type=Path, default=ROOT / 'logs' / 'harness')
+    parser.add_argument('--report-dir', type=Path)
     args = parser.parse_args()
-    report_dir = args.report_dir.resolve()
+    try:
+        storage = resolve_storage(ROOT)
+        report_dir = storage.report_dir(
+            explicit=args.report_dir.absolute() if args.report_dir is not None else None,
+            local_default=ROOT / 'logs' / 'harness')
+        storage.ensure_directory(report_dir)
+    except StorageError as exc:
+        print('Harness storage: {}'.format(exc), file=sys.stderr)
+        return 1
     if args.command in ('_pytest', '_django'):
         if args.group is None:
             parser.error('Internal checks require a group')
@@ -280,10 +340,7 @@ def main():
     results = {}
     for kind, group, name in specs:
         print('\nRunning {} ...'.format(name), flush=True)
-        # A previous successful report must never mask a crashed process.
         path = report_dir / (name + '.json')
-        if path.exists():
-            path.unlink()
         results[name] = child_check(kind, group, path)
         if group == 'browser':
             results[name]['environment'] = browser

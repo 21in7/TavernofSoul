@@ -258,12 +258,16 @@ def replace_bytes(path, content, mode):
 
 class Cleanup:
     def __init__(self, root, directory, ledger, report, approval, *, transport=None,
-                 origin_validator=validate_origin):
+                 origin_validator=validate_origin, storage_guard=None):
         # Injection is only a Python test seam, never a CLI/config option.
         self.root, self.directory = Path(root), Path(directory)
         self.ledger, self.report, self.approval = ledger, report, approval
         self.git = transport or Git(root)
         self.origin_validator = origin_validator
+        # The journal controller supplies readiness/containment checks. Standalone
+        # Python callers retain the existing API and durability/policy checks.
+        self.storage_guard = storage_guard or (lambda: None)
+        self.storage_guard()
         self.path = self.directory / 'cleanup.json'
         if self.path.exists():
             if self.path.is_symlink() or self.path.stat().st_mode & 0o077:
@@ -279,11 +283,16 @@ class Cleanup:
                           'remote': {}, 'prune': {}, 'sync': {}, 'local': {}, 'events': []}
         self.target = 'proof'
 
+    def persist(self):
+        # A mount check is not a lease: recheck after potentially slow Git reads.
+        self.storage_guard()
+        durable_json(self.path, self.state)
+
     def checkpoint(self, target, state, reason=None):
         self.state[target] = {'status': state, **({'reason': reason} if reason else {})}
         self.state['events'].append({'target': target, **self.state[target]})
         self.state['status'] = 'cleanup_pending'
-        durable_json(self.path, self.state)
+        self.persist()
 
     def fetch(self, prune=False):
         self.origin_validator(self.git, self.ledger['config']['repository'])
@@ -424,6 +433,7 @@ class Cleanup:
         snapshots = self.directory / 'cleanup-backup'
         if snapshots.is_symlink():
             raise Pending('unsafe_backup')
+        self.storage_guard()
         snapshots.mkdir(mode=0o700, exist_ok=True)
         if snapshots.stat().st_mode & 0o077:
             raise Pending('unsafe_backup')
@@ -433,10 +443,11 @@ class Cleanup:
             if fingerprint(self.root, name, limit) != item['after']:
                 raise Pending('approved_file_changed')
             if item['after']:
+                self.storage_guard()
                 replace_bytes(snapshots / str(i), workspace.safe_path(self.root, name).read_bytes(), 0o600)
             entries[name] = {'before': item['before'], 'after': item['after'], 'snapshot': str(i)}
         self.state['restore'] = {'head': head, 'phase': 'prepared', 'files': entries}
-        durable_json(self.path, self.state)
+        self.persist()
         self.finish_restore(head)
 
     def finish_restore(self, head):
@@ -473,7 +484,7 @@ class Cleanup:
                         ('100755' if current['mode'] & 0o111 else '100644') != entry['mode']:
                     raise Pending('recovery_user_edit')
             restore['phase'] = 'synced'
-            durable_json(self.path, self.state)
+            self.persist()
             return
         changes = status(self.git)
         if set(changes) - set(restore['files']):
@@ -502,9 +513,9 @@ class Cleanup:
                 if fingerprint(self.root, name, limit) != item['after']:
                     raise Pending('recovery_user_edit')
                 replace_bytes(path, content, item['before']['mode'])
-            durable_json(self.path, self.state)
+            self.persist()
         restore['phase'] = 'baseline'
-        durable_json(self.path, self.state)
+        self.persist()
 
     def remote_cleanup(self):
         ref = 'refs/heads/' + self.ledger['branch']
@@ -665,12 +676,12 @@ class Cleanup:
             self.local_cleanup(remote_base)
             self.complete()
             self.state['status'] = 'complete'
-            durable_json(self.path, self.state)
+            self.persist()
         except (Pending, OSError, ValueError, KeyError, TypeError, UnicodeError) as exc:
             # Only Pending strings originate from our fixed reason codes.
             self.checkpoint(self.target, 'pending', str(exc) if isinstance(exc, Pending) else 'cleanup_state_invalid')
         return self.state
 
 
-def execute(root, directory, ledger, report, approval):
-    return Cleanup(root, directory, ledger, report, approval).run()
+def execute(root, directory, ledger, report, approval, *, storage_guard=None):
+    return Cleanup(root, directory, ledger, report, approval, storage_guard=storage_guard).run()

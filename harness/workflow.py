@@ -1,5 +1,6 @@
 """Route development work, run configured agents, review, verify and publish edits."""
 import argparse
+import contextlib
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -9,14 +10,14 @@ import re
 import secrets
 import subprocess
 import sys
-import tempfile
 import time
 
-from harness import agent_models, failure_feedback, git_publish, triage, workspace
+from harness import agent_models, failure_feedback, git_publish, storage, triage, workspace
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/workflow-config.json'
 REPORTS = ROOT / 'logs/harness/workflows'
+_DEFAULT_REPORTS = REPORTS
 PHASES = {'prepare': '준비', 'triage': 'Jev 판단', 'plan': '작업 배정',
           'implement': '담당 에이전트 실행', 'review': 'Claude 검토',
           'validate': '하네스 검증', 'apply': '결과 반영', 'github': 'GitHub 게시·병합·정리'}
@@ -55,7 +56,12 @@ def scoped_files(root, files):
     names = triage.scoped_paths(files, triage.load_policy()['max_files'])
     if not names:
         raise ValueError('An explicit list of source files is required.')
+    # A caller-selected private config may be outside the usual protected logs.
+    # Never make it model-readable even if mistakenly included in approved scope.
+    private_config = storage.resolve_storage(root).config_path
     for name in names:
+        if private_config == root / name:
+            raise ValueError('Private storage config cannot be assigned to a model.')
         if workspace.protected(name):
             raise ValueError('Protected file cannot be assigned: ' + name)
         workspace.safe_path(root, name)
@@ -79,6 +85,21 @@ def object_response(text):
     if not isinstance(result, dict):
         raise ValueError('Expected one JSON object from the agent.')
     return result
+
+
+def status_object(data):
+    def unique_fields(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError('Duplicate workflow status metadata.')
+            result[name] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError('Invalid workflow status number.')
+
+    return json.loads(data, object_pairs_hook=unique_fields, parse_constant=invalid_constant)
 
 
 class PlanScopeError(ValueError):
@@ -152,11 +173,25 @@ def required_checks(scope, recommendation):
     return ['check'] if 'check' in checks else sorted(checks)
 
 
+def storage_policy():
+    return storage.resolve_storage(ROOT)
+
+
+def local_reports():
+    # ROOT/REPORTS are deliberate test seams; an imported original root must not
+    # leak into an isolated project when only ROOT was changed.
+    return REPORTS if REPORTS != _DEFAULT_REPORTS else ROOT / 'logs/harness/workflows'
+
+
 def check_environment(keys):
     env = agent_models.child_environment('codex', keys)
     env.pop('PYTHONPATH', None)
     env.pop('PYTEST_ADDOPTS', None)
     env.pop('PYTEST_PLUGINS', None)
+    # Validation receives only the policy supplied by its trusted parent below.
+    # Model children must independently strip these in agent_models.
+    env.pop(storage.CONFIG_ENV, None)
+    env.pop(storage.REPORT_ENV, None)
     env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
     env['TAVERN_WORKFLOW_CHILD'] = '1'
     return env
@@ -165,14 +200,54 @@ def check_environment(keys):
 def run_check(candidate, command, report_dir, keys, policy):
     if command not in CHECKS + ('doctor',):
         raise ValueError('Check command is not allowlisted.')
-    report_dir.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run([sys.executable, '-m', 'harness', command,
-                             '--report-dir', str(report_dir)], cwd=str(candidate),
-                            env=check_environment(keys), capture_output=True, text=True,
-                            timeout=policy['check_timeout_seconds'])
+    selected = storage_policy()
+    selected.ensure_directory(report_dir)
+    env = check_environment(keys)
+    if selected.configured:
+        # The original artifact root contains the validation source snapshot.
+        # Give the trusted runner its own disjoint application roots instead of
+        # weakening the resolver's repository-ancestry checks. Neither this
+        # config nor its path is copied into the model workspace/environment.
+        with selected.temporary_directory(prefix='tavern-workflow-check-') as temporary:
+            artifacts = report_dir
+            mount = selected.artifacts.required_mount
+            if mount not in artifacts.parents or artifacts == candidate or \
+                    artifacts in candidate.parents or candidate in artifacts.parents or \
+                    artifacts == temporary or artifacts in temporary.parents:
+                artifacts = selected.artifact_root / ('validation-' + secrets.token_hex(8))
+            selected.ensure_directory(artifacts)
+            config = report_dir / 'storage-validation.json'
+            agent_models.private_json(config, {
+                'version': 1,
+                'artifacts': {'path': str(artifacts), 'required_mount': str(mount),
+                              'min_free_bytes': selected.artifacts.min_free_bytes},
+                'temporary': {'path': str(temporary),
+                              'required_mount': str(selected.temporary.required_mount),
+                              'min_free_bytes': selected.temporary.min_free_bytes},
+            }, policy=selected)
+            env[storage.CONFIG_ENV] = str(config)
+            env.update(TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
+            selected.check_ready()
+            result = subprocess.run([sys.executable, '-m', 'harness', command,
+                                     '--report-dir', str(report_dir)], cwd=str(candidate),
+                                    env=env, capture_output=True, text=True,
+                                    timeout=policy['check_timeout_seconds'])
+    else:
+        result = subprocess.run([sys.executable, '-m', 'harness', command,
+                                 '--report-dir', str(report_dir)], cwd=str(candidate),
+                                env=env, capture_output=True, text=True,
+                                timeout=policy['check_timeout_seconds'])
+    selected.check_ready()
     log = report_dir / (command + '.log')
-    log.write_text(agent_models.redact(result.stdout + result.stderr, keys), encoding='utf-8')
-    log.chmod(0o600)
+    parent = selected.fs.open_directory(report_dir)
+    try:
+        fd = os.open(log.name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                     0o600, dir_fd=parent)
+    finally:
+        os.close(parent)
+    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        handle.write(agent_models.redact(result.stdout + result.stderr, keys))
     path = report_dir / (command + '.json')
     try:
         data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
@@ -190,13 +265,15 @@ def run_check(candidate, command, report_dir, keys, policy):
 
 
 class Progress:
-    def __init__(self, directory, report, keys):
+    def __init__(self, directory, report, keys, selected):
         self.directory, self.report, self.keys = directory, report, keys
+        self.storage = selected
 
     def save(self):
         safe = triage.scrub(self.report, self.keys)
-        agent_models.private_json(self.directory / 'report.json', safe)
-        agent_models.private_json(REPORTS / 'latest.json', {'run_id': safe['run_id']})
+        agent_models.private_json(self.directory / 'report.json', safe, policy=self.storage)
+        agent_models.private_json(self.directory.parent / 'latest.json',
+                                  {'run_id': safe['run_id']}, policy=self.storage)
 
     def event(self, phase, state, role=None, **detail):
         spec = agent_models.load_config()['roles'].get(role, {})
@@ -209,9 +286,17 @@ class Progress:
         self.report['events'].append(event)
         self.save()
         safe = triage.scrub(event, self.keys)
-        with (self.directory / 'events.jsonl').open('a', encoding='utf-8') as handle:
+        self.storage.check_ready()
+        path = self.storage.record_path(self.directory, 'events.jsonl', local_default=local_reports())
+        parent = self.storage.fs.open_directory(self.directory)
+        try:
+            fd = os.open(path.name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent)
+        finally:
+            os.close(parent)
+        with os.fdopen(fd, 'a', encoding='utf-8') as handle:
+            os.fchmod(handle.fileno(), 0o600)
             handle.write(json.dumps(safe, ensure_ascii=False) + '\n')
-        (self.directory / 'events.jsonl').chmod(0o600)
         identity = ' / '.join(value for value in (role, safe['provider'], safe['model']) if value)
         print('{}[{}/{} {}] {} · {}{}'.format('[fixture] ' if self.report['simulated'] else '',
               safe['stage'], len(PHASES), PHASES[phase], state,
@@ -294,20 +379,35 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
     keys = agent_models.load_keys() if keys is None else keys
     task = agent_models.redact(task, keys)
     runner, checker = runner or agent_models.run, checker or run_check
-    REPORTS.mkdir(parents=True, exist_ok=True)
-    REPORTS.chmod(0o700)
-    if (REPORTS / '.lock').is_symlink():
-        raise ValueError('Invalid project lock.')
-    lock = (REPORTS / '.lock').open('a')
-    (REPORTS / '.lock').chmod(0o600)
+    selected = storage_policy()
+    reports = selected.workflow_root(local_default=local_reports())
+    selected.ensure_directory(reports)
+    # Same historical local lock inode as GitHub cleanup, across config changes.
+    lock_path = selected.project_lock_path
+    selected.fs.create_directory(lock_path.parent)
+    parent = selected.fs.open_directory(lock_path.parent)
+    try:
+        fd = os.open(lock_path.name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                     0o600, dir_fd=parent)
+    finally:
+        os.close(parent)
+    lock = os.fdopen(fd, 'a')
+    os.fchmod(lock.fileno(), 0o600)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock.close()
         raise ValueError('Another workflow is running in this repository.') from None
     run_id = str(time.time_ns()) + '-' + secrets.token_hex(3)
-    directory = REPORTS / run_id
-    directory.mkdir(mode=0o700)
+    directory = reports / run_id
+    try:
+        selected.check_ready()
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o700)
+        selected.validate_run_directory(directory, local_default=local_reports())
+    except BaseException:
+        lock.close()
+        raise
     candidate = directory / 'workspace'
     report = {'run_id': run_id, 'policy_version': policy['version'], 'pid': os.getpid(),
               'status': 'running', 'read_only': read_only, 'simulated': simulated,
@@ -318,20 +418,29 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
               'applied': [], 'report': str(directory / 'report.json')}
     report['github_enabled'] = github_enabled
     report['no_git'] = no_git
-    progress = Progress(directory, report, keys)
+    progress = Progress(directory, report, keys, selected)
+    context_cleanup = contextlib.ExitStack()
+    context_dir = None
     try:
         progress.event('prepare', 'running', detail='승인 파일 모델 사본과 로컬 검증 사본을 분리해 생성')
+        selected.check_ready()
         baseline = workspace.copy_validation_sources(ROOT, candidate, scope, policy)
-        agent_models.private_json(directory / 'baseline.json', baseline)
+        candidate.chmod(0o700)
+        agent_models.private_json(directory / 'baseline.json', baseline, policy=selected)
         # Outside repository ancestry: native CLIs must not discover parent project
         # instructions. The local verification snapshot is never a model workspace.
-        context_dir = Path(tempfile.mkdtemp(prefix='tavern-model-context-', dir='/tmp'))
+        context_dir = context_cleanup.enter_context(selected.temporary_directory(
+            prefix='tavern-model-context-', purpose='context'))
+        if context_dir == ROOT or ROOT in context_dir.parents or context_dir in ROOT.parents:
+            raise ValueError('Model context must be outside repository ancestry.')
         model_context = context_dir / 'sources'
         model_baseline = workspace.copy_sources(candidate, model_context, scope, policy)
+        model_context.chmod(0o700)
         report['model_workspace'] = str(model_context)
         report['model_context_manifest'] = str(directory / 'model-context.json')
         agent_models.private_json(directory / 'model-context.json',
-                                  {'approved_files': scope, 'copied_files': model_baseline})
+                                  {'approved_files': scope, 'copied_files': model_baseline}, policy=selected)
+        selected.ensure_directory(directory / 'prepare')
         result = checker(candidate, 'doctor', directory / 'prepare', keys, policy)
         report['environment'] = result
         if result['status'] != 'passed':
@@ -484,7 +593,9 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             failures, round_validation = [], []
             for command in checks:
                 progress.event('validate', 'running', detail=command, round=round_number)
-                result = checker(candidate, command, directory / ('checks-' + str(round_number)) / command,
+                selected.check_ready()
+                check_dir = selected.ensure_directory(directory / ('checks-' + str(round_number)) / command)
+                result = checker(candidate, command, check_dir,
                                  keys, policy)
                 # A successful CLI/fixture status cannot override structured
                 # failures, skipped coverage, or a nonzero process exit.
@@ -506,6 +617,8 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             report['delivery_validation'] = round_validation
             progress.event('apply', 'running', detail='읽기 전용/데모는 원본에 반영하지 않음' if read_only or simulated else '')
             if not read_only and not simulated:
+                selected.check_ready()
+                selected.ensure_directory(directory / 'backup')
                 report['applied'] = workspace.publish(ROOT, candidate, baseline, candidate_manifest, changes,
                                                       scope, directory / 'backup', policy)
             report['status'] = ('running' if github_enabled and changes else
@@ -524,6 +637,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                               json.dumps([{'command': item['command'], 'status': item['status']}
                                           for item in report['delivery_validation']]), diff)
                 response = model_step(progress, model_context, 'github', 'git', prompt, keys, policy, runner)
+                selected.check_ready()
                 report['github'] = git_publish.prepare(ROOT, directory, report, baseline, candidate_manifest,
                                                        changes, policy, git_publish.metadata(response))
                 report['status'] = 'awaiting_github'
@@ -539,9 +653,23 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
         phase = report.get('current', {}).get('phase', 'prepare')
         progress.event(phase, report['status'], report.get('current', {}).get('role'), detail=report['error'])
     finally:
-        report['finished_at'] = datetime.now(timezone.utc).isoformat()
-        progress.save()
-        lock.close()
+        try:
+            try:
+                context_cleanup.close()
+                if context_dir is not None:
+                    report['model_context_cleanup'] = {'status': 'passed'}
+            except BaseException as exc:
+                report['status'] = 'interrupted' if isinstance(exc, KeyboardInterrupt) else 'failed'
+                report['model_context_cleanup'] = {
+                    'status': 'failed', 'error_type': type(exc).__name__,
+                    'error': agent_models.redact(str(exc), keys)}
+                report.setdefault('error_type', type(exc).__name__)
+                report.setdefault('error', report['model_context_cleanup']['error'])
+            finally:
+                report['finished_at'] = datetime.now(timezone.utc).isoformat()
+                progress.save()
+        finally:
+            lock.close()
     return triage.scrub(report, keys)
 
 
@@ -601,10 +729,16 @@ def main(argv=None):
         if args.run_id and args.command != 'status':
             parser.error('--run-id is for status only')
         if args.command == 'status':
-            run_id = args.run_id or json.loads((REPORTS / 'latest.json').read_text())['run_id']
-            if not re.fullmatch(r'[0-9]+-[a-f0-9]{6}', run_id):
-                raise ValueError('Invalid run ID.')
-            report = json.loads((REPORTS / run_id / 'report.json').read_text())
+            selected = storage_policy()
+            directory = (selected.find_run(args.run_id, local_default=local_reports()) if args.run_id
+                         else selected.latest_run(local_default=local_reports()))
+            record = selected.record_path(directory, 'report.json', local_default=local_reports())
+            report = status_object(selected.fs.read_bytes(record))
+            if not isinstance(report, dict) or report.get('run_id') != directory.name or \
+                    not isinstance(report.get('status'), str) or \
+                    not isinstance(report.get('github', {}), dict) or \
+                    not isinstance(report.get('github', {}).get('cleanup', {}), dict):
+                raise ValueError('Invalid workflow status record.')
             if report.get('status') == 'passed' and report.get('github', {}).get('merge_sha') and \
                     not git_publish.cleanup_complete(report['github']):
                 # Old reports prove merge only. Display the explicit migration
@@ -615,6 +749,8 @@ def main(argv=None):
                                                 'status': 'cleanup_pending', 'proof': {
                                                     'status': 'pending', 'reason': 'legacy_cleanup_required'}}}
             if report['status'] == 'running':
+                if type(report.get('pid')) is not int or report['pid'] <= 0:
+                    raise ValueError('Invalid workflow process metadata.')
                 try:
                     os.kill(report['pid'], 0)
                 except ProcessLookupError:
@@ -644,6 +780,9 @@ def main(argv=None):
         print(json.dumps(summary if args.command != 'plan' else report, ensure_ascii=False, indent=2))
         # Exit 0 hands control to the parent; awaiting_github still means incomplete.
         return 0 if report.get('status', 'passed') in ('passed', 'running', 'demonstrated', 'awaiting_github') else 1
+    except storage.StorageError as exc:
+        print('Workflow failed: StorageError: {}'.format(exc), file=sys.stderr)
+        return 1
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         print('Workflow failed: {}'.format(type(exc).__name__), file=sys.stderr)
         return 1

@@ -1,17 +1,26 @@
 """GitHub delivery gates and real checkout preservation, without network calls."""
 import copy
+import fcntl
 import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 
 import pytest
 
-from harness import agent_models, git_publish as delivery, workflow, workspace
+from harness import agent_models, git_publish as delivery, storage, workflow, workspace
 
 BASE, TREE, NEW_TREE, HEAD, MERGE, TEST_MERGE = [char * 40 for char in 'abcdef']
 DETAILS = {'commit_message': 'Correct fixture behavior', 'pr_title': 'Correct fixture behavior',
            'pr_body': 'Preserve the task scope. Validation: offline checks passed.'}
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage_environment(monkeypatch):
+    # Tests must never consult a host's explicitly selected private storage.
+    monkeypatch.delenv(storage.CONFIG_ENV, raising=False)
+    monkeypatch.delenv(storage.REPORT_ENV, raising=False)
 
 
 def git(root, *args):
@@ -463,6 +472,315 @@ def test_tampered_journal_cannot_generate_connector_requests(prepared, capsys, k
         (prepared['directory'] / 'github.json').chmod(0o644)
     assert delivery.main(['request', '--run-id', ledger['run_id']]) == 1
     assert 'request' not in json.loads(capsys.readouterr().out)
+
+
+class DeliveryStorageFS(storage.FileSystem):
+    """Only the fixture mount exists; no host mount table or network is used."""
+    def __init__(self, mount):
+        self.mount = mount
+        self.ready = True
+        self.free = 1024 * 1024
+        self.writable = True
+
+    def mount_ready(self, path):
+        return self.ready and path == self.mount
+
+    def free_bytes(self, path):
+        assert path == self.mount
+        return self.free
+
+    def probe(self, path):
+        if not self.writable:
+            raise PermissionError('synthetic private probe failure')
+        return super().probe(path)
+
+
+@pytest.fixture
+def configured_delivery(prepared, tmp_path, monkeypatch):
+    mount = tmp_path / 'delivery-mount'
+    mount.mkdir()
+    fs = DeliveryStorageFS(mount)
+    config = {'version': 1, 'artifacts': {
+        'path': str(mount / 'artifacts'), 'required_mount': str(mount), 'min_free_bytes': 4096},
+        'temporary': {
+            'path': str(mount / 'temporary'), 'required_mount': str(mount), 'min_free_bytes': 4096}}
+    agent_models.private_json(prepared['root'] / 'logs/harness/storage-local.json', config)
+    # Resolve against the patched caller ROOT at operation time, with a fake FS.
+    monkeypatch.setattr(delivery, 'storage_policy', lambda: storage.resolve_storage(
+        delivery.ROOT, env={}, fs=fs))
+    monkeypatch.setattr(workflow, 'ROOT', prepared['root'])
+    monkeypatch.setattr(workflow, 'REPORTS', prepared['directory'].parent)
+    monkeypatch.setattr(workflow, 'storage_policy', lambda: storage.resolve_storage(
+        workflow.ROOT, env={}, fs=fs))
+    return {**prepared, 'fs': fs, 'storage': delivery.storage_policy()}
+
+
+def journal_at(item, placement):
+    """Build an independent synthetic new journal; never rebase legacy approval."""
+    if placement == 'legacy':
+        return item['directory'], copy.deepcopy(item['ledger'])
+    selected = item['storage']
+    parent = selected.ensure_directory(selected.artifact_root / 'workflows')
+    directory = parent / '654321-fedcba'
+    shutil.copytree(item['directory'], directory)
+    report = json.loads((directory / 'report.json').read_text())
+    report.update(run_id=directory.name, workspace=str(directory / 'workspace'))
+    approval = json.loads((directory / 'github-approved.json').read_text())
+    approval.update(run_id=directory.name, workspace=report['workspace'])
+    ledger = copy.deepcopy(item['ledger'])
+    ledger.update(run_id=directory.name, branch='codex/' + directory.name)
+    agent_models.private_json(directory / 'report.json', report)
+    agent_models.private_json(directory / 'github-approved.json', approval)
+    agent_models.private_json(directory / 'github.json', ledger)
+    return directory, ledger
+
+
+@pytest.mark.parametrize('placement', ['legacy', 'configured'])
+@pytest.mark.parametrize('command', ['request', 'accept', 'resume', 'cleanup'])
+def test_storage_cli_locates_journals_without_rewriting_approval(
+        configured_delivery, capsys, placement, command):
+    item = configured_delivery
+    historical_approval = (item['directory'] / 'github-approved.json').read_bytes()
+    directory, ledger = journal_at(item, placement)
+    approval_before = (directory / 'github-approved.json').read_bytes()
+    workspace_before = json.loads((directory / 'report.json').read_text())['workspace']
+    args = [command, '--run-id', ledger['run_id']]
+    if command == 'accept':
+        assert delivery.main(['request', '--run-id', ledger['run_id']]) == 0
+        job = json.loads(capsys.readouterr().out)['request']
+        args += ['--request-id', job['request_id'], '--response-json', json.dumps({
+            'full_name': ledger['config']['repository'], 'archived': False,
+            'permissions': {'push': True}, 'allow_squash_merge': True})]
+    elif command == 'resume':
+        to_pr(ledger)
+        ledger['deadline'] = 0
+        assert delivery.request(ledger) is None
+        agent_models.private_json(directory / 'github.json', ledger)
+    elif command == 'cleanup':
+        start_cleanup(ledger)
+        ledger.update(step='done', status='merged')
+        agent_models.private_json(directory / 'github.json', ledger)
+    assert delivery.main(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['request']['tool'] == delivery.TOOLS['fetch']
+    if command == 'cleanup':
+        assert output['github']['step'] == 'cleanup_pr'
+        assert output['github']['merge_sha'] == MERGE
+    elif command == 'resume':
+        assert output['request']['arguments']['url'].endswith('/pulls/11')
+    assert delivery.directory_for(ledger['run_id']) == directory
+    assert (directory / 'github-approved.json').read_bytes() == approval_before
+    assert (item['directory'] / 'github-approved.json').read_bytes() == historical_approval
+    assert json.loads((directory / 'report.json').read_text())['workspace'] == workspace_before
+    assert (directory / 'github.json').stat().st_mode & 0o777 == 0o600
+    assert (directory / 'github.lock').stat().st_mode & 0o777 == 0o600
+    assert directory.stat().st_mode & 0o777 == 0o700
+    local_lock = item['root'] / 'logs/harness/workflows/.lock'
+    assert local_lock.stat().st_mode & 0o777 == 0o600
+    assert not (item['storage'].artifact_root / 'workflows/.lock').exists()
+    if placement == 'legacy':
+        assert not (item['storage'].artifact_root / 'workflows' / ledger['run_id']).exists()
+
+
+@pytest.mark.parametrize('command', ['request', 'accept', 'resume', 'cleanup'])
+def test_duplicate_storage_ids_fail_before_locks_or_journal_writes(configured_delivery, capsys, command):
+    item = configured_delivery
+    parent = item['storage'].ensure_directory(item['storage'].artifact_root / 'workflows')
+    shutil.copytree(item['directory'], parent / item['directory'].name)
+    journal_before = (item['directory'] / 'github.json').read_bytes()
+    assert delivery.main([command, '--run-id', item['directory'].name]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output['error_type'] == 'StorageError' and 'Ambiguous' in output['error']
+    assert (item['directory'] / 'github.json').read_bytes() == journal_before
+    assert not (item['directory'] / 'github.lock').exists()
+
+
+@pytest.mark.parametrize('run_id', ['../123456-abcdef', '/123456-abcdef', '123456-ABCDEF', ''])
+def test_storage_invalid_run_ids_fail_without_writes(prepared, capsys, run_id):
+    assert delivery.main(['request', '--run-id', run_id]) == 1
+    assert 'request' not in json.loads(capsys.readouterr().out)
+    assert not (prepared['directory'] / 'github.lock').exists()
+
+
+@pytest.mark.parametrize('placement', ['legacy', 'configured'])
+@pytest.mark.parametrize('unsafe', ['run', 'root', 'report.json', 'github.json',
+                                    'github-approved.json', 'github.lock', 'events.jsonl',
+                                    'workspace', 'backup'])
+def test_storage_symlink_paths_fail_closed(configured_delivery, capsys, placement, unsafe):
+    item = configured_delivery
+    directory, ledger = journal_at(item, placement)
+    if unsafe == 'run':
+        path = directory
+    elif unsafe == 'root':
+        path = directory.parent
+    else:
+        path = directory / unsafe
+    target = path.with_name(path.name + '-original')
+    if path.exists():
+        path.rename(target)
+    else:
+        target.write_text('do not alter\n')
+    path.symlink_to(target, target_is_directory=target.is_dir())
+    target_before = target.read_bytes() if target.is_file() else None
+    assert delivery.main(['request', '--run-id', ledger['run_id']]) == 1
+    assert 'request' not in json.loads(capsys.readouterr().out)
+    if target_before is not None:
+        assert target.read_bytes() == target_before
+
+
+@pytest.mark.parametrize('failure', ['absent_mount', 'below_floor', 'unwritable'])
+def test_configured_storage_failure_never_falls_back_to_legacy_journal(configured_delivery, capsys, failure):
+    item = configured_delivery
+    if failure == 'absent_mount':
+        item['fs'].ready = False
+    elif failure == 'below_floor':
+        item['fs'].free = 0
+    else:
+        item['fs'].writable = False
+    before = (item['directory'] / 'github.json').read_bytes()
+    assert delivery.main(['request', '--run-id', item['directory'].name]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output['error_type'] == 'StorageError' and output['error']
+    assert (item['directory'] / 'github.json').read_bytes() == before
+    assert not (item['directory'] / 'github.lock').exists()
+    assert not (item['directory'].parent / '.lock').exists()
+    if failure != 'unwritable':
+        assert not item['storage'].artifact_root.exists()
+        assert not item['storage'].temp_root.exists()
+
+
+def test_explicit_missing_storage_config_reports_safe_error(prepared, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(storage.CONFIG_ENV, str(tmp_path / 'missing-private-config.json'))
+    assert delivery.main(['request', '--run-id', prepared['directory'].name]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert 'Explicit HARNESS_STORAGE_CONFIG is missing' in output['error']
+    assert str(tmp_path) not in output['error']
+    assert not (prepared['directory'] / 'github.lock').exists()
+
+
+@pytest.mark.parametrize('placement', ['legacy', 'configured'])
+def test_workflow_and_delivery_share_local_lock_across_storage_changes(
+        configured_delivery, capsys, placement):
+    item = configured_delivery
+    directory, ledger = journal_at(item, placement)
+    selected = item['storage']
+    legacy_policy = storage.Storage(root=item['root'], env={})
+    assert workflow.storage_policy().project_lock_path == selected.project_lock_path
+    assert legacy_policy.project_lock_path == selected.project_lock_path
+    before = (directory / 'github.json').read_bytes()
+    with legacy_policy.project_lock_path.open('a') as controller:
+        fcntl.flock(controller, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # A controller that started with local defaults keeps this same inode.
+        assert delivery.storage_policy().project_lock_path == legacy_policy.project_lock_path
+        assert delivery.main(['request', '--run-id', ledger['run_id']]) == 1
+        assert 'request' not in json.loads(capsys.readouterr().out)
+    assert (directory / 'github.json').read_bytes() == before
+    assert not (directory / 'github.lock').exists()
+
+
+@pytest.mark.parametrize('placement', ['legacy', 'configured'])
+def test_per_journal_lock_remains_alongside_selected_journal(configured_delivery, capsys, placement):
+    directory, ledger = journal_at(configured_delivery, placement)
+    with (directory / 'github.lock').open('a') as controller:
+        fcntl.flock(controller, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = (directory / 'github.json').read_bytes()
+        assert delivery.main(['request', '--run-id', ledger['run_id']]) == 1
+        assert 'request' not in json.loads(capsys.readouterr().out)
+        assert (directory / 'github.json').read_bytes() == before
+
+
+@pytest.mark.parametrize('placement', ['legacy', 'configured'])
+def test_cleanup_execution_receives_selected_journal_and_storage_guard(
+        configured_delivery, monkeypatch, capsys, placement):
+    item = configured_delivery
+    directory, ledger = journal_at(item, placement)
+    approval_before = (directory / 'github-approved.json').read_bytes()
+    start_cleanup(ledger)
+    cleanup_to_branches(ledger)
+    delivery.accept(ledger, [])
+    assert ledger['step'] == 'cleanup_open_prs'
+    agent_models.private_json(directory / 'github.json', ledger)
+    assert delivery.main(['request', '--run-id', ledger['run_id']]) == 0
+    job = json.loads(capsys.readouterr().out)['request']
+    received = []
+    def cleanup(root, selected_directory, accepted, report, approval, *, storage_guard):
+        storage_guard()
+        assert accepted['cleanup_proof']['verified'] is True
+        assert accepted['head_sha'] == HEAD and accepted['merge_sha'] == MERGE
+        received.append((root, selected_directory, approval['workspace']))
+        return {'version': 'cleanup-v1', 'status': 'complete',
+                'remote': {'status': 'absent'}, 'local': {'status': 'absent'},
+                'prune': {'status': 'complete'}, 'sync': {'status': 'complete'},
+                'completion': {'status': 'complete'}}
+    # No Git cleanup transport runs: only the verified boundary is observed.
+    monkeypatch.setattr(delivery.git_cleanup, 'execute', cleanup)
+    assert delivery.main(['accept', '--run-id', ledger['run_id'],
+                          '--request-id', job['request_id'], '--response-json', '[]']) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['github']['cleanup']['status'] == 'complete'
+    assert received == [(item['root'], directory, str(directory / 'workspace'))]
+    assert (directory / 'github-approved.json').read_bytes() == approval_before
+
+
+def test_cleanup_rechecks_storage_before_durable_checkpoint(configured_delivery):
+    item = configured_delivery
+    directory, ledger = journal_at(item, 'configured')
+    approval = json.loads((directory / 'github-approved.json').read_text())
+    report = json.loads((directory / 'report.json').read_text())
+    def guard():
+        item['storage'].record_path(directory, 'cleanup.json', local_default=delivery.local_reports())
+    cleanup = delivery.git_cleanup.Cleanup(item['root'], directory, ledger, report, approval,
+                                          storage_guard=guard)
+    cleanup.checkpoint('proof', 'pending', 'synthetic_test')
+    checkpoint_before = (directory / 'cleanup.json').read_bytes()
+    item['fs'].ready = False
+    with pytest.raises(storage.StorageError, match='mount is absent'):
+        cleanup.checkpoint('proof', 'pending', 'synthetic_after_unmount')
+    assert (directory / 'cleanup.json').read_bytes() == checkpoint_before
+    delivery.execute_cleanup(directory, ledger)
+    assert ledger['status'] == 'cleanup_pending'
+    assert (directory / 'cleanup.json').read_bytes() == checkpoint_before
+
+
+@pytest.mark.parametrize('placement', ['legacy', 'configured'])
+def test_storage_workspace_escape_is_rejected_without_rewriting_approval(
+        configured_delivery, capsys, placement):
+    directory, ledger = journal_at(configured_delivery, placement)
+    report = json.loads((directory / 'report.json').read_text())
+    approval = json.loads((directory / 'github-approved.json').read_text())
+    report['workspace'] = approval['workspace'] = str(directory.parent / 'outside-workspace')
+    agent_models.private_json(directory / 'report.json', report)
+    agent_models.private_json(directory / 'github-approved.json', approval)
+    before = (directory / 'github-approved.json').read_bytes()
+    assert delivery.main(['request', '--run-id', ledger['run_id']]) == 1
+    assert 'request' not in json.loads(capsys.readouterr().out)
+    assert (directory / 'github-approved.json').read_bytes() == before
+
+
+def test_configured_journal_preserves_ci_and_expected_merge_sha(configured_delivery, capsys):
+    directory, ledger = journal_at(configured_delivery, 'configured')
+    to_pr(ledger)
+    delivery.accept(ledger, pr_data(ledger))
+    delivery.accept(ledger, check_response(rows_for(ledger)))
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0, 'state': 'pending'})
+    delivery.accept(ledger, pr_data(ledger))
+    agent_models.private_json(directory / 'github.json', ledger)
+    assert delivery.main(['request', '--run-id', ledger['run_id']]) == 0
+    job = json.loads(capsys.readouterr().out)['request']
+    assert job['tool'] == delivery.TOOLS['merge_pull_request']
+    assert job['arguments']['expected_head_sha'] == HEAD
+    assert job['arguments']['merge_method'] == 'squash'
+    assert set(ledger['checks']) == delivery.REQUIRED
+    assert set(ledger['checks'].values()) == {'success'}
+
+
+def test_root_only_seam_and_report_override_do_not_hide_local_history(prepared, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(delivery, 'REPORTS', delivery._DEFAULT_REPORTS)
+    monkeypatch.setenv(storage.REPORT_ENV, str(tmp_path / 'new-reports'))
+    assert delivery.directory_for(prepared['directory'].name) == prepared['directory']
+    assert delivery.main(['request', '--run-id', prepared['directory'].name]) == 0
+    assert json.loads(capsys.readouterr().out)['request']['tool'] == delivery.TOOLS['fetch']
+    assert not (tmp_path / 'new-reports').exists()
 
 
 def test_pending_repository_rules_and_unknown_mergeability_keep_pr_open(prepared):
