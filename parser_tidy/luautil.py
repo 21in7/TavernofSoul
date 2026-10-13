@@ -20,10 +20,24 @@ _METHOD_RE = re.compile(r'function (\w+):(\w+)\((.*)\)')
 _FUNCTION_DECLARATION_RE = re.compile(r'(local\s+)?function\s+[\w.:]+\(.*?\)')
 
 
+_INTEGER_ATTRIBUTE_NAMES = (
+    'Blockable', 'HPCount', 'ReinforceArmor', 'TranscendArmor',
+    'ReinforceWeapon', 'TranscendWeapon',
+)
+_INTEGER_ATTRIBUTES = frozenset(_INTEGER_ATTRIBUTE_NAMES)
+
+
 # HotFix: don't throw errors when LUA is getting an unknown key
 def attr_getter(obj, name):
     if name in obj:
-        if name in ['Blockable', 'HPCount', 'ReinforceArmor', 'TranscendArmor', 'ReinforceWeapon', 'TranscendWeapon']:
+        try:
+            integer_attribute = name in _INTEGER_ATTRIBUTES
+        except TypeError:
+            # Lua supplies string names. Keep legacy membership for unhashable
+            # direct Python names accepted by a custom mapping, on a cold path.
+            # Arbitrary custom hash/equality behavior is not the Lua protocol.
+            integer_attribute = name in _INTEGER_ATTRIBUTE_NAMES
+        if integer_attribute:
             return int(obj[name])
         else:
             return obj[name]
