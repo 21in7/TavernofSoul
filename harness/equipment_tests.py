@@ -1,5 +1,6 @@
 """Goddess equipment and gem sources reach the real importer, ORM and HTTP."""
 import csv
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -55,6 +56,59 @@ class EquipmentPipelineTests(TransactionTestCase):
                 for row in rows:
                     row.pop('updated', None)
         return records
+
+    def assert_clean_snapshot(self):
+        self.assertEqual(self.command.base_path, str(self.release))
+        self.assertFalse(list(self.release.glob('.import-prev-*')))
+        for name in ('_staged_snapshot', '_snapshot_path', '_previous_path',
+                     '_available_skill_names', '_item_ids_by_name', '_reconcile_map_relations'):
+            self.assertNotIn(name, self.command.__dict__)
+
+    def test_mutable_equipment_and_skill_consumers_cannot_change_snapshot_or_prev(self):
+        self.prepare_region()
+        expected = {path.name: path.read_bytes() for path in self.release.glob('*.json')}
+        source_items = json.loads(expected['items_by_name.json'])
+        original_equipment = self.command.makeEQ
+        original_skills = self.command.importSkills
+        observed = []
+
+        def mutate_equipment(item, row, item_types, upd=False):
+            original_equipment(item, row, item_types, upd)
+            before = copy.deepcopy(self.command._staged_snapshot['items_by_name'])
+            if not isinstance(row.get('AnvilATK'), list):
+                row['AnvilATK'] = []
+            row['AnvilATK'].append(-999)
+            if not isinstance(row.get('Bonus'), list):
+                row['Bonus'] = []
+            row['Bonus'].append(['STR', '-999'])
+            self.assertEqual(self.command.importJSON(str(Path(self.command.base_path) / 'items_by_name.json')),
+                             before)
+            observed.append(item.ids)
+
+        def mutate_skills(rows, update):
+            before = copy.deepcopy(self.command._staged_snapshot['skills'])
+            original_skills(rows, update)
+            for row in rows.values():
+                row['Name'] = 'mutated consumer only'
+                if not isinstance(row.get('CaptionRatio'), list):
+                    row['CaptionRatio'] = []
+                row['CaptionRatio'].append(-999)
+            self.assertEqual(self.command.importJSON(str(Path(self.command.base_path) / 'skills.json')), before)
+
+        with patch.object(self.command, 'makeEQ', side_effect=mutate_equipment), \
+                patch.object(self.command, 'importSkills', side_effect=mutate_skills):
+            self.import_release()
+        self.assertTrue(observed)
+        self.assertEqual(Equipments.objects.get(item__ids='110').anvil_atk,
+                         source_items['harness_sword']['AnvilATK'])
+        self.assertEqual({name: self.baseline()[name] for name in expected}, expected)
+        self.assertEqual({path.name: path.read_bytes() for path in self.release.glob('*.json')}, expected)
+        self.assert_clean_snapshot()
+        before = self.snapshot(ignore_updated=True)
+        self.import_release()
+        self.assertEqual(self.snapshot(ignore_updated=True), before)
+        self.assertEqual({name: self.baseline()[name] for name in expected}, expected)
+        self.assert_clean_snapshot()
 
     def assert_roundtrip(self, region):
         self.prepare_region(region)
@@ -221,16 +275,35 @@ class EquipmentPipelineTests(TransactionTestCase):
 
         def fail_after_gems(item_type):
             original(item_type)
+            # A failing consumer must not leave its mutable copies as the
+            # input for the next handle on this same Command instance.
+            skills_path = Path(self.command.base_path) / 'skills.json'
+            items_path = Path(self.command.base_path) / 'items_by_name.json'
+            skill_copy = self.command.importJSON(skills_path)
+            item_copy = self.command.importJSON(items_path)
+            skill_copy['400']['BasicSP'] = -999
+            item_copy['harness_sword']['AnvilATK'].append(-999)
+            self.assertNotEqual(self.command.importJSON(skills_path), skill_copy)
+            self.assertNotEqual(self.command.importJSON(items_path), item_copy)
             raise RuntimeError('fixture gem import failure')
 
         with patch.object(self.command, 'importGems', side_effect=fail_after_gems):
             with self.assertRaisesMessage(RuntimeError, 'fixture gem import failure'):
                 self.import_release()
+        self.assert_clean_snapshot()
         self.assertEqual(self.snapshot(), snapshot)
         self.assertEqual(self.baseline(), baseline)
         self.assertFalse(list(self.release.glob('.import-prev-*')))
+        skills_file = self.release / 'skills.json'
+        skills = json.loads(skills_file.read_text())
+        skills['400']['BasicSP'] = 79
+        skills_file.write_text(json.dumps(skills))
         self.import_release()
+        self.assert_clean_snapshot()
         self.assertEqual(Equipments.objects.get(item__ids='110').patk, 8100)
+        self.assertEqual(Skills.objects.get(ids='400').sp, 79)
+        self.assertNotIn(-999, Equipments.objects.get(item__ids='110').anvil_atk)
+        self.assertEqual((self.release / 'prev/skills.json').read_bytes(), skills_file.read_bytes())
         self.assertEqual(Gems.objects.get(item__ids='240').skill.ids, '400')
         self.assertEqual(Version.objects.count(), 2)
 
@@ -348,10 +421,12 @@ class EquipmentPipelineTests(TransactionTestCase):
         with patch.object(self.command, 'importGems', side_effect=duplicate_after_writes):
             with self.assertRaises(IntegrityError):
                 self.import_release()
+        self.assert_clean_snapshot()
         self.assertEqual(self.snapshot(), snapshot)
         self.assertEqual(self.baseline(), baseline)
         self.assertFalse(list(self.release.glob('.import-prev-*')))
         self.import_release()
+        self.assert_clean_snapshot()
         self.assertEqual(Equipments.objects.get(item__ids='110').anvil_atk[5], 620)
 
     def test_invalid_new_data_is_blocked_before_database_queries_and_preserves_state(self):

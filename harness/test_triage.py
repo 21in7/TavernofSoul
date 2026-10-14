@@ -8,11 +8,27 @@ import urllib.error
 
 import pytest
 
-from harness import agent_models, jev_client, triage
+from harness import agent_models, jev_client, triage, storage
 
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
+    project = tmp_path / 'storage-project'
+    project.mkdir()
+    resolve = storage.resolve_storage
+    class SyntheticFS(storage.FileSystem):
+        def read_bytes(self, path):
+            pytest.fail('Triage fixture attempted a storage config read')
+
+        def free_bytes(self, path):
+            pytest.fail('Triage fixture attempted a mount free-space query')
+
+        def probe(self, path):
+            pytest.fail('Triage fixture attempted a storage probe')
+
+    monkeypatch.setenv(storage.CONFIG_ENV, str(tmp_path / 'ignored-storage.json'))
+    monkeypatch.setattr(storage, 'resolve_storage',
+                        lambda *a, **kw: resolve(project, env={}, fs=SyntheticFS()))
     monkeypatch.setattr(agent_models, 'KEY_FILE', tmp_path / '.agent-keys.json')
     monkeypatch.setattr(triage, 'REPORTS', tmp_path / 'reports')
     for name in agent_models.KEY_NAMES:
@@ -24,6 +40,15 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(jev_client, 'evaluate',
                         lambda *a, **kw: pytest.fail('Unexpected live TypeSafe request'))
     return evaluate
+
+
+def test_synthetic_storage_ignores_caller_root_and_ambient_policy(tmp_path):
+    guard = storage.resolve_storage(tmp_path / 'uncreated-project',
+                                    env={storage.CONFIG_ENV: str(tmp_path / 'unread-config.json')})
+    assert guard.root == tmp_path / 'storage-project'
+    assert guard.artifact_root == guard.root / 'logs/harness'
+    assert guard.env == {} and not guard.configured
+    assert guard.check_ready() is guard
 
 
 @pytest.fixture

@@ -7,10 +7,40 @@ import subprocess
 
 import pytest
 
-from harness import git_cleanup as cleanup, git_publish as publication, workspace
+from harness import git_cleanup as cleanup, git_publish as publication, workspace, storage
 
 RUN_ID = '123456-abcdef'
 BRANCH = 'codex/' + RUN_ID
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(tmp_path, monkeypatch):
+    # Publication keeps its fixture ROOT; storage uses only this disposable root.
+    project = tmp_path / 'storage-project'
+    project.mkdir()
+    resolve = storage.resolve_storage
+    class SyntheticFS(storage.FileSystem):
+        def read_bytes(self, path):
+            pytest.fail('Git cleanup fixture attempted a storage config read')
+
+        def free_bytes(self, path):
+            pytest.fail('Git cleanup fixture attempted a mount free-space query')
+
+        def probe(self, path):
+            pytest.fail('Git cleanup fixture attempted a storage probe')
+
+    monkeypatch.setenv(storage.CONFIG_ENV, str(tmp_path / 'ignored-storage.json'))
+    monkeypatch.setattr(storage, 'resolve_storage',
+                        lambda *a, **kw: resolve(project, env={}, fs=SyntheticFS()))
+
+
+def test_synthetic_storage_ignores_caller_root_and_ambient_policy(tmp_path):
+    guard = storage.resolve_storage(tmp_path / 'uncreated-project',
+                                    env={storage.CONFIG_ENV: str(tmp_path / 'unread-config.json')})
+    assert guard.root == tmp_path / 'storage-project'
+    assert guard.artifact_root == guard.root / 'logs/harness'
+    assert guard.env == {} and not guard.configured
+    assert guard.check_ready() is guard
 
 
 @pytest.fixture

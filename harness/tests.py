@@ -1,11 +1,14 @@
 """Exercise actual parser/exporter, importer, ORM, URLs, views, and templates."""
 import json
+import copy
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TransactionTestCase
+from django.db import transaction
 
 from DB import ToS_DB
 from items import resolve_package_contents
@@ -220,3 +223,62 @@ class SourcePipelineTests(TransactionTestCase):
         self.assertEqual(Items.objects.count(), 7)
         self.assertEqual(Equipments.objects.count(), 1)
         self.assertEqual(Item_Recipe_Target.objects.count(), 1)
+
+    def test_item_classification_keeps_caller_lists_order_priority_and_errors(self):
+        self.import_release()
+        source = copy.deepcopy(self.db.data['items_by_name']['harness_sword'])
+        for kind in ('added', 'changed'):
+            with self.subTest(kind=kind):
+                groups = copy.deepcopy(self.db.data['item_type'])
+                # Direct consumers retain the original equipment-first priority
+                # even when a legacy caller supplies overlapping group lists.
+                for group in ('CARD', 'RECIPES', 'COLLECTION', 'BOOKS'):
+                    groups.setdefault(group, []).append('harness_sword')
+                before = copy.deepcopy(groups)
+                lists = list(groups.values())
+                changes = {'added': [], 'changed': [], 'removed': []}
+                changes[kind] = [copy.deepcopy(source)]
+                with patch.object(self.command, 'makeEQ', wraps=self.command.makeEQ) as equipment, \
+                        patch.object(self.command, 'makeCard') as card, \
+                        patch.object(self.command, 'makeRecipe') as recipe, \
+                        patch.object(self.command, 'makeCollection') as collection, \
+                        patch.object(self.command, 'makeBook') as book:
+                    self.command.importItem(changes, groups, 1)
+                equipment.assert_called_once()
+                for consumer in (card, recipe, collection, book):
+                    consumer.assert_not_called()
+                self.assertEqual(groups, before)
+                self.assertEqual(list(groups), list(before))
+                for current, original in zip(groups.values(), lists):
+                    self.assertIs(current, original)
+                self.assertEqual(Equipments.objects.get(item__ids='110').patk, 140)
+                missing = copy.deepcopy(groups)
+                del missing['EQUIPMENT']
+                with transaction.atomic():
+                    with self.assertRaisesMessage(KeyError, 'EQUIPMENT'):
+                        self.command.importItem(changes, missing, 1)
+                    transaction.set_rollback(True)
+                self.assertEqual(groups, before)
+
+    def test_item_membership_indexes_preserve_input_row_order_with_duplicate_group_names(self):
+        self.import_release()
+        rows = []
+        for ident in ('8111', '8110'):
+            row = copy.deepcopy(self.db.data['items_by_name']['harness_sword'])
+            row.update({'$ID': ident, '$ID_NAME': 'Harness_Order_' + ident})
+            rows.append(row)
+        groups = copy.deepcopy(self.db.data['item_type'])
+        # Membership lists deliberately disagree with row order and contain
+        # duplicates: indexing them must not reorder either source.
+        groups['EQUIPMENT'].extend([rows[1]['$ID_NAME'], rows[0]['$ID_NAME'], rows[1]['$ID_NAME']])
+        before_groups, before_rows = copy.deepcopy(groups), copy.deepcopy(rows)
+        for kind, ordered in (('added', rows), ('changed', list(reversed(rows)))):
+            with self.subTest(kind=kind):
+                changes = {'added': [], 'changed': [], 'removed': []}
+                changes[kind] = ordered
+                with patch.object(self.command, 'makeEQ') as equipment:
+                    self.command.importItem(changes, groups, 1)
+                self.assertEqual([str(call.args[0].ids) for call in equipment.call_args_list],
+                                 [row['$ID'] for row in ordered])
+                self.assertEqual(groups, before_groups)
+                self.assertEqual(rows, before_rows)

@@ -7,6 +7,12 @@
   [0004](0004-reviewed-and-validated-publication.md)의 검토·검증 게이트,
   [0010](0010-automatic-post-merge-cleanup.md)의 cleanup·durable 복구·전체 완료 정책을 유지한다.
 
+2026-10-14 보충: 이번 승인 실행은 importer snapshot/SELECT와 호출 소유 임시 cleanup 수리에
+한정한다. 기존 configured NFS 설정·mount·floor를 유지하며 아래의 종전 activation 계획이나
+local temporary override 제안은 실행하지 않는다. private host 설정은 읽거나 복사하지 않았다.
+[0013](0013-owned-validation-temporary-cleanup.md)은 이 ADR를 대체하지 않고 고유 tree 정리의
+readiness 경계와 매 항목 identity/mount 증명을 구체화한다.
+
 ## 문맥
 
 사용자는 하네스 작업물이 로컬 디스크를 채워 당일 운영 cron이 중단된 문제를 보고했다.
@@ -69,6 +75,17 @@ Docker 데이터베이스·운영 볼륨·컨테이너 tmpfs·mount 자체는 �
 모든 configured required mount가 정확한 경로의 실제 mount인지, 각 mount의 free bytes가
 `min_free_bytes` 이상인지 **어떤 mkdir나 probe보다 먼저** 확인한다. symlink와 application/출력까지
 다른 nested mount도 거부한다. 각 쓰기 경계에서 재검사하며 이전 readiness를 lease로 간주하지 않는다.
+한 호출 소유 고유 임시 tree 제거는 directory 생성/probe처럼 한 고수준 filesystem 작업이다.
+cleanup 진입과 최종 root 제거 직전에 `check_ready()`를 새로 수행한다. 진입 실패는 첫 chmod/
+unlink/rmdir 전에 중단하며 다음 cleanup에도 이전 성공을 재사용하지 않는다.
+각 directory chmod·file/link unlink·directory rmdir 전 root·parent·ancestor·대상 attachment,
+ownership·no-follow·device·kernel mount identity는 계속 새로 증명한다. readonly 소유 directory만
+pinned descriptor로 접근을 복구하고 파일/외부 target chmod는 금지한다. statx mount ID 미지원/
+실패는 fail closed다. 최종 readiness 실패는 일부 정리된 tree/root를 남기고 non-success로 노출한다.
+global prerequisites와 per-entry containment의 책임·제약·counting 회귀는
+[0013](0013-owned-validation-temporary-cleanup.md)에 기록한다.
+이 경계로 제한하는 조회는 configured prerequisites의 readiness/free-space 조회다.
+항목별 mount-point 및 kernel mount ID 검사 수는 제한하지 않으며 계속 새로 수행한다.
 application은 프로세스 소유·`0700`이어야 한다. 새 디렉터리만 private mode로 만들고 기존 mount
 root나 무관한 디렉터리는 chmod하지 않는다. private JSON·events·logs·lock은 `0600`이다.
 실제 writeability probe는 private application 안의 고유 `0600` 파일을 write/fsync/readback/delete한다.
@@ -145,8 +162,9 @@ cron·unpack·JSON·DB는 보존한다. 과거 두 GitHub 처리 대기의 조�
 
 scoped worker는 승인 파일만 작성하고 checks·Git·workflow·models·운영 작업·재위임을 실행하지
 않는다. tests/full `make check`와 독립 의미 검토는 orchestrator, connector 게시·필수 CI 확인·
-merge·정확한 cleanup은 main이 맡는다. **main은 검토·full checks·GitHub 전달 후에만 호스트의
-private 설정을 활성화한다.** draft 복구·문서 변경·회귀 정의 존재를 승인·실행 성공으로 취급하지 않는다.
+merge·정확한 cleanup은 main이 맡는다. 종전 제안의 activation은 검토·full checks·GitHub 전달 뒤로
+제한했으나 이번 실행은 최신 선택대로 기존 설정을 유지한다. draft 복구·문서 변경·회귀 정의
+존재를 승인·실행 성공으로 취급하지 않는다.
 매 orchestrator review는 `documentation={status,files,reason}`과 `status=updated`를 실제 변경된
 승인 Markdown과 저장/격리/복구 설명의 의미적 판단으로 뒷받침한다.
 
@@ -201,18 +219,35 @@ itself fails, that error is surfaced to the caller; no successful result is
 returned. A surviving context after failed cleanup is not silently treated as
 cleaned, and permanent evidence remains available for investigation.
 
-The user's eventual ignored private host configuration selects
+### Historical local-temporary proposal (superseded host choice, 2026-10-14)
+
+The earlier proposal for an eventual ignored private host configuration selected
 `artifacts.path=/mnt/nfs-2tb/oci-tavernof-soul/harness-artifacts`,
 `artifacts.required_mount=/mnt/nfs-2tb` and
 `artifacts.min_free_bytes=10737418240` (10 GiB), together with
 `temporary.path=/tmp/oci-tavernof-soul/harness-temporary`,
 `temporary.required_mount=/` and `temporary.min_free_bytes=8589934592` (8 GiB).
-Permanent records and workspace copies therefore use NVMe NFS, while temporary
-model sources use local storage and are automatically cleaned. These values are
-host choices with configurable floors, not generic defaults or a tracked live
-configuration. The main activates the private configuration after review, full
-checks and GitHub delivery. This decision neither changes the storage schema nor
+That proposal would have placed permanent records and workspace copies on NVMe
+NFS and temporary model sources on local storage. These historical proposed
+values are not the current effective configuration or instructions to activate
+an override. The latest user choice preserves existing configured NFS settings,
+mounts and floors, with no local storage override or activation change in this
+run. No private configuration was consulted to infer current values.
+This decision neither changes the storage schema nor
 authorizes mount changes, operating-data mutation, historical migration/deletion,
 broader model file access or model/provider/authentication/permission changes.
 The independent full-check and three-real-CI-success/merge/cleanup gate remains
 in force.
+
+### Candidate evidence and remaining gates (2026-10-14)
+
+The supplied 2691 selected parser/harness tests passed with zero skips, but
+cleanup stayed very slow. A prior full workflow timed out during NFS RPC waits
+and its old parent `shutil.rmtree` failed on readonly keep. The supplied recovery
+of the NFS statvfs probe is an observation, not full validation. Importer timing,
+SELECT and byte comparisons are candidate evidence described in
+[ADR 0012](0012-importer-single-run-snapshot.md) and [harness](../harness.md).
+Full validation of the final source remains pending. Fresh real review,
+orchestrator complete `make check`, scoped apply/default Git role and main-only
+exact GitHub app journal, three actual CI successes, merge and cleanup are still
+required. Every review records `documentation={status,files,reason}`.

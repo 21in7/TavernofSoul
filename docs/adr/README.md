@@ -16,6 +16,8 @@
 | [0009](0009-post-merge-branch-cleanup.md) | master squash PR 유지와 메인의 증거 기반 머지 후 브랜치 정리 | 대체됨(superseded), 0010 | 2026-10-12 |
 | [0010](0010-automatic-post-merge-cleanup.md) | 자동 parent Git cleanup·lease 비교 삭제·durable 복구·전체 완료 게이트 | 승인(accepted), 새 구현 결정 | 2026-10-12 |
 | [0011](0011-configurable-harness-storage.md) | 설정 가능한 산출물·비인증 임시 저장, 고정 로컬 lock·인증 runtime, legacy 조회와 fallback 금지 | 제안(proposed), 구현안 검토·검증·전달 대기 | 2026-10-13 |
+| [0012](0012-importer-single-run-snapshot.md) | 호출 소유 importer snapshot·consumed-only retention·복사 소비자·fresh direct/prev·SELECT 인덱스와 ORM 의미 보존 | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
+| [0013](0013-owned-validation-temporary-cleanup.md) | 고유 임시 tree의 진입/최종 readiness와 매 destructive 작업 attachment·ownership·kernel mount proof | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
 
 ## 상태와 근거의 의미
 
@@ -35,8 +37,22 @@ complete여야 passed다. 새 repository/default_branch proof로 현재 기본 �
 0011은 외부 artifacts/temp와 고정 로컬 project lock·credential runtime을 분리하는 저장 결정이다.
 0010을 대체하지 않으며 기존 approved hash·expected SHA·durable snapshot·정확한 cleanup·전체 완료
 게이트는 유지한다. legacy absolute 경로는 재작성하지 않고 status/latest·Git 재개에서 함께 조회한다.
-proposed는 구현안의 독립 의미 검토·full checks·GitHub 전달이 대기 중임을 나타내며 main은 그 뒤에만
-호스트 private 설정을 활성화한다. ADR 존재·회귀 정의·draft 복구가 승인이나 activation 증거는 아니다.
+proposed는 구현안의 독립 의미 검토·full checks·GitHub 전달이 대기 중임을 나타낸다.
+2026-10-14 최신 선택은 기존 configured NFS 설정·mount·floor 유지다. 종전의 향후 local temp
+override/activation 계획은 이번 실행에 적용하지 않는다. ADR 존재·회귀 정의·draft 복구는
+검증이나 activation 증거가 아니다.
+0012는 0008의 strict diagnostics/order를 보존하고 한 호출의 private staging 소비만 재사용한다.
+0013은 0011의 prerequisites를 한 tree 제거의 고수준 작업 경계로 구체화하며 per-entry
+attachment/ownership/no-follow/device/kernel mount 증명을 유지한다. 0010의 Git cleanup은 별개다.
+두 신규 ADR의 proposed는 작업 승인이나 기존 real-model/Claude 후보 검토를 부정하는 상태가
+아니며 최종 소스의 새 검토·full validation·실제 게시 완료가 아직 없다는 뜻이다.
+2691 selected zero-skip과 제공된 importer 성능/지역 JSON bytes는 후보 근거다.
+이전 NFS RPC timeout/readonly cleanup 실패를 포함한 최종 인계는 [harness](../harness.md)와
+[workflow](../workflow.md)에 둔다. 장비 Lua batching은 4.8% 느려 제외되었으며
+그 결정을 위한 문서나 ADR 항목은 생성하지 않는다.
+이번 repair 입력의 unavailable/unattributed `check` diagnostic은 알려진 실패 원인을
+추가하지 않는다. 원인 추정이나 통과 주장을 하지 않고 [workflow 인계](../workflow.md#이번-31파일-수리의-검토검증게시-인계)에
+한계를 기록한다. 최종 새 실제 검토 후 원래 필수 checks 전체를 오케스트레이터가 실행한다.
 
 상태는 제안(proposed), 승인(accepted), 대체됨(superseded)을 사용한다. 이후 결정 변경은
 기존 ADR를 삭제하거나 새 결론으로 재작성하지 않는다. 기존 상태를 superseded로 바꾸고
@@ -50,10 +66,12 @@ proposed는 구현안의 독립 의미 검토·full checks·GitHub 전달이 대
 문서 생략 이유를 reviewer의 documentation.not_required에 구체적으로 기록할 수 있다.
 필요 문서가 승인 읽기 scope 밖이면 자동 열람·복사·생성하지 않는다. 누락 경로를 보고하고
 기존 승인 파일 finding과 documentation.missing으로 승인을 거부한다. 메인이 범위 확인 후 새 실행을 준비한다.
-이번 저장 정책 변경의 매 orchestrator review는 `documentation={status,files,reason}`을 반환하고
+이번 importer/cleanup 변경의 매 orchestrator review는 `documentation={status,files,reason}`을 반환하고
 `status=updated`를 실제 변경된 승인 Markdown 목록과 구조·격리·실패 복구·운영 명령의 의미적
-완전성 판단으로 뒷받침한다. Markdown 확장자 확인은 완전성 증거가 아니다. tests/full `make check`는
-orchestrator, connector 게시·필수 CI 확인·merge·정확한 cleanup은 main의 책임이다.
+완전성 판단으로 뒷받침한다. 0011/0012/0013·architecture·data-contracts·harness·workflow의
+의미를 함께 판단한다. Markdown 확장자 확인은 완전성 증거가 아니다. 새 실제 review·전체
+`make check`·31파일 scoped apply와 기본 Git 역할은 orchestrator, 정확한 GitHub 앱 journal·
+실제 CI 3개 success·merge·정확한 cleanup은 main의 책임이다. leaf worker는 실행하지 않는다.
 
 번호는 목록의 다음 번호를 사용하고 한 ADR에는 한 주요 결정을 둔다. 문맥·결정·비교 대안·선택 이유·
 결과/비용/제약을 구분한다. 소스·설정·검증 경로·문서의 실제 링크를 포함하되 검증 경로가 있다는 것과

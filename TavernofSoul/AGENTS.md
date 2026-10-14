@@ -13,6 +13,15 @@
 - 레시피의 숫자 `$ID` 충돌은 importer의 `recipe-<id>` 정규화가 처리한다.
 - 공통 계약 `ipfparser/contracts.py`는 적재할 스냅샷을 DB 쿼리 전에 검사한다.
   계약 변경은 [../docs/data-contracts.md](../docs/data-contracts.md)와 검증을 함께 갱신하고 `make check`로 확인한다.
+- `load_import_snapshot`은 모든 JSON을 엄격히 검사하고 적재에 쓰는 컬렉션과 version만 반환한다.
+  `load_release`의 version 반환과 첫 오류 순서, `load_json`·`validate_release`의 검사는 유지한다.
+  importer는 활성 `handle`의 staging에서만 이 값을 재사용하며 mutable 소비자에게 deep copy를 준다.
+  직접 호출과 `prev/`는 매번 읽고, 성공·실패 후 snapshot·참조 인덱스·스킬 이름 상태를 제거한다.
+- 스킬·직업 조회 인덱스는 `importSkills` 호출 안에서 canonical 문자열 ID로 만든다.
+  중복 ID는 원래 소비 지점의 `get()`으로 확인하여 누락·중복 예외를 유지한다.
+  행별 save·created/updated·update=0·삭제 동작을 유지하며 bulk write나 unchanged-save 생략은 하지 않는다.
+  아이템 분류 membership은 호출 내 set으로 조회하고 호출자의 목록·분류 우선순위는 보존한다.
+  `parser_tidy/tests/test_import_safety.py`의 회귀와 전체 검증은 coordinator가 실행하기 전까지 pending이다.
 - SQLite 검증은 운영 MySQL의 정규식·정렬·트랜잭션·전용 필드 동작 검증을 대체하지 않는다.
 - MySQL 저장·정규식·정렬·DB 제약 동작 변경은 `make check-mysql-container`로 확인한다.
   일회용 서버와 제한된 계정만 사용하며 접속 설정은 `settings_harness_mysql.py`를 따른다.

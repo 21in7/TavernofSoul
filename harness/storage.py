@@ -36,6 +36,13 @@ context copies keep /tmp and validation uses tempfile's existing default. With
 config both use temporary.path. credential_runtime_root stays in local logs;
 credential_temp_root is /tmp and never follows configured temporary/report roots.
 Never export this policy as global TMPDIR, HOME or the real CODEX_HOME.
+Context-manager cleanup pins its unique directory's allocation identity before
+use. Removing that owned tree is one high-level filesystem operation: readiness
+is checked at cleanup entry and immediately before final root removal, freshly
+for each call. Every chmod/unlink/rmdir still proves root, parent and ancestor
+attachment, ownership, device and kernel mount identity without following links.
+Only owned directories regain owner access; files and external targets are
+never chmodded. Replacement paths, foreign owners and nested mounts fail closed.
 
 CLI (no models): python -m harness.storage status | doctor [--probe]. Both are
 read-only by default; --probe requires existing private application directories.
@@ -56,6 +63,7 @@ only the example; do not include the private config in model source contexts.
 
 import argparse
 from contextlib import contextmanager
+import ctypes
 from dataclasses import dataclass, field
 import json
 import os
@@ -77,6 +85,26 @@ class StorageError(ValueError):
     """Actionable fixed metadata only; never includes arbitrary config values."""
 
 
+class _StatxTimestamp(ctypes.Structure):
+    _fields_ = [('seconds', ctypes.c_int64), ('nanoseconds', ctypes.c_uint32),
+                ('reserved', ctypes.c_int32)]
+
+
+class _Statx(ctypes.Structure):
+    # Linux statx's fixed 256-byte ABI; the trailing fields are not consumed.
+    _fields_ = [('mask', ctypes.c_uint32), ('block_size', ctypes.c_uint32),
+                ('attributes', ctypes.c_uint64), ('links', ctypes.c_uint32),
+                ('uid', ctypes.c_uint32), ('gid', ctypes.c_uint32),
+                ('mode', ctypes.c_uint16), ('reserved0', ctypes.c_uint16),
+                ('inode', ctypes.c_uint64), ('size', ctypes.c_uint64),
+                ('blocks', ctypes.c_uint64), ('attributes_mask', ctypes.c_uint64),
+                ('atime', _StatxTimestamp), ('btime', _StatxTimestamp),
+                ('ctime', _StatxTimestamp), ('mtime', _StatxTimestamp),
+                ('rdev_major', ctypes.c_uint32), ('rdev_minor', ctypes.c_uint32),
+                ('dev_major', ctypes.c_uint32), ('dev_minor', ctypes.c_uint32),
+                ('mount_id', ctypes.c_uint64), ('reserved', ctypes.c_uint64 * 13)]
+
+
 class FileSystem:
     """Offline seams: subclass mount_ready/free_bytes/probe (or I/O methods).
 
@@ -90,6 +118,26 @@ class FileSystem:
 
     def mount_ready(self, path):
         return os.path.ismount(path)
+
+    def mount_identity(self, directory, name=''):
+        """Kernel mount identity, including same-device bind mounts; no host files.
+
+        Cleanup fails closed on platforms/libcs/kernels without STATX_MNT_ID.
+        Empty names inspect a pinned descriptor; other names never follow links
+        or trigger automounts (AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT).
+        """
+        try:
+            statx = ctypes.CDLL(None).statx
+        except (AttributeError, OSError):
+            raise StorageError('Temporary cleanup requires kernel mount identity support.') from None
+        statx.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                         ctypes.c_uint, ctypes.POINTER(_Statx))
+        statx.restype = ctypes.c_int
+        info = _Statx()
+        if statx(directory, os.fsencode(name), 0x1900, 0x1000, ctypes.byref(info)) != 0 or \
+                not info.mask & 0x1000:
+            raise StorageError('Temporary cleanup cannot establish kernel mount identity.')
+        return info.mount_id
 
     def free_bytes(self, path):
         return shutil.disk_usage(path).free
@@ -559,6 +607,11 @@ class Storage:
         return max(candidates)[3]
 
     def mkdtemp(self, *, prefix='tavern-harness-', purpose='validation'):
+        path, _ = self._allocate_temporary(prefix=prefix, purpose=purpose)
+        return path
+
+    def _allocate_temporary(self, *, prefix, purpose):
+        """Keep allocation identity private; public mkdtemp still returns a path."""
         if purpose not in ('context', 'validation'):
             raise StorageError('Temporary purpose must be context or validation (never credentials).')
         if not isinstance(prefix, str) or not prefix or '/' in prefix or '\\' in prefix or \
@@ -577,19 +630,140 @@ class Storage:
             else:
                 path = Path(tempfile.mkdtemp(prefix=prefix, dir=str(parent) if parent is not None else None))
             self._private_directory(path)
-            return path
+            return path, self.fs.lstat(path)
         except OSError:
             raise StorageError('Cannot create private non-credential temporary directory.') from None
 
     @contextmanager
     def temporary_directory(self, *, prefix='tavern-harness-', purpose='validation'):
-        path = self.mkdtemp(prefix=prefix, purpose=purpose)
+        path, allocated = self._allocate_temporary(prefix=prefix, purpose=purpose)
+        parent = directory = None
         try:
-            yield path
+            parent = self.fs.open_directory(path.parent)
+            parent_identity = os.fstat(parent)
+            directory = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=parent)
+            identity = os.fstat(directory)
+            if (identity.st_dev, identity.st_ino) != (allocated.st_dev, allocated.st_ino):
+                raise StorageError('Temporary cleanup directory identity changed.')
+            if identity.st_uid != os.geteuid() or not stat.S_ISDIR(identity.st_mode):
+                raise StorageError('Temporary cleanup requires an owned directory.')
+            try:
+                yield path
+            finally:
+                self._remove_owned_temporary(path, parent, directory, identity, parent_identity)
         finally:
-            # Only the unique directory created by this call is disposable.
-            _safe_path(self.fs, path)
-            shutil.rmtree(path)
+            if directory is not None:
+                os.close(directory)
+            if parent is not None:
+                os.close(parent)
+
+    def _remove_owned_temporary(self, path, parent, directory, identity, parent_identity):
+        """Remove only this call's pinned non-credential tree, without following links.
+
+        Readonly regular files need no chmod: unlink uses parent permissions.
+        This also preserves modes on external hardlinks. Directory chmod uses an
+        owned, identity-checked descriptor, never a path or a symlink target.
+        Inaccessible directories and concurrent identity changes are errors.
+        Readiness belongs to this whole removal, never a persistent lease;
+        attachment and mount proofs remain fresh at every destructive operation.
+        """
+        def same(first, second):
+            return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+        ancestry = []
+
+        def attached(where, owner, name, expected):
+            current = os.stat(name, dir_fd=owner, follow_symlinks=False)
+            if not same(current, expected) or stat.S_IFMT(current.st_mode) != stat.S_IFMT(expected.st_mode):
+                raise StorageError('Temporary cleanup directory identity changed.')
+            if current.st_uid != os.geteuid():
+                raise StorageError('Temporary cleanup refuses foreign-owned entries.')
+            if self.fs.mount_identity(owner, name) != mount_identity or \
+                    current.st_dev != identity.st_dev or (
+                    not stat.S_ISLNK(current.st_mode) and self.fs.mount_ready(where)):
+                raise StorageError('Temporary cleanup refuses mount boundaries.')
+            return current
+
+        def root_attached():
+            # A pinned parent alone is insufficient if it has since been moved.
+            current_parent = self.fs.open_directory(path.parent)
+            try:
+                current = os.fstat(current_parent)
+                pinned = os.fstat(parent)
+                if not same(current, parent_identity) or not same(pinned, parent_identity):
+                    raise StorageError('Temporary cleanup parent identity changed.')
+                # Legacy /tmp may be a shared parent owned by another user.
+                # Its pinned owner must remain unchanged; tree entries below
+                # it must always be owned by this process.
+                if current.st_uid != parent_identity.st_uid or pinned.st_uid != parent_identity.st_uid:
+                    raise StorageError('Temporary cleanup refuses foreign-owned entries.')
+                if current.st_dev != identity.st_dev or \
+                        self.fs.mount_identity(current_parent) != mount_identity or \
+                        self.fs.mount_identity(parent) != mount_identity:
+                    raise StorageError('Temporary cleanup refuses mount boundaries.')
+            finally:
+                os.close(current_parent)
+            attached(path, parent, path.name, identity)
+            for where, owner, name, expected in ancestry:
+                attached(where, owner, name, expected)
+
+        def remove(where, owner, name, fd, expected):
+            ancestry.append((where, owner, name, expected))
+            try:
+                remove_contents(where, owner, name, fd, expected)
+            finally:
+                ancestry.pop()
+
+        def remove_contents(where, owner, name, fd, expected):
+            root_attached()
+            current = attached(where, owner, name, expected)
+            opened = os.fstat(fd)
+            if not same(current, opened) or opened.st_uid != os.geteuid():
+                raise StorageError('Temporary cleanup directory identity changed.')
+            if self.fs.mount_identity(fd) != mount_identity:
+                raise StorageError('Temporary cleanup refuses mount boundaries.')
+            # Restore access only on owned directories, within the pinned tree.
+            mode = stat.S_IMODE(opened.st_mode)
+            if mode & 0o700 != 0o700:
+                os.fchmod(fd, mode | 0o700)
+            for child_name in os.listdir(fd):
+                root_attached()
+                attached(where, owner, name, expected)
+                child_path = where / child_name
+                child = os.stat(child_name, dir_fd=fd, follow_symlinks=False)
+                if child.st_uid != os.geteuid():
+                    raise StorageError('Temporary cleanup refuses foreign-owned entries.')
+                if stat.S_ISDIR(child.st_mode):
+                    attached(child_path, fd, child_name, child)
+                    child_fd = os.open(child_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=fd)
+                    try:
+                        remove(child_path, fd, child_name, child_fd, child)
+                    finally:
+                        os.close(child_fd)
+                else:
+                    # Unlink does not alter linked external bytes or permissions.
+                    attached(child_path, fd, child_name, child)
+                    os.unlink(child_name, dir_fd=fd)
+            if len(ancestry) == 1:
+                # Final boundary: readiness may have changed during this tree's
+                # removal. Re-prove attachment afterwards, before removing root.
+                self.check_ready()
+            root_attached()
+            attached(where, owner, name, expected)
+            os.rmdir(name, dir_fd=owner)
+
+        try:
+            # All configured mounts/floors precede even the first directory chmod.
+            self.check_ready()
+            mount_identity = self.fs.mount_identity(parent)
+            if self.fs.mount_identity(directory) != mount_identity:
+                raise StorageError('Temporary cleanup refuses mount boundaries.')
+            root_attached()
+            remove(path, parent, path.name, directory, identity)
+        except OSError:
+            raise StorageError('Cannot safely remove owned non-credential temporary directory.') from None
 
     def status(self, *, probe=False):
         """Read-only unless probing existing application directories is requested."""

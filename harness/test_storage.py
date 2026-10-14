@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,12 +18,33 @@ class FakeFS(storage.FileSystem):
         self.created = []
         self.probes = []
         self.fail_probe = False
+        self.mount_queries = []
+        self.space_queries = []
+        self.identity_queries = []
+        self.open_queries = []
+        self.mount_ids = {}
 
     def mount_ready(self, path):
+        self.mount_queries.append(path)
         return path in self.mounts
 
     def free_bytes(self, path):
+        self.space_queries.append(path)
         return self.free
+
+    def mount_identity(self, directory, name=''):
+        # Synthetic kernel identities keep these tests independent of real
+        # mounts/statx support; dedicated ABI tests below fake the libc seam.
+        owner = os.fstat(directory)
+        info = (os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if name else owner)
+        result = self.mount_ids.get((info.st_dev, info.st_ino), 1)
+        self.identity_queries.append(((owner.st_dev, owner.st_ino), name, result))
+        return result
+
+    def open_directory(self, path):
+        self.open_queries.append(path)
+        return super().open_directory(path)
 
     def create_directory(self, path):
         self.created.append(path)
@@ -720,6 +742,673 @@ def test_cli_validates_raw_path_spelling(project, monkeypatch, capsys, option, s
     assert 'absolute normalized path' in json.loads(captured.err)['error']
     assert not (project / 'output').exists()
     assert not (project / 'logs').exists()
+
+
+def _observe_cleanup(monkeypatch, before=None):
+    """Record destructive operations only after the caller finishes allocation."""
+    operations = []
+    for action in ('unlink', 'rmdir', 'fchmod'):
+        original = getattr(os, action)
+
+        def observe(name, *args, _action=action, _original=original, **kwargs):
+            if before is not None:
+                before(_action, name, kwargs)
+            operations.append((_action, name))
+            return _original(name, *args, **kwargs)
+
+        monkeypatch.setattr(os, action, observe)
+    return operations
+
+
+def _identity(info):
+    return info.st_dev, info.st_ino
+
+
+def _changed_stat(info, **changes):
+    return SimpleNamespace(st_dev=changes.get('st_dev', info.st_dev),
+                           st_ino=changes.get('st_ino', info.st_ino),
+                           st_uid=changes.get('st_uid', info.st_uid),
+                           st_mode=changes.get('st_mode', info.st_mode))
+
+
+@pytest.mark.parametrize('nested', [False, True], ids=['flat', 'nested'])
+@pytest.mark.parametrize('file_count', [1, 64, 256])
+def test_cleanup_readiness_is_bounded_with_fresh_per_operation_proofs(
+        configured, tmp_path, monkeypatch, nested, file_count):
+    policy, fs, data = configured
+    # Keep artifact readiness separate, as on the unrelated configured NFS mount.
+    artifact_mount = tmp_path / 'artifact-mount'
+    artifact_mount.mkdir()
+    fs.mounts.add(artifact_mount)
+    data['artifacts'].update(path=str(artifact_mount / 'artifacts'),
+                             required_mount=str(artifact_mount))
+    save_config(policy.root, data)
+    policy = storage.resolve_storage(policy.root, env={}, fs=fs)
+    with policy.temporary_directory() as root:
+        directories = [root]
+        if nested:
+            for level in range(4):
+                child = directories[-1] / ('level-' + str(level))
+                child.mkdir(mode=0o700)
+                directories.append(child)
+        directory_proofs = {}
+        parent_keys = {}
+        for directory in directories:
+            key = _identity(directory.stat())
+            parent_key = _identity(directory.parent.stat())
+            directory_proofs[key] = (parent_key, directory.name)
+            parent_keys[key] = parent_key
+        for index in range(file_count):
+            file = directories[index % len(directories)] / ('file-' + str(index))
+            file.write_text('fixture')
+            file.chmod(0o400)
+        for directory in directories:
+            directory.chmod(0o500)
+        root_key = _identity(root.stat())
+        root_parent = _identity(root.parent.stat())
+        fs.mount_queries.clear()
+        fs.space_queries.clear()
+        fs.identity_queries.clear()
+        fs.open_queries.clear()
+        cursors = [0, 0]
+
+        def prove_each_operation(action, name, kwargs):
+            recent = {(owner, entry) for owner, entry, _ in
+                      fs.identity_queries[cursors[0]:]}
+            assert root.parent in fs.open_queries[cursors[1]:]
+            assert (root_parent, '') in recent
+            assert directory_proofs[root_key] in recent
+            if action == 'fchmod':
+                info = os.fstat(name)
+                assert stat.S_ISDIR(info.st_mode)
+                assert info.st_uid == os.geteuid()
+                key = _identity(info)
+                assert (key, '') in recent  # pinned directory mount proof
+                assert directory_proofs[key] in recent
+            else:
+                key = _identity(os.fstat(kwargs['dir_fd']))
+                assert (key, name) in recent  # no-follow target mount proof
+            while key in directory_proofs:
+                assert directory_proofs[key] in recent
+                key = parent_keys[key]
+            cursors[:] = [len(fs.identity_queries), len(fs.open_queries)]
+
+        operations = _observe_cleanup(monkeypatch, prove_each_operation)
+    assert not root.exists()
+    assert [action for action, _ in operations].count('unlink') == file_count
+    assert [action for action, _ in operations].count('rmdir') == len(directories)
+    assert [action for action, _ in operations].count('fchmod') == len(directories)
+    # Exactly two readiness boundaries, each querying both floors/mounts.
+    assert len(fs.space_queries) == 4
+    for mount in fs.mounts:
+        assert fs.space_queries.count(mount) == 2
+        assert fs.mount_queries.count(mount) == 2
+    assert len(fs.identity_queries) >= file_count * 3
+    assert fs.open_queries.count(root.parent) >= len(operations)
+
+
+@pytest.mark.parametrize('invalid', ['mount', 'floor', 'inspection-error'])
+def test_new_cleanup_never_reuses_previous_readiness(configured, monkeypatch, invalid):
+    policy, fs, _ = configured
+    with policy.temporary_directory() as previous:
+        (previous / 'first').write_text('fixture')
+    assert not previous.exists()
+    with pytest.raises(storage.StorageError):
+        with policy.temporary_directory() as root:
+            (root / 'retained').write_text('fixture')
+            root.chmod(0o500)
+            operations = _observe_cleanup(monkeypatch)
+            if invalid == 'mount':
+                fs.mounts.clear()
+            elif invalid == 'floor':
+                fs.free = 999
+            else:
+                def fail_space(path):
+                    raise OSError('PRIVATE-READINESS-DIAGNOSTIC')
+                monkeypatch.setattr(fs, 'free_bytes', fail_space)
+    assert operations == []
+    assert root.exists()
+    assert (root / 'retained').read_text() == 'fixture'
+    assert stat.S_IMODE(root.stat().st_mode) == 0o500
+
+
+@pytest.mark.parametrize('invalid', ['mount', 'floor', 'inspection-error'])
+def test_final_cleanup_readiness_failure_retains_root(configured, monkeypatch, invalid):
+    policy, fs, _ = configured
+    with pytest.raises(storage.StorageError):
+        with policy.temporary_directory() as root:
+            child = root / 'child'
+            child.mkdir()
+            (child / 'fixture').write_text('fixture')
+            unlink = os.unlink
+
+            def unlink_then_invalidate(name, *args, **kwargs):
+                result = unlink(name, *args, **kwargs)
+                if invalid == 'mount':
+                    fs.mounts.clear()
+                elif invalid == 'floor':
+                    fs.free = 999
+                else:
+                    def fail_space(path):
+                        raise OSError('PRIVATE-READINESS-DIAGNOSTIC')
+                    monkeypatch.setattr(fs, 'free_bytes', fail_space)
+                return result
+
+            monkeypatch.setattr(os, 'unlink', unlink_then_invalidate)
+            operations = _observe_cleanup(monkeypatch)
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+    assert ('rmdir', 'child') in operations
+    assert ('rmdir', root.name) not in operations
+
+
+@pytest.mark.parametrize('purpose', ['context', 'validation'])
+def test_owned_cleanup_handles_readonly_tree_links_and_preserves_unrelated_data(
+        configured, tmp_path, monkeypatch, purpose):
+    policy, _, _ = configured
+    external = tmp_path / 'external'
+    external.mkdir()
+    target = external / 'target'
+    target.write_bytes(b'external bytes')
+    target.chmod(0o400)
+    with policy.temporary_directory(purpose=purpose) as root:
+        sibling = root.parent / 'unrelated'
+        sibling.mkdir(mode=0o700)
+        (sibling / 'preserve').write_text('user data')
+        child = root / 'readonly-directory'
+        child.mkdir()
+        file = child / 'readonly-file'
+        file.write_bytes(b'disposable')
+        file.chmod(0o400)
+        (child / 'file-link').symlink_to(target)
+        (child / 'directory-link').symlink_to(external, target_is_directory=True)
+        (child / 'dangling-link').symlink_to(external / 'absent')
+        os.link(target, child / 'hardlink')
+        child.chmod(0o500)
+        root.chmod(0o500)
+        chmod_targets = []
+        fchmod = os.fchmod
+
+        def directory_chmod_only(fd, mode):
+            info = os.fstat(fd)
+            assert stat.S_ISDIR(info.st_mode)
+            chmod_targets.append(_identity(info))
+            return fchmod(fd, mode)
+
+        monkeypatch.setattr(os, 'fchmod', directory_chmod_only)
+    assert not root.exists()
+    assert len(chmod_targets) == 2
+    assert target.read_bytes() == b'external bytes'
+    assert stat.S_IMODE(target.stat().st_mode) == 0o400
+    assert list(external.iterdir()) == [target]
+    assert (sibling / 'preserve').read_text() == 'user data'
+
+
+def test_owned_cleanup_preserves_body_exception_after_removal(configured):
+    policy, _, _ = configured
+    failure = RuntimeError('body failure')
+    with pytest.raises(RuntimeError) as error:
+        with policy.temporary_directory() as root:
+            (root / 'fixture').write_text('fixture')
+            root.chmod(0o500)
+            raise failure
+    assert error.value is failure
+    assert not root.exists()
+
+
+@pytest.mark.parametrize('operation', ['unlink', 'rmdir', 'fchmod', 'listdir', 'open'])
+def test_owned_cleanup_os_errors_are_sanitized_without_fallback(
+        configured, monkeypatch, operation):
+    policy, _, _ = configured
+    with pytest.raises(storage.StorageError, match='Cannot safely remove') as error:
+        with policy.temporary_directory() as root:
+            child = root / 'child'
+            child.mkdir()
+            (child / 'fixture').write_text('fixture')
+            root.chmod(0o500)
+            original = getattr(os, operation)
+
+            def fail(*args, **kwargs):
+                # Leave fresh parent traversal working; fail opening this child.
+                if operation == 'open' and args[0] != 'child':
+                    return original(*args, **kwargs)
+                raise PermissionError('PRIVATE-CLEANUP-DIAGNOSTIC')
+
+            monkeypatch.setattr(os, operation, fail)
+    assert 'PRIVATE-CLEANUP-DIAGNOSTIC' not in str(error.value)
+    assert root.exists()
+    assert not (policy.root / 'logs/harness/workflows').exists()
+
+
+def test_cleanup_failure_does_not_hide_body_exception(configured, monkeypatch):
+    policy, _, _ = configured
+    failure = RuntimeError('body failure')
+    with pytest.raises(storage.StorageError) as error:
+        with policy.temporary_directory() as root:
+            (root / 'fixture').write_text('fixture')
+
+            def fail_unlink(*args, **kwargs):
+                raise PermissionError('PRIVATE-CLEANUP-DIAGNOSTIC')
+
+            monkeypatch.setattr(os, 'unlink', fail_unlink)
+            raise failure
+    assert error.value.__context__.__context__ is failure
+    assert root.exists()
+
+
+def test_cleanup_rejects_replacement_between_allocation_and_pin(configured, monkeypatch):
+    policy, _, _ = configured
+    allocate = policy._allocate_temporary
+    allocated_paths = []
+
+    def allocate_then_replace(**kwargs):
+        path, identity = allocate(**kwargs)
+        retained = path.with_name(path.name + '-retained')
+        path.rename(retained)
+        path.mkdir(mode=0o700)
+        (path / 'replacement').write_text('user data')
+        allocated_paths.extend([path, retained])
+        return path, identity
+
+    monkeypatch.setattr(policy, '_allocate_temporary', allocate_then_replace)
+    with pytest.raises(storage.StorageError, match='directory identity changed'):
+        with policy.temporary_directory():
+            pytest.fail('replacement must fail before yielding')
+    path, retained = allocated_paths
+    assert path.exists() and retained.exists()
+    assert (path / 'replacement').read_text() == 'user data'
+
+
+def test_local_cleanup_preserves_shared_parent_owner(project, tmp_path, monkeypatch):
+    fs = FakeFS()
+    policy = storage.resolve_storage(project, env={}, fs=fs)
+    parent_info = tmp_path.stat()
+    parent_key = _identity(parent_info)
+    real_stat = os.stat
+    real_fstat = os.fstat
+
+    def shared_parent_stat(*args, **kwargs):
+        info = real_stat(*args, **kwargs)
+        return (_changed_stat(info, st_uid=os.geteuid() + 1)
+                if _identity(info) == parent_key else info)
+
+    def shared_parent_fstat(fd):
+        info = real_fstat(fd)
+        return (_changed_stat(info, st_uid=os.geteuid() + 1)
+                if _identity(info) == parent_key else info)
+
+    def local_mkdtemp(*, prefix, dir):
+        assert dir is None
+        path = tmp_path / 'local-validation'
+        path.mkdir(mode=0o700)
+        return str(path)
+
+    monkeypatch.setattr(storage.tempfile, 'mkdtemp', local_mkdtemp)
+    monkeypatch.setattr(os, 'stat', shared_parent_stat)
+    monkeypatch.setattr(os, 'fstat', shared_parent_fstat)
+    with policy.temporary_directory() as root:
+        (root / 'fixture').write_text('fixture')
+        root_key = _identity(os.stat(root))
+        root.chmod(0o500)
+
+        def prove_parent_is_untouched(action, name, kwargs):
+            if action == 'fchmod':
+                assert _identity(os.fstat(name)) == root_key
+
+        operations = _observe_cleanup(monkeypatch, prove_parent_is_untouched)
+    assert not root.exists()
+    # Some pathlib versions retain the original os.stat in their accessor;
+    # observe synthetic ownership through the explicitly patched OS seam.
+    assert os.stat(tmp_path).st_uid == os.geteuid() + 1
+    assert real_stat(tmp_path).st_uid == parent_info.st_uid
+    assert stat.S_IMODE(real_stat(tmp_path).st_mode) == stat.S_IMODE(parent_info.st_mode)
+    assert [action for action, _ in operations] == ['fchmod', 'unlink', 'rmdir']
+    assert fs.space_queries == []
+
+
+@pytest.mark.parametrize('replacement', ['directory', 'symlink'])
+def test_cleanup_rejects_child_replacement_during_no_follow_open(
+        configured, tmp_path, monkeypatch, replacement):
+    policy, _, _ = configured
+    outside = tmp_path / 'external'
+    outside.mkdir()
+    (outside / 'preserve').write_text('external')
+    with pytest.raises(storage.StorageError):
+        with policy.temporary_directory() as root:
+            child = root / 'child'
+            child.mkdir()
+            (child / 'fixture').write_text('retained')
+            retained = root / 'retained-child'
+            open_directory = os.open
+
+            def replace_then_open(name, flags, *args, **kwargs):
+                if name == 'child' and 'dir_fd' in kwargs:
+                    assert flags & os.O_NOFOLLOW
+                    assert flags & os.O_DIRECTORY
+                    child.rename(retained)
+                    if replacement == 'directory':
+                        child.mkdir(mode=0o700)
+                        (child / 'replacement').write_text('user data')
+                    else:
+                        child.symlink_to(outside, target_is_directory=True)
+                return open_directory(name, flags, *args, **kwargs)
+
+            monkeypatch.setattr(os, 'open', replace_then_open)
+            operations = _observe_cleanup(monkeypatch)
+    assert operations == []
+    assert (retained / 'fixture').read_text() == 'retained'
+    assert (outside / 'preserve').read_text() == 'external'
+    if replacement == 'directory':
+        assert (child / 'replacement').read_text() == 'user data'
+    else:
+        assert child.is_symlink()
+
+
+def test_cleanup_reproves_root_after_final_readiness(configured, monkeypatch):
+    policy, _, _ = configured
+    with pytest.raises(storage.StorageError, match='identity changed'):
+        with policy.temporary_directory() as root:
+            (root / 'fixture').write_text('fixture')
+            retained = root.with_name(root.name + '-retained')
+            check_ready = policy.check_ready
+            boundaries = []
+
+            def ready_then_replace_root():
+                result = check_ready()
+                boundaries.append(True)
+                if len(boundaries) == 2:
+                    root.rename(retained)
+                    root.mkdir(mode=0o700)
+                    (root / 'replacement').write_text('user data')
+                return result
+
+            monkeypatch.setattr(policy, 'check_ready', ready_then_replace_root)
+            operations = _observe_cleanup(monkeypatch)
+    assert len(boundaries) == 2
+    assert [action for action, _ in operations] == ['unlink']
+    assert retained.is_dir()
+    assert (root / 'replacement').read_text() == 'user data'
+
+
+@pytest.mark.parametrize('replacement', ['directory', 'symlink'])
+def test_cleanup_rejects_replaced_root_without_destructive_operations(
+        configured, tmp_path, monkeypatch, replacement):
+    policy, _, _ = configured
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'preserve').write_text('external')
+    with pytest.raises(storage.StorageError, match='directory identity changed'):
+        with policy.temporary_directory() as root:
+            (root / 'fixture').write_text('retained')
+            retained = root.with_name(root.name + '-retained')
+            root.rename(retained)
+            if replacement == 'directory':
+                root.mkdir(mode=0o700)
+                (root / 'replacement').write_text('user data')
+            else:
+                root.symlink_to(outside, target_is_directory=True)
+            operations = _observe_cleanup(monkeypatch)
+    assert operations == []
+    assert (retained / 'fixture').read_text() == 'retained'
+    assert (outside / 'preserve').read_text() == 'external'
+    if replacement == 'directory':
+        assert (root / 'replacement').read_text() == 'user data'
+    else:
+        assert root.is_symlink()
+
+
+@pytest.mark.parametrize('replacement', ['directory', 'symlink'])
+def test_cleanup_rejects_replaced_parent_without_destructive_operations(
+        configured, tmp_path, monkeypatch, replacement):
+    policy, _, _ = configured
+    outside = tmp_path / 'outside'
+    outside.mkdir(mode=0o700)
+    with pytest.raises(storage.StorageError):
+        with policy.temporary_directory() as root:
+            (root / 'fixture').write_text('retained')
+            parent = root.parent
+            retained = parent.with_name(parent.name + '-retained')
+            parent.rename(retained)
+            if replacement == 'directory':
+                parent.mkdir(mode=0o700)
+                (parent / 'preserve').write_text('user data')
+            else:
+                parent.symlink_to(outside, target_is_directory=True)
+            operations = _observe_cleanup(monkeypatch)
+    assert operations == []
+    assert (retained / root.name / 'fixture').read_text() == 'retained'
+    assert list(outside.iterdir()) == []
+    if replacement == 'directory':
+        assert (parent / 'preserve').read_text() == 'user data'
+
+
+@pytest.mark.parametrize('location', ['root', 'parent', 'directory', 'file'])
+def test_cleanup_rejects_foreign_owned_entries_before_chmod_or_removal(
+        configured, monkeypatch, location):
+    policy, _, _ = configured
+    with pytest.raises(storage.StorageError, match='foreign-owned|Application directory'):
+        with policy.temporary_directory() as root:
+            child = root / 'child'
+            child.mkdir()
+            file = child / 'fixture'
+            file.write_text('retained')
+            child.chmod(0o500)
+            target = {'root': root, 'parent': root.parent,
+                      'directory': child, 'file': file}[location]
+            foreign = _identity(target.stat())
+            real_stat = os.stat
+            real_fstat = os.fstat
+
+            def foreign_stat(*args, **kwargs):
+                info = real_stat(*args, **kwargs)
+                return (_changed_stat(info, st_uid=os.geteuid() + 1)
+                        if _identity(info) == foreign else info)
+
+            def foreign_fstat(fd):
+                info = real_fstat(fd)
+                return (_changed_stat(info, st_uid=os.geteuid() + 1)
+                        if _identity(info) == foreign else info)
+
+            monkeypatch.setattr(os, 'stat', foreign_stat)
+            monkeypatch.setattr(os, 'fstat', foreign_fstat)
+            operations = _observe_cleanup(monkeypatch)
+    # A foreign file is found only after regaining access to its owned parent.
+    assert all(action == 'fchmod' for action, _ in operations)
+    assert len(operations) == (1 if location == 'file' else 0)
+    assert file.read_text() == 'retained'
+
+
+@pytest.mark.parametrize('location', ['root', 'parent', 'directory', 'file'])
+@pytest.mark.parametrize('boundary', ['mount', 'same-device-bind', 'device'])
+def test_cleanup_rejects_mount_boundaries_before_target_mutation(
+        configured, monkeypatch, location, boundary):
+    policy, fs, _ = configured
+    with pytest.raises(storage.StorageError, match='mount boundaries|identity changed|different mount'):
+        with policy.temporary_directory() as root:
+            child = root / 'child'
+            child.mkdir()
+            file = child / 'fixture'
+            file.write_text('retained')
+            target = {'root': root, 'parent': root.parent,
+                      'directory': child, 'file': file}[location]
+            target_key = _identity(target.stat())
+            if boundary == 'mount':
+                fs.mounts.add(target)
+            elif boundary == 'same-device-bind':
+                # ismount is intentionally false and st_dev stays unchanged.
+                fs.mount_ids[target_key] = 2
+            else:
+                real_stat = os.stat
+                real_fstat = os.fstat
+
+                def other_device_stat(*args, **kwargs):
+                    info = real_stat(*args, **kwargs)
+                    return (_changed_stat(info, st_dev=info.st_dev + 1)
+                            if _identity(info) == target_key else info)
+
+                def other_device_fstat(fd):
+                    info = real_fstat(fd)
+                    return (_changed_stat(info, st_dev=info.st_dev + 1)
+                            if _identity(info) == target_key else info)
+
+                monkeypatch.setattr(os, 'stat', other_device_stat)
+                monkeypatch.setattr(os, 'fstat', other_device_fstat)
+            operations = _observe_cleanup(monkeypatch)
+    assert operations == []
+    assert file.read_text() == 'retained'
+
+
+@pytest.mark.parametrize('changed', ['root', 'parent', 'ancestor'])
+def test_cleanup_rechecks_attachment_after_each_file_operation(
+        configured, monkeypatch, changed):
+    policy, _, _ = configured
+    with pytest.raises(storage.StorageError, match='identity changed'):
+        with policy.temporary_directory() as root:
+            child = root / 'child'
+            child.mkdir()
+            (child / 'first').write_text('fixture')
+            (child / 'second').write_text('fixture')
+            target = {'root': root, 'parent': root.parent, 'ancestor': child}[changed]
+            retained = target.with_name(target.name + '-retained')
+            unlink = os.unlink
+            removed = []
+
+            def unlink_then_replace(name, *args, **kwargs):
+                result = unlink(name, *args, **kwargs)
+                removed.append(name)
+                if len(removed) == 1:
+                    target.rename(retained)
+                    target.mkdir(mode=0o700)
+                    (target / 'replacement').write_text('user data')
+                return result
+
+            monkeypatch.setattr(os, 'unlink', unlink_then_replace)
+            operations = _observe_cleanup(monkeypatch)
+    assert len(removed) == 1
+    assert [action for action, _ in operations] == ['unlink']
+    assert (target / 'replacement').read_text() == 'user data'
+    original_child = (retained if changed == 'ancestor' else retained / 'child'
+                      if changed == 'root' else retained / root.name / 'child')
+    assert len(list(original_child.iterdir())) == 1
+
+
+@pytest.mark.parametrize('change', ['foreign-owner', 'bind-mount'])
+def test_cleanup_rechecks_parent_proof_after_each_file_operation(
+        configured, monkeypatch, change):
+    policy, fs, _ = configured
+    with pytest.raises(storage.StorageError, match='foreign-owned|mount boundaries'):
+        with policy.temporary_directory() as root:
+            (root / 'first').write_text('fixture')
+            (root / 'second').write_text('fixture')
+            parent_key = _identity(root.parent.stat())
+            unlink = os.unlink
+            real_fstat = os.fstat
+            removed = []
+
+            def changed_parent_fstat(fd):
+                info = real_fstat(fd)
+                return (_changed_stat(info, st_uid=os.geteuid() + 1)
+                        if removed and _identity(info) == parent_key else info)
+
+            def unlink_then_change(name, *args, **kwargs):
+                result = unlink(name, *args, **kwargs)
+                removed.append(name)
+                if change == 'bind-mount':
+                    fs.mount_ids[parent_key] = 2
+                return result
+
+            if change == 'foreign-owner':
+                monkeypatch.setattr(os, 'fstat', changed_parent_fstat)
+            monkeypatch.setattr(os, 'unlink', unlink_then_change)
+            operations = _observe_cleanup(monkeypatch)
+    assert len(removed) == 1
+    assert [action for action, _ in operations] == ['unlink']
+    assert len(list(root.iterdir())) == 1
+
+
+@pytest.mark.parametrize('location', ['root', 'ancestor', 'file'])
+def test_cleanup_rechecks_mount_identity_after_each_file_operation(
+        configured, monkeypatch, location):
+    policy, fs, _ = configured
+    with pytest.raises(storage.StorageError, match='mount boundaries'):
+        with policy.temporary_directory() as root:
+            child = root / 'child'
+            child.mkdir()
+            files = [child / 'first', child / 'second']
+            for file in files:
+                file.write_text('fixture')
+            keys = {file.name: _identity(file.stat()) for file in files}
+            unlink = os.unlink
+            removed = []
+
+            def unlink_then_mount(name, *args, **kwargs):
+                result = unlink(name, *args, **kwargs)
+                removed.append(name)
+                if location == 'file':
+                    remaining = next(key for filename, key in keys.items() if filename != name)
+                    fs.mount_ids[remaining] = 2
+                else:
+                    fs.mount_ids[_identity((root if location == 'root' else child).stat())] = 2
+                return result
+
+            monkeypatch.setattr(os, 'unlink', unlink_then_mount)
+            operations = _observe_cleanup(monkeypatch)
+    assert len(removed) == 1
+    assert [action for action, _ in operations] == ['unlink']
+    assert len(list(child.iterdir())) == 1
+
+
+@pytest.mark.parametrize('support', ['no-libc', 'no-symbol', 'syscall-error', 'missing-mask'])
+def test_cleanup_unsupported_statx_fails_closed_before_any_mutation(
+        configured, monkeypatch, support):
+    policy, fs, _ = configured
+    with pytest.raises(storage.StorageError, match='kernel mount identity') as error:
+        with policy.temporary_directory() as root:
+            (root / 'fixture').write_text('retained')
+            root.chmod(0o500)
+
+            class UnsupportedStatx:
+                def __call__(self, directory, name, flags, mask, result):
+                    assert flags == 0x1900
+                    assert mask == 0x1000
+                    return -1 if support == 'syscall-error' else 0
+
+            def fake_libc(name):
+                assert name is None
+                if support == 'no-libc':
+                    raise OSError('PRIVATE-LIBC-DIAGNOSTIC')
+                if support == 'no-symbol':
+                    return SimpleNamespace()
+                return SimpleNamespace(statx=UnsupportedStatx())
+
+            monkeypatch.setattr(storage.ctypes, 'CDLL', fake_libc)
+            monkeypatch.setattr(fs, 'mount_identity', storage.FileSystem().mount_identity)
+            operations = _observe_cleanup(monkeypatch)
+    assert operations == []
+    assert 'PRIVATE-LIBC-DIAGNOSTIC' not in str(error.value)
+    assert (root / 'fixture').read_text() == 'retained'
+    assert stat.S_IMODE(root.stat().st_mode) == 0o500
+
+
+@pytest.mark.parametrize('name', ['', 'entry', 'symlink'])
+def test_kernel_mount_identity_uses_fixed_abi_and_no_follow_flags(monkeypatch, name):
+    calls = []
+
+    class Statx:
+        def __call__(self, directory, entry, flags, mask, result):
+            calls.append((directory, entry, flags, mask))
+            info = storage.ctypes.cast(result, storage.ctypes.POINTER(storage._Statx)).contents
+            info.mask = 0x1000
+            info.mount_id = 987654321
+            return 0
+
+    statx = Statx()
+    monkeypatch.setattr(storage.ctypes, 'CDLL', lambda library: SimpleNamespace(statx=statx))
+    assert storage.ctypes.sizeof(storage._Statx) == 256
+    assert storage._Statx.mount_id.offset == 144
+    assert storage.FileSystem().mount_identity(123, name) == 987654321
+    assert calls == [(123, os.fsencode(name), 0x1900, 0x1000)]
+    assert statx.restype is storage.ctypes.c_int
 
 
 @pytest.mark.parametrize('prefix', ['/escape-', '../escape-', 'nested/escape-', 'bad\n', 'bad\ud800'])

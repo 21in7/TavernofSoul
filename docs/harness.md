@@ -269,8 +269,39 @@ runner의 비인증 검증 자식은 configured 임시 경로의 `HARNESS_WORK_D
 과거 absolute workspace·승인 journal·snapshot은 재작성하지 않는다. 상세 lookup·재개·수동 복구
 경계는 [workflow](workflow.md#저장-위치와-기존-실행-조회)를 따른다. 자동 migration·archive·
 역사적 산출물 삭제나 cron 등록은 없다. 임시 context manager는 자신이 만든 고유 작업만 정리한다.
-main이 제공한 호스트의 `/mnt/nfs-2tb`·`/mnt/nfs-hdd`는 활성화할 private 설정의 후보이며 소스
-기본값이 아니다. 이 문서는 mount 확인·호스트 활성화·검토·검증·GitHub 전달 완료를 주장하지 않는다.
+main이 제공한 호스트의 NFS 경로는 소스 기본값이 아니다. 이번 실행은 최신 사용자 선택대로
+기존 configured NFS 설정·mount·floor를 유지한다. activation 변경이나 local storage override를
+제안하지 않으며 private 설정을 읽지 않았다. 이 문서는 mount 확인·검토·검증·GitHub 전달
+완료를 주장하지 않는다.
+
+### 호출 소유 임시 tree의 cleanup 경계
+
+`temporary_directory`의 고유 비인증 tree 제거는 한 고수준 filesystem 작업이다.
+첫 chmod/unlink/rmdir 전 cleanup 진입과 최종 root 제거 직전에 모든 configured mount/floor의
+readiness를 새로 확인한다. 이전 cleanup의 성공을 재사용하지 않는다. 각 destructive 작업에는
+root·parent·ancestor·대상 attachment, ownership, no-follow, device와 kernel mount identity의
+새 proof가 필요하다. global readiness 조회는 파일 수에 비례하지 않지만 이 proof는 계속 수행한다.
+이 한계는 configured prerequisites의 mount readiness/free-space 조회에 적용하며, 항목별
+mount-point 검사와 statx mount ID 호출 수를 제한하거나 캐시하는 정책은 아니다.
+같은 device의 bind mount도 거부한다. readonly 소유 directory만 검증된 descriptor로 owner
+접근을 복구하며 파일 chmod·외부 link target 접근은 하지 않는다. hardlink의 외부 bytes/mode도
+보존한다. parent의 고정 owner는 legacy 공용 `/tmp`에서 다른 사용자일 수 있지만 바뀌면 실패하며
+tree 내부는 모두 프로세스 소유여야 한다.
+
+Linux statx `STATX_MNT_ID`를 얻지 못하는 libc/platform/kernel·오류/mask는 fail closed다.
+device/ismount fallback이나 host mount 설정 열람은 없다. 최종 readiness 실패는 일부 제거된
+tree를 남길 수 있으며 failure를 숨기지 않는다. workflow는 permanent 증거와 redacted
+`model_context_cleanup`을 유지하고 non-success로 노출한다. report persistence 실패도 caller에
+전달하며 local project lock을 해제한다. 상세/대안은 [ADR 0013](adr/0013-owned-validation-temporary-cleanup.md)에 둔다.
+
+`harness/test_storage.py`의 counting-FakeFS는 여러 파일 수에서 cleanup readiness 경계가
+2회이고 configured mount/free-byte 조회가 bounded인 반면 per-entry proof는 증가함을 확인해야
+한다. 새 cleanup의 invalid readiness는 removal/chmod 0회, 최종 readiness 실패는 root 보존을
+확인한다. readonly·exception·link/hardlink·swapped allocation/root/parent·foreign owner·device/
+mount/bind mount·statx 실패 회귀를 보존한다. synthetic env/root는 host private config·실 NFS와
+분리하며 기존 tests/제외를 유지하고 skip/xfail을 추가하지 않는다. worker는 실행하지 않는다.
+계측은 allocation/create/probe 이후 cleanup 자체를 대상으로 한다. empty tree도 진입/최종
+2회 readiness 경계를 요구하고 invalid 새 cleanup의 0회 mutation에는 `fchmod`도 포함한다.
 
 이 변경의 매 orchestrator review는 `documentation={status,files,reason}`을 반환하며
 `status=updated`는 실제 변경된 승인 Markdown 목록과 저장·격리·복구 설명의 의미적 판단으로
@@ -575,6 +606,10 @@ ID 중복·참조·수치 범위·단위 담당 단계와 기존 optional/sentin
 
 ### 최적화 회귀와 성능 근거
 
+이번 31파일 importer/cleanup 수리의 현재 범위·근거·pending 상태는
+[별도 인계 기록](#이번-importercleanup-수리의-후보-근거와-검증-대기)에 둔다.
+아래 이전 최적화별 설명은 그 작업의 회귀 요구사항이며 이번 full validation 성공 기록이 아니다.
+
 다음은 네 최적화의 검토·검사 요구사항이며 실행 성공 기록이 아니다. 작은 합성 입력과
 직접 작성한 기대값을 사용하고 기존 임시 프로젝트 준비·전역 상태 복원 정책을 유지한다.
 
@@ -875,3 +910,54 @@ unpack과 번역 디렉터리 전체를 롤백하는 구조는 아니므로 실�
 추적되는 `.example`을 읽어 다운로드·파서·import 실패 가드를 검사한다.
 예제가 없으면 skip하지 않고 실패하며 운영 cron은 실행하지 않는다.
 서버의 기존 설정과 운영 파일은 이 소스 준비 작업에서 수정하지 않는다.
+
+## 이번 importer/cleanup 수리의 후보 근거와 검증 대기
+
+이번 범위는 기존 `files-repair.txt`의 정확히 31개 개별 파일이다. 원래 최적화와 추가 8개
+repair 파일의 작업 승인을 유지하되 이 수리는 importer snapshot/SELECT와 호출 소유 임시
+cleanup만 완료한다. `parser_tidy/items.py`·`luautil.py`는 바꾸지 않는다. 장비 Lua batching은
+제공된 측정에서 4.8% 느려 제외되었으며 해당 Lua ADR은 만들거나 index하지 않는다.
+기존 역할/provider/model과 후속 PAK 실행용 GLM을 유지한다. 기존 configured NFS 선택·mount·
+floor도 유지하며 local storage override나 activation 변경은 없다.
+
+`load_import_snapshot`은 모든 JSON의 strict validation/order를 유지하고 consumed collections와
+version만 반환한다. 활성 handle의 staging 소비자에는 deepcopy, direct/prev에는 fresh read를
+적용하며 성공·실패·retry에서 상태를 버린다. SELECT 인덱스는 canonical ID와 기존 item
+분류 목록/우선순위/오류, 스킬 행별 save·update=0·created/updated·삭제 및 missing/ambiguous
+예외를 보존한다. 새 snapshot API/ORM 검증은 기존 scoped `test_release_contract.py`,
+`test_import_safety.py`, `harness/contract_tests.py`에 두고 기존 테스트와 제외를 유지한다.
+호출 소유·nested copy·strict order·fresh direct/prev·failure/retry·state cleanup과 실제
+save/audit/write 수·삭제·참조 예외를 의미 있는 기대값으로 확인해야 하며 skip을 추가하지 않는다.
+
+아래는 메인이 제공한 **검토된 후보의 진단 근거**다. 이 worker는 재측정하거나 검사하지 않았다.
+
+| 제공된 관측 | 범위와 한계 |
+| --- | --- |
+| isolated importer 3회: 첫 실행 wall 31.7%, 반복 실행 48.1% 감소 | 후보/기준의 importer 비교이며 최종 소스나 전체 pipeline 개선율이 아님 |
+| 반복 SELECT 1604→100 | read 최적화; bulk write나 save 생략의 근거가 아님 |
+| 33개 테이블: 자동 audit timestamp 외 값 동일 | audit 값을 제외한 DB 비교이며 모든 필드의 byte 동등성 주장이 아님 |
+| 정확한 prev bytes 및 INSERT/UPDATE/DELETE 수 동일 | 후보의 비교 기준/쓰기 동등성 근거 |
+| fresh isolated kTOS/iTOS/jTOS main: 지역별 41개 JSON bytes baseline과 동일 | 후보 지역 출력 비교이며 반영한 최종 소스를 다시 확인해야 함 |
+| selected parser/harness 2691 tests passed, zero skips | parent의 부분 검사 기록; 전체 make check/full workflow 성공이 아님 |
+| NFS statvfs probe 회복 | 제공된 장애 회복 관측; cleanup 성능·최종 validation 완료가 아님 |
+
+prior real models와 Claude가 공급된 후보 diff를 승인했으나 새 cleanup/readiness 수리 후 최종
+소스의 fresh real review가 필요하다. 이전 full workflow는 NFS RPC 대기 중 timeout했으며
+old parent `shutil.rmtree`는 readonly keep에서 실패했다. selected tests 이후에도 cleanup이
+매우 느렸다. **full validation은 통과하지 않았고 현재 pending이다.** 최종 수리의 cleanup
+성능/성공·전체 `make check`·최종 source bytes/ORM 비교·실제 CI/merge/cleanup 성공을 꾸미지 않는다.
+
+이번 repair 입력의 `check` diagnostic은 context unavailable·unattributed다. 이 정보만으로
+실패 원인이나 특정 파일의 책임을 추정하지 않으며 기존 후보의 timeout/cleanup 실패와
+같은 원인으로 합치지 않는다. 최종 소스의 새 실제 review 후 원래 필수 checks를 모두 실행하는
+책임은 오케스트레이터에 남는다.
+
+오케스트레이터가 새 실제 review, complete `make check`와 기존 tests/제외·zero-skip 확인,
+31파일 scoped apply 및 기본 Git 역할을 담당한다. main은 최종 소스 근거를 확인한 뒤 정확한
+GitHub 앱 journal을 실행하고 `Offline harness (SQLite)`, `MySQL harness`,
+`Chromium browser harness`의 실제 success 3개, SHA 고정 merge와 cleanup 완료를 확인한다.
+worker는 checks·Git·workflow·agent-run·다른 모델·cron·download·importAll을 실행하지 않는다.
+외부 모델에는 승인 31파일만 주며 private config/diagnostic 파일은 주지 않는다.
+인계와 매 review의 `documentation={status,files,reason}` 요구는
+[workflow](workflow.md#이번-31파일-수리의-검토검증게시-인계), 결정은
+[0012](adr/0012-importer-single-run-snapshot.md)와 [0013](adr/0013-owned-validation-temporary-cleanup.md)에 둔다.
