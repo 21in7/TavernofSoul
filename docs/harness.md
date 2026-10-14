@@ -901,6 +901,124 @@ binary IES 변환 정확성이나 게임 값의 의미적 정확성을 증명하
 unpack과 번역 디렉터리 전체를 롤백하는 구조는 아니므로 실패 후 일부 파일이 남을 수 있다.
 실패 상태에서 cron의 후속 단계를 차단하고 다음 실행이 해당 패치를 다시 적용하는 방식이다.
 
+## 이번 PAK 스트리밍 재시도의 근거와 인계
+
+이번 변경의 구현·테스트 읽기 참조는
+[`unpacker_pak.py`](../downloader/unpacker_pak.py),
+[`conftest.py`](../downloader/tests/conftest.py),
+[`test_downloader.py`](../downloader/tests/test_downloader.py)다.
+64KiB compressed member read와 양수 1MiB inflate 상한, 작은 header/name exact-read,
+native signed 14바이트 형식·blacklist-before-UTF8·trailing compressed bytes 호환성을 유지한다.
+메모리에는 여러 조각과 zlib/Python/file 상태가 함께 존재하므로 이 상한들의 합을 RSS
+상한으로 주장하지 않는다. 전체 archive/member buffering과 무제한 decompressor flush는 없다.
+파일별 `.part` flush/fsync/close/replace와 실패 정리, 앞 파일 완료·뒤 destination/archive
+보존 및 처음부터 재시도하는 계약은 [아키텍처](architecture.md#pak-스트리밍-추출의-메모리공개복구-경계)에 둔다.
+직접 `unpack()`의 실패 archive 보존과 상위 다운로더의 손상 PAK 재다운로드는 별개다.
+
+### 작은 회귀 명세와 정정 이력
+
+`pak_io_guard`는 실제 파일과 `decompressobj`를 감싼 테스트 전용 fixture다.
+source `read(size)`는 양수·최대 65536 bytes, inflate `max_length`는 양수·최대
+1048576 bytes이며 반환 출력도 전달한 상한 이하인지 확인한다. 짧은 read를 반환할 수
+있고 decompressor flush를 금지한다. pytest monkeypatch teardown으로 원래 seam을
+복원하며 HTTP fixture·인증·의존성·production behavior를 바꾸지 않는다.
+기존 baseline/version/redownload/CSV guard 테스트는 유지한다.
+
+현재 추가된 테스트 함수는 여섯 개, parameterization을 포함하면 18개 회귀이며
+아직 실행 결과는 없다. 필요한 오류 변형만 parameterize한다.
+
+| 회귀 명세 | 현재 정의된 범위 |
+| --- | --- |
+| bounded member read/inflate | seed 20261014의 RNG 하나로 만든 200 bytes, compressed 입력 >16 bytes·decoded 출력 >32 bytes 확인, read 16 bytes·inflate 32 bytes로 축소, 출력 equality·archive 삭제·no `.part`·호출 상한 assertion |
+| 짧은 read·여러 레코드 | header/name/member 짧은 read, 유효한 빈 decoded member, blacklist invalid UTF-8, trailing compressed bytes 뒤 다음 레코드 결과 |
+| invalid record | 빈 archive·짧은 header·양수 이름 길이 대비 이름 bytes 부족·비양수 이름 길이·음수 compressed/uncompressed 크기·빈 compressed member·member 경계 초과·비blacklist invalid UTF-8, archive 보존·no `.part` |
+| 뒤 레코드 실패 | incomplete/corrupt deflate·declared size mismatch에서 앞 파일 완료, 기존 뒤 파일과 archive 보존·part 정리 |
+| 같은 경로 재시도 | 실패 archive를 정상 bytes로 다시 제공하여 정상 출력·archive 삭제·no `.part` |
+| 공개 IO 오류 | fsync/replace 오류에서 기존 destination과 archive 보존·part 정리 |
+
+2026-10-14 정정: 이전 문서 finding은 매 바이트마다 RNG를 새로 생성한 입력과
+`truncated_name`·`empty_member` 사례 누락을 지적했다. 이번 승인 소스 열람에서는
+`rng = random.Random(20261014)` 하나를 반복 사용하며 기존 크기 assertion이 유지되고,
+두 사례가 기존 `INVALID_PAKS` parameterization에 추가된 것을 확인했다.
+이전 finding의 입력·정의 문제는 현재 소스에 반영되어 있다. 문서 worker는 테스트를
+수정하거나 실행하지 않았으며 이 열람 결과는 assertion 통과나 validation success를
+뜻하지 않는다. 여섯 함수의 정의와 기존 deflate/size/truncated 재시도·버전·CSV 회귀를
+함께 유지한다. 짧은 read와 이름/member 경계 검사는 작은 합성 입력의 회귀 명세이며
+실제 운영 archive나 모든 IO 실패 형태를 검증한 결과가 아니다.
+
+### 제공된 측정과 검증 상태
+
+2026-10-14 최신 인계 정정: 종전 기록의 구현 단계 passed·큰 테스트 요청 900초
+timeout 이후, 마지막 run은 실제 GLM 소스·fixture·테스트와 Codex 문서 작성 및
+Claude 승인까지 완료했다. 그러나 Python3.8 실제 `check`에서 테스트 helper의
+`zlib.compress(data, 9, -15)`가 `TypeError: compress() takes at most 2 arguments`로
+downloader 수집을 실패시켜 run은 failed였다. Root에는 아무것도 반영하지 않았다.
+기본 gate의 parser 실패도 같은 downloader collection error를 다시 실행하는 통합 테스트
+한 건이며 django/regression/pipeline은 통과했다. 이는 메인이 제공한 이전 결과이며
+이번 worker가 실행·확인한 검증 결과가 아니다.
+메인은 승인된 7개 파일만 새 격리 모델 사본에 재사용했다. 원본 Root와 원래 baseline은
+새 전체 검토·검증 후 반영 전까지 그대로 유지한다.
+
+이번 국소 수리는 `raw_deflate` 한 곳을 Python3.8에서 지원하는 raw-deflate
+`zlib.compressobj(9, zlib.DEFLATED, -15)` 생성 후
+`compressor.compress(data) + compressor.flush()`로 바꾸는 것이다.
+작은 fixture 입력을 완성하는 compressor flush이며 production decompressor flush 금지를
+바꾸지 않는다. 현재 승인 테스트 소스에서 이 정의를 확인했지만 실행하지 않았다.
+production source·fixture·나머지 기존 및 신규 테스트는 유지하며 weakening/deletion/skip은 없다.
+
+| 메인이 제공한 관측 | 증거의 범위 |
+| --- | --- |
+| 소스 SHA256 `ace103822ecb0496602066e25ff5d5172cff44fd471ede65e9226c002568108e` | 재사용 완료 소스의 제공된 식별값; 이 worker는 hash 검사를 실행하지 않음 |
+| 기존 downloader 회귀 81개 passed, skip 0 | 위 소스·fixture의 이전 결과; 새 18개 회귀나 이번 전체 gate 성공이 아님 |
+| 격리 64MiB 합성 입력 3회와 별도 tracemalloc에서 output bytes/SHA256이 baseline과 동일 | 이전 승인 후보의 제공된 측정이며 최종 소스·새 회귀·전체 validation success가 아님 |
+| Python traced peak 134851344 → 2337899 bytes | 위 후보의 별도 tracemalloc 관측; RSS·전체 pipeline peak·고정 메모리 상한을 증명하지 않음 |
+
+64MiB benchmark는 기본 테스트에 넣지 않는다. 새 작은 테스트의 존재나 제공된 측정을
+최종 검토·offline gate·CI 성공으로 해석하지 않는다. 현재 최종 검토·전체 검증·원격
+게시·CI·merge·cleanup은 결과가 제공되지 않아 모두 대기다.
+
+### 실행·검토·게시 책임
+
+2026-10-14 배정 정정: 종전 세 task 대신 정확히 두 순차 task다.
+(1) downloader GLM의 `unpacker_pak.py`·`conftest.py`·`test_downloader.py`에서
+`raw_deflate` helper 한 곳만 수리하고 나머지를 유지한다.
+(2) coordinator의 architecture/harness/ADR0014/index 문서를 확인·유지하고 필요할 때만 갱신한다.
+읽기 참조 파일을 별도 task로 배정하지 않는다. 기존 GLM `glm-5.3-flash`와 모든 역할
+설정, NFS 저장 설정·mount·floor를 유지하며 모델·설정·storage override를 변경하지 않는다.
+
+worker는 승인된 정확히 7개 파일만 읽고 각 task의 배정 파일만 수정한다.
+문서 worker의 편집 대상은 `docs/architecture.md`, `docs/harness.md`,
+`docs/adr/README.md`, `docs/adr/0014-streaming-pak-extraction.md`다.
+기존 사용자 편집을 보존하며 tests/checks·Git·운영 데이터·cron·전체다운로더·실DB·
+다운로드·importAll·다른 모델·agent-run·harness.workflow를 실행하거나 위임하지 않는다.
+
+실행기는 새 검토 뒤 필수 check 하나인 **전체 offline gate (`make check`)**를 수행한다.
+기존 baseline tests·제외를 유지하며 selected skip/xfail·미수집은 성공으로 처리하지 않는다.
+이 worker는 어떤 검사도 실행하지 않았고 실행기의 성공을 대신 선언하지 않는다.
+매 review는 `documentation={status,files,reason}`을 반환하고 실제 changed docs가
+메모리·공개·실패 복구·격리·책임을 완전히 설명하는지 의미적으로 판단한다.
+Markdown 확장자 확인은 완전성 증거가 아니다. 이번 문서 수리는 승인된 네 문서에
+구현 계약·현재 테스트 명세·근거 한계·후속 책임을 기록하여
+`documentation.status=updated`로 인계하며, 새 reviewer의 의미적 완전성 판단은 대기다.
+
+2026-10-14 문서 finding 정정: 이전 승인 사본에는 ADR0014가 없어
+`changes_requested`, `documentation.status=missing`으로 보고했다. 이전 문서 수리는
+승인된 정확한 경로의 [ADR0014](adr/0014-streaming-pak-extraction.md) 작성을 명시하여
+그 파일을 작성하고 index의 예약 항목을 실제 링크로 갱신했다. 이번에는 해당 기록을 유지한다.
+이는 승인 밖 파일 생성이나 scope 확대가 아니다. importer ADR0012·owned-temp ADR0013의 항목은 보존한다.
+다른 문서·parent instructions·호스트 설정·credentials는 읽지 않는다.
+추가로 필요한 승인 밖 문서는 현재 확인되지 않았다. 필요해지면 정확한 누락 경로를
+기존 승인 파일 finding에 기록하고 changes_requested로 보고한다. scope 확인·새 run
+준비는 메인 coordinator 책임이며 repair round는 승인을 확대하지 않는다.
+
+메인은 finding 해결과 최종 검토·전체 offline gate 후 최종 소스 hash 및 제공된 측정과의
+일치를 확인하고 기존 GitHub request/accept 흐름으로 원격 commit·PR을 진행한다.
+`Offline harness (SQLite)`, `MySQL harness`, `Chromium browser harness`의 실제
+CI success 3개를 확인한 뒤 승인 SHA에 squash merge하고 해당 run branch 정리를 완료한다.
+기존 journal·정확한 ref·lease·사용자 편집 보존·cleanup 완료 계약을 유지한다.
+merge와 cleanup 상태는 구분하며 cleanup complete 전 전체 성공을 선언하지 않는다.
+이는 후속 책임이며 이 문서 작업의 실행 결과가 아니다.
+
 ## 공개 저장소의 운영 알림 설정
 
 추적되는 `cron_itos.sh.example`, `cron_jtos.sh.example`, `cron_ktos.sh.example`의 Discord 웹훅은

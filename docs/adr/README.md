@@ -18,6 +18,7 @@
 | [0011](0011-configurable-harness-storage.md) | 설정 가능한 산출물·비인증 임시 저장, 고정 로컬 lock·인증 runtime, legacy 조회와 fallback 금지 | 제안(proposed), 구현안 검토·검증·전달 대기 | 2026-10-13 |
 | [0012](0012-importer-single-run-snapshot.md) | 호출 소유 importer snapshot·consumed-only retention·복사 소비자·fresh direct/prev·SELECT 인덱스와 ORM 의미 보존 | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0013](0013-owned-validation-temporary-cleanup.md) | 고유 임시 tree의 진입/최종 readiness와 매 destructive 작업 attachment·ownership·kernel mount proof | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
+| [0014](0014-streaming-pak-extraction.md) | PAK의 bounded read/inflate와 파일별 원자 공개·부분 실패·재시도 경계 | 제안(proposed), 새 검토·전체 검증·전달 대기 | 2026-10-14 |
 
 ## 상태와 근거의 의미
 
@@ -53,6 +54,63 @@ attachment/ownership/no-follow/device/kernel mount 증명을 유지한다. 0010�
 이번 repair 입력의 unavailable/unattributed `check` diagnostic은 알려진 실패 원인을
 추가하지 않는다. 원인 추정이나 통과 주장을 하지 않고 [workflow 인계](../workflow.md#이번-31파일-수리의-검토검증게시-인계)에
 한계를 기록한다. 최종 새 실제 검토 후 원래 필수 checks 전체를 오케스트레이터가 실행한다.
+
+### PAK 재시도의 문서 finding
+
+2026-10-14 정정: 이전 문서 finding은 승인 사본에
+`docs/adr/0014-streaming-pak-extraction.md`가 없어 `changes_requested`로 보고했다.
+이전 문서 수리는 승인 목록 안의 해당 ADR 작성을 명시하여 파일을 작성하고 예약 항목을
+실제 링크로 바꿨다. 이번에는 해당 기록을 유지한다. 파일 존재는 문서 검토 통과나
+validation success의 증거가 아니다.
+승인 밖 문서를 자동 열람·복사·생성하지 않으며 repair round는 승인 범위를 확대하지 않는다.
+필요한 승인 밖 경로가 발견되면 기존 승인 파일 finding에 정확히 기록하고
+changes_requested로 보고한다. scope 확인과 새 run 준비는 메인 coordinator 책임이다.
+이 작업에서 추가로 필요한 승인 밖 문서는 확인되지 않았으며 기존 설계·workflow 링크는
+그 문서들을 열람했다는 뜻이 아니다.
+
+[0014](0014-streaming-pak-extraction.md)에 기록한 주요 결정은 다음과 같다. 기존 importer 0012와 owned-temp 0013을
+대체하지 않으며 두 항목과 기존 기록을 보존한다.
+
+- 문맥: 전체 PAK/member buffering에 따른 Python peak를 archive/member 크기에
+  비례하지 않는 버퍼로 줄인다. 기존 형식·checksum·경로 정책은 유지한다.
+- 결정: compressed member read 64KiB와 양수 inflate `max_length` 1MiB,
+  작은 header/name exact-read와 eof/실제 출력 크기 확인을 사용한다.
+  파일별 `.part` flush/fsync/close/replace와 실패 정리, 전체 성공·archive close 후
+  archive 삭제를 유지한다. blacklist-before-UTF8와 trailing compressed bytes 무시도 유지한다.
+- 비교·이유: 전체 buffering은 단순하지만 입력·decoded member 크기에 따라 메모리가 늘어난다.
+  read만 잘라도 inflate 출력이 무제한이면 목적을 달성하지 못한다. 양쪽 상한과 tail 처리는
+  반복 제어·byte count 검사를 요구하지만 기존 파일별 공개 의미를 유지한다.
+  전체 archive rollback은 별도 staging/복구 정책을 요구하여 이번 결정에 포함하지 않는다.
+- 비용·복구: 추가 read/inflate/write 반복의 성능 효과는 아직 측정 근거가 없다.
+  여러 조각·zlib/Python/file 상태가 함께 존재하여 두 chunk 상한의 합은 RSS 상한이 아니다.
+  앞 파일은 뒤 레코드 실패 때도 완료 상태로 남고 기존 뒤 destination/archive는 보존한다.
+  직접 unpack의 같은 경로 정상 bytes 재시도와 상위 다운로더의 손상 PAK 재다운로드는 구분한다.
+  디스크 사용량·전체 archive 원자성·directory fsync·정전 복구는 보장 범위를 확대하지 않는다.
+- 근거·상태: 제공된 소스 SHA256
+  `ace103822ecb0496602066e25ff5d5172cff44fd471ede65e9226c002568108e`의
+  격리 64MiB 합성 입력 3회와 별도 tracemalloc에서 output bytes/SHA256은 baseline과 같았고
+  Python traced peak는 134851344 → 2337899 bytes였다. 이는 이전 승인 후보의 제공된 측정이며
+  validation success가 아니다. 원본 Root/baseline은 전체 검토·검증 후에만 반영한다.
+
+실제 구현 계약은 [아키텍처](../architecture.md#pak-스트리밍-추출의-메모리공개복구-경계),
+여섯 작은 테스트의 현재 범위·RNG/경계 finding 정정·근거 한계·후속 책임은
+[하네스 인계](../harness.md#이번-pak-스트리밍-재시도의-근거와-인계)에 기록한다.
+2026-10-14 최신 인계 정정: 마지막 실제 GLM 소스·fixture·테스트와 Codex 문서는
+Claude 승인을 받았지만 Python3.8 `raw_deflate`의 3인자 `zlib.compress`가
+downloader 수집을 실패시켜 run은 failed였고 Root 반영은 없었다.
+기존 downloader 81개는 passed/skip 0, 새 18개 회귀는 미실행이다. 승인된 7개 파일을
+새 격리 사본에 재사용하고 두 순차 task로 helper 수리와 문서 확인을 수행한다.
+Python3.8 raw `compressobj`의 compress+compressor flush는 작은 fixture 완성을 위한
+국소 호환성 수리이며 production decompressor flush 금지·설계 결정을 바꾸지 않는다.
+새 ADR은 필요하지 않으며 기존 0014와 0012·0013을 보존한다. 모두 새 review/check를 받는다.
+기존 GLM `glm-5.3-flash`·모든 역할·NFS 설정·mount·floor를 유지한다.
+실행기가 필수 전체 offline gate 하나를 수행하며 selected skip/xfail은 성공이 아니다.
+메인은 최종 hash/측정 일치를 확인한 뒤 기존 GitHub request/accept로 원격 commit·PR,
+실제 CI success 3개·squash merge·해당 run branch cleanup을 담당한다. 모두 후속 대기다.
+매 review는 `documentation={status,files,reason}`으로 실제 changed docs의 의미적
+완전성을 판단한다. 이번 문서 수리의 인계 상태는 `updated`이며 새 reviewer 판단과
+필수 전체 검증은 대기다. ADR0014의 proposed는 작업 승인을 부정하는 상태가 아니라
+최종 소스의 새 검토·전체 offline gate·실제 게시가 아직 완료되지 않았다는 뜻이다.
 
 상태는 제안(proposed), 승인(accepted), 대체됨(superseded)을 사용한다. 이후 결정 변경은
 기존 ADR를 삭제하거나 새 결론으로 재작성하지 않는다. 기존 상태를 superseded로 바꾸고
