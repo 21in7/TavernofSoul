@@ -247,6 +247,61 @@ cleanup_pending은 non-success이며 이전 merged/passed journal은 새 명시�
 따옴표나 열을 추측 보정한 결과로 정확성을 주장하지 않는다.
 CSV 형식 검증 통과도 binary IES 변환·게임 값의 의미적 정확성 검증을 대신하지 않는다.
 
+## PAK 스트리밍 추출의 메모리·공개·복구 경계
+
+이번 PAK 재시도는 위 IPF/CSV 작업과 별개의 승인 범위다.
+[`downloader/unpacker_pak.py`](../downloader/unpacker_pak.py)는 전체 PAK이나 member를
+메모리에 모으지 않고 압축 member를 최대 64KiB(65536 bytes)씩 읽는다.
+raw-deflate `decompressobj`의 모든 `decompress` 호출은 양수인 1MiB(1048576 bytes)
+`max_length`를 전달하며 반환된 조각을 바로 파일에 쓴다. `unconsumed_tail`을 같은
+상한으로 처리하고 무제한 `decompressor.flush()`는 사용하지 않는다.
+14바이트 header와 이름만 exact-read loop로 모으며 짧은 read를 허용한다.
+이름은 양수 native signed 16-bit 길이로 최대 32767 bytes다.
+따라서 버퍼 크기는 archive/member 크기·레코드 수에 비례하지 않는다.
+동시에 존재하는 입력·tail·출력 조각, 이름의 복사, Python/file buffer와 zlib 내부 상태가
+추가되므로 64KiB+1MiB를 총 Python peak나 RSS의 절대 상한으로 해석하지 않는다.
+출력 파일 크기와 필요한 디스크 공간의 상한을 줄이는 변경도 아니다.
+
+header는 offset 0/2/6/10에서 각각 native signed `@h`/`@i`/`@i`/`@i`로 읽는
+기존 14바이트 형식이다. endian·alignment 형식을 새로 정하지 않는다.
+빈 archive, 짧은 header/name/member, 비양수 이름 길이, 음수 compressed/uncompressed
+크기와 archive 끝을 넘는 레코드를 거부한다. checksum은 읽되 검증하지 않는다.
+blacklist는 raw 이름 bytes에 먼저 적용하므로 해당하는 invalid UTF-8 이름도
+디코딩·추출 없이 건너뛴다. 나머지 이름은 UTF-8 오류를 전파한다.
+추출 member는 실제 출력 크기가 선언값과 같고 deflate `eof`에 도달해야 한다.
+완전한 deflate stream으로 표현된 빈 출력은 유효하다.
+빈 compressed member는 deflate `eof`에 도달하지 못하므로 실패한다.
+stream 뒤의 compressed trailing bytes는 기존 `zlib.decompress`처럼 무시하고,
+다음 레코드는 stream 끝이 아닌 선언된 compressed 크기의 경계로 seek한다.
+checksum·경로 해석·blacklist·format 정책은 바꾸지 않는다.
+
+각 destination은 같은 경로의 `.part`에 쓰고 크기·eof 확인 → 파일 flush/fsync → close →
+`os.replace` 순서로 공개한다. 교체 전 실패하면 기존 destination과 archive를 보존하고
+실패한 `.part`를 정리한다. 두 번째 레코드 실패 시 첫 번째 파일은 이미 완료된 상태로
+남으며, 뒤의 기존 destination과 archive는 유지된다. 전체 archive rollback은 없다.
+만든 디렉터리도 남을 수 있다. 모든 레코드 처리와 archive close가 성공한 뒤에만 PAK을
+삭제한다. 정리·삭제 자체의 IO 오류는 전파하며, 파일 fsync만으로 directory fsync나
+정전·강제 종료 전체의 원자성을 보장하지 않는다.
+
+직접 `unpack()` 호출은 실패 PAK을 보존하며 같은 경로에 정상 bytes를 제공한 재시도는
+레코드를 처음부터 다시 적용하고 전체 성공 후 archive를 삭제한다.
+상위 다운로더의 기존 회귀는 손상 PAK을 폐기하고 다음 실행에 재다운로드하는 정책을
+별도로 확인한다. release 버전은 해제와 번역 복사까지 성공해야 전진한다.
+이 두 복구 경계를 archive 전체의 원자 갱신으로 합치지 않는다.
+
+기존 GLM `glm-5.3-flash`, 모든 역할 설정과 NFS 저장 설정·mount·floor를 유지한다.
+이전 실제 GLM 소스·fixture·테스트와 Codex 문서는 Claude 승인 후 승인된 7개 파일만
+새 격리 모델 사본에 재사용했다. Python3.8 테스트 수집 실패로 이전 run은 failed였고
+Root에는 반영하지 않았다. 원본 Root와 baseline은 새 전체 검토·검증 뒤에만 반영한다.
+이번 수리는 테스트의 `raw_deflate` helper만 Python3.8 지원 `compressobj`의
+`compress(data) + flush()`로 바꾼다. 작은 fixture를 완성하는 compressor flush이며
+production decompressor flush 금지와 별개다. 생산 계약·fixture·나머지 테스트는 유지한다.
+이전 승인 후보의 제공된 측정, 실행기·메인의 후속 책임과
+현재 상태는 [PAK 검증 인계](harness.md#이번-pak-스트리밍-재시도의-근거와-인계)에 둔다.
+주요 결정·대안·비용·증거 범위는 [ADR 0014](adr/0014-streaming-pak-extraction.md)에
+기록한다. 이전 문서 수리에서 승인 경로의 누락 ADR을 작성했으며 문서 존재 자체는 검토·검증
+통과를 뜻하지 않는다. importer ADR0012와 owned-temp ADR0013은 유지한다.
+
 ## 파서 → importer 계약
 
 - 입력 JSON은 컬렉션별 객체 또는 배열이다. `version.json`에는 비어 있지 않은 `version`이 필요하다.

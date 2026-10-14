@@ -1,11 +1,13 @@
 """Offline download → extraction → version → retry regressions."""
 from pathlib import Path
+import random
 import shutil
 import struct
 import stat
 import subprocess
 import sys
 import urllib.error
+import zlib
 
 import pytest
 
@@ -360,6 +362,220 @@ def test_pak_validation_preserves_existing_output_and_retries(workspace, server,
     assert not language.with_suffix('.tsv.part').exists()
     server.routes['1_001001.pak'] = (FIXTURES / 'release.pak').read_bytes()
     assert client.main(['itos']) == 0
+
+
+# Synthetic archives for the streaming PAK unpacker. The pak_io_guard fixture
+# (conftest.py) proves the bounded-memory contract from the outside: every
+# archive read() must be positive and capped, every inflate call must pass a
+# positive bounded max_length and return at most that much, and the unbounded
+# decompressor.flush() must never be called. The unpacker exposes its chunk
+# globals exactly so tests can shrink them to drive the chunked loops with
+# small fixed inputs. Failures must preserve the archive and the existing
+# destination bytes and leave no .part behind.
+def raw_deflate(data):
+    # zlib.compress gained its wbits argument only in Python 3.11, so build
+    # the raw deflate stream with compressobj. flush() here finishes the
+    # test-side compressor; the unbounded production decompressor.flush()
+    # that pak_io_guard forbids stays forbidden.
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return compressor.compress(data) + compressor.flush()
+
+
+def pak_header(name_length, checksum, size_compressed, size_uncompressed):
+    # Exactly the 14 native signed header bytes unpacker_pak.unpack() parses.
+    return (struct.pack('@h', name_length) + struct.pack('@i', checksum) +
+            struct.pack('@i', size_compressed) + struct.pack('@i', size_uncompressed))
+
+
+def pak_record(name, member, size_uncompressed, checksum=0):
+    encoded = name if isinstance(name, bytes) else name.encode('utf-8')
+    return pak_header(len(encoded), checksum, len(member), size_uncompressed) + encoded + member
+
+
+def test_pak_large_member_streams_through_bounded_reads_and_inflate(tmp_path, pak_io_guard, monkeypatch):
+    monkeypatch.setattr(unpacker_pak, '_READ_CHUNK_SIZE', 16)
+    monkeypatch.setattr(unpacker_pak, '_INFLATE_CHUNK_SIZE', 32)
+
+    reads, inflates = [], []
+
+    def counting_open(file, mode, *args, **kwargs):
+        handle = pak_io_guard.open(file, mode, *args, **kwargs)
+        if mode == 'rb':
+            guarded_read = handle.read
+
+            def counted_read(size):
+                reads.append(size)
+                return guarded_read(size)
+            handle.read = counted_read
+        return handle
+
+    def counting_decompressobj(*args, **kwargs):
+        decompressor = pak_io_guard.decompressobj(*args, **kwargs)
+        guarded_decompress = decompressor.decompress
+
+        def counted_decompress(data, max_length):
+            inflates.append(max_length)
+            return guarded_decompress(data, max_length)
+        decompressor.decompress = counted_decompress
+        return decompressor
+
+    # Counting sits on top of the guard, so every recorded call still runs
+    # the fixture's positive/bounded assertions.
+    monkeypatch.setattr(unpacker_pak, 'open', counting_open, raising=False)
+    monkeypatch.setattr(unpacker_pak.zlib, 'decompressobj', counting_decompressobj)
+    # Fixed-seed pseudorandom bytes are incompressible: the compressed member
+    # must span several read chunks and the decoded output several inflates.
+    # One seeded RNG is reused, so the bytes differ; a fresh Random per byte
+    # would repeat one value and deflate it far below the read chunk size.
+    rng = random.Random(20261014)
+    payload = bytes(rng.getrandbits(8) for _ in range(200))
+    member = raw_deflate(payload)
+    assert len(member) > 16 and len(payload) > 32
+    destination = tmp_path / 'unpack'
+    destination.mkdir()
+    archive = destination / 'bounded.pak'
+    archive.write_bytes(pak_record('items.bin', member, len(payload)))
+    unpacker_pak.unpack('bounded.pak', str(destination))
+    assert (destination / 'items.bin').read_bytes() == payload
+    assert len(reads) > 1 and max(reads) <= 16
+    assert len(inflates) > 1 and set(inflates) == {32}
+    assert not archive.exists()
+    assert not list(destination.rglob('*.part'))
+
+
+def test_pak_short_reads_empty_member_blacklist_and_trailing_bytes(tmp_path, pak_io_guard):
+    pak_io_guard.short_reads = True
+    destination = tmp_path / 'unpack'
+    destination.mkdir()
+    archive = destination / 'records.pak'
+    archive.write_bytes(
+        pak_record('multi/first.txt', raw_deflate(b'first\n'), 6) +
+        # A zero-byte decoded member is a complete valid file.
+        pak_record('multi/empty.txt', raw_deflate(b''), 0) +
+        # The blacklist matches raw bytes before UTF-8 decoding: this invalid
+        # name is skipped undecoded and unwritten, and later records stay valid.
+        pak_record(b'xigncode\xff.lua', raw_deflate(b'skipped\n'), 8) +
+        # Trailing bytes after the deflate stream are ignored, and the next
+        # record starts at the declared compressed size, not at stream end.
+        pak_record('multi/trailing.txt', raw_deflate(b'trailing\n') + b'ignored-trailing', 9) +
+        pak_record('multi/last.txt', raw_deflate(b'last\n'), 5))
+    unpacker_pak.unpack('records.pak', str(destination))
+    published = sorted(str(path.relative_to(destination))
+                       for path in destination.rglob('*') if path.is_file())
+    assert published == ['multi/empty.txt', 'multi/first.txt', 'multi/last.txt', 'multi/trailing.txt']
+    assert (destination / 'multi/first.txt').read_bytes() == b'first\n'
+    assert (destination / 'multi/empty.txt').read_bytes() == b''
+    assert (destination / 'multi/trailing.txt').read_bytes() == b'trailing\n'
+    assert (destination / 'multi/last.txt').read_bytes() == b'last\n'
+    assert not list(destination.rglob('*.part'))
+
+
+INVALID_PAKS = {
+    'empty_archive': (b'', ValueError),
+    'truncated_header': (b'\x01\x02\x03', ValueError),
+    # A positive name length declared past the archive end: the record
+    # boundary check must reject it before any name byte is read.
+    'truncated_name': (pak_header(4, 0, 0, 0), ValueError),
+    'negative_name_length': (pak_header(-1, 0, 0, 0), ValueError),
+    'empty_name': (pak_header(0, 0, 0, 0), ValueError),
+    # A zero-length compressed member can never reach the deflate stream's
+    # eof, so declaring non-empty output must fail instead of publishing.
+    'empty_member': (pak_record('name', b'', 1), zlib.error),
+    'negative_size_compressed': (pak_header(4, 0, -1, 0) + b'name', ValueError),
+    'negative_size_uncompressed': (pak_header(4, 0, 0, -1) + b'name', ValueError),
+    'member_past_end': (pak_header(4, 0, 999, 0) + b'name', ValueError),
+    # Invalid UTF-8 outside the blacklist must fail the decode without ever
+    # opening a .part or discarding the archive.
+    'invalid_utf8_name': (pak_record(b'bad\xff\xfe.txt', raw_deflate(b'x'), 1), UnicodeDecodeError),
+}
+
+
+@pytest.mark.parametrize('damage', sorted(INVALID_PAKS))
+def test_pak_invalid_record_preserves_archive_and_publishes_nothing(tmp_path, pak_io_guard, damage):
+    damaged, expected = INVALID_PAKS[damage]
+    destination = tmp_path / 'unpack'
+    destination.mkdir()
+    archive = destination / 'damaged.pak'
+    archive.write_bytes(damaged)
+    with pytest.raises(expected):
+        unpacker_pak.unpack('damaged.pak', str(destination))
+    assert archive.read_bytes() == damaged
+    published = [path for path in destination.rglob('*')
+                 if path.is_file() and path.name != 'damaged.pak']
+    assert not published
+    assert not list(destination.rglob('*.part'))
+
+
+DAMAGED_SECOND_RECORDS = {
+    'incomplete_deflate': (raw_deflate(b'second\n')[:-1], len(b'second\n'), zlib.error),
+    'corrupt_deflate': (b'\xff\x00\x00\x00\x00\x00\x00\x00', len(b'second\n'), zlib.error),
+    'declared_size_mismatch': (raw_deflate(b'second\n'), len(b'second\n') + 1, ValueError),
+}
+
+
+@pytest.mark.parametrize('damage', sorted(DAMAGED_SECOND_RECORDS))
+def test_pak_failure_in_second_record_publishes_first_and_preserves_rest(tmp_path, pak_io_guard, damage):
+    member, size_uncompressed, expected = DAMAGED_SECOND_RECORDS[damage]
+    destination = tmp_path / 'unpack'
+    existing = destination / 'multi'
+    existing.mkdir(parents=True)
+    (existing / 'second.txt').write_bytes(b'PREVIOUS\n')
+    archive = destination / 'tworecords.pak'
+    damaged = (pak_record('multi/first.txt', raw_deflate(b'first\n'), 6) +
+               pak_record('multi/second.txt', member, size_uncompressed))
+    archive.write_bytes(damaged)
+    with pytest.raises(expected):
+        unpacker_pak.unpack('tworecords.pak', str(destination))
+    # The record before the failure stays published; the failed record's old
+    # destination bytes, the archive and no .part survive for the retry.
+    assert (destination / 'multi/first.txt').read_bytes() == b'first\n'
+    assert (destination / 'multi/second.txt').read_bytes() == b'PREVIOUS\n'
+    assert archive.read_bytes() == damaged
+    assert not list(destination.rglob('*.part'))
+
+
+def test_pak_retry_with_good_bytes_at_same_archive_path_recovers(tmp_path, pak_io_guard):
+    destination = tmp_path / 'unpack'
+    destination.mkdir()
+    archive = destination / 'release.pak'
+    archive.write_bytes(b'broken archive bytes')
+    with pytest.raises(ValueError):
+        unpacker_pak.unpack('release.pak', str(destination))
+    assert archive.exists()
+    # The same path refilled with good bytes recovers with no leftover state
+    # from the failed attempt: correct output, archive discarded.
+    payload = b'harness_ore\tHarness Ore\n'
+    archive.write_bytes(pak_record('languageData/English/items.tsv', raw_deflate(payload), len(payload)))
+    unpacker_pak.unpack('release.pak', str(destination))
+    assert (destination / 'languageData/English/items.tsv').read_bytes() == payload
+    assert not archive.exists()
+    assert not list(destination.rglob('*.part'))
+
+
+@pytest.mark.parametrize('failure', ['fsync', 'replace'])
+def test_pak_publication_failure_preserves_output_and_archive(tmp_path, pak_io_guard, monkeypatch, failure):
+    if failure == 'fsync':
+        def failing(*args, **kwargs):
+            raise OSError('simulated fsync failure')
+        monkeypatch.setattr(unpacker_pak.os, 'fsync', failing)
+    else:
+        def failing(source, target):
+            raise OSError('simulated replace failure')
+        monkeypatch.setattr(unpacker_pak.os, 'replace', failing)
+    destination = tmp_path / 'unpack'
+    existing = destination / 'languageData' / 'English'
+    existing.mkdir(parents=True)
+    (existing / 'items.tsv').write_bytes(b'PREVIOUS\n')
+    archive = destination / 'release.pak'
+    payload = b'next\n'
+    archive.write_bytes(pak_record('languageData/English/items.tsv', raw_deflate(payload), len(payload)))
+    with pytest.raises(OSError):
+        unpacker_pak.unpack('release.pak', str(destination))
+    # The already published member is untouched, the archive survives for the
+    # retry, and the failed .part publication is removed again.
+    assert (destination / 'languageData/English/items.tsv').read_bytes() == b'PREVIOUS\n'
+    assert archive.exists()
+    assert not list(destination.rglob('*.part'))
 
 
 def test_translation_copy_failure_keeps_release_pending_for_retry(workspace, server, monkeypatch):
