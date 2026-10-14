@@ -75,6 +75,7 @@ dict 키의 `{!r}`·인덱스의 `[{}]` 표현과 `ContractError`의 path·code�
 | 공개 `validate_release(data, require_version=True)` | private `_validate_release_structure`로 릴리스 객체·필수 컬렉션·version 검사 → `finite_tree(data, 'release')`로 전체 메모리 검사 → private `_validate_release_domain`으로 도메인 검사 |
 | `load_json(path)` | 엄격한 디코딩으로 문법·중복 키·NaN/±Infinity 거부 → 객체/배열 루트 확인 → 파일 경로를 기준으로 `finite_tree` 실행; `1e999` 오버플로도 거부 |
 | `load_release(directory, require_version=True)` | 필수 파일 존재 확인 → 정렬한 모든 `*.json`을 각각 `load_json`으로 검사 → 보관한 컬렉션에 같은 private 구조·도메인 검사 적용 |
+| `load_import_snapshot(directory, require_version=True)` | `load_release`와 동일한 새 파일 검사·구조/도메인 검사 완료 → importer 소비 컬렉션·선택적 강화·version만 반환 |
 
 `load_release`에서 제거하는 것은 파일별 전체 유한성 검사 뒤의
 `finite_tree(data, 'release')` 중복 순회 하나다. 보조·알 수 없는 확장 JSON도 보관 여부와 무관하게
@@ -93,7 +94,43 @@ scalar fast path에도 공유 컨테이너 identity 캐시·전역 결과 캐시
 `require_version=False`는 version의 부재만 허용하며 필수 데이터 컬렉션을 선택적으로 만들지 않는다.
 version이 제공되면 두 경계 모두 비어 있지 않은 최대 50자 문자열 계약을 계속 검사하며,
 파일은 엄격한 JSON 검사도 거친다.
-파일 로더는 기존처럼 version 객체 또는 부재 시 `None`을 반환하고 메모리 검사 API는 성공 시 `None`을 반환한다.
+`load_release`는 기존처럼 version 객체 또는 부재 시 `None`을 반환하고 메모리 검사 API는 성공 시 `None`을 반환한다.
+`load_import_snapshot`은 실제 제공된 `REQUIRED_COLLECTIONS + REINFORCEMENT_COLLECTIONS + ('version',)`
+값의 새 dict를 반환한다. 선택적 진단 컬렉션은 기존 도메인 검사까지 마친 후
+반환값에서 버리고 보조/확장 파일도 기존 strict decoding/유한성 검사를 받는다.
+보관 대상만 검사하는 변경은 아니다. 두 파일 API는 missing-file 순서, sorted JSON 첫 오류와
+기존 path/code/message를 동일하게 유지하며 공개 memory API의 검사 순서는 바꾸지 않는다.
+consumed-only retention은 검사 완료 후 반환된 snapshot에 적용한다. 구조·도메인 검사에
+필요한 진단 값은 그 검사 동안 일시 보관할 수 있으므로 최대 검증 메모리의 상한을 주장하지 않는다.
+
+### Importer 호출 소유와 ORM 의미
+
+[ADR 0012](adr/0012-importer-single-run-snapshot.md)의 스냅샷은 한 `handle`의 private
+staging에만 속한다. 활성 handle의 base와 입력 파일 디렉터리가 그 staging인 소비 컬렉션에
+한해서 재사용하고 각 mutable 소비자 및 version payload에 `deepcopy`를 제공한다.
+consumer의 배열/중첩 객체 변경은 다음 consumer나 검증 원본으로 전파되지 않는다.
+직접 호출·`prev/`·다른 디렉터리·미보관 파일은 매번 새 `load_json`이며 새 변경/손상을 검출한다.
+재검사 시작 전에 이전 snapshot을 버리고 성공·실패·재시도에서 staging/path·previous-path·
+item ID·skill-name·관계 재조정 상태를 정리하고 base를 복원한다. 검증 실패는 DB 쿼리 전에
+중단하며 트랜잭션과 prev 공개/복원 및 정확한 bytes를 유지한다. global cache는 없다.
+
+스킬/직업 SELECT prefetch는 canonical ID의 `str` 키를 사용하고 중복 legacy ID를 임의로
+고르지 않는다. ambiguous 참조는 원래 consumer의 `get()`에서 `MultipleObjectsReturned`,
+누락 직업은 기존 `DoesNotExist`를 발생시키며 조회 오류를 누락으로 숨기지 않는다.
+기존 행의 `update=0` skip·신규 생성·`Link_Job=None`·삭제 목록의 기존 상호작용과 루프 순서,
+행별 `save()` 및 created/updated audit 의미를 유지한다. bulk write나 동일 save 생략은 없다.
+item membership set은 함수 내부에서만 만들며 호출자의 분류 목록·순서·우선순위와 누락
+그룹 오류를 보존한다. Recipe canonical ID와 분류 정책을 바꾸지 않는다.
+
+API/ORM 회귀는 기존 scoped `test_release_contract.py`, `test_import_safety.py`,
+`harness/contract_tests.py`에서 consumed-only·diagnostic/aux strict order·nested copy·fresh
+direct/prev·failure/retry/state cleanup 및 실제 save/audit/삭제·missing/ambiguous 참조를
+검증해야 한다. 기존 tests/제외를 보존하고 skip을 추가하지 않는다. supplied 성능·bytes와
+2691 selected zero-skip 결과는 후보 근거이며 최종 `make check` 통과를 뜻하지 않는다.
+이전 full workflow timeout/readonly cleanup 실패와 후속 인계는
+[하네스](harness.md#이번-importercleanup-수리의-후보-근거와-검증-대기)에 기록한다.
+
+### Export staging과 공개·복원 경계
 
 직렬화 전 메모리 검사와 기록 후 staging 검사는 서로 다른 입력 경계이므로 둘 다 유지한다.
 메모리 실패는 staging 잔재·backup·복구 sentinel·공개 bytes·version을 건드리기 전에 중단한다.

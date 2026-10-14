@@ -182,8 +182,9 @@ readiness 실패의 legacy fallback을 금지한다. durable checkpoint/snapshot
 실패한 실행의 수동 정리는 프로세스 종료·pending publication/cleanup·승인 snapshot 필요 여부를
 main이 확인한 별도 운영 작업이다. 역사적 absolute 경로를 임의 이동하면 재개 검사가 실패하므로
 설정 작업의 부수 효과로 journal/workspace/backup을 이동·삭제하지 않는다. 기존 사용자 편집과
-운영 cron·unpack·JSON·DB는 보존한다. main은 새 검토·full checks·GitHub 전달 뒤에만 실제 호스트
-private 설정을 활성화한다. 현재 문서 작성은 activation이나 checks·CI·merge 성공의 증거가 아니다.
+운영 cron·unpack·JSON·DB는 보존한다. 이번 실행은 최신 사용자 선택대로 기존 configured NFS
+설정·mount·floor를 유지하며 activation 변경이나 local storage override를 하지 않는다.
+현재 문서 작성은 checks·CI·merge 성공의 증거가 아니다.
 
 ## 검토와 검증 기준
 
@@ -235,9 +236,10 @@ reviewer의 정상 CLI 응답만으로 승인 처리하지 않는다. 최상위 
 증거 경로를 제한할 뿐 문서의 의미적 완전성을 증명하지 않는다. 영향과 생략 근거의 적절성은
 reviewer가 판단한다. read_only·demo도 이 필드를 반환하며 원본 변경·외부 호출을 추가하지 않는다.
 통합 보고서의 `review.documentation`과 private 모델 응답에 판단을 보존한다.
-이번 저장 정책 변경의 매 orchestrator review는 `documentation={status,files,reason}`과
+이번 importer/cleanup 변경의 매 orchestrator review는 `documentation={status,files,reason}`과
 `status=updated`를 요구한다. 실제 변경된 승인 Markdown을 참조하고 설정·격리·잠금·legacy 복구와
-ADR0011의 의미적 완전성을 판단한다. 기존 ADR0010의 cleanup·전체 완료 정책은 대체하지 않는다.
+ADR0011/0012/0013 및 architecture·data-contracts·harness·workflow의 의미적 완전성을 판단한다.
+기존 ADR0010의 Git cleanup·전체 완료 정책은 대체하지 않는다.
 수정 요청은 finding 파일을 맡은 **정확한 구현 task**에만 전달한다. 검증 실패도 승인된
 실패 파일을 찾으면 그 파일을 맡은 task에만 전달하며, 같은 역할의 다른 task나 관련 없는
 downloader 작업을 다시 호출하지 않는다. 각 task에는 자기 파일의 finding·진단만 전달한다.
@@ -547,6 +549,32 @@ completed run, `awaiting_github`, failed review or validation, an exception, or
 `TMPDIR` change. Cleanup targets only that invocation's context, never unrelated
 sibling directories or historical contexts.
 
+Removing that uniquely owned tree is one high-level filesystem operation, like
+directory creation/probe. Fresh `check_ready()` runs at cleanup entry before any
+chmod or removal, and again immediately before final root removal. It checks all
+configured mounts/floors; no assurance is cached across cleanup calls. File or
+ancestor checks do not repeat unrelated artifact NFS readiness queries. Before
+every directory chmod, file/link unlink and directory rmdir, freshly prove root,
+parent, ancestor and target attachment, ownership, no-follow status, device and
+kernel mount identity. Same-device bind mounts are refused. A pinned shared
+legacy parent may have a different owner, but that owner must remain unchanged;
+the owned tree entries must belong to the process.
+The bounded count covers configured prerequisite readiness/free-space queries;
+per-entry mount-point and kernel mount identity checks still grow with the tree.
+Cleanup counters exclude allocation/create/probe; even an empty successful tree
+has both readiness boundaries. A failed new cleanup entry must cause zero
+unlink, rmdir or directory fchmod operations.
+
+Only an owned directory may regain owner access using its identity-checked
+descriptor. Readonly files are unlinked without chmod, links are never followed,
+and external hardlink/target bytes and modes stay untouched. Linux statx mount ID
+support is required; absent libc/kernel support, errors or a missing returned
+mask fail closed without fallback. Final-readiness failure can leave a partially
+removed tree and the root; it does not undo earlier deletions. The decision and
+counting-FakeFS regression requirements are in
+[ADR 0013](adr/0013-owned-validation-temporary-cleanup.md), which refines
+[ADR 0011](adr/0011-configurable-harness-storage.md)'s operation boundaries.
+
 The validation workspace, report, `model-context.json` approved-source manifest,
 approval snapshots, backups and journals remain on the permanent artifact root.
 The report's `model_workspace` path identifies the former temporary context; it
@@ -560,21 +588,83 @@ and the stable local project lock is released even if cleanup or report
 persistence fails. A report persistence error propagates to the caller rather
 than returning a successful result.
 
-For the selected host, the main will activate the ignored private storage config
-only after review, full checks and GitHub delivery. Its selected application
-directories and configurable floors are:
+The earlier future host-activation/local-temporary proposal is superseded by the
+latest user choice: retain existing configured NFS settings, mounts and floors.
+This run does not activate a new configuration or introduce a local storage
+override. Current private values are not inferred or exposed to models.
+Credential runtime and the stable project lock retain their existing local
+boundaries. Configured readiness/floors and containment remain required; no
+mounts, operating data or historical records are migrated or deleted.
 
-| Setting | Artifacts | Non-credential temporary files |
-| --- | --- | --- |
-| `path` | `/mnt/nfs-2tb/oci-tavernof-soul/harness-artifacts` | `/tmp/oci-tavernof-soul/harness-temporary` |
-| `required_mount` | `/mnt/nfs-2tb` | `/` |
-| `min_free_bytes` | `10737418240` (10 GiB) | `8589934592` (8 GiB) |
+## 이번 31파일 수리의 검토·검증·게시 인계
 
-This places new permanent records and validation workspace copies on NVMe NFS
-and automatically cleaned temporary model sources on local storage. These are
-private host selections, not tracked live configuration or generic defaults.
-Credential runtime and the stable project lock remain local. Mount readiness,
-private writeability and the configured free-space floor are checked before
-configured storage writes; no mounts, operating data or historical records are
-migrated or deleted. Independent full checks and the three real CI successes,
-merge and publication cleanup gate remain required.
+원래 최적화와 추가 8개 repair 파일의 작업 승인은 유지한다. 이번 수리는 기존
+`files-repair.txt`의 정확히 31개 개별 파일 안에서 importer snapshot/SELECT와 호출 소유
+temporary cleanup만 완료한다. 등록된 역할/provider/model과 후속 PAK용 GLM, 기존 NFS
+설정/mount/floor를 보존한다. `parser_tidy/items.py`·`luautil.py`는 변경하지 않는다.
+제공된 4.8% slowdown의 equipment Lua batching은 제외하고 그 ADR은 만들거나 index하지 않는다.
+외부 모델은 승인 31파일만 받고 private config/diagnostic 파일을 받지 않는다.
+leaf worker는 checks·Git·agent-run·harness.workflow·재위임·다른 모델·cron·download·importAll을
+실행하지 않으며 기존 사용자 편집을 보존한다.
+
+공급된 후보는 prior real models와 Claude의 승인을 받았다. importer isolated 3회에서
+첫 wall 31.7%/반복 48.1% 감소, 반복 SELECT 1604→100, 자동 audit timestamp 외 33테이블
+동등성, 정확한 prev bytes와 INSERT/UPDATE/DELETE 수 불변이 제공되었다.
+fresh isolated kTOS/iTOS/jTOS main의 지역별 41 JSON bytes도 baseline과 같았고 parent는
+2691 selected parser/harness tests zero-skip을 보고했다. 이는 **후보 근거**이며 최종 소스의
+full validation 통과가 아니다. 이전 full workflow는 NFS RPC 대기 중 timeout했고 old
+parent rmtree는 readonly keep에서 실패했다. 부분 검사 뒤에도 cleanup이 매우 느렸다.
+NFS statvfs probe 회복은 제공된 관측일 뿐 이 worker의 재확인·full workflow 성공이 아니다.
+
+이번 repair 입력의 `check` diagnostic은 context unavailable·unattributed로 제공되었다.
+실패 원인과 담당 파일은 알 수 없으며 이를 NFS timeout이나 readonly 실패에 귀속하지 않는다.
+추가 원인 판단에는 승인 source context 또는 승인 파일에 귀속된 scoped reviewer finding이
+필요하다. private diagnostic 파일을 모델 읽기 scope에 추가하지 않는다. 모든 원래 필수
+checks는 최종 소스의 fresh real review 뒤 오케스트레이터가 실행한다.
+
+1. 오케스트레이터는 최종 snapshot/ORM 및 cleanup 수리에 대해 fresh **실제** review를 받는다.
+   매 review는 `documentation={status,files,reason}`을 반환하고 실제 변경된 승인 문서와
+   strict diagnostics/order·소유/copy/fresh reads/state cleanup·ORM semantics 및 readiness/
+   per-entry proof·statx/failure 경계의 의미적 완전성을 판단한다. Markdown 검사로 대신하지 않는다.
+2. 오케스트레이터는 complete `make check`를 실행하고 기존 tests/제외와 zero skips를 확인한다.
+   counting-FakeFS, invalid 새 cleanup의 removal/chmod 0회, readonly/link/swap/mount/foreign-owner,
+   snapshot API 및 실제 ORM 회귀를 포함한다. 부분 2691 결과나 과거 candidate approval로 대체하지 않는다.
+3. 승인/전체 검증 뒤 충돌과 기존 사용자 편집을 보존하며 31파일 범위만 반영한다.
+   이 leaf의 기준 인계는 아직 소스 미반영·ROOT original master clean이라는 메인의 제공 상태다.
+   worker는 Git으로 확인하지 않았다. 기본 Git 역할을 생략하거나 worker가 수행하지 않는다.
+   main은 반영한 최종 소스의 요구된 시간/bytes/ORM 비교를 다시 확인한 뒤 게시로 진행한다.
+4. main만 `awaiting_github` run의 정확한 journal `request.tool(request.arguments)`를 앱으로
+   실행하고 해당 `request_id`의 실제 응답을 accept한다. 모호한 쓰기는 reconciliation으로 남기며
+   수동 대체 게시나 가공된 성공으로 넘기지 않는다.
+5. main은 pinned SHA에 대한 `Offline harness (SQLite)`, `MySQL harness`,
+   `Chromium browser harness`의 **실제 success 세 개**를 확인한 뒤 기존 expected-head-SHA
+   squash merge와 실제 merge SHA를 확인하고 자동 cleanup을 끝낸다. ref 부재·prune·clean base
+   sync·cleanup complete 전에는 passed가 아니다. merge 사실과 cleanup 실패를 분리해 보고한다.
+
+이 문서 worker는 위 실행 단계를 수행하지 않았다. 최종 새 검토·전체 checks·apply/Git 역할·
+최종 비교·앱 journal·실제 CI/merge/cleanup은 pending이다. 관련 결정은
+[0012](adr/0012-importer-single-run-snapshot.md), [0013](adr/0013-owned-validation-temporary-cleanup.md),
+후보 범위/한계는 [harness](harness.md#이번-importercleanup-수리의-후보-근거와-검증-대기)에 둔다.
+
+이 leaf의 문서 영향 인계 기록은 다음과 같다. 후속 real reviewer는 최종 코드와 문서의 의미를
+독립 판단해 자기 `documentation` 결과를 반환해야 하며 이 기록을 승인으로 재사용하지 않는다.
+`harness-design.md`와 ADR0008은 읽기 참조이며 이 leaf의 수정 범위가 아니다.
+
+```json
+{
+  "documentation": {
+    "status": "updated",
+    "files": [
+      "docs/architecture.md",
+      "docs/data-contracts.md",
+      "docs/harness.md",
+      "docs/workflow.md",
+      "docs/adr/0011-configurable-harness-storage.md",
+      "docs/adr/0012-importer-single-run-snapshot.md",
+      "docs/adr/0013-owned-validation-temporary-cleanup.md",
+      "docs/adr/README.md"
+    ],
+    "reason": "Preserved existing documentation and clarified snapshot retention after complete strict validation; bounded configured prerequisite queries versus fresh per-entry mount proof and cleanup-only mutation counters; unchanged NFS choices, statx limits and surfaced failures; candidate-only evidence, unavailable/unattributed repair diagnostics and pending fresh review/full-check/apply/main-only publication handoff."
+  }
+}
+```

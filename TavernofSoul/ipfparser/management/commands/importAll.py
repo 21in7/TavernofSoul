@@ -13,6 +13,7 @@ from django.db import transaction
 import tempfile
 import logging
 import json
+from copy import deepcopy
 from os.path import join, exists
 from Monsters.models import Monsters, Item_Monster, Skill_Monster
 import os
@@ -28,7 +29,7 @@ from Attributes.models import Attributes
 from Dashboard.models import Version
 from Other.models import Achievements
 from ipfparser.contracts import (ContractError, RECIPE_ID_PREFIX, canonical_item_id,
-                                 load_json, load_release, GEM_SLOTS, inactive_recipe, number)
+                                 load_json, load_import_snapshot, GEM_SLOTS, inactive_recipe, number)
 class Command(BaseCommand):
     
     base_path               = settings.JSON_ROOT
@@ -54,16 +55,29 @@ class Command(BaseCommand):
     buff_path               = 'buff.json'
     achieve_path            = 'achievements.json'
     def importJSON(self, file):
+        # Reuse only the active handle's private staging input. Baselines and
+        # direct calls continue to decode and strictly validate their files.
+        snapshot = getattr(self, '_staged_snapshot', None)
+        if (snapshot is not None and hasattr(self, '_previous_path') and
+                os.path.abspath(self.base_path) == self._snapshot_path and
+                os.path.dirname(os.path.abspath(file)) == self._snapshot_path):
+            name = os.path.basename(file)
+            if name.endswith('.json') and name[:-5] in snapshot:
+                return deepcopy(snapshot[name[:-5]])
         try:
             return load_json(file)
         except ContractError as exc:
             raise CommandError("Cannot load JSON {}: {}".format(file, exc)) from exc
 
     def _validate_staged_release(self, directory):
+        self.__dict__.pop('_staged_snapshot', None)
         try:
-            return load_release(directory)
+            snapshot = load_import_snapshot(directory)
         except ContractError as exc:
             raise CommandError('Invalid release: {}'.format(exc)) from exc
+        if os.path.abspath(directory) == getattr(self, '_snapshot_path', None):
+            self._staged_snapshot = snapshot
+        return deepcopy(snapshot['version'])
 
     def add_arguments(self, parser):
         parser.add_argument('-u', '--update', type=int, help='Indicate wether ignore any \
@@ -197,6 +211,7 @@ class Command(BaseCommand):
         published = False
         moved_old = False
         try:
+            self._snapshot_path = os.path.abspath(staged)
             for name in os.listdir(self.base_path):
                 if name.endswith('.json'):
                     shutil.copy2(join(self.base_path, name), join(staged, name))
@@ -228,6 +243,9 @@ class Command(BaseCommand):
             self.__dict__.pop('_previous_path', None)
             self.__dict__.pop('_reconcile_map_relations', None)
             self.__dict__.pop('_item_ids_by_name', None)
+            self.__dict__.pop('_staged_snapshot', None)
+            self.__dict__.pop('_snapshot_path', None)
+            self.__dict__.pop('_available_skill_names', None)
             if exists(staged):
                 shutil.rmtree(staged)
         if moved_old:
@@ -292,6 +310,8 @@ class Command(BaseCommand):
         self.importAchieve(achieve,update)
         
     def importItem(self,items, item_type, update ):
+        # Local membership indexes preserve the caller's ordered group lists.
+        item_type = {group: set(names) for group, names in item_type.items()}
         for i in items['removed']:
             try:
                 Items.objects.get(ids= i['$ID']).delete()
@@ -833,6 +853,16 @@ class Command(BaseCommand):
             
         
     
+    @staticmethod
+    def _prefetch_ids(model, ids):
+        result = {}
+        for row in model.objects.filter(ids__in=ids):
+            key = str(row.ids)
+            # Defer ambiguous legacy rows to get() at the original consumer,
+            # preserving MultipleObjectsReturned instead of picking a row.
+            result[key] = None if key in result else row
+        return result
+
     def importSkills(self,skills, update ):
         self._available_skill_names = {row['$ID_NAME'] for row in skills.values()
                                        if row.get('Link_Job') is not None}
@@ -842,10 +872,19 @@ class Command(BaseCommand):
         table = Skills
         all_item = table.objects.values_list('ids')
         json_item = []
+        existing = self._prefetch_ids(Skills, {str(row['$ID']) for row in skills.values()})
+        job_ids = {str(row['Link_Job']) for row in skills.values()
+                   if row['Link_Job'] is not None and
+                   not (update == 0 and str(row['$ID']) in existing)}
+        jobs = self._prefetch_ids(Jobs, job_ids)
         for i in skills.values() :
             flag_u = False
             try :
-                handler = Skills.objects.get(ids= i['$ID'])
+                if str(i['$ID']) not in existing:
+                    raise Skills.DoesNotExist
+                handler = existing[str(i['$ID'])]
+                if handler is None:
+                    handler = Skills.objects.get(ids=i['$ID'])
                 flag_u = True
                 if update == 0:
                     logging.info("skipping ({}/{})  {}".format(count,count_all,i['Name']))
@@ -881,7 +920,10 @@ class Command(BaseCommand):
             handler.max_lv          = i['MaxLevel']
             handler.unlock          = i['UnlockClassLevel']
             handler.overheat        = i['OverHeat']
-            handler.job             = Jobs.objects.get(ids = i['Link_Job'])
+            job_id = str(i['Link_Job'])
+            if jobs.get(job_id) is None:
+                jobs[job_id] = Jobs.objects.get(ids=i['Link_Job'])
+            handler.job             = jobs[job_id]
             if 'sfr' in i:
                 handler.sfr             = i['sfr']
             # CaptionRatio 단위 변환은 parser(skills.py)가 단일 소유한다.
@@ -947,9 +989,9 @@ class Command(BaseCommand):
                 except (ValueError, TypeError):
                     i['CoolDown'] = None
                 handler.cooldown_lv     = i['CoolDown'] 
-            handler.job = Jobs.objects.get(ids = i['Link_Job'])
             handler.stance = i['RequiredStance']
             handler.save()
+            existing[str(i['$ID'])] = handler
             
             
             count+=1

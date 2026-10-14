@@ -665,7 +665,23 @@ def load_json(path):
 
 
 def load_release(directory, require_version=True):
-    """Validate the snapshot to be imported, retaining only importer collections."""
+    """Strictly validate a fresh release and return its version payload."""
+    return _load_release_data(directory, require_version).get('version')
+
+
+def load_import_snapshot(directory, require_version=True):
+    """Validate every release file, retaining only importer-consumed values.
+
+    Values belong to this call; mutable consumers must receive copies. Neither
+    this result nor a previous successful load assures any subsequent input.
+    Diagnostic collections are validated but are not retained in the result.
+    """
+    data = _load_release_data(directory, require_version)
+    return {name: value for name, value in data.items()
+            if name in REQUIRED_COLLECTIONS + REINFORCEMENT_COLLECTIONS + ('version',)}
+
+
+def _load_release_data(directory, require_version):
     directory = Path(directory)
     required = REQUIRED_COLLECTIONS + (('version',) if require_version else ())
     for name in required:
@@ -683,4 +699,4 @@ def load_release(directory, require_version=True):
     # or use it for independently supplied (possibly mutated) memory inputs.
     _validate_release_structure(data, require_version=require_version)
     _validate_release_domain(data)
-    return data.get('version')
+    return data

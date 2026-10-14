@@ -14,7 +14,8 @@ from DB import ToS_DB
 from harness.contract_fixture import add_contract_edges
 from harness.parser_fixture import parse_workspace, prepare_combat_workspace
 from ipfparser import contracts
-from ipfparser.contracts import ContractError, finite_tree, load_json, load_release, validate_release
+from ipfparser.contracts import (ContractError, finite_tree, load_import_snapshot,
+                                 load_json, load_release, validate_release)
 
 DELETE = object()
 
@@ -1300,3 +1301,403 @@ def test_contract_import_works_from_flat_parser_without_pythonpath():
         'assert callable(validate_release)'], cwd=str(root / 'parser_tidy'), env=env,
         capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+# Spell out the consumer boundary independently of the implementation constants.
+IMPORT_SNAPSHOT_REQUIRED_KEYS = {
+    'items_by_name', 'jobs', 'skills', 'monsters', 'npcs', 'maps',
+    'attributes', 'skill_mon', 'buff', 'achievements', 'item_monster',
+    'map_item', 'map_npc', 'map_item_spawn', 'item_type',
+}
+
+
+@pytest.fixture
+def import_snapshot_release(map_link_release):
+    directory = Path(map_link_release.BASE_PATH_OUTPUT)
+    additions = {
+        'goddess_reinf': {'560': [
+            {'ClassName': 'snapshot_step_1', 'ClassID': 1, 'BasicProp': 10},
+        ]},
+        'goddess_reinf_mat': {'560': {'weapon': {'1': {'harness_ore': 2}}}},
+        # Auxiliary JSON has no collection schema, but still needs strict JSON.
+        'future': {'rows': [{'metric': 1.5}]},
+        'version': {'version': 'snapshot-v1', 'metadata': {'regions': ['kTOS']}},
+    }
+    for name, value in additions.items():
+        (directory / (name + '.json')).write_text(json.dumps(value), encoding='utf-8')
+    return directory
+
+
+@pytest.mark.parametrize('require_version,has_version', [
+    (True, True), (False, True), (False, False),
+])
+@pytest.mark.parametrize('has_reinforcement', [False, True])
+def test_import_snapshot_retains_exact_consumer_keys_and_checks_every_json_once(
+        import_snapshot_release, monkeypatch, require_version, has_version,
+        has_reinforcement):
+    directory = import_snapshot_release
+    assert load_json(directory / 'unresolved_map_links.json')  # Nonempty valid diagnostics.
+    assert (directory / 'dictionary.json').is_file()
+    expected_keys = set(IMPORT_SNAPSHOT_REQUIRED_KEYS)
+    if has_version:
+        expected_keys.add('version')
+    else:
+        (directory / 'version.json').unlink()
+    if has_reinforcement:
+        expected_keys.update({'goddess_reinf', 'goddess_reinf_mat'})
+    else:
+        (directory / 'goddess_reinf.json').unlink()
+        (directory / 'goddess_reinf_mat.json').unlink()
+    expected_values = {name: load_json(directory / (name + '.json'))
+                       for name in expected_keys}
+    before = snapshot(directory)
+    calls = Counter()
+    real_finite = contracts.finite_tree
+
+    def record_finite(value, path):
+        calls[str(path)] += 1
+        return real_finite(value, path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(contracts, 'finite_tree', record_finite)
+        result = load_import_snapshot(directory, require_version=require_version)
+    assert set(result) == expected_keys
+    assert result == expected_values
+    assert calls == Counter({str(directory / name): 1 for name in before})
+    assert snapshot(directory) == before
+    # The legacy public loader still returns only version, never the collections.
+    assert load_release(directory, require_version=require_version) == (
+        expected_values['version'] if has_version else None)
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+@pytest.mark.parametrize('filename', STRICT_FILES + ['goddess_reinf.json', 'goddess_reinf_mat.json'])
+@pytest.mark.parametrize('content,suffix,code,message', STRICT_FILE_CASES)
+def test_import_snapshot_rechecks_strict_json_after_success_and_after_repair(
+        release_db, require_version, filename, content, suffix, code, message):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    for name, value in [('unresolved_map_links', []), ('future', {}),
+                        ('goddess_reinf', {}), ('goddess_reinf_mat', {})]:
+        (directory / (name + '.json')).write_text(json.dumps(value), encoding='utf-8')
+    first = load_import_snapshot(directory, require_version=require_version)
+    first_before = copy.deepcopy(first)
+    target = directory / filename
+    original = target.read_bytes()
+    before = snapshot(directory)
+    target.write_text(content, encoding='utf-8')
+    corrupted = snapshot(directory)
+    with pytest.raises(ContractError) as error:
+        load_import_snapshot(directory, require_version=require_version)
+    assert_contract_error(error.value, str(target) + suffix, code, message)
+    assert snapshot(directory) == corrupted
+    assert first == first_before
+    target.write_bytes(original)
+    assert load_import_snapshot(directory, require_version=require_version) == first_before
+    assert load_release(directory, require_version=require_version) == {'version': 'contract-v1'}
+    assert snapshot(directory) == before
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+@pytest.mark.parametrize('collection,keys,value,path,code,message', DOMAIN_BOUNDARY_CASES)
+def test_import_snapshot_validates_domain_before_discarding_diagnostics(
+        release_db, require_version, collection, keys, value, path, code, message):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    for name, payload in [('goddess_reinf', {}), ('goddess_reinf_mat', {}),
+                          ('unresolved_map_links', [])]:
+        (directory / (name + '.json')).write_text(json.dumps(payload), encoding='utf-8')
+    first = load_import_snapshot(directory, require_version=require_version)
+    target = directory / (collection + '.json')
+    original = target.read_bytes()
+    invalid = load_json(target)
+    if keys:
+        owner = invalid
+        for key in keys[:-1]:
+            owner = owner[key]
+        if value is DELETE:
+            del owner[keys[-1]]
+        else:
+            owner[keys[-1]] = copy.deepcopy(value)
+    else:
+        invalid = copy.deepcopy(value)
+    target.write_text(json.dumps(invalid), encoding='utf-8')
+    corrupted = snapshot(directory)
+    with pytest.raises(ContractError) as error:
+        load_import_snapshot(directory, require_version=require_version)
+    assert_contract_error(error.value, path, code, message)
+    assert snapshot(directory) == corrupted
+    target.write_bytes(original)
+    assert load_import_snapshot(directory, require_version=require_version) == first
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+def test_import_snapshot_keeps_required_decode_structure_and_domain_first_error_order(
+        import_snapshot_release, require_version):
+    directory = import_snapshot_release
+    items_path = directory / 'items_by_name.json'
+    jobs_path = directory / 'jobs.json'
+    version_path = directory / 'version.json'
+    diagnostic_path = directory / 'unresolved_map_links.json'
+    originals = snapshot(directory)
+    items = load_json(items_path)
+    items['harness_ore']['Grade'] = 7
+    diagnostic = load_json(diagnostic_path)
+    diagnostic[0]['SourceRow'] = '17'
+    diagnostic_path.write_text(json.dumps(diagnostic), encoding='utf-8')
+    version_path.write_text('{"version": ""}', encoding='utf-8')
+    items_path.unlink()
+    jobs_path.unlink()
+    # Create in reverse lexical order: decoding must use sorted filenames.
+    later = directory / 'z_snapshot_error.json'
+    earlier = directory / 'a_snapshot_error.json'
+    later.write_text('{"z": [{"metric": 1e999}], "a": -1e999}', encoding='utf-8')
+    earlier.write_text('{"value": 1, "value": 2}', encoding='utf-8')
+
+    def assert_first(path, code, message):
+        before = snapshot(directory)
+        for loader in (load_import_snapshot, load_release):
+            with pytest.raises(ContractError) as error:
+                loader(directory, require_version=require_version)
+            assert_contract_error(error.value, path, code, message)
+            assert snapshot(directory) == before
+
+    assert_first('items_by_name.json', 'required', 'missing release file')
+    items_path.write_text(json.dumps(items), encoding='utf-8')
+    assert_first('jobs.json', 'required', 'missing release file')
+    jobs_path.write_bytes(originals['jobs.json'])
+    assert_first(str(earlier), 'duplicate_key', "duplicate JSON key 'value'")
+    earlier.write_text('{}', encoding='utf-8')
+    assert_first(str(later) + "['z'][0]['metric']", 'number',
+                 'NaN and Infinity are not JSON numbers')
+    later.write_text('{}', encoding='utf-8')
+    assert_first('version.version', 'empty', 'expected a nonempty string')
+    version_path.write_bytes(originals['version.json'])
+    assert_first("items_by_name['harness_ore'].Grade", 'range', 'expected a value in 0..6')
+    items_path.write_bytes(originals['items_by_name.json'])
+    assert_first('unresolved_map_links[0].SourceRow', 'type', 'expected an integer source row number')
+    diagnostic_path.write_bytes(originals['unresolved_map_links.json'])
+    result = load_import_snapshot(directory, require_version=require_version)
+    assert result['version'] == load_json(version_path)
+    assert 'unresolved_map_links' not in result
+    assert earlier.stem not in result and later.stem not in result
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+@pytest.mark.parametrize('payload,code,message', VERSION_DOMAIN_CASES)
+def test_import_snapshot_rejects_invalid_present_version_even_when_optional(
+        release_db, require_version, payload, code, message):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    first = load_import_snapshot(directory, require_version=require_version)
+    target = directory / 'version.json'
+    original = target.read_bytes()
+    target.write_text(json.dumps(payload), encoding='utf-8')
+    before = snapshot(directory)
+    with pytest.raises(ContractError) as error:
+        load_import_snapshot(directory, require_version=require_version)
+    assert_contract_error(error.value, 'version.version', code, message)
+    assert snapshot(directory) == before
+    target.write_bytes(original)
+    assert load_import_snapshot(directory, require_version=require_version) == first
+
+
+@pytest.mark.parametrize('require_version', [False, True])
+def test_import_snapshot_optional_version_never_makes_data_files_optional(
+        release_db, require_version):
+    directory = Path(release_db.BASE_PATH_OUTPUT)
+    target = directory / 'version.json'
+    original = target.read_bytes()
+    target.unlink()
+    before = snapshot(directory)
+    if require_version:
+        with pytest.raises(ContractError) as error:
+            load_import_snapshot(directory)
+        assert_contract_error(error.value, 'version.json', 'required', 'missing release file')
+    else:
+        result = load_import_snapshot(directory, require_version=False)
+        assert 'version' not in result
+        assert validate_release(result, require_version=False) is None
+        assert load_release(directory, require_version=False) is None
+    assert snapshot(directory) == before
+    target.write_bytes(original)
+    first = load_import_snapshot(directory, require_version=require_version)
+    data_file = directory / 'buff.json'
+    data_bytes = data_file.read_bytes()
+    data_file.unlink()
+    before = snapshot(directory)
+    with pytest.raises(ContractError) as error:
+        load_import_snapshot(directory, require_version=require_version)
+    assert_contract_error(error.value, 'buff.json', 'required', 'missing release file')
+    assert snapshot(directory) == before
+    data_file.write_bytes(data_bytes)
+    assert load_import_snapshot(directory, require_version=require_version) == first
+
+
+def test_import_snapshot_results_own_all_mutable_values_across_calls_and_directories(
+        import_snapshot_release, tmp_path):
+    directory = import_snapshot_release
+    other = tmp_path / 'other-snapshot-release'
+    shutil.copytree(directory, other)
+    before = snapshot(directory)
+    first = load_import_snapshot(directory)
+    second = load_import_snapshot(directory)
+    third = load_import_snapshot(other)
+
+    def mutable_ids(value):
+        if isinstance(value, dict):
+            children = value.values()
+        elif isinstance(value, list):
+            children = value
+        else:
+            return set()
+        identities = {id(value)}
+        for child in children:
+            identities.update(mutable_ids(child))
+        return identities
+
+    identities = [mutable_ids(value) for value in (first, second, third)]
+    assert first == second == third
+    assert identities[0].isdisjoint(identities[1])
+    assert identities[0].isdisjoint(identities[2])
+    assert identities[1].isdisjoint(identities[2])
+    first['items_by_name']['harness_ore']['Name'] = 'consumer changed this row'
+    first['item_type']['EQUIPMENT'].append('consumer-only-item')
+    first['goddess_reinf']['560'][0]['BasicProp'] = 99
+    first['goddess_reinf_mat']['560']['weapon']['1']['harness_ore'] = 99
+    first['version']['metadata']['regions'].append('iTOS')
+    first['version']['version'] = 'consumer-version'
+    assert second == third == load_import_snapshot(directory)
+    assert load_json(directory / 'items_by_name.json') == second['items_by_name']
+    assert load_release(directory) == second['version']
+    assert snapshot(directory) == snapshot(other) == before
+
+
+@pytest.mark.parametrize('collection', ['items_by_name', 'version', 'goddess_reinf'])
+def test_import_snapshot_reads_replaced_consumer_files_after_failure_and_retry(
+        import_snapshot_release, tmp_path, collection):
+    directory = import_snapshot_release
+    target = directory / (collection + '.json')
+    replacement = tmp_path / 'replacement-snapshot.json'
+    first = load_import_snapshot(directory)
+    original_result = copy.deepcopy(first)
+    changed = copy.deepcopy(first[collection])
+    if collection == 'items_by_name':
+        changed['harness_ore']['Name'] = 'replaced ore name'
+    elif collection == 'version':
+        changed['version'] = 'snapshot-v2'
+        changed['metadata']['regions'].append('jTOS')
+    else:
+        changed['560'][0]['BasicProp'] = 20
+    replacement.write_text(json.dumps(changed), encoding='utf-8')
+    replacement.replace(target)
+    before = snapshot(directory)
+    second = load_import_snapshot(directory)
+    expected = copy.deepcopy(original_result)
+    expected[collection] = changed
+    assert second == expected
+    assert first == original_result
+    assert load_json(target) == changed
+    assert snapshot(directory) == before
+
+    replacement.write_text('{"value": 1, "value": 2}', encoding='utf-8')
+    replacement.replace(target)
+    corrupted = snapshot(directory)
+    with pytest.raises(ContractError) as error:
+        load_import_snapshot(directory)
+    assert_contract_error(error.value, str(target), 'duplicate_key', "duplicate JSON key 'value'")
+    assert snapshot(directory) == corrupted
+    replacement.write_text(json.dumps(original_result[collection]), encoding='utf-8')
+    replacement.replace(target)
+    assert load_import_snapshot(directory) == original_result
+    assert load_release(directory) == original_result['version']
+    assert first == original_result and second == expected
+
+
+@pytest.mark.parametrize('location', ['item-field', 'version-field', 'auxiliary'])
+def test_validate_release_rechecks_mutated_import_snapshot_without_trusting_prior_load(
+        import_snapshot_release, location):
+    directory = import_snapshot_release
+    result = load_import_snapshot(directory)
+    pristine = copy.deepcopy(result)
+    before = snapshot(directory)
+    owners = {
+        'item-field': (result['items_by_name']['harness_ore'],
+                       "release['items_by_name']['harness_ore']"),
+        'version-field': (result['version'], "release['version']"),
+        'auxiliary': (result, 'release'),
+    }
+    owner, prefix = owners[location]
+    shared = {'metric': 1.0}
+    owner['RegressionExtra'] = {'entries': [(shared,)], 'alias': shared}
+    assert validate_release(result) is None
+    shared['metric'] = float('inf')
+    original_grade = result['items_by_name']['harness_ore']['Grade']
+    result['items_by_name']['harness_ore']['Grade'] = 7
+    unchanged = json.dumps(result)
+    with pytest.raises(ContractError) as error:
+        validate_release(result)
+    assert_nonfinite_error(error.value, prefix + "['RegressionExtra']['entries'][0][0]['metric']")
+    assert json.dumps(result) == unchanged
+    assert owner['RegressionExtra']['entries'][0][0] is owner['RegressionExtra']['alias'] is shared
+    shared['metric'] = 2.0
+    unchanged = json.dumps(result)
+    with pytest.raises(ContractError) as error:
+        validate_release(result)
+    assert_contract_error(error.value, "items_by_name['harness_ore'].Grade", 'range',
+                          'expected a value in 0..6')
+    assert json.dumps(result) == unchanged
+    result['items_by_name']['harness_ore']['Grade'] = original_grade
+    assert validate_release(result) is None
+    assert load_import_snapshot(directory) == pristine
+    assert load_release(directory) == pristine['version']
+    assert snapshot(directory) == before
+
+
+@pytest.mark.parametrize('collection', ['unresolved_map_links', 'future'])
+def test_import_snapshot_rechecks_replaced_unretained_files_and_their_removal(
+        import_snapshot_release, tmp_path, collection):
+    directory = import_snapshot_release
+    target = directory / (collection + '.json')
+    replacement = tmp_path / 'replacement-unretained.json'
+    first = load_import_snapshot(directory)
+    pristine = copy.deepcopy(first)
+    assert collection not in first
+    original = target.read_bytes()
+    changed = load_json(target)
+    if collection == 'unresolved_map_links':
+        changed[0]['SourceRow'] = 18
+        invalid = copy.deepcopy(changed)
+        invalid[0]['SourceRow'] = '18'
+        invalid_text = json.dumps(invalid)
+        expected_error = ('unresolved_map_links[0].SourceRow', 'type',
+                          'expected an integer source row number')
+    else:
+        changed['rows'].append({'metric': 2.5})
+        invalid_text = '{"rows": [{"metric": 1e999}]}'
+        expected_error = (str(target) + "['rows'][0]['metric']", 'number',
+                          'NaN and Infinity are not JSON numbers')
+
+    # Replacing an omitted collection must still cause fresh strict validation.
+    for content, error_fields in [(json.dumps(changed), None),
+                                  (invalid_text, expected_error),
+                                  (original.decode('utf-8'), None)]:
+        replacement.write_text(content, encoding='utf-8')
+        replacement.replace(target)
+        before = snapshot(directory)
+        for loader, expected in [(load_import_snapshot, pristine),
+                                 (load_release, pristine['version'])]:
+            if error_fields is None:
+                assert loader(directory) == expected
+            else:
+                with pytest.raises(ContractError) as error:
+                    loader(directory)
+                assert_contract_error(error.value, *error_fields)
+            assert snapshot(directory) == before
+            assert first == pristine
+
+    assert target.read_bytes() == original
+    # Neither optional file is required or retained after it disappears.
+    target.unlink()
+    before = snapshot(directory)
+    assert load_import_snapshot(directory) == pristine
+    assert load_release(directory) == pristine['version']
+    assert snapshot(directory) == before
+    assert first == pristine

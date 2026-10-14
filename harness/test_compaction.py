@@ -6,7 +6,44 @@ import subprocess
 
 import pytest
 
-from harness import agent_models, compaction
+from harness import agent_models, compaction, storage
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(tmp_path, monkeypatch):
+    # Storage must not read the checkout's private config or inherited NFS policy.
+    project = tmp_path / 'storage-project'
+    project.mkdir()
+    resolve = storage.resolve_storage
+    class SyntheticFS(storage.FileSystem):
+        def read_bytes(self, path):
+            pytest.fail('Compaction fixture attempted a storage config read')
+
+        def free_bytes(self, path):
+            pytest.fail('Compaction fixture attempted a mount free-space query')
+
+        def probe(self, path):
+            pytest.fail('Compaction fixture attempted a storage probe')
+
+    # Poison only synthetic ambient policy: accidentally using os.environ must
+    # fail locally, before any host config or real mount can be consulted.
+    monkeypatch.setenv(storage.CONFIG_ENV, str(tmp_path / 'ignored-storage.json'))
+    monkeypatch.setattr(agent_models, 'KEY_FILE', tmp_path / 'no-key-file.json')
+    monkeypatch.setattr(compaction, 'REPORTS', tmp_path / 'reports')
+    for name in agent_models.KEY_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(storage, 'resolve_storage',
+                        lambda *a, **kw: resolve(project, env={}, fs=SyntheticFS()))
+
+
+def test_synthetic_storage_ignores_caller_root_and_ambient_policy(tmp_path):
+    guard = storage.resolve_storage(tmp_path / 'uncreated-project',
+                                    env={storage.CONFIG_ENV: str(tmp_path / 'unread-config.json')})
+    assert guard.root == tmp_path / 'storage-project'
+    assert guard.artifact_root == guard.root / 'logs/harness'
+    assert guard.env == {} and not guard.configured
+    assert guard.check_ready() is guard
+
 
 
 def test_pinned_vendor_files_are_present_and_unchanged():

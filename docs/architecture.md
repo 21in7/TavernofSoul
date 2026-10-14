@@ -78,13 +78,25 @@ version 1 JSON은 정확히 `version: 1`, `artifacts`, `temporary`를 갖고 두
 두 application root는 서로 겹치지 않고 저장소의 상위·하위 밖에 있으며 각각 required mount의
 엄격한 하위 디렉터리다. mount는 공유할 수 있고 공간 하한은 0 이상의 정수 byte 수다.
 추적되는 [설정 예제](../harness/storage-config.json.example)는 실제 호스트 설정이 아니다.
-메인은 검토·검사·GitHub 전달 뒤 private 설정을 활성화하며 mount나 운영 저장소를 변경하지 않는다.
+이번 importer/임시 cleanup 수리는 기존 configured NFS 설정·mount·floor를 그대로 유지한다.
+새 활성화나 로컬 storage override는 하지 않으며 private 설정을 모델 소스에 제공하지 않는다.
 
 설정 사용 시 새 실행 사본·checks·backup·journal과 일반 보고서는 artifact root에,
 비인증 검증 임시와 모델 소스 사본은 temporary root에 둔다.
 보고서 선택은 명시적 `--report-dir` → `HARNESS_REPORT_DIR` → 설정 artifact/category → 기존 로컬
 기본 경로 순서다. 명시적 보고서 override도 설정의 준비 검사를 우회하지 않는다.
 모든 configured mount와 공간 하한을 mkdir·probe·출력 전에 확인하고 쓰기마다 다시 확인한다.
+한 호출이 만든 고유 임시 tree의 cleanup은 하나의 고수준 filesystem 작업이다.
+첫 chmod/삭제 전 진입과 최종 root 제거 직전에 모든 configured readiness를 새로 확인한다.
+파일·ancestor 확인마다 무관한 artifact mount의 공간을 조회하거나 다른 cleanup의 성공을
+재사용하지 않는다. 각 directory chmod·file/link unlink·directory rmdir 전에는 root·parent·
+ancestor·대상 attachment/ownership/no-follow/device/kernel mount identity를 계속 새로 증명한다.
+같은 device의 bind mount도 거부하며 readonly 소유 directory만 pinned descriptor로 접근을
+복구한다. 파일 chmod와 외부 link target 접근은 금지한다. statx mount ID를 확보하지 못하면
+fail closed하며 일부 정리 실패도 surfaced non-success다. 상세는
+[ADR 0013](adr/0013-owned-validation-temporary-cleanup.md)에 둔다.
+bounded 대상은 configured prerequisites의 readiness/free-space 조회다. 항목별
+mount-point/kernel mount ID 검사는 파일 수와 함께 늘어나며 이를 캐시하거나 생략하지 않는다.
 다른 mount를 가로지르는 출력은 거부하고 application 디렉터리는 소유자 일치·0700을 요구한다.
 실제 쓰기·fsync·읽기·삭제 probe는 해당 private 디렉터리 안의 고유한 0600 파일만 사용한다.
 mount root나 무관한 기존 디렉터리를 chmod하지 않으며 private JSON·이벤트·로그는 0600을 유지한다.
@@ -277,8 +289,27 @@ private `_validate_release_domain`으로 타입·범위·유일성·참조와 �
 이미 검사한 데이터에 대한 마지막 `finite_tree(..., 'release')` 재순회를 제거한다.
 도메인 수치 검사는 유지하며 공개 우회 flag를 추가하지 않는다.
 파일 검사 완료의 근거는 해당 호출에서 새로 디코딩한 값에만 유효하다.
-원본 스냅샷을 변경하거나 검사 결과를 캐시하지 않으며, 다음 파일 로드와 메모리 API 호출은
-수정된 입력을 다시 검사한다. 결정과 비교 대안은 [ADR 0008](adr/0008-json-validation-single-pass.md)에 둔다.
+원본 bytes는 변경하지 않고 다음 파일/메모리 API 호출은 입력을 새로 검사한다.
+검증 순서의 결정은 [ADR 0008](adr/0008-json-validation-single-pass.md)에 둔다.
+
+`load_import_snapshot`은 `load_release`와 같은 엄격한 모든 파일 검사와 구조·도메인 검사를
+완료한 뒤 importer 소비 컬렉션·선택적 강화·version만 반환한다. 진단/보조 JSON은 검사하되
+최종 반환값에 보관하지 않는다. 기존 `load_release`의 version/None과 `validate_release`의
+독립 메모리 검사·오류 path/code/message·첫 오류 순서는 유지한다.
+consumed-only는 반환 스냅샷의 수명/보관 경계이며 검증 도중 진단 값의 일시 보관이나
+전체 검증의 최대 메모리 사용량을 없앤다는 뜻은 아니다.
+한 활성 `handle`의 private staging 값만 재사용하며 mutable 소비자와 version에는 deepcopy를
+준다. 직접 `importJSON`·`prev/`·다른 경로는 새 파일 읽기이며 재검사 전과 성공/실패/retry에서
+snapshot/path·행 인덱스·스킬 이름 상태를 버린다. DB 쿼리 전 검증·트랜잭션·prev 복원도 유지한다.
+스킬/직업의 canonical ID SELECT 인덱스와 로컬 item membership set은 기존 루프/분류 순서,
+호출자 목록·우선순위·오류, 행별 save·update=0·created/updated·삭제와 missing/ambiguous
+참조 예외를 유지한다. bulk write·동일 save 생략·전역 캐시는 없다.
+책임·대안·비용은 [ADR 0012](adr/0012-importer-single-run-snapshot.md)에 둔다.
+이번 수리에서 `parser_tidy/items.py`·`luautil.py`는 그대로 두며 장비 Lua batching은 제외한다.
+제공된 성능/bytes/2691 selected zero-skip 결과는 후보 근거다. 이전 NFS RPC timeout과
+readonly cleanup 실패가 있었고 최종 full validation은 대기다.
+[하네스 근거](harness.md#이번-importercleanup-수리의-후보-근거와-검증-대기)와
+[workflow 인계](workflow.md#이번-31파일-수리의-검토검증게시-인계)를 함께 확인한다.
 
 유한성 순회 내부의 scalar fast path는 정확한 내장 `str`·`int`·`bool`와 `None` 자식의
 재귀 호출만 생략하고, 정확한 내장 `float` 자식은 부모에서 `math.isfinite`로 검사한다.
