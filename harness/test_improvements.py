@@ -2,7 +2,7 @@
 
 The default-scope regression reads exact project sources in the executor's full
 local verification copy. Other added source inputs, authority and HTTP are
-synthetic. Size contracts are documented in docs/improvements.md and ADR 0015.
+synthetic. Size contracts are documented in docs/improvements.md and ADRs 0015/0016.
 """
 import copy
 import datetime as dt
@@ -417,6 +417,7 @@ def test_model_failures_keep_actual_metadata_without_false_consensus(lab, failur
 @pytest.mark.parametrize('bad', [
     'extra_field', 'too_many', 'evidence_path', 'evidence_missing', 'end_range', 'zero_line',
     'reverse_range', 'bool_line', 'edit_scope', 'measured_without_evidence', 'oversized', 'malformed',
+    'invalid_type', 'empty', 'control', 'invalid_utf8', 'nested_unknown',
 ])
 def test_bad_specialist_schema_and_evidence_are_not_proposals(lab, bad):
     def transform(role, result, response, options):
@@ -444,14 +445,27 @@ def test_bad_specialist_schema_and_evidence_are_not_proposals(lab, bad):
         elif bad == 'measured_without_evidence':
             c['benefit']['kind'] = 'measured'
         elif bad == 'oversized':
-            c['issue'] = '가' * 401
+            c['issue'] = '가' * 1601
+        elif bad == 'invalid_type':
+            c['issue'] = ['가상 설명']
+        elif bad == 'empty':
+            c['issue'] = ' \n\t'
+        elif bad == 'control':
+            c['issue'] = '합성 설명\x00'
+        elif bad == 'invalid_utf8':
+            c['issue'] = '합성 설명\ud800'
+        elif bad == 'nested_unknown':
+            c['evidence'][0]['approved'] = True
         result['response'] = '{broken' if bad == 'malformed' else json.dumps(response)
         return result
-    report = scan(lab, ModelRunner(lab, transform=transform))
+    pair = [candidate(), candidate(title='두 번째 합성 후보')]
+    report = scan(lab, ModelRunner(lab, {'coordinator': pair}, transform=transform))
     assert report['status'] == 'partial'
     assert report['proposals'] == []
     assert report['agents'][0]['status'] == 'failed'
     assert imp.report(DATE, selected=lab.selected)['counts']['eligible'] == 0
+    assert imp.daily(runner=forbidden, keys={}, now=NOW,
+                     selected=lab.selected)['scan_id'] == report['scan_id']
 
 
 @pytest.mark.parametrize('bad', ['missing', 'duplicate', 'unknown', 'extra_field',
@@ -615,9 +629,185 @@ def test_unbounded_configuration_rejected_before_models(lab, setting):
 
 
 @pytest.mark.parametrize('text', ['{"x":1,"x":2}', '{"x":NaN}', '```json\n{}\n```', '{} trailing', '\ud800'])
-def test_strict_json_rejects_ambiguous_or_non_utf8_model_response(text):
+def test_strict_json_entry_point_rejects_ambiguous_or_non_utf8_input(text):
     with pytest.raises(contract.ValidationError):
         contract.parse_json(text)
+
+
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('as_bytes', [False, True])
+def test_model_envelope_preserves_json_content_with_literal_backticks(newline, as_bytes):
+    original = candidate()
+    original['issue'] = '합성 문자열의 ```json\n{}\n``` 및 ``` 표시는 데이터입니다.'
+    bare = json.dumps({'candidates': [original]}, ensure_ascii=False)
+    fenced = ' \t\r\n```json' + newline + bare + newline + '```\r\n\t '
+    if as_bytes:
+        bare, fenced = bare.encode('utf-8'), fenced.encode('utf-8')
+    assert imp._parse_model_response(fenced, 65536) == contract.parse_json(bare)
+
+
+@pytest.mark.parametrize('fenced_role', ['coordinator', 'reviewer', 'all'])
+def test_fenced_model_responses_keep_proposal_and_review_identity(lab, fenced_role):
+    bare = scan(lab)
+    raw = {}
+
+    def transform(role, result, response, options):
+        if fenced_role in (role, 'all'):
+            result['response'] = ' \t\n```json\n' + result['response'] + '\n```\r\n '
+        raw[role] = copy.deepcopy(result)
+        return result
+
+    runner = ModelRunner(lab, transform=transform)
+    wrapped = scan(lab, runner)
+    assert bare['status'] == wrapped['status'] == 'scanned'
+    assert bare['review_complete'] and wrapped['review_complete']
+    assert bare['proposals'] == wrapped['proposals']
+    assert contract.digest(bare['proposals']) == contract.digest(wrapped['proposals'])
+    assert bare['documentation'] == wrapped['documentation']
+    assert len(runner.calls) == 5
+    for agent in wrapped['agents']:
+        assert agent['status'] == 'succeeded'
+        assert agent['result'] == raw[agent['role']]
+    public = imp.report(DATE, selected=lab.selected)
+    assert '```json' not in contract.canonical_json(public).decode('utf-8')
+    assert not lab.store.exists('authority.key')
+    for directory in ('approvals', 'decisions', 'claims', 'executions'):
+        assert not lab.store.exists(directory + '/' + wrapped['proposals'][0]['id'] + '.json')
+
+
+@pytest.mark.parametrize('role', ['coordinator', 'reviewer'])
+@pytest.mark.parametrize('bad', [
+    'untagged', 'unknown_tag', 'uppercase_tag', 'tag_space', 'four_backticks',
+    'inline', 'cr_only', 'unicode_outer_space', 'prose_before', 'prose_after',
+    'multiple', 'unclosed', 'truncated_json', 'trailing_json', 'duplicate',
+    'nan', 'infinity', 'overflow', 'invalid_utf8', 'invalid_utf8_bytes',
+])
+def test_invalid_model_envelope_and_json_keep_partial_failure(lab, role, bad):
+    def transform(current, result, response, options):
+        if current != role:
+            return result
+        text = result['response']
+        wrapped = '```json\n' + text + '\n```'
+        broken_json = {
+            'duplicate': '{"x":1,"x":2}', 'nan': '{"x":NaN}',
+            'infinity': '{"x":Infinity}', 'overflow': '{"x":1e9999}',
+        }
+        cases = {
+            'untagged': '```\n' + text + '\n```',
+            'unknown_tag': wrapped.replace('```json', '```python', 1),
+            'uppercase_tag': wrapped.replace('```json', '```JSON', 1),
+            'tag_space': wrapped.replace('```json', '```json ', 1),
+            'four_backticks': '`' + wrapped + '`',
+            'inline': '```json ' + text + '```',
+            'cr_only': '```json\r' + text + '\r```',
+            'unicode_outer_space': '\u00a0' + wrapped,
+            'prose_before': 'Explanation\n' + wrapped,
+            'prose_after': wrapped + '\nExplanation',
+            'multiple': wrapped + '\n' + wrapped,
+            'unclosed': wrapped[:-1],
+            'truncated_json': '```json\n' + text[:-1] + '\n```',
+            'trailing_json': '```json\n' + text + '\n{}\n```',
+            'invalid_utf8': '```json\n"\ud800"\n```',
+            'invalid_utf8_bytes': b'```json\n"\xff"\n```',
+        }
+        if bad in broken_json:
+            result['response'] = '```json\n' + broken_json[bad] + '\n```'
+        else:
+            result['response'] = cases[bad]
+        # Exercise the transport parser directly too: metadata retention may
+        # independently reject invalid UTF-8 before reaching this boundary.
+        with pytest.raises(contract.ValidationError):
+            imp._parse_model_response(result['response'], lab.config['limits']['max_response_bytes'])
+        return result
+
+    runner = ModelRunner(lab, transform=transform)
+    report = scan(lab, runner)
+    assert report['status'] == 'partial' and len(runner.calls) == 5
+    failed = next(a for a in report['agents'] if a['role'] == role)
+    assert failed['status'] == 'failed' and failed['error_type']
+    public = imp.report(DATE, selected=lab.selected)
+    assert public['counts']['eligible'] == 0
+    if role == 'reviewer':
+        assert not report['review_complete'] and len(report['proposals']) == 1
+        assert 'review' not in report['proposals'][0]
+        assert public['proposals'][0]['review']['verdict'] == 'needs_evidence'
+    else:
+        assert report['review_complete'] and report['proposals'] == []
+        assert runner.calls[-1]['prior'] == []
+    assert imp.daily(runner=forbidden, keys={}, now=NOW,
+                     selected=lab.selected)['scan_id'] == report['scan_id']
+    assert not lab.store.exists('authority.key')
+
+
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('as_bytes', [False, True])
+def test_original_model_bytes_include_whitespace_and_fence(newline, as_bytes):
+    bare = '{"text":"한글"}'
+    wrapped = ' \t```json' + newline + bare + newline + '```\r\n '
+    raw_size = len(wrapped.encode('utf-8'))
+    assert raw_size > len(bare.encode('utf-8'))
+    value = wrapped.encode('utf-8') if as_bytes else wrapped
+    assert imp._parse_model_response(value, raw_size) == contract.parse_json(bare)
+    with pytest.raises(contract.ValidationError):
+        imp._parse_model_response(value, raw_size - 1)
+    # Plain JSON outer whitespace consumes the same original-byte budget.
+    plain = ' \t' + bare + '\r\n '
+    with pytest.raises(contract.ValidationError):
+        imp._parse_model_response(plain, len(plain.encode('utf-8')) - 1)
+
+
+@pytest.mark.parametrize('excess', [False, True])
+def test_configured_model_byte_limit_applies_before_unwrapping(lab, excess):
+    raw_size = 4096
+    config = copy.deepcopy(lab.config)
+    config['limits']['max_response_bytes'] = raw_size
+    lab.config_path.write_text(json.dumps(config))
+
+    def transform(role, result, response, options):
+        if role == 'coordinator':
+            wrapped = '```json\n' + result['response'] + '\n```'
+            padding = raw_size - len(wrapped.encode('utf-8'))
+            assert padding > 0
+            result['response'] = ' ' * (padding + int(excess)) + wrapped
+        return result
+
+    runner = ModelRunner(lab, transform=transform)
+    report = scan(lab, runner)
+    assert len(runner.calls) == 5
+    if excess:
+        assert report['status'] == 'partial' and not report['proposals']
+        assert report['agents'][0]['status'] == 'failed'
+    else:
+        assert report['status'] == 'scanned' and report['review_complete']
+        assert len(report['proposals']) == 1
+
+
+@pytest.mark.parametrize('source', ['config', 'public', 'storage'])
+def test_model_fence_tolerance_never_changes_other_json_entry_points(lab, source):
+    if source == 'config':
+        value = lab.config
+    elif source == 'public':
+        value = contract.build_web_report(private_report())
+    else:
+        value = {'synthetic': 'private record'}
+    bare = contract.canonical_json(value)
+    assert contract.parse_json(bare) == value
+    fenced = b'```json\n' + bare + b'\n```'
+    with pytest.raises(contract.ValidationError):
+        contract.parse_json(fenced)
+    if source == 'config':
+        lab.config_path.write_bytes(fenced)
+        with pytest.raises(contract.ValidationError):
+            imp.load_config()
+    elif source == 'public':
+        with pytest.raises(contract.ValidationError):
+            contract.validate_web_report(fenced.decode('utf-8'))
+    else:
+        lab.store.write_bytes('synthetic-transport-record.json', bare)
+        assert lab.store.read('synthetic-transport-record.json') == value
+        lab.store.write_bytes('synthetic-transport-record.json', fenced)
+        with pytest.raises(ValueError):
+            lab.store.read('synthetic-transport-record.json')
 
 
 @pytest.mark.parametrize('kind', ['absent', 'empty', 'public', 'symlink', 'invalid_utf8', 'too_large'])
@@ -996,6 +1186,396 @@ def test_safe_bounded_one_page_projection_and_canonical_digest():
     lowered = contract.build_web_report(private, max_proposals=1)
     assert len(lowered['proposals']) == 1 and lowered['counts']['additional_candidates'] == 7
     assert private['instruction'] == 'never-publish-instruction'
+
+
+@pytest.mark.parametrize('fenced', [False, True])
+def test_long_private_candidates_survive_review_persistence_and_authorized_handoff(lab, fenced):
+    first = candidate('downloader/example.py')
+    first['issue'] = '가' * 400 + '나' * 19  # Synthetic 419-character reproducer.
+    second = candidate('downloader/example.py', title='두 번째 합성 제안')
+    second['issue'] = '다' * 279
+
+    def transform(role, result, response, options):
+        if fenced:
+            result['response'] = '```json\n' + result['response'] + '\n```'
+        return result
+
+    runner = ModelRunner(lab, {'downloader': [first, second]}, transform=transform)
+    report = scan(lab, runner)
+    assert report['status'] == 'scanned' and report['review_complete']
+    assert len(report['proposals']) == 2 and len(runner.calls) == 5
+    assert [p['candidate'] for p in runner.calls[-1]['prior']] == [first, second]
+    for record, original in zip(report['proposals'], (first, second)):
+        assert record['candidate'] == original
+        saved = lab.store.read('proposals/' + record['id'] + '.json')['proposal']
+        assert saved == record == imp._eligible(lab.store, record['id'])
+        for directory in ('approvals', 'decisions', 'claims', 'executions'):
+            assert not lab.store.exists(directory + '/' + record['id'] + '.json')
+    assert not lab.store.exists('authority.key')
+    assert imp.daily(runner=forbidden, keys={}, now=NOW,
+                     selected=lab.selected)['scan_id'] == report['scan_id']
+    public = imp.report(DATE, selected=lab.selected)
+    card = next(p for p in public['proposals'] if p['id'] == report['proposals'][0]['id'])
+    assert card['issue'] == '가' * 399 + '…' and len(card['issue']) == 400
+    assert report['proposals'][0]['candidate']['issue'] == first['issue']
+    assert (lab.root / 'downloader/example.py').read_text() == 'fixture first line\nfixture second line\n'
+    # Only an explicit synthetic human instruction permits the later handoff.
+    pid = report['proposals'][0]['id']
+    instruction = lab.root.parent / 'synthetic-long-proposal-approval.txt'
+    instruction.write_text('제안 ' + pid + ' 승인. 지정된 파일만 수정하세요.', encoding='utf-8')
+    instruction.chmod(0o600)
+    imp.approve(pid, instruction, now=NOW, selected=lab.selected)
+    calls = []
+    imp.execute(pid, now=NOW, selected=lab.selected, executor=executor_for(calls))
+    assert len(calls) == 1
+    assert contract.canonical_json(first).decode('utf-8') in calls[0][0]
+
+
+NARRATIVE_CASES = [
+    (('title',), 80), (('analogy',), 200), (('issue',), 400),
+    (('evidence', 0, 'summary'), 240), (('benefit', 'text'), 240),
+    (('benefit', 'evidence', 0, 'summary'), 240), (('risk',), 240),
+    (('validation_plan', 0), 200), (('documentation_impact',), 360),
+]
+
+
+def narrative_slot(value, path):
+    for key in path[:-1]:
+        value = value[key]
+    return value, path[-1]
+
+
+REVIEW_REASON_PATHS = [
+    ('proposals', 0, 'review', 'reason'),
+    ('proposals', 0, 'review', 'documentation', 'reason'),
+    ('documentation', 'reason'),
+]
+
+
+def review_response(report):
+    return {'reviews': [dict(r['review'], candidate_id=r['id']) for r in report['proposals']],
+            'documentation': report['documentation']}
+
+
+@pytest.mark.parametrize('fenced', [False, True])
+def test_416_character_review_survives_scan_without_discovery_authority(lab, fenced):
+    # Synthetic prose only: reproduce the observed length, never a private response.
+    reason = '가' * 360 + '나' * 56
+    doc_reason = '다' * 360 + '라' * 56
+    top_reason = '마' * 360 + '바' * 56
+    before = {p: ((lab.root / p).read_bytes(), (lab.root / p).stat().st_mode) for p in FILES}
+
+    def transform(role, result, response, options):
+        if role == 'reviewer':
+            response['reviews'][0]['reason'] = reason
+            response['reviews'][0]['documentation']['reason'] = doc_reason
+            response['documentation']['reason'] = top_reason
+        result['response'] = json.dumps(response, ensure_ascii=False)
+        if fenced:
+            result['response'] = '```json\n' + result['response'] + '\n```'
+        return result
+
+    runner = ModelRunner(lab, transform=transform)
+    report = scan(lab, runner)
+    assert report['status'] == 'scanned' and report['review_complete']
+    assert [call['role'] for call in runner.calls] == list(contract.ROLES)
+    assert all(a['status'] == 'succeeded' and a['result']['status'] == 'passed'
+               for a in report['agents'])
+    record = report['proposals'][0]
+    assert record['review']['reason'] == reason
+    assert record['review']['documentation']['reason'] == doc_reason
+    assert report['documentation']['reason'] == top_reason
+    assert lab.store.read('scans/' + report['scan_id'] + '.json') == report
+    assert lab.store.read('proposals/' + record['id'] + '.json')['proposal'] == record
+    assert imp._eligible(lab.store, record['id']) == record
+    public = imp.report(DATE, selected=lab.selected)
+    assert public['status'] == 'scanned' and public['counts']['eligible'] == 1
+    for path, original in zip(REVIEW_REASON_PATHS, (reason, doc_reason, top_reason)):
+        owner, key = narrative_slot(public, path)
+        assert owner[key] == original[:359] + '…'
+    assert before == {p: ((lab.root / p).read_bytes(), (lab.root / p).stat().st_mode) for p in FILES}
+    for directory in ('approvals', 'decisions', 'claims', 'executions'):
+        assert not lab.store.exists(directory + '/' + record['id'] + '.json')
+    assert not lab.store.exists('authority.key')
+
+
+@pytest.mark.parametrize('path', REVIEW_REASON_PATHS)
+def test_review_private_exact_ceiling_and_projection_revalidation(path):
+    report = private_report(records_for())
+    owner, key = narrative_slot(report, path)
+    owner[key] = '가' * 1440
+    response = review_response(report)
+    assert contract.validate_review(response, report['proposals'], FILES, private=True) == response
+    public = contract.build_web_report(report)
+    display_owner, display_key = narrative_slot(public, path)
+    assert display_owner[display_key] == '가' * 359 + '…'
+    assert public['status'] == 'scanned' and public['counts']['eligible'] == 1
+    assert owner[key] == '가' * 1440
+    owner[key] += '나'
+    with pytest.raises(contract.ValidationError):
+        contract.validate_review(review_response(report), report['proposals'], FILES, private=True)
+    if path[0] == 'documentation':
+        with pytest.raises(contract.ValidationError):
+            contract.build_web_report(report)
+    else:
+        # Preserve existing incomplete-review fallback, never invent eligibility.
+        public = contract.build_web_report(report)
+        assert public['status'] == 'partial' and public['counts']['eligible'] == 0
+        assert public['proposals'][0]['review']['verdict'] == 'needs_evidence'
+    assert len(owner[key]) == 1441  # Projection must not mutate private input.
+
+
+@pytest.mark.parametrize('path', REVIEW_REASON_PATHS)
+def test_review_ceiling_in_persisted_eligibility_and_authorization(lab, path):
+    def transform(role, result, response, options):
+        if role == 'reviewer':
+            response_path = (('reviews', 0) + path[3:] if path[0] == 'proposals' else path)
+            owner, key = narrative_slot(response, response_path)
+            owner[key] = '가' * 1440
+            result['response'] = json.dumps(response, ensure_ascii=False)
+        return result
+
+    report = scan(lab, ModelRunner(lab, transform=transform))
+    assert report['status'] == 'scanned' and report['review_complete']
+    pid = report['proposals'][0]['id']
+    assert imp._eligible(lab.store, pid) == report['proposals'][0]
+    instruction = lab.root.parent / 'synthetic-ceiling-approval.txt'
+    instruction.write_text('제안 ' + pid + ' 승인. 지정된 파일만 수정하세요.', encoding='utf-8')
+    instruction.chmod(0o600)
+    imp.approve(pid, instruction, now=NOW, selected=lab.selected)
+    record, approval = imp._authorization(lab.store, pid, NOW)
+    assert record == report['proposals'][0]
+    if path[0] == 'proposals':
+        assert '가' * 1440 in imp._task(record, approval)
+    owner, key = narrative_slot(report, path)
+    owner[key] += '나'
+    lab.store.write('scans/' + report['scan_id'] + '.json', report)
+    saved = lab.store.read('proposals/' + pid + '.json')
+    saved['proposal'] = report['proposals'][0]
+    lab.store.write('proposals/' + pid + '.json', saved)
+    with pytest.raises(contract.ValidationError):
+        imp._eligible(lab.store, pid)
+    with pytest.raises(contract.ValidationError):
+        imp.execute(pid, now=NOW, selected=lab.selected, executor=forbidden)
+    assert not lab.store.exists('claims/' + pid + '.json')
+
+
+@pytest.mark.parametrize('path', REVIEW_REASON_PATHS)
+def test_public_review_360_361_bounds_with_recomputed_digest(path):
+    payload = contract.build_web_report(private_report(records_for()))
+    owner, key = narrative_slot(payload, path)
+    owner[key] = '가' * 360
+    payload['digest'] = contract.digest({k: v for k, v in payload.items() if k != 'digest'})
+    for consume in (contract.validate_web_report, contract.render_html, contract.render_markdown):
+        consume(payload)
+    owner[key] += '나'
+    payload['digest'] = contract.digest({k: v for k, v in payload.items() if k != 'digest'})
+    assert contract.verify_web_digest(payload)
+    for consume in (contract.validate_web_report, contract.render_html, contract.render_markdown):
+        with pytest.raises(contract.ValidationError):
+            consume(payload)
+    # Explicit public mode also remains strict before any projection.
+    report = private_report(records_for())
+    private_owner, private_key = narrative_slot(report, path)
+    private_owner[private_key] = owner[key]
+    with pytest.raises(contract.ValidationError):
+        contract.validate_review(review_response(report), report['proposals'], FILES, private=False)
+
+
+@pytest.mark.parametrize('field', ['reason', 'documentation'])
+@pytest.mark.parametrize('change_suffix', [False, True])
+def test_full_review_digest_and_explicit_mocked_handoff(lab, field, change_suffix):
+    original = '가' * 360 + '나' * 56
+
+    def transform(role, result, response, options):
+        if role == 'reviewer':
+            review = response['reviews'][0]
+            owner = review if field == 'reason' else review['documentation']
+            owner['reason'] = original
+            result['response'] = json.dumps(response, ensure_ascii=False)
+        return result
+
+    report = scan(lab, ModelRunner(lab, transform=transform))
+    assert report['status'] == 'scanned' and report['review_complete']
+    record = report['proposals'][0]
+    pid = record['id']
+    public_before = imp.report(DATE, selected=lab.selected)
+    instruction = lab.root.parent / 'synthetic-review-approval.txt'
+    instruction.write_text('제안 ' + pid + ' 승인. 지정된 파일만 수정하세요.', encoding='utf-8')
+    instruction.chmod(0o600)
+    imp.approve(pid, instruction, now=NOW, selected=lab.selected)
+    approval = lab.store.verify(lab.store.read('approvals/' + pid + '.json'))
+    canonical = json.dumps(record['review'], ensure_ascii=False, sort_keys=True,
+                           separators=(',', ':'), allow_nan=False).encode('utf-8')
+    assert approval['review_digest'] == hashlib.sha256(canonical).hexdigest()
+    calls = []
+    if change_suffix:
+        owner = record['review'] if field == 'reason' else record['review']['documentation']
+        owner['reason'] = original[:-1] + '다'
+        lab.store.write('scans/' + report['scan_id'] + '.json', report)
+        saved = lab.store.read('proposals/' + pid + '.json')
+        saved['proposal'] = record
+        lab.store.write('proposals/' + pid + '.json', saved)
+        assert imp._eligible(lab.store, pid) == record  # Still a valid full review.
+        assert contract.build_web_report(report) == public_before
+        assert approval['review_digest'] != contract.digest(record['review'])
+        with pytest.raises(ValueError, match='bind the exact eligible proposal'):
+            imp.execute(pid, now=NOW, selected=lab.selected, executor=executor_for(calls))
+        assert not lab.store.exists('claims/' + pid + '.json')
+        assert calls == []
+    else:
+        imp.execute(pid, now=NOW, selected=lab.selected, executor=executor_for(calls))
+        assert len(calls) == 1
+        assert contract.canonical_json(record['review']).decode('utf-8') in calls[0][0]
+        assert original in calls[0][0]
+
+
+def test_short_review_representation_and_digest_remain_unchanged():
+    report = private_report(records_for())
+    original = copy.deepcopy(review_response(report))
+    assert contract.validate_review(original, report['proposals'], FILES) == original
+    assert contract.validate_review(original, report['proposals'], FILES, private=False) == original
+    review = report['proposals'][0]['review']
+    canonical = json.dumps(review, ensure_ascii=False, sort_keys=True,
+                           separators=(',', ':'), allow_nan=False).encode('utf-8')
+    assert contract.digest(review) == hashlib.sha256(canonical).hexdigest()
+    assert contract.build_web_report(report)['proposals'][0]['review'] == review
+
+
+@pytest.mark.parametrize('path', REVIEW_REASON_PATHS)
+def test_review_redaction_and_whitespace_are_only_display_operations(path):
+    report = private_report(records_for())
+    reason = '가' * 400 + '\n  합성 검토\tBearer synthetic-review-secret\n끝까지 보존합니다.'
+    owner, key = narrative_slot(report, path)
+    owner[key] = reason
+    before = copy.deepcopy(report)
+    assert contract.validate_review(review_response(report), report['proposals'], FILES) == review_response(report)
+    public = contract.build_web_report(report)
+    assert report == before and owner[key] == reason
+    display_owner, display_key = narrative_slot(public, path)
+    assert display_owner[display_key] == '가' * 359 + '…'
+    assert 'synthetic-review-secret' not in contract.canonical_json(public).decode('utf-8')
+    # Exercise visible redaction/whitespace separately from an already-long prefix.
+    owner[key] = '합성 검토\n  Bearer synthetic-review-secret\t끝까지 보존합니다.'
+    public = contract.build_web_report(report)
+    display_owner, display_key = narrative_slot(public, path)
+    assert display_owner[display_key] == '합성 검토 [인증 정보는 웹 보고서에서 생략했습니다] 끝까지 보존합니다.'
+    assert '\n' in owner[key] and 'synthetic-review-secret' in owner[key]
+
+
+@pytest.mark.parametrize('location', ['candidate', 'global'])
+@pytest.mark.parametrize('bad', ['short_reason', 'unknown_status', 'files_without_required',
+                                  'required_without_files', 'non_markdown', 'outside_scope',
+                                  'missing_eligible', 'extra_key'])
+def test_long_review_keeps_documentation_and_scope_constraints(location, bad):
+    report = private_report(records_for())
+    response = review_response(report)
+    response['reviews'][0]['reason'] = '가' * 416
+    doc = (response['documentation'] if location == 'global' else
+           response['reviews'][0]['documentation'])
+    doc['reason'] = '나' * 1440
+    if bad == 'short_reason':
+        doc['reason'] = '가' * 11
+    elif bad == 'unknown_status':
+        doc['status'] = 'updated'  # Implementation-review status is not advisory schema.
+    elif bad == 'files_without_required':
+        doc['files'] = ['docs/architecture.md']
+    elif bad == 'required_without_files':
+        doc['status'] = 'required'
+    elif bad == 'non_markdown':
+        doc.update(status='required', files=['harness/example.py'])
+    elif bad == 'outside_scope':
+        doc.update(status='required', files=['docs/unapproved.md'])
+    elif bad == 'missing_eligible':
+        doc.update(status='missing', files=['docs/architecture.md'])
+    else:
+        doc['approved'] = True
+    with pytest.raises(contract.ValidationError):
+        contract.validate_review(response, report['proposals'], FILES)
+
+
+@pytest.mark.parametrize('path,display_limit', NARRATIVE_CASES)
+def test_private_prose_exact_ceiling_projection_and_excess(path, display_limit):
+    original = candidate()
+    original['benefit']['kind'] = 'measured'
+    original['benefit']['evidence'] = copy.deepcopy(original['evidence'])
+    owner, key = narrative_slot(original, path)
+    owner[key] = '가' * (4 * display_limit)
+    sources = {'harness/example.py': 'first\nsecond\n'}
+    validated = contract.validate_candidate(original, sources)
+    assert validated == original
+    fingerprints = contract.fingerprint_sources({
+        'harness/example.py': {'exists': True, 'mode': 0o644, 'content': b'first\nsecond\n'}})
+    review = records_for()[0]['review']
+    record = dict(contract.proposal_record(validated, fingerprints), review=review)
+    payload = contract.build_web_report(private_report([record]))
+    display_owner, display_key = narrative_slot(payload['proposals'][0], path)
+    assert display_owner[display_key] == '가' * (display_limit - 1) + '…'
+    assert record['candidate'] == original
+    assert contract.validate_web_report(payload) == payload
+    owner[key] += '나'
+    with pytest.raises(contract.ValidationError):
+        contract.validate_candidate(original, sources)
+    # Revalidation of private display inputs must enforce the same hard ceiling.
+    oversized = dict(contract.proposal_record(original, fingerprints), review=review)
+    with pytest.raises(contract.ValidationError):
+        contract.build_web_report(private_report([oversized]))
+
+
+@pytest.mark.parametrize('path,display_limit', NARRATIVE_CASES)
+def test_oversized_public_prose_rejected_even_with_correct_digest(path, display_limit):
+    record = records_for()[0]
+    record['candidate']['benefit']['evidence'] = copy.deepcopy(record['candidate']['evidence'])
+    record = dict(contract.proposal_record(record['candidate'], record['source_fingerprints']),
+                  review=record['review'])
+    payload = contract.build_web_report(private_report([record]))
+    owner, key = narrative_slot(payload['proposals'][0], path)
+    owner[key] = '가' * display_limit
+    payload['digest'] = contract.digest({k: v for k, v in payload.items() if k != 'digest'})
+    assert contract.validate_web_report(payload) == payload  # Public exact bound.
+    owner[key] += '나'
+    payload['digest'] = contract.digest({k: v for k, v in payload.items() if k != 'digest'})
+    assert contract.verify_web_digest(payload)
+    for consume in (contract.validate_web_report, contract.render_html, contract.render_markdown):
+        with pytest.raises(contract.ValidationError):
+            consume(payload)
+
+
+def test_private_identity_covers_suffix_hidden_by_public_projection():
+    original = records_for()[0]
+    short = candidate()
+    assert contract.validate_candidate(short, {'harness/example.py': 'first\nsecond\n'}) == short
+    expected = {'version': 'improvement-proposal-v1', 'candidate': short,
+                'source_fingerprints': original['source_fingerprints']}
+    canonical = json.dumps(expected, ensure_ascii=False, sort_keys=True,
+                           separators=(',', ':'), allow_nan=False).encode('utf-8')
+    short_record = contract.proposal_record(short, original['source_fingerprints'])
+    assert short_record['digest'] == hashlib.sha256(canonical).hexdigest()
+    assert short_record['id'] == 'IMP-' + short_record['digest'][:16]
+    records = []
+    for suffix in ('나' * 19, '다' * 19):
+        c = candidate()
+        c['issue'] = '가' * 400 + suffix
+        records.append(dict(contract.proposal_record(c, original['source_fingerprints']),
+                            review=original['review']))
+    assert records[0]['id'] != records[1]['id']
+    assert records[0]['digest'] != records[1]['digest']
+    cards = [contract.build_web_report(private_report([r]))['proposals'][0] for r in records]
+    assert cards[0]['issue'] == cards[1]['issue'] == '가' * 399 + '…'
+
+
+def test_independent_review_redaction_never_uses_display_prefix(lab):
+    c = candidate()
+    # Redaction expands this input; its final safe text and whitespace must survive.
+    c['issue'] = '가' * 400 + '\n' + 'Bearer synthetic-token ' * 8 + '\n끝까지 검토합니다.'
+    runner = ModelRunner(lab, {'coordinator': [c]})
+    report = scan(lab, runner)
+    assert report['status'] == 'scanned'
+    reviewed = runner.calls[-1]['prior'][0]['candidate']['issue']
+    assert 'synthetic-token' not in reviewed
+    assert reviewed.count('[인증 정보는 웹 보고서에서 생략했습니다]') == 8
+    assert reviewed.endswith('\n끝까지 검토합니다.') and len(reviewed) > 400
+    assert report['proposals'][0]['candidate']['issue'] == c['issue']
 
 
 def test_public_digest_does_not_depend_on_human_state_or_agent_private_logs():

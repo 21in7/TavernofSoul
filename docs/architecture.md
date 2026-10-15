@@ -67,6 +67,45 @@ private 원본에는 모든 읽기 의존성의 SHA256·크기·POSIX mode·존�
 원문·소스·승인 지시·인증은 웹 경계를 넘지 않는다. Sites 인증·UI·배포는 메인 책임이고 host는
 HTTPS POST와 날짜/digest GET 확인만 수행한다. 정상 제안 없음과 실패/미완료를 구분한다.
 
+[ADR 0016](adr/0016-bounded-private-improvement-text.md)은 후보 서술의 PRIVATE 수용과
+PUBLIC 표시를 분리한다. title/analogy/issue/evidence summary/benefit text/risk/validation 단계/
+documentation impact의 private 상한은 기존 표시 상한의 4배다(예: issue 1600자 / 웹 400자).
+수용 본문은 기존 바깥 공백 정규화 이후 축약 없이 reviewer 입력(기존 민감 정보 redaction 적용),
+canonical proposal ID/digest·private 저장·재검증·후속 명시 승인/실행으로 이어진다.
+`review.reason`과 후보별·전체 `documentation.reason`은 private 1440자 / public 360자다.
+후보별 review 원문 전체는 private scan/proposal·기존 approval `review_digest`·eligibility/
+authorization 재검증·승인 후 task에 유지한다. 전체 documentation도 scan에 무축약 보존하고
+재검증한다. 짧은 review 표현·digest는 불변이다. reviewer는 간결한 한국어 360자 목표와
+private hard 1440자를 안내받으며 문서 reason 최소 12자·정확한 coverage·scope·verdict·
+문서 상태/files 일치·eligible의 필요 문서 edit_files 포함 조건은 엄격히 유지한다.
+웹 projection에서만 정제·공백 합치기·상한 내 `…` 생략을 적용한다. `improvement-web-v1`의
+allowlist·기존 public maxima·digest는 그대로며 public validator는 정상 digest가 있어도 과대
+서술을 거부한다. 현재 private Sites의 API/auth/배포 변경은 필요하지 않다.
+review reason·후보별 documentation reason·전체 documentation reason도 public validator에서
+명시적 360자 상한을 사용하며 재계산 digest가 있는 361자를 거부한다. private validator의
+1440자 수용을 public에 적용하지 않는다. 합성 회귀는 416자 review의 5회 호출 완료·무승인
+발견·전체 private 저장과 승인 후 mocked handoff·suffix 승인 무효화·세 위치의 private
+1440/1441 및 public 360/361·render 경계를 다룬다. worker는 이를 실행하지 않았다.
+HTML/Markdown의 최대 3카드 한 장 요약도 유지한다. 전체 응답 64KiB·source/context·구조·경로·근거 줄·배열 상한은
+완화하지 않으며 private 초과나 invalid 후보는 기존 partial 경계로 거부한다.
+역할·예산·재시도·daily 재사용/수동 재점검·storage·권한 결정은 변경하지 않는다.
+모델 응답은 `_call_role`에서만 strict bare JSON 또는 전체를 감싼 단일 소문자 `json` 태그의
+3-backtick fence를 수용한다. 각 delimiter 줄 경계는 LF 또는 CRLF, 바깥 공백은
+space/tab/CR/LF만 허용한다. 원래 UTF-8 bytes를 설정 상한으로 검사한 뒤 wrapper만 벗겨
+기존 strict `parse_json`에 넘긴다. config/storage/public parser는 fence를 거부한다.
+설명문·여러 block·알 수 없는 태그·잘린/중복 key/비유한 JSON은 기존 partial로 실패하며
+추출·salvage·retry는 없다. JSON 문자열의 backtick은 보존한다. 같은 내부 JSON의 후보/검토
+내용·proposal ID/digest는 같으며 genuine redacted runner result는 원래 wrapper까지 private에 둔다.
+prompt는 계속 bare JSON을 요청한다. 이는 제한된 private 서술을 보존하는 transport 호환 수리다.
+이번 `GIT=0` continuation은 새 Claude 검토·전체 검증·local apply 후 메인의 실제 재점검과
+private 보고 전달을 기다린다. GitHub create_tree의 자동 승인 거부(명시적 공개 동의 부족)는
+유지되며 Git 쓰기·재요청·journal 변경은 하지 않는다. 별도 공개 승인 전 게시하지 않는다.
+새 실제 점검 성공을 주장하지 않으며 발견 제안은 각각 사용자 승인 전 실행하지 않는다.
+최신 메인 제공 scan `1792065346555306548-d8a875`는 GLM 포함 specialist 4명과 Claude
+runner가 성공했으나 416자 review reason의 기존 360자 검증으로 partial이었다.
+이전 3215 passed는 이번 수리 검증이 아니다. 새 Claude 검토·전체 검증·local apply·
+읽기 전용 실제 재점검·정제 private inbox 전달은 메인/실행기의 후속 작업이다.
+
 모델의 적격 판정과 인간의 승인은 다르다. 메인만 구체적인 사용자 지시로 서명된 private 승인을
 발급하고, `execute`가 만료·원본 staleness·정확한 편집 범위·일회성 claim을 검증한 뒤 기존
 workflow로 연결한다. 새 의미 검토·필수 검사·범위 반영·GitHub journal·CI 3개·squash merge·

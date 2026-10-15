@@ -11,6 +11,9 @@ Task-2 integration contract (validators use ValidationError for contract failure
 * validate_candidates({"candidates": [...]}, {path: UTF8_text_or_None}) validates
   one specialist response, at most two candidates. Optional allowed_files is the
   exact model scope; never pass a broader scope than that model actually saw.
+  Candidate narrative ceilings are 4x CANDIDATE_DISPLAY_LIMITS; accepted prose
+  keeps the established outer trim and is never shortened before review/IDs.
+  The full JSON response still has the separate 64KiB byte ceiling.
 * proposal_record(validated_candidate, fingerprints) creates immutable
   {id, digest, candidate, source_fingerprints}; digest covers all four inputs
   (schema version, candidate, dependency contents/modes/existence). Store human
@@ -19,9 +22,15 @@ Task-2 integration contract (validators use ValidationError for contract failure
 * validate_review({reviews: [...], documentation: {...}}, proposals, allowed_files)
   requires exactly one independent verdict per proposal. A missing/failed review
   must remain visibly incomplete; the caller must never synthesize eligibility.
+  Review reasons and per-candidate/global documentation reasons retain up to
+  1440 characters with private=True; public consumers explicitly pass
+  private=False for the original 360 bound.
 * build_web_report(report) projects a PRIVATE immutable report into the public
   improvement-web-v1 contract. render_html/render_markdown accept that payload.
   validate_web_report(payload) checks the exact public contract and digest.
+  Display projections redact/compact and visibly abbreviate with an ellipsis;
+  reviewer redaction never abbreviates. Public validation keeps the original
+  display maxima, even with a recomputed digest.
   Pass max_proposals=config['limits']['max_reported_proposals'] when lowered.
   Human approval text, prompts, model raw responses, logs and source are never
   read by the projection. Transport/human state must not alter report digests.
@@ -106,6 +115,16 @@ CANDIDATE_FIELDS = (
     "title", "priority", "analogy", "issue", "evidence", "benefit", "risk",
     "edit_files", "validation_plan", "documentation_impact",
 )
+# Character limits, independent of the unchanged 64KiB response byte ceiling.
+# Public web-v1 limits stay fixed; retained candidate/reviewer prose gets headroom.
+CANDIDATE_DISPLAY_LIMITS = {
+    "title": 80, "analogy": 200, "issue": 400, "evidence_summary": 240,
+    "benefit": 240, "risk": 240, "validation_step": 200,
+    "documentation_impact": 360,
+}
+PRIVATE_PROSE_MULTIPLIER = 4
+REVIEW_DISPLAY_LIMIT = 360
+REVIEW_PRIVATE_LIMIT = REVIEW_DISPLAY_LIMIT * PRIVATE_PROSE_MULTIPLIER
 
 
 class ValidationError(ValueError):
@@ -137,6 +156,12 @@ def _integer(value: Any, minimum: int, maximum: int) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
         raise ValidationError("integer outside permitted range")
     return value
+
+
+def _candidate_text(value: Any, field: str, private: bool = True) -> str:
+    """Validate retained prose without shortening; keep existing outer trim."""
+    limit = CANDIDATE_DISPLAY_LIMITS[field]
+    return _text(value, limit * PRIVATE_PROSE_MULTIPLIER if private else limit)
 
 
 def _list(value: Any, maximum: int, minimum: int = 0) -> list:
@@ -309,11 +334,12 @@ def _paths(value: Any, allowed: Iterable[str], maximum: int = 12,
     return paths
 
 
-def validate_documentation(value: Any, allowed_files: Iterable[str]) -> dict:
+def validate_documentation(value: Any, allowed_files: Iterable[str], private: bool = True) -> dict:
+    """Retain private reasons losslessly; public callers must use private=False."""
     value = _object(value, ("status", "files", "reason"))
     status = _enum(value["status"], ("required", "missing", "not_required"))
     files = _paths(value["files"], allowed_files)
-    reason = _text(value["reason"], 360)
+    reason = _text(value["reason"], REVIEW_PRIVATE_LIMIT if private else REVIEW_DISPLAY_LIMIT)
     if len(reason) < 12:
         raise ValidationError("documentation needs a specific explanatory reason")
     if (status == "not_required" and files) or (status != "not_required" and not files):
@@ -337,7 +363,7 @@ def _evidence(value: Any, sources: Mapping[str, Optional[str]],
         if end > len(sources[path].splitlines()):
             raise ValidationError("evidence line range exceeds source")
         result.append({"path": path, "start_line": start, "end_line": end,
-                       "summary": _text(item["summary"], 240)})
+                       "summary": _candidate_text(item["summary"], "evidence_summary")})
     return result
 
 
@@ -362,7 +388,8 @@ def validate_candidate(value: Any, sources: Mapping[str, Optional[str]],
         total_bytes += source_size
         if source_size > LIMIT_CEILINGS["max_file_bytes"] or total_bytes > LIMIT_CEILINGS["max_source_bytes"]:
             raise ValidationError("source text exceeds byte bounds")
-    title, analogy = _text(value["title"], 80), _text(value["analogy"], 200)
+    title = _candidate_text(value["title"], "title")
+    analogy = _candidate_text(value["analogy"], "analogy")
     if not re.search(r"[가-힣]", title) or not re.search(r"[가-힣]", analogy):
         raise ValidationError("title and everyday analogy must include Korean text")
     edit_files = _paths(value["edit_files"], allowed, minimum=1)
@@ -374,15 +401,16 @@ def validate_candidate(value: Any, sources: Mapping[str, Optional[str]],
         "title": title,
         "priority": _enum(value["priority"], ("high", "medium", "low")),
         "analogy": analogy,
-        "issue": _text(value["issue"], 400),
+        "issue": _candidate_text(value["issue"], "issue"),
         "evidence": _evidence(value["evidence"], sources, allowed),
-        "benefit": {"kind": kind, "text": _text(benefit["text"], 240),
+        "benefit": {"kind": kind, "text": _candidate_text(benefit["text"], "benefit"),
                     "evidence": _evidence(benefit["evidence"], sources, allowed,
                                           1 if kind == "measured" else 0)},
-        "risk": _text(value["risk"], 240),
+        "risk": _candidate_text(value["risk"], "risk"),
         "edit_files": edit_files,
-        "validation_plan": [_text(x, 200) for x in _list(value["validation_plan"], 6, 1)],
-        "documentation_impact": _text(value["documentation_impact"], 360),
+        "validation_plan": [_candidate_text(x, "validation_step")
+                            for x in _list(value["validation_plan"], 6, 1)],
+        "documentation_impact": _candidate_text(value["documentation_impact"], "documentation_impact"),
     }
 
 
@@ -411,18 +439,20 @@ def proposal_record(candidate: dict, source_fingerprints: Mapping[str, dict]) ->
             "candidate": candidate, "source_fingerprints": fingerprints}
 
 
-def _review_item(value: Any, allowed_files: Iterable[str]) -> dict:
+def _review_item(value: Any, allowed_files: Iterable[str], private: bool = True) -> dict:
     value = _object(value, ("verdict", "reason", "documentation"))
-    documentation = validate_documentation(value["documentation"], allowed_files)
+    documentation = validate_documentation(value["documentation"], allowed_files, private=private)
     verdict = _enum(value["verdict"], VERDICTS)
     if verdict == "eligible" and documentation["status"] == "missing":
         raise ValidationError("missing documentation cannot be eligible")
-    return {"verdict": verdict, "reason": _text(value["reason"], 360),
+    return {"verdict": verdict, "reason": _text(
+                value["reason"], REVIEW_PRIVATE_LIMIT if private else REVIEW_DISPLAY_LIMIT),
             "documentation": documentation}
 
 
-def validate_review(value: Any, proposals: Sequence[dict], allowed_files: Iterable[str]) -> dict:
-    """Return {reviews:[{candidate_id,...}],documentation}; require exact coverage."""
+def validate_review(value: Any, proposals: Sequence[dict], allowed_files: Iterable[str],
+                    private: bool = True) -> dict:
+    """Require exact coverage; retain private prose or enforce public bounds."""
     value = _object(value, ("reviews", "documentation"))
     allowed = validate_scope_paths(allowed_files)
     if len(proposals) > MAX_CANDIDATES:
@@ -437,7 +467,8 @@ def validate_review(value: Any, proposals: Sequence[dict], allowed_files: Iterab
         if candidate_id not in expected or candidate_id in seen:
             raise ValidationError("unknown or duplicate review candidate")
         seen.add(candidate_id)
-        review = _review_item({k: item[k] for k in ("verdict", "reason", "documentation")}, allowed)
+        review = _review_item({k: item[k] for k in ("verdict", "reason", "documentation")},
+                              allowed, private=private)
         doc = review["documentation"]
         if review["verdict"] == "eligible" and not set(doc["files"]).issubset(
                 expected[candidate_id]["candidate"]["edit_files"]):
@@ -445,7 +476,7 @@ def validate_review(value: Any, proposals: Sequence[dict], allowed_files: Iterab
         result.append(dict(review, candidate_id=candidate_id))
     if seen != set(expected):
         raise ValidationError("incomplete independent review")
-    documentation = validate_documentation(value["documentation"], allowed)
+    documentation = validate_documentation(value["documentation"], allowed, private=private)
     if documentation["status"] == "missing" and any(x["verdict"] == "eligible" for x in result):
         raise ValidationError("global missing documentation contradicts eligibility")
     return {"reviews": result, "documentation": documentation}
@@ -461,12 +492,18 @@ _REDACTIONS = (
 )
 
 
-def safe_text(value: str, limit: int = 400) -> str:
-    """Bound and redact free text; HTML escaping happens separately at rendering."""
-    value = _text(value, 4096)
+def redact_text(value: str) -> str:
+    """Redact accepted text for model input without display truncation."""
+    _text(value, 4096)
     for pattern, replacement in _REDACTIONS:
         value = pattern.sub(replacement, value)
-    return " ".join(value.split())[:limit]
+    return value
+
+
+def safe_text(value: str, limit: int = 400) -> str:
+    """Project compact redacted display text; escape HTML when rendering."""
+    value = " ".join(redact_text(value).split())
+    return value if len(value) <= limit else value[:limit - 1] + "…"
 
 
 def _safe_documentation(value: dict) -> dict:
@@ -478,7 +515,8 @@ def _safe_evidence(items: list) -> list:
     return [dict(item, summary=safe_text(item["summary"], 240)) for item in items]
 
 
-def _safe_candidate(candidate: dict) -> dict:
+def _safe_candidate(candidate: dict, private: bool = True) -> dict:
+    """Project bounded private prose, or strictly check existing public bounds."""
     # Revalidate shape and ranges without reconstructing/storing any source text.
     # Source existence/line checks already occurred before immutable persistence.
     _object(candidate, CANDIDATE_FIELDS)
@@ -493,26 +531,27 @@ def _safe_candidate(candidate: dict) -> dict:
         path = validate_path(item["path"])
         _integer(item["start_line"], 1, 1000000)
         _integer(item["end_line"], item["start_line"], 1000000)
-        _text(item["summary"], 240)
+        _candidate_text(item["summary"], "evidence_summary", private)
         sources[path] = None
     paths = set(sources) | set(_paths(candidate["edit_files"], candidate["edit_files"], minimum=1))
     if sum(len(path) for path in candidate["edit_files"]) > 600:
         raise ValidationError("edit file list exceeds one-page character budget")
     # Explicit projection: never copy arbitrary keys from a private report.
     return {
-        "title": safe_text(_text(candidate["title"], 80), 80),
+        "title": safe_text(_candidate_text(candidate["title"], "title", private), 80),
         "priority": _enum(candidate["priority"], ("high", "medium", "low")),
-        "analogy": safe_text(_text(candidate["analogy"], 200), 200),
-        "issue": safe_text(_text(candidate["issue"], 400), 400),
+        "analogy": safe_text(_candidate_text(candidate["analogy"], "analogy", private), 200),
+        "issue": safe_text(_candidate_text(candidate["issue"], "issue", private), 400),
         "evidence": _safe_evidence(evidence),
         "benefit": {"kind": kind,
-                    "text": safe_text(_text(benefit["text"], 240), 240),
+                    "text": safe_text(_candidate_text(benefit["text"], "benefit", private), 240),
                     "evidence": _safe_evidence(benefit["evidence"])},
-        "risk": safe_text(_text(candidate["risk"], 240), 240),
+        "risk": safe_text(_candidate_text(candidate["risk"], "risk", private), 240),
         "edit_files": _paths(candidate["edit_files"], paths, minimum=1),
-        "validation_plan": [safe_text(_text(x, 200), 200)
+        "validation_plan": [safe_text(_candidate_text(x, "validation_step", private), 200)
                             for x in _list(candidate["validation_plan"], 6, 1)],
-        "documentation_impact": safe_text(_text(candidate["documentation_impact"], 360), 360),
+        "documentation_impact": safe_text(_candidate_text(
+            candidate["documentation_impact"], "documentation_impact", private), 360),
     }
 
 
@@ -576,7 +615,7 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
         try:
             for record in records:
                 scope = validate_scope_paths(record["source_fingerprints"])
-                review = _review_item(record.get("review"), scope)
+                review = _review_item(record.get("review"), scope, private=True)
                 if review["verdict"] == "eligible" and not set(review["documentation"]["files"]).issubset(
                         record["candidate"]["edit_files"]):
                     raise ValidationError("eligible card omits required document edits")
@@ -626,7 +665,7 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
     # For zero-candidate reports documentation may name approved documents only
     # when caller supplies the exact approved paths in approved_files.
     allowed.update(validate_scope_paths(report["approved_files"]) if report.get("approved_files") else ())
-    documentation = validate_documentation(report["documentation"], allowed)
+    documentation = validate_documentation(report["documentation"], allowed, private=True)
     if documentation["status"] == "missing" and eligible:
         raise ValidationError("report documentation contradicts eligibility")
     if not records:
@@ -708,12 +747,14 @@ def validate_web_report(payload: Any) -> dict:
             raise ValidationError("invalid or duplicate public proposal identity")
         ids.add(proposal_id)
         candidate = {key: card[key] for key in CANDIDATE_FIELDS}
-        if _safe_candidate(candidate) != candidate:
+        # Public input must obey web-v1 bounds BEFORE projection/redaction.
+        # A valid recomputed digest cannot authorize oversized public prose.
+        if _safe_candidate(candidate, private=False) != candidate:
             raise ValidationError("unsanitized public candidate")
         review_doc = _object(card["review"], ("verdict", "reason", "documentation"))["documentation"]
         doc_files = _object(review_doc, ("status", "files", "reason"))["files"]
         allowed = set(card["edit_files"]) | set(_paths(doc_files, doc_files))
-        review = _review_item(card["review"], allowed)
+        review = _review_item(card["review"], allowed, private=False)
         if safe_text(review["reason"], 360) != review["reason"] or _safe_documentation(review_doc) != review_doc:
             raise ValidationError("unsanitized public review")
         if review["verdict"] == "eligible":
@@ -732,7 +773,7 @@ def validate_web_report(payload: Any) -> dict:
     if (status == "failed" or not reviewer_succeeded) and counts["eligible"]:
         raise ValidationError("failed or missing review cannot produce executable proposals")
     doc = _object(payload["documentation"], ("status", "files", "reason"))
-    validate_documentation(doc, _paths(doc["files"], doc["files"]))
+    validate_documentation(doc, _paths(doc["files"], doc["files"]), private=False)
     if _safe_documentation(doc) != doc:
         raise ValidationError("unsanitized public documentation")
     if doc["status"] == "missing" and counts["eligible"]:

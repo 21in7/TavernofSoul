@@ -20,8 +20,36 @@
 | [0013](0013-owned-validation-temporary-cleanup.md) | 고유 임시 tree의 진입/최종 readiness와 매 destructive 작업 attachment·ownership·kernel mount proof | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0014](0014-streaming-pak-extraction.md) | PAK의 bounded read/inflate와 파일별 원자 공개·부분 실패·재시도 경계 | 제안(proposed), 새 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0015](0015-approval-gated-improvement-discovery.md) | 일일 읽기 전용 발견·독립 검토·private Sites 보고와 사람의 개별 서명 승인·일회성 기존 workflow 실행 | 제안(proposed), 기반 구현 승인됨·최종 검토/전체 검증/전달 대기 | 2026-10-15 |
+| [0016](0016-bounded-private-improvement-text.md) | 표시 상한 4배의 무축약 private 후보·review(1440/360)와 web-v1 projection 분리, 모델 전용 bounded strict JSON envelope | 제안(proposed), 명시 요청 수리·새 Claude 검토/전체 검증/local 전달 대기·공개 승인 차단 유지 | 2026-10-15 |
 
 ## 상태와 근거의 의미
+
+0016은 메인이 보고한 419자 issue의 표시 한도 거부를 수리하는 데이터 계약 결정이다.
+원본 private 서술은 적당한 hard ceiling 안에서 reviewer·identity·persistence·승인/실행에 유지하고
+web-v1은 기존 상한을 유지한다. 0015의 권한·일회성 claim·모델 호출/재시도·storage·스케줄 정책을
+대체하지 않는다. 같은 요청의 후속 transport 수리는 `_call_role`에서만 전체 단일 소문자 json
+fence를 허용한다(LF/CRLF, 바깥 JSON 공백). 원래 UTF-8 byte ceiling 검사 후 기존 strict
+parser에 내부를 전달하며 config/storage/public 입력은 fence를 거부한다. 후보/검토 내용·
+ID/digest와 private 원래 redacted runner result를 보존한다. 설명문/다중 block/invalid JSON의
+추출·복구·retry는 없다. 별도 ADR를 만들거나 0015 권한 결정을 대체하지 않는다.
+같은 수용/표시 결합의 reviewer 수리도 0016을 확장한다. `review.reason`과 후보별·전체
+`documentation.reason`의 private hard 1440 / public 360 계약을 적용하며 private 원문을
+보존한다. 후보별 review 전체는 기존 approval review_digest·재검증·승인 후 task에 결합하고
+전체 문서 판단도 scan에 보존·재검증한다. 짧은 review 표현/digest는 불변이다. public
+validator와 render는 세 위치 모두 재계산 digest가 있는 361자를 거부한다. schema·문서
+최소 길이/상태/Markdown/scope·coverage/verdict·eligible 필수 문서 범위는 엄격히 유지한다.
+합성 명세는 416자 review의 정확히 5회 fixture 호출·전체 private 저장·발견 시 무승인/무실행,
+명시 승인 뒤 mocked handoff·표시 밖 suffix 승인 무효화·private 1440/1441과 public 360/361을
+다룬다. 최신 scan `1792065346555306548-d8a875`의 네 specialist(GLM 포함)/Claude runner
+성공과 416자 reason 검증 실패는 메인 제공 관찰이다. raw 원문은 fixture로 복사하지 않는다.
+이전 3215 passed는 새 수리 검증이 아니며 worker는 새 검사를 실행하지 않았다.
+proposed는 이번 수리 승인과 별개로 새 Claude 검토·필수 전체 check·local apply/전달이 대기라는
+뜻이다. 이번 `GIT=0`은 GitHub create_tree의 automatic approval review 거부(명시적 공개
+동의 부족)를 유지하며 Git 쓰기·journal 변경·재요청을 하지 않는다. 메인은 local 수리/보고
+전달 후 별도 공개 승인을 요청한다. 새 실제 재점검 성공이나 private 보고함 전달 완료를 주장하지 않는다.
+이번 문서 변경 판단은 `documentation.updated`로 improvements·architecture·harness-design·
+0016·이 index를 포함한다. harness 사용법은 명령/검증 실행 설명 불변, AGENTS/0015는 권한 정책
+불변이라 수정하지 않는다. 기존 역사적 상태와 인계 기록은 아래에 보존한다.
 
 0015는 기존 직접 개발 요청의 GitHub 허가를 자율 발견 제안에 적용하지 않는 새 권한 결정이다.
 이번 기반 기능 구현·전달은 명시 승인되었지만 후속 제안은 specific ID별 인간 지시가 필요하다.
