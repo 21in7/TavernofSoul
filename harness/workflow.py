@@ -368,9 +368,13 @@ def repair_feedback(progress, tasks, items, round_number, attempts, previous, ke
 
 
 def execute(task, files, read_only=False, rules_only=False, simulated=False,
-            runner=None, checker=None, keys=None, fixture=None, no_git=False):
+            runner=None, checker=None, keys=None, fixture=None, no_git=False,
+            _improvement_guard=None):
     if os.environ.get('TAVERN_WORKFLOW_CHILD'):
         raise ValueError('Workflow workers must not start another workflow.')
+    if os.environ.get('TAVERN_IMPROVEMENT_DISCOVERY') or (
+            os.environ.get('TAVERN_IMPROVEMENT_UNATTENDED') and not read_only):
+        raise ValueError('Unattended improvement discovery cannot start a development workflow.')
     policy = load_policy()
     github_enabled = not (read_only or simulated or no_git) and git_publish.load_config()['enabled']
     scope = scoped_files(ROOT, files)
@@ -401,6 +405,11 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
     run_id = str(time.time_ns()) + '-' + secrets.token_hex(3)
     directory = reports / run_id
     try:
+        # The trusted improvement parent claims authorization before entry, then
+        # revalidates it here under the same lock used by apply and cleanup.
+        # Ordinary explicit-user workflows retain their existing authority.
+        if _improvement_guard is not None:
+            _improvement_guard(run_id)
         selected.check_ready()
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)

@@ -49,6 +49,29 @@ Ubuntu 20.04 ARM 호스트에서는 엔진만 지원 Ubuntu 컨테이너로 실�
 | Django 서빙 | 검색·관계 조회·화면/API 제공 | `TavernofSoul/urls.py`, 각 앱 |
 | 개발 하네스 | 격리 환경·검증 실행·기계가 읽을 수 있는 결과 | `Makefile`, `harness/runner.py` |
 | 하네스 저장 정책 | 산출물·비인증 임시 경로 해석, 쓰기 전 mount·공간·private 검사, 기존 실행 조회와 고정 로컬 lock 경로 | `harness/storage.py` |
+| 개선 발견·승인 | 개별 승인 소스의 읽기 전용 역할 점검, 독립 검토, private 승인/claim 및 기존 workflow 연결 | `harness/improvements.py` |
+| 개선 보고·전달 | 순수 JSON/HTML/Markdown 계약과 정제된 보고서만 private Sites로 HTTP 전달 | `harness/improvement_report.py`, `harness/improvements.py` |
+
+### 자율 개선의 별도 권한 경계
+
+[일일 개선 점검](improvements.md)은 게임 데이터 흐름 밖의 개발 보조 기능이다.
+`discover`/`daily`는 `workflow.owner()`별 개별 승인 파일과 명시된 공통 문서만 별도
+`write=False, scoped=True` 모델 사본에 제공한다. reviewer는 별도 사본에서 승인 scope 전체를
+독립 검토한다. 다른 영역의 소스 대신 앞 역할의 정제된 후보 요약을 공유한다.
+디렉터리 탐색이나 모델에 의한 scope 확대는 없으며 테스트·문서가 부족하면 추가 승인 필요로 남긴다.
+점검은 소스 쓰기·검사·Git·workflow·운영 importAll을 호출하지 않는다. 기록·lock·격리 임시
+context/runtime만 쓰고, 기존 workflow/cleanup과 동일한 고정 project lock으로 중첩을 거부한다.
+
+private 원본에는 모든 읽기 의존성의 SHA256·크기·POSIX mode·존재와 scope/config fingerprint,
+실제 모델 참여·실패를 보존한다. 한국어 한 장 요약과 `improvement-web-v1`은 별도 정제 projection이다.
+원문·소스·승인 지시·인증은 웹 경계를 넘지 않는다. Sites 인증·UI·배포는 메인 책임이고 host는
+HTTPS POST와 날짜/digest GET 확인만 수행한다. 정상 제안 없음과 실패/미완료를 구분한다.
+
+모델의 적격 판정과 인간의 승인은 다르다. 메인만 구체적인 사용자 지시로 서명된 private 승인을
+발급하고, `execute`가 만료·원본 staleness·정확한 편집 범위·일회성 claim을 검증한 뒤 기존
+workflow로 연결한다. 새 의미 검토·필수 검사·범위 반영·GitHub journal·CI 3개·squash merge·
+cleanup 완료 경계는 그대로다. 기존 직접 개발 요청의 권한을 자율 제안에 재사용하지 않는다.
+[ADR 0015](adr/0015-approval-gated-improvement-discovery.md)에 결정과 비용·복구 한계를 둔다.
 
 운영에서는 로컬 파일인 `cron_<region>.sh`가 다운로드, 파싱, 적재를 순서대로 호출한다.
 Git 추적 대상은 5개 지역(`itos`, `jtos`, `ktos`, `ktest`, `twtos`)의

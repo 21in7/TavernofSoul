@@ -2,6 +2,7 @@
 
 기록일: 2026-10-11. Codex 경고·성공 판정과 머지 후 정리 정책 갱신: 2026-10-12.
 설정 가능한 저장 경계 갱신: 2026-10-13.
+승인 대기 일일 개선 발견 경계 추가: 2026-10-15.
 이 문서는 현재 소스의 설계와 검토 기준을 Git에 남긴다.
 명령·설치 절차는 [하네스 사용법](harness.md), [자동 작업 실행](workflow.md),
 [모델 연결](agent-models.md), [접수 판단](triage.md), [대화 압축](compaction.md)에 둔다.
@@ -220,6 +221,64 @@ triage 단독 명령은 shadow 기록이며 `execution_allowed=false`다. 실제
 검토 승인 뒤 경로·Jev·소유 역할의 필수 검사를 모두 실행한다. 모든 검사가 통과하고 검사 자체의
 소스 변경이 없어야 원본 충돌 검사를 거쳐 반영한다. read_only·demo는 원본 반영하지 않는다.
 기본 쓰기·변경 있음·게시 활성 상태에서는 git 역할이 설명 JSON만 반환하고 메인 앱에 넘긴다.
+
+## 승인 게이트 일일 개선 발견
+
+2026-10-15 추가 결정은 [ADR 0015](adr/0015-approval-gated-improvement-discovery.md),
+정확한 CLI·web schema·복구 절차는 [일일 개선 점검](improvements.md)에 둔다.
+이번 기반 기능 구현·전달은 승인되었지만 발견된 제안의 구현 권한은 각각 사람에게 남긴다.
+기존 직접 개발 요청의 일반 workflow와 모델/provider/effort/compaction 설정은 유지한다.
+새 provider나 Cloudflare 자원·credential은 만들지 않는다.
+
+`improvement_report.py`는 I/O 없는 Python 3.8 schema·fingerprint·정제·렌더러다.
+`improvements.py`는 기존 storage/model/workspace API로 scope snapshot, 직렬 role 호출,
+private 기록·lock·승인·claim·HTTP를 담당한다. `workflow.execute`의 선택적
+`_improvement_guard(run_id)`는 project lock 안에서 쓰기 모델·소스 사본·검사 전에 재검증한다.
+일반 명시 요청에는 guard가 필수가 아니며 자율 제안은 반드시 guarded entrypoint를 사용한다.
+
+발견 순서는 coordinator → downloader → parser → django → 독립 reviewer다.
+각 specialist는 `workflow.owner()`의 소유 파일과 `shared_files` 중 승인 scope에 있는 파일만 본다.
+`parser_tidy/tests/test_import_safety.py` 등 기존 owner 예외도 그대로 적용한다.
+각 역할은 앞선 정제 후보 요약만 공유하며 reviewer는 별도 context에서 전체 승인 파일을 본다.
+원본 읽기는 개별 경로만 사용하고 symlink·보호 파일·private config를 거부한다. 파일 사본은
+0400, 호출은 `write=False, scoped=True`; 원본 소스·검사·Git·workflow·운영 작업에 접근하지 않는다.
+이는 격리된 모델 도구와 신뢰한 parent에 의존하며 임의 host 프로세스를 막는 VM 경계는 아니다.
+
+버전 고정 설정은 최대 보고 3개, specialist당 후보 2개(전체 8개), 실제 role 호출 5회,
+호출당 600초, 자동 retry 0회다. 파일 128KiB·전체 소스 1.5MiB(1572864 bytes)·
+context 2MiB(2097152 bytes, UTF-8 소스와 prompt 합)·응답 64KiB,
+scope 64개·편집 파일 12개·근거/검증 단계 각 6개의 상한을 둔다. 기존 provider 예산은 유지한다.
+호출 수/시간/bytes는 비용 통제 수단이며 달러 상한이나 실제 비용 측정이 아니다.
+실제 응답의 역할/provider/model/result·시각·경과시간과 제공된 CLI 비용 추정만 private에 보존한다.
+실패·unavailable을 성공 합의로 바꾸지 않으며 실제 비용이 없으면 unknown이다.
+
+근거는 승인 소스와 실제 line range로 검사하되 의미적 타당성은 reviewer가 판단한다.
+review는 모든 후보를 한 번씩 `eligible|rejected|needs_evidence`로 판단하고 후보별·전체
+`documentation={status,files,reason}`을 요구한다. 자문 schema의 상태는
+`required|missing|not_required`로, 구현 검토의 `updated`와 구분한다. 분석만 했다는 구체적
+`not_required`는 가능하다. 적격 제안의 필요 문서는 정확한 edit_files에 있어야 한다.
+누락/실패/잘못된 검토는 실행 가능 제안을 만들지 않는다. 추가 필요 파일은 읽지 않고
+승인 파일 finding과 함께 보고하여 메인이 새 scope/run을 준비한다.
+
+날짜는 KST이며 `daily`는 failed/partial도 포함해 같은 날 기존 결과를 반환하고 모델을 다시
+부르지 않는다. 수동 `discover`만 명시 재점검을 허용한다. private 원본을 먼저 저장하고 한 장
+HTML/Markdown과 digest 고정 web projection을 만든다. pending 제안은 내용과 전체 읽기
+의존성 bytes/mode/존재 기반 ID로 중복을 피하며 human 결정은 별도 보존한다.
+improvement lock과 기존 고정 project lock은 발견/승인/실행의 경쟁과 workflow/cleanup 중첩을 막는다.
+
+신뢰한 메인은 구체적 ID·private 지시 파일로 승인한다. HMAC private 승인에는 proposal/review
+digest·모든 원본 fingerprint·정확한 편집 범위·고정 게시 범위·만료(기본 7일)·고유 authorization을 묶는다.
+`execute`는 승인과 원본을 검증하고 lock 안에서 claim을 기록하며 workflow lock 안에서 다시
+검증한다. claim은 실패·중단에도 자동 재사용하지 않는다. 기존 run 조정 후 새 명시 승인으로만
+갱신하며 `awaiting_github`는 메인의 journal 처리가 남은 상태다. 새 Claude 의미 검토와 필수
+checks·범위 반영·기존 Git 역할·세 CI·squash merge·증거 기반 cleanup 게이트는 생략하지 않는다.
+
+웹은 보고 전달 경계이며 승인 실행 경로가 아니다. 메인만 nonsymlink 0600 `{origin,token}`을
+관리하고 HTTPS/no-redirect/시간·bytes 상한으로 POST 뒤 GET의 날짜·canonical SHA256을 확인한다.
+전달 실패는 immutable 보고서와 별도 `delivery_failed`로 남기며 모델 없이 재전송한다.
+unattended 환경은 승인/reject/execute를 거부하고 child/discovery 환경은 orchestration을 거부한다.
+CLI나 HMAC은 인간 신원을 증명하지 못한다. 동일 OS 계정 탈취와 신뢰한 메인의 오용은 별도 위협이다.
+09:00 KST scheduler 설치·storage 선택/readiness 확인·실제 GitHub 앱 작업은 메인만 수행한다.
 
 ## 역할 모델과 압축
 

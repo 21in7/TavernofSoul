@@ -1,0 +1,32 @@
+{
+  "version": "improvement-config-v1",
+  "timezone": "Asia/Seoul",
+  "scope_file": "harness/improvement-scope.txt",
+  "specialist_roles": ["coordinator", "downloader", "parser", "django"],
+  "reviewer_role": "reviewer",
+  "shared_files": [
+    "AGENTS.md",
+    "docs/architecture.md",
+    "docs/harness-design.md",
+    "docs/improvements.md",
+    "docs/data-contracts.md"
+  ],
+  "limits": {
+    "max_reported_proposals": 3,
+    "max_candidates_per_specialist": 2,
+    "max_role_calls": 5,
+    "call_timeout_seconds": 600,
+    "max_retries": 0,
+    "max_scope_files": 64,
+    "max_file_bytes": 131072,
+    "max_source_bytes": 1572864,
+    "max_context_bytes": 2097152,
+    "max_response_bytes": 65536,
+    "max_evidence": 6,
+    "max_edit_files": 12,
+    "max_validation_steps": 6,
+    "approval_expiry_days": 7,
+    "delivery_timeout_seconds": 20,
+    "max_delivery_bytes": 262144
+  }
+}

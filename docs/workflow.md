@@ -26,6 +26,41 @@ coordinator가 계획한 뒤 각 파일을 실제 소유 영역의 모델에 배
 영역 담당자를 새로 실행하는 주체는 실행기이며 작업자 자신의 재위임은 끈다.
 첫 버전은 담당자를 **순차 실행**한다. 모든 작업에 모든 모델을 호출하지 않는다.
 
+## 자율 발견 제안의 별도 승인 경로
+
+직접 요청한 개발 작업의 기존 승인과 GitHub 전달 정책은 유지한다. 자율 발견된 제안은 기존의
+포괄 Git 허가에 포함되지 않는다. 이번 기반 기능 구현·전달 승인도 후속 제안의 승인을 뜻하지 않는다.
+[일일 개선 점검](improvements.md)의 `discover`/`daily`는 일반 `READ_ONLY=1` workflow와 별도다.
+일반 READ_ONLY workflow는 필수 검사도 실행하지만 일일 점검은 source write·checks·Git·
+workflow.execute·운영 파이프라인을 호출하지 않고 격리된 읽기 전용 역할 분석만 수행한다.
+
+메인은 보고서의 특정 `IMP-<16 hex>`와 실제 사용자 지시를 확인하여 private 0600 UTF-8
+instruction 파일로 `approve`한다. reviewer의 `eligible`, 모델 텍스트/boolean, 웹 문구는 사람의
+승인이 아니다. `execute --proposal-id ID`에는 task/files override가 없으며 승인된 제안과
+정확한 편집 목록으로 고정 task를 생성한다. 기본 게시 범위는 commit/PR/필수 CI 3개/
+squash merge/cleanup이고, 승인 시 `--local-only`로만 로컬 전용을 고정한다.
+
+승인 전에 독립 검토·원본 freshness를 확인한다. execute는 HMAC 승인·proposal/review digest·
+정확한 파일 목록·모든 읽기 의존성의 bytes/mode/존재·scope/config·만료·human decision·
+미소비 상태를 검증하고 lock 안에서 한 번 claim한다. workflow가 고정 project lock을 잡으면
+`_improvement_guard(run_id)`가 준비 사본·검사·쓰기 모델 전에 재검증하고 run_id를 기록한다.
+발견/승인/claim과 workflow/cleanup은 같은 project lock을 사용해 중첩을 거부한다.
+guard 없는 일반 workflow는 직접 요청 권한을 유지하며 자동 제안의 우회 실행에 사용하지 않는다.
+
+claim 이후 실패·중단·`awaiting_github`에도 승인은 소비된다. 기존 run과 GitHub journal을 먼저
+조정한다. `approve ... --reconcile-run-id <정확한 run_id>`는 terminal run과 cleanup 상태를
+확인하고 이전 기록을 archive한 뒤 새로운 명시적 지시로만 승인한다. workflow에 전달되지 않은
+claim은 메인이 실제 미시작을 확인한 뒤 `--reconcile-run-id unstarted`로 처리한다.
+소스가 바뀌었으면 새 discovery가 필요하다. reconcile은 실패 모델을 재호출하거나 실행하지 않는다.
+
+improvement execute의 `awaiting_github` 반환/CLI exit0는 완료가 아니다. 메인은 기록된 run_id의
+기존 request/accept journal을 이어 새 Claude 의미 검토·필수 하네스 checks·범위 반영 이후의
+Git 역할·앱 게시·CI 3개 success·SHA 고정 squash merge·cleanup complete까지 확인한다.
+지연·실패를 숨기거나 execute를 반복하지 않는다. improvement execution 기록은 인계 당시 상태이며
+이후 GitHub 완료의 기준은 기존 workflow/journal의 실제 상태다.
+unattended는 approve/reject/execute를, child/discovery 세션은 개선 orchestration을 거부한다.
+scheduler는 매일 보고만 수행하며 게시에는 승인과 메인 앱 세션이 필요하다.
+
 ## 실행
 
 작업 설명은 UTF-8 텍스트로, 모델이 읽거나 변경할 파일은 저장소 상대 경로를 한 줄에 하나씩 적는다.

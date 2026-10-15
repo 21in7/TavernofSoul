@@ -9,6 +9,11 @@ PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(i
 .PHONY: agent-workflow agent-workflow-plan agent-workflow-demo agent-workflow-status
 .PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume agent-git-cleanup
 .PHONY: storage-status storage-doctor
+.PHONY: agent-improve agent-improve-daily agent-improve-status agent-improve-approve agent-improve-reject agent-improve-execute
+
+# Quote each improvement argument as one literal shell word. Never evaluate it
+# as shell code; the Python CLI validates IDs, paths and trusted-parent authority.
+improve_quote = '$(subst ','"'"',$(1))'
 
 help:
 	@echo "doctor          Check the offline harness environment"
@@ -49,6 +54,12 @@ help:
 	@echo "agent-git-accept Validate a connector response: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=..."
 	@echo "agent-git-resume Continue existing CI wait or post-merge cleanup: RUN_ID=..."
 	@echo "agent-git-cleanup Recheck a merged PR and resume cleanup: RUN_ID=..."
+	@echo "agent-improve   Manual read-only discovery [SCOPE_FILE=explicit-approved-list]"
+	@echo "agent-improve-daily Idempotent KST discovery [DELIVER=1]; never approve or execute"
+	@echo "agent-improve-status Show the report [DATE=YYYY-MM-DD]"
+	@echo "agent-improve-approve Trusted parent only: PROPOSAL_ID=... INSTRUCTION_FILE=... [LOCAL_ONLY=1]"
+	@echo "agent-improve-reject Trusted parent only: PROPOSAL_ID=..."
+	@echo "agent-improve-execute Consume one exact approval: PROPOSAL_ID=..."
 	@echo "Override the interpreter with: make check PYTHON=/path/to/python"
 
 prepare-ipf-unpacker:
@@ -119,3 +130,22 @@ agent-git-request agent-git-resume agent-git-cleanup:
 
 agent-git-accept:
 	$(PYTHON) -m harness.git_publish accept --run-id "$(RUN_ID)" --request-id "$(REQUEST_ID)" --response-file "$(RESPONSE_FILE)"
+
+agent-improve:
+	$(PYTHON) -m harness.improvements discover $(if $(SCOPE_FILE),--scope-file $(call improve_quote,$(SCOPE_FILE)))
+
+# The runtime must reject approve/execute under this environment marker too.
+agent-improve-daily:
+	TAVERN_IMPROVEMENT_UNATTENDED=1 $(PYTHON) -m harness.improvements daily $(if $(filter 1,$(DELIVER)),--deliver)
+
+agent-improve-status:
+	$(PYTHON) -m harness.improvements status $(if $(DATE),--date $(call improve_quote,$(DATE)))
+
+agent-improve-approve:
+	$(PYTHON) -m harness.improvements approve --proposal-id $(call improve_quote,$(PROPOSAL_ID)) --instruction-file $(call improve_quote,$(INSTRUCTION_FILE)) $(if $(filter 1,$(LOCAL_ONLY)),--local-only)
+
+agent-improve-reject:
+	$(PYTHON) -m harness.improvements reject --proposal-id $(call improve_quote,$(PROPOSAL_ID))
+
+agent-improve-execute:
+	$(PYTHON) -m harness.improvements execute --proposal-id $(call improve_quote,$(PROPOSAL_ID))
