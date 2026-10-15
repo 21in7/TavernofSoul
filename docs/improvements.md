@@ -62,7 +62,7 @@ source snapshot은 symlink·비정규 파일·보호 경로·private 설정을 �
 | 한 장의 제안 / specialist당 후보 | 3 / 2, 전체 후보 최대 8 |
 | 실제 역할 호출 / 호출 timeout / 자동 retry | 5 / 600초 / 0 |
 | scope 파일 수 / 파일 bytes / 전체 소스 bytes | 64 / 131072 / 1572864 (1.5MiB) |
-| context bytes / 모델 JSON 응답 bytes | 2097152 (2MiB) / 65536 |
+| context bytes / 모델 원래 응답 bytes (공백·wrapper 포함) | 2097152 (2MiB) / 65536 |
 | 제안의 근거 수 / 편집 파일 수 / 검증 단계 수 | 6 / 12 / 6 |
 | 승인 만료 | 기본 7일, hard ceiling 7일 |
 | HTTP 요청별 timeout | 현재 20초, hard ceiling 30초 |
@@ -90,19 +90,50 @@ private 참여 기록은 실제 configured/returned role/provider/model과 실�
 
 specialist 응답은 추가 key 없이 `{"candidates":[...]}`다. candidate는 정확히
 `title, priority, analogy, issue, evidence, benefit, risk, edit_files, validation_plan, documentation_impact`를 갖는다.
-title/analogy에는 한국어가 필요하며 각각 80/200자 이하이다. issue 400자, risk 240자,
-documentation_impact 360자, validation_plan은 1~6개 각 200자 이하이다.
-evidence는 1~6개 `{path,start_line,end_line,summary}`로 summary는 240자 이하이고
-승인된 실제 파일의 1부터 시작하는 inclusive line range여야 한다.
-benefit은 `{kind,text,evidence}`이고 kind는 `estimated|measured`, text는 240자 이하이다.
+후보 서술의 PRIVATE 수용 상한과 PUBLIC 표시 상한을 분리한다.
+[ADR 0016](adr/0016-bounded-private-improvement-text.md)의 결정에 따라 모든 후보 서술은
+표시 상한의 정확히 4배까지 수용한다. 단위는 문자열 문자 수이며 응답 전체 64KiB UTF-8
+bytes 상한과 독립적이다. specialist는 간결한 한국어로 표시 상한을 목표로 작성한다.
+
+| 후보 서술 | PUBLIC 표시 상한 / 목표 | PRIVATE hard ceiling |
+| --- | --- | --- |
+| title / analogy (각 한국어 포함) | 80 / 200 | 320 / 800 |
+| issue | 400 | 1600 |
+| evidence.summary 및 benefit.evidence.summary | 각 240 | 각 960 |
+| benefit.text / risk | 각 240 | 각 960 |
+| validation_plan의 각 단계 | 200 | 800 |
+| documentation_impact | 360 | 1440 |
+
+evidence는 1~6개 `{path,start_line,end_line,summary}`이며 승인된 실제 파일의 1부터
+시작하는 inclusive line range여야 한다. validation_plan은 1~6개이다.
+benefit은 `{kind,text,evidence}`이고 kind는 `estimated|measured`다.
 measured는 적어도 한 실제 근거를 요구하지만 schema는 측정의 의미적 타당성을 증명하지 않는다.
 실측이 없으면 '예상·미측정'으로 설명하고 속도·비용 수치를 만들지 않는다.
 
+수용된 본문은 기존 바깥 공백 정규화 이후 축약 없이 독립 reviewer 입력·canonical proposal
+ID/digest·private persistence·재검증·후속 승인/실행 task까지 유지한다. reviewer에는 기존
+credential/경로 redaction을 적용하되 표시 길이 제한이나 공백 합치기를 적용하지 않는다.
+redaction 치환으로 길이가 늘어도 뒤의 안전한 설명을 자르지 않으며 context 상한은 그대로다.
+기존 짧은 후보의 canonical 표현과 ID는 바뀌지 않고 공개 prefix 뒤 문자가 바뀌면 원본 ID/digest가
+바뀐다. reviewer의 `review.reason`과 후보별·전체 `documentation.reason`도 PRIVATE
+1440자 / PUBLIC 360자로 분리한다. 수용된 review 원문은 private scan/proposal에 보존하고
+후보별 독립 review 전체의 기존 `review_digest` 승인 결합·재검증·승인 후 task에 사용한다.
+전체 documentation 판단도 private scan에 원문 그대로 보존하고 eligibility 때 재검증한다.
+짧은 review의 표현·digest는 그대로다. reviewer prompt는 세 reason 모두 간결한 한국어
+360자 이하를 목표로 요청하고 private hard maximum 1440자를 명시한다.
+private ceiling 초과·빈 문자열·잘못된 타입/UTF-8/제어문자·unknown key·scope/line 오류는
+전체 해당 specialist 출력을 거부한다. 구조가 잘못된 후보를 잘라 살리지 않으며 기존 partial
+처리를 유지한다. 나머지 source/context·배열·enum·경로·권한 상한은 그대로다.
+
 reviewer 응답은 정확히 `reviews,documentation`이다. reviews는 각 후보를 한 번씩
 `{candidate_id,verdict,reason,documentation}`으로 판단하고 verdict는
-`eligible|rejected|needs_evidence`, reason은 360자 이하이다.
+`eligible|rejected|needs_evidence`, reason은 비어 있지 않은 private 1440자 이하이다.
 각 후보와 전체의 documentation은 `{status,files,reason}`이며 status는
-`required|missing|not_required`다. reason은 구체적인 12~360자 설명이어야 한다.
+`required|missing|not_required`다. reason은 구체적인 private 12~1440자 설명이어야 한다.
+세 reason 모두 공개 projection에서만 redaction·표시 공백 합치기·360자 이내 `…` 생략을
+적용한다. private 입력은 수용 전에 자르지 않는다. `validate_web_report`와 HTML/Markdown
+소비자는 올바르게 재계산한 digest가 있어도 세 위치의 public 361자 reason을 거부한다.
+특히 top-level documentation도 private validator의 확대된 상한을 사용하지 않는다.
 required/missing은 승인된 Markdown 경로가 필요하고 not_required는 빈 files를 요구한다.
 읽기 전용 분석만 수행하여 문서를 바꾸지 않았다는 구체적인 not_required는 허용된다.
 구현에 필요한 문서는 eligible 제안의 edit_files에 있어야 하며 missing과 eligible은 양립하지 않는다.
@@ -110,7 +141,17 @@ required/missing은 승인된 Markdown 경로가 필요하고 not_required는 �
 이 자문 계약의 required는 '문서를 이미 수정했다'는 뜻이 아니다. 이후 실제 구현 reviewer는
 기존 `documentation.updated`와 실제 changed Markdown으로 의미적 완전성을 판단한다.
 
-JSON은 UTF-8 strict parsing으로 중복 key·NaN·fence·후행 텍스트·잘못된 필드를 거부한다.
+prompt는 specialist/reviewer 모두 bare strict JSON을 요청한다. `_call_role`의 모델 응답
+transport 경계에서만 bare JSON 또는 응답 전체를 차지하는 단 하나의 소문자 `json` 태그
+3-backtick fence를 허용한다. 여는 태그 직후와 닫는 fence 직전은 각각 LF 또는 CRLF여야 한다.
+바깥에는 JSON 공백(space/tab/CR/LF)만 허용한다. 공백·wrapper를 제거하기 **전에** 원래 응답의
+strict UTF-8 및 설정된 전체 byte 상한(최대 65536)을 검사한다. 인식한 wrapper의 내부만
+기존 `parse_json`으로 검사하며 duplicate key·NaN/Infinity·숫자 overflow·잘린 JSON을 거부한다.
+untagged/다른 언어 fence·설명문·여러 block·후행 내용은 추출·복구·retry 없이 기존 partial
+경계로 실패한다. 유효 JSON 문자열 안의 backtick은 데이터다. envelope는 private runner
+result를 변경하지 않으며 같은 JSON의 후보/검토 내용·canonical proposal ID/digest는 같다.
+config/storage/public 입력의 parser와 공용 `parse_json`은 fence를 계속 거부한다. schema·공개/비공개 문자
+상한·review redaction·source/context·cardinality·비용·자동 retry 0회는 그대로다.
 line range/경로 검사는 구조적 검사이며 의미 판단은 실제 reviewer에게 남긴다.
 실패·누락·malformed review는 실행 적격 제안을 만들지 않으며 보고는 partial/failed로 남는다.
 일부 specialist 실패에도 독립 전체 review가 유효한 나머지 후보는 partial 보고의 적격 후보가
@@ -236,7 +277,8 @@ host는 private 보고가 존재한 뒤 명시 projection만 만든다. HTML/Mar
 
 card의 정확한 필드는
 `id,priority,title,analogy,issue,evidence,benefit,risk,edit_files,validation_plan,documentation_impact,review,approval_wording`이다.
-candidate의 같은 이름 필드·배열/문자 한도를 사용한다. id는 `IMP-[0-9a-f]{16}`,
+candidate의 같은 이름 필드·배열 한도와 위 표의 기존 PUBLIC 문자 상한을 사용한다.
+PRIVATE 상한은 웹 입력에 적용하지 않는다. id는 `IMP-[0-9a-f]{16}`,
 review는 `{verdict,reason,documentation}`, approval_wording은 정확히 `'제안 ' + id + ' 승인'`이다.
 review verdict는 `eligible|rejected|needs_evidence`이며 누락/실패한 검토는
 needs_evidence로 투영하여 독립 검토가 끝났다고 표시하지 않는다.
@@ -258,7 +300,13 @@ separators=(',', ':'), allow_nan=False).encode('utf-8')`이며 digest 필드 없
 반드시 같은 UTF-8 key 정렬/숫자 표현으로 계산한다. digest는 전송 일치 확인이며 사용자 승인이나
 서비스 신원 증명은 아니다. human/delivery 상태와 비용 metadata는 payload digest를 바꾸지 않는다.
 credential·승인 지시·절대 local 경로·외부 URL·raw 응답·prompt·source text/diff·로그를 웹에
-포함하지 않는다. 자유 문자열은 길이 제한과 credential/경로 정제를 적용하고 렌더링 시 escape한다.
+포함하지 않는다. 자유 문자열은 credential/경로 정제·표시 공백 정규화 후 길이 상한을 적용하고
+렌더링 시 escape한다. 표시 상한을 넘으면 마지막 한 자리를 `…`로 사용하여 생략을 드러낸다.
+이 축약은 표시 projection에만 적용되며 원본 proposal 내용을 덮어쓰지 않는다. public validator는
+정제/축약 전 PUBLIC 상한을 엄격히 검사하므로 올바르게 재계산한 digest가 있어도 oversized card를
+거부한다. `improvement-web-v1`의 버전·allowlist shape·public maxima·canonical digest는 유지하며
+현재 private Sites에 새 배포/API/auth 변경을 요구하지 않는다. HTML/Markdown은 같은 제한된
+payload를 검증한 뒤 기존 최대 3카드 한 장 요약을 만든다.
 정제는 민감한 임의 데이터를 공유할 허가가 아니며 소스 범위부터 private 내용을 제외해야 한다.
 
 ## 비공개 HTTP 전달
@@ -335,7 +383,57 @@ GitHub 게시를 시작하지 않는다. 승인된 실행도 GitHub 앱이 필�
 
 ## 검토·검증 인계
 
-이번 문서 영향은 권한·책임·격리·schema·검증·실패 복구·게시 정책 변경이므로
+2026-10-15 후보·reviewer 길이/모델 transport 수리의 문서 판단은 `documentation.updated`이며 실제 변경 문서는
+`docs/improvements.md`, `docs/architecture.md`, `docs/harness-design.md`,
+`docs/adr/0016-bounded-private-improvement-text.md`, `docs/adr/README.md`다.
+후보·reviewer 수용/표시 데이터 계약·전체 private review 승인 결합·검토 입력·모델 전용
+envelope/원래 byte 검사·실패 경계를 기록한다. 아래 기반 구현의
+역사적 인계 목록은 이번 변경 목록과 구분한다. `docs/harness.md`는 명령·검증 실행 책임·환경
+설명이 바뀌지 않아 수정하지 않으며 AGENTS와 ADR0015의 권한 정책도 그대로 유지한다.
+
+메인 제공 원인 관찰은 첫 실제 scan에서 419자 issue가 기존 400자 표시 한도로 거부되어
+두 후보가 사라졌다는 것이다. raw 응답 64KiB 초과는 아니었다. 원문이나 credential을 fixture에
+옮기지 않았다. 합성 오프라인 회귀에는 419자/279자 두 후보의 전체 독립 검토·private 저장·
+재검증·명시 승인 후 task 전달, 4배 ceiling의 정확/초과 경계, 표시 말줄임과 suffix별 원본 ID,
+정상 digest를 가진 oversized public 카드 거부, invalid 구조의 전체 거부·partial daily 재사용을 둔다.
+기존 daily 날짜 idempotency·명시 same-day discover·human 기록 보존·authority guard 회귀도 유지한다.
+새 retry·역할 호출·provider/context 예산·storage 변경은 없다. worker는 검사를 실행하지 않았다.
+이번 local continuation은 `GIT=0`이다. 오케스트레이터의 새 Claude 문서/구현 검토·전체
+`make check`·local apply
+뒤 승인된 수동 실제 재점검과 정제 private 보고함 전달은 메인이 수행한다.
+이 수리는 새 실제 점검 성공이나 보고 전달 완료의 증거가 아니며 발견 제안은 별도 사용자 승인 대상이다.
+
+메인 제공 후속 관찰: 기존 8파일 길이 patch는 Claude 검토와 selected 3158 tests를 통과했다.
+실제 재점검에서 GLM runner는 passed였지만 전체 응답이 단일 json fence여서 transport 파싱이
+실패했다. 메인의 내부 strict JSON/승인 source 검사는 두 후보가 유효함을 확인했지만 이를
+보고에 승격하거나 승인/claim/실행하지 않았고 partial 보고를 정직하게 전달했다. 이 worker는
+그 private 원문을 읽거나 fixture에 복사하지 않았다. 이 관찰은 이번 변경의 검증 성공이 아니다.
+추가 합성 명세는 bare/fenced 내용·ID/digest 동등성, fenced 419자 후보 전체 독립 review와
+bounded 웹 출력, fenced reviewer, LF/CRLF·문자열 backtick, 잘못된 container/strict JSON의
+partial 및 daily 재사용, wrapper/공백 포함 원래 UTF-8 byte 경계와 config/public/storage의
+strict parsing을 대상으로 한다. worker는 새 명세를 실행하지 않았다.
+
+최신 메인 제공 관찰 `1792065346555306548-d8a875`: GLM을 포함한 네 specialist는 모두
+성공하고 두 후보를 만들었으며 Claude reviewer runner도 passed였다. 첫 review reason
+416자가 private/display 공유 360자 검증에서 거부되어 완료 review가 되지 않았다.
+두 번째 reason 351자, 전체 documentation reason 176자와 후보별 142/159자는 기존 한도
+안이었고 문서 경로도 승인 scope 안이었다. 원문은 fixture로 복사하지 않았다. 후보는
+승인·claim·실행되지 않았으며 partial 보고만 전달했다는 메인 제공 근거다.
+이번 합성 명세는 정확히 specialist 4회+reviewer 1회의 416자 scan 완료, 세 private reason
+1440자 수용/1441자 거부와 저장 후 eligibility/authorization 재검증, full review의 명시 승인
+후 mocked task 전달, 표시 prefix 밖 suffix의 review_digest 결합 및 기존 승인 무효화,
+public 360/361자와 재계산 digest의 검증·render 거부를 포함한다. 구조·문서 최소 길이·scope·
+coverage·verdict·필수 문서 edit_files·byte/fence/short digest 회귀는 유지한다.
+이전 3215 passed는 새 수리의 검증이 아니다. 새 Claude 검토·전체 make check는 실행기,
+local apply·새 읽기 전용 실점검·정제 private inbox 전달은 메인 소유이며 아직 대기다.
+
+GitHub `create_tree`는 명시적 공개 동의 부족으로 automatic approval review가 거부했다는
+메인 제공 상태를 유지한다. 모든 Git 쓰기/재요청은 중단되어 있으며 이번 `GIT=0` 수리는
+공개 게시 승인이나 journal 변경이 아니다. 메인은 영향 없는 local 수리/보고 전달을 마친 뒤
+별도 공개 승인을 요청한다. 이 문서는 공개/CI/merge/cleanup 완료를 주장하지 않는다.
+
+아래는 기반 구현 당시의 역사적 문서 영향 기록이며 이번 변경/열람 목록이 아니다.
+당시 권한·책임·격리·schema·검증·실패 복구·게시 정책 변경은
 `documentation={status:updated,files:[AGENTS.md,docs/architecture.md,docs/harness-design.md,
 docs/harness.md,docs/workflow.md,docs/improvements.md,docs/adr/README.md,
 docs/adr/0015-approval-gated-improvement-discovery.md],reason:...}`에 해당하는 실제 Markdown을 수정했다.
