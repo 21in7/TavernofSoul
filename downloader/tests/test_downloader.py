@@ -487,6 +487,19 @@ INVALID_PAKS = {
     # Invalid UTF-8 outside the blacklist must fail the decode without ever
     # opening a .part or discarding the archive.
     'invalid_utf8_name': (pak_record(b'bad\xff\xfe.txt', raw_deflate(b'x'), 1), UnicodeDecodeError),
+    # A decoded name must stay inside patch_destination: '..' components,
+    # absolute paths and backslashes are rejected before any directory or
+    # .part file is created, so a damaged archive can never write outside it.
+    # The members themselves are valid, so only the name rule can reject
+    # these records.
+    'dotdot_name': (pak_record('../escaped.bin', raw_deflate(b'x'), 1), ValueError),
+    'climbing_dotdot_name': (pak_record('a/../../b.bin', raw_deflate(b'x'), 1), ValueError),
+    # Built per-test from tmp_path: still an absolute name, but a hypothetical
+    # guard failure would then write inside tmp_path, never at a real
+    # absolute location.
+    'absolute_name': (lambda destination: pak_record(
+        str(destination.parent / 'escaped.bin'), raw_deflate(b'x'), 1), ValueError),
+    'backslash_name': (pak_record('sub\\escaped.bin', raw_deflate(b'x'), 1), ValueError),
 }
 
 
@@ -495,6 +508,8 @@ def test_pak_invalid_record_preserves_archive_and_publishes_nothing(tmp_path, pa
     damaged, expected = INVALID_PAKS[damage]
     destination = tmp_path / 'unpack'
     destination.mkdir()
+    if callable(damaged):
+        damaged = damaged(destination)
     archive = destination / 'damaged.pak'
     archive.write_bytes(damaged)
     with pytest.raises(expected):
@@ -504,6 +519,13 @@ def test_pak_invalid_record_preserves_archive_and_publishes_nothing(tmp_path, pa
                  if path.is_file() and path.name != 'damaged.pak']
     assert not published
     assert not list(destination.rglob('*.part'))
+    # A rejected name must also never escape the destination: no file or
+    # directory at all may appear anywhere else under tmp_path, so a '..'
+    # climb, an absolute name or a backslash cannot write outside the unpack
+    # directory, and no .part residue survives anywhere either.
+    escaped = [str(path.relative_to(tmp_path)) for path in tmp_path.rglob('*')
+               if path != destination and path != archive]
+    assert escaped == []
 
 
 DAMAGED_SECOND_RECORDS = {

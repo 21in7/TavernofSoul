@@ -330,12 +330,15 @@ header는 offset 0/2/6/10에서 각각 native signed `@h`/`@i`/`@i`/`@i`로 읽�
 크기와 archive 끝을 넘는 레코드를 거부한다. checksum은 읽되 검증하지 않는다.
 blacklist는 raw 이름 bytes에 먼저 적용하므로 해당하는 invalid UTF-8 이름도
 디코딩·추출 없이 건너뛴다. 나머지 이름은 UTF-8 오류를 전파한다.
+UTF-8 디코딩에 성공한 이름은 절대 경로이거나 `..` 경로 구성요소 또는 역슬래시(`\`)를
+포함하면 `ValueError`로 거부한다. 이 검사는 출력 디렉터리 생성·`.part` 작성 등
+출력 파일시스템 작업 전에 수행하며, 그 외 정상 이름의 경로 해석은 유지한다.
 추출 member는 실제 출력 크기가 선언값과 같고 deflate `eof`에 도달해야 한다.
 완전한 deflate stream으로 표현된 빈 출력은 유효하다.
 빈 compressed member는 deflate `eof`에 도달하지 못하므로 실패한다.
 stream 뒤의 compressed trailing bytes는 기존 `zlib.decompress`처럼 무시하고,
 다음 레코드는 stream 끝이 아닌 선언된 compressed 크기의 경계로 seek한다.
-checksum·경로 해석·blacklist·format 정책은 바꾸지 않는다.
+checksum·blacklist·format 정책은 바꾸지 않는다.
 
 각 destination은 같은 경로의 `.part`에 쓰고 크기·eof 확인 → 파일 flush/fsync → close →
 `os.replace` 순서로 공개한다. 교체 전 실패하면 기존 destination과 archive를 보존하고

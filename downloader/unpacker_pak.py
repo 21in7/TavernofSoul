@@ -116,6 +116,13 @@ def unpack(pak, patch_destination):
             if not any(s in file_name for s in PAK_BLACKLIST):
                 logging.debug('Unzipping %s...', file_name)
                 file_name = file_name.decode(encoding='utf-8')
+                # A decoded member name must stay inside patch_destination:
+                # absolute paths, '..' components and backslashes are rejected
+                # before any directory or .part file is created, so a damaged
+                # or hostile archive can never write outside it.
+                if (os.path.isabs(file_name) or '..' in file_name.split('/')
+                        or '\\' in file_name):
+                    raise ValueError('Unsafe PAK member name')
                 file_path = os.path.join(patch_destination, file_name)
 
                 # ensure file_path exists
