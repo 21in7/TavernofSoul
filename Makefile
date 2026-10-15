@@ -10,6 +10,7 @@ PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(i
 .PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume agent-git-cleanup
 .PHONY: storage-status storage-doctor
 .PHONY: agent-improve agent-improve-daily agent-improve-status agent-improve-approve agent-improve-reject agent-improve-execute
+.PHONY: agent-improve-tick agent-improve-loop-status agent-improve-publish
 
 # Quote each improvement argument as one literal shell word. Never evaluate it
 # as shell code; the Python CLI validates IDs, paths and trusted-parent authority.
@@ -57,6 +58,9 @@ help:
 	@echo "agent-improve   Manual read-only discovery [SCOPE_FILE=explicit-approved-list]"
 	@echo "agent-improve-daily Idempotent KST discovery [DELIVER=1]; never approve or execute"
 	@echo "agent-improve-status Show the report [DATE=YYYY-MM-DD]"
+	@echo "agent-improve-tick One hourly research step; deliver the frozen 09:00 KST report when due"
+	@echo "agent-improve-loop-status Show loop budget, holds, next role and next report; no models"
+	@echo "agent-improve-publish Deliver a frozen report without models [RECONCILE=1: explicit same-digest reconciliation]"
 	@echo "agent-improve-approve Trusted parent only: PROPOSAL_ID=... INSTRUCTION_FILE=... [LOCAL_ONLY=1]"
 	@echo "agent-improve-reject Trusted parent only: PROPOSAL_ID=..."
 	@echo "agent-improve-execute Consume one exact approval: PROPOSAL_ID=..."
@@ -140,6 +144,22 @@ agent-improve-daily:
 
 agent-improve-status:
 	$(PYTHON) -m harness.improvements status $(if $(DATE),--date $(call improve_quote,$(DATE)))
+
+# Main replaces the legacy daily scheduler with this target after validation.
+# Do not schedule discover/daily alongside tick: they bypass the loop ledger.
+# The CLI defaults to deliver=True and calls improvements.deliver_report only
+# after releasing the improvement/project locks. No separate publish cron.
+# The engine owns the <=600s tick deadline, shorter model/quota deadlines and
+# durable hourly claim; do not wrap this command in an automatic retry loop.
+agent-improve-tick:
+	TAVERN_IMPROVEMENT_UNATTENDED=1 $(PYTHON) -m harness.improvement_loop tick
+
+agent-improve-loop-status:
+	$(PYTHON) -m harness.improvement_loop status
+
+# Manual recovery only; unknown sends need explicit same-digest reconciliation.
+agent-improve-publish:
+	TAVERN_IMPROVEMENT_UNATTENDED=1 $(PYTHON) -m harness.improvement_loop publish $(if $(filter 1,$(RECONCILE)),--reconcile)
 
 agent-improve-approve:
 	$(PYTHON) -m harness.improvements approve --proposal-id $(call improve_quote,$(PROPOSAL_ID)) --instruction-file $(call improve_quote,$(INSTRUCTION_FILE)) $(if $(filter 1,$(LOCAL_ONLY)),--local-only)

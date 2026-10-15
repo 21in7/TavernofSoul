@@ -3,7 +3,13 @@
 - 상태: 제안(proposed), 기반 구현·전달은 사용자 승인됨; 최종 의미 검토·전체 검증·GitHub 전달 대기
 - 기록일: 2026-10-15
 - 기록 성격: 새 결정
-- 대체 관계: 없음. 기존 직접 요청 workflow·공유 저장·GitHub journal/CI/cleanup 결정을 유지하며 자율 발견의 권한 경계를 추가한다.
+- 대체 관계: 승인권한 결정은 유지. daily-only 예약·하루 한 scan/5회·one-pass 부분은 [ADR 0017](0017-budgeted-continuous-improvement.md)로 대체한다. 기존 직접 요청 workflow·공유 저장·GitHub journal/CI/cleanup 결정은 유지한다.
+
+2026-10-16 후속: 아래 daily 설명과 5회 호출 비용은 도입 당시 계약 및 legacy API의 기록이다.
+현재 자동 탐색은 hourly 한 단계·하루 최대24회와 Claude 추정 US$1 ledger, 로컬→기존 역할 검토,
+09:00 once 보고를 따른다. 개별 승인·독립 검토·서명·freshness·일회성 claim은 그대로다.
+loop/local/agent/workflow config digest도 추가 승인 freshness에 결합한다. 당시 준비/대기 관찰은
+역사로 보존하며 최신 준비·미가동 상태는 [운영 문서](../improvements.md)를 따른다.
 
 ## 문맥
 

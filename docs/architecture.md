@@ -50,17 +50,68 @@ Ubuntu 20.04 ARM 호스트에서는 엔진만 지원 Ubuntu 컨테이너로 실�
 | 개발 하네스 | 격리 환경·검증 실행·기계가 읽을 수 있는 결과 | `Makefile`, `harness/runner.py` |
 | 하네스 저장 정책 | 산출물·비인증 임시 경로 해석, 쓰기 전 mount·공간·private 검사, 기존 실행 조회와 고정 로컬 lock 경로 | `harness/storage.py` |
 | 개선 발견·승인 | 개별 승인 소스의 읽기 전용 역할 점검, 독립 검토, private 승인/claim 및 기존 workflow 연결 | `harness/improvements.py` |
+| 시간별 개선 연구 | durable slot/예산·9단계 local/owner 검토·오전 보고 journal과 상태 | `harness/improvement_loop.py`, `harness/improvement-loop-config.json` |
+| 로컬 초안 전송 | 승인 snapshot의 작은 연속 line window·정제 feedback만 loopback text HTTP로 전송 | `harness/local_model.py` |
 | 개선 보고·전달 | 순수 JSON/HTML/Markdown 계약과 정제된 보고서만 private Sites로 HTTP 전달 | `harness/improvement_report.py`, `harness/improvements.py` |
 
 ### 자율 개선의 별도 권한 경계
 
-[일일 개선 점검](improvements.md)은 게임 데이터 흐름 밖의 개발 보조 기능이다.
-`discover`/`daily`는 `workflow.owner()`별 개별 승인 파일과 명시된 공통 문서만 별도
+[시간별 연구·오전 보고](improvements.md)는 게임 데이터 흐름 밖의 개발 보조 기능이다.
+최신 [ADR 0017](adr/0017-budgeted-continuous-improvement.md)에 따라 hourly tick은
+local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
+local(django)→django→독립 Claude 검토의9단계를 한 slot에 한 단계씩 진행한다. 로컬 포함
+KST 하루 최대24회·tick당 모델 최대1회다. 기존 `discover/daily`는 legacy 호환 경로이며
+활성 예약은 새 tick 하나만 사용한다. 기존37개 읽기 승인은 확대하지 않는다.
+cloud specialist는 `workflow.owner()`별 개별 승인 파일과 명시된 공통 문서만 별도
 `write=False, scoped=True` 모델 사본에 제공한다. reviewer는 별도 사본에서 승인 scope 전체를
 독립 검토한다. 다른 영역의 소스 대신 앞 역할의 정제된 후보 요약을 공유한다.
 디렉터리 탐색이나 모델에 의한 scope 확대는 없으며 테스트·문서가 부족하면 추가 승인 필요로 남긴다.
 점검은 소스 쓰기·검사·Git·workflow·운영 importAll을 호출하지 않는다. 기록·lock·격리 임시
 context/runtime만 쓰고, 기존 workflow/cleanup과 동일한 고정 project lock으로 중첩을 거부한다.
+
+로컬 mlx-lm은 owner scope의 한 파일에서 정확한 path/원래 line 번호를 가진 작은 연속 window만
+받는다. request24576bytes·output3072tokens·HTTP180초·response65536/header8192bytes 상한,
+기본96줄/feedback4096bytes다. evidence와 benefit.evidence는 실제 전달 범위 안에서만 수용한다.
+durable owner cursor로 다음 window/파일을 순환하며 긴 한 줄은 slice 없이 명시 skip한다.
+local 실패/빈 초안이면 관련 specialist는 미호출로 기록한다. local은 초안 참여자이며
+private local_participation의 mlx-lm/model/stage/owner_role로 구분하고 web-v1 agents에 넣지 않는다.
+정식 candidate는 기존 specialist가 자기 소스로 확인·보완하고 reviewer가 전체를 독립 검토한다.
+다음 round의 실제 local prompt에 정제 issue·specialist 설명·review.reason을 candidate_id/
+draft_digest와 함께 이어받는다. HTTP는 숫자 loopback만 허용하며 DNS/proxy/redirect/remote_code/
+도구·자유 파일 접근은 없다. 모델/endpoint 설정과 원문은 private 경계에 남긴다.
+
+호출 전에 improvement/project locks 아래 slot·호출 수·Claude reservation·cursor/inflight를
+durable 기록한다. 실패 slot 자동 재호출/daemon/fallback은 없다. source bytes/mode/존재·scope·
+discovery/loop/local/agent/workflow config fingerprint 변경은 old pool/review/feedback/cursor를
+무효화한다. loop context digest도 proposal provenance와 HMAC 승인에 결합하여 동일 ID가
+재발견되어도 옛 승인의 새 설정 재결합을 막는다. tick은 human decisions/approvals/claims를 쓰지 않는다.
+
+Claude는 KST 하루 추정 US$1·호출 cap min(US$0.20, 잔액, 기존 역할 한도)을 사전 예약한다.
+성공한 finite estimate만 정산하고 실패/중단/unknown은 예약 전부 소비, 초과 관측은 기록 후
+당일 전체 중단이다. 일반 잔액 소진은 reviewer admission에서 판단한다. 그 차례 전의 로컬/구독
+역할은 다른 gate와 call cap 내 진행하지만 reviewer 예산 보류는 stage_index를 유지한다.
+새 slot에서도 같은 reviewer를 재판단하고 대기가 풀릴 때까지 이후 로컬/구독 역할도 멈춘다.
+09:00 보고는 독립적이다. 구현 workflow 비용은 별도이며 CLI 추정 cap은 실청구 강제상한 보장이 아니다.
+기본 자정600초 전에는 모든 모델을 보류하고 rollback/cross-day 중단을 보수적으로 처리한다.
+legacy 동일날 비용/호출은 scan_id로 중복 제거해 carry-in하며 unknown은 소비로 처리한다.
+GLM은 기존 Coding Lite 인증·anthropic endpoint를 유지하고 trusted parent가 매 admission에
+고정 quota endpoint를 조회한다. TOKENS_LIMIT/CREDIT_LIMIT의5h·있으면weekly percentage/reset을
+검증하고>=80%·unknown·malformed·조회 실패는 보류한다. 두 model type 모두5h의 정확한
+finite numeric0%(bool 제외)에만 absent/null reset을 idle로 허용하며 private null을 미상·미활성으로
+유지한다. weekly는0%라도 유효한 reset을 요구하고 비영 사용량의 누락·존재하는 잘못된 reset·
+실패 envelope는 거부한다. TIME_LIMIT 단독·model limit 부재·HTTP 실패를0%로 해석하지 않는다.
+명목20% 개발 여유이며 진행 중 소모까지 보장하지 않는다. 새 cloud/balance fallback은 없다.
+
+보고는 `[전날09:00, 당일09:00)`의 현재 fingerprint 일치 최신 완료 review 하나만 선택해
+09:00 이후 첫 tick에 불변 확정한다. 최대8 distinct 후보를 priority/ID순 최대3카드로 projection하며
+eligible 우선은 아니다. 유효 review 없으면0카드 partial/failed이고 옛 참여를 오늘 성공으로
+표시하지 않는다. journal prepared→publication_pending→sending→delivered를 사용하며
+전송 unknown은 자동 retry 없이 같은 digest만 메인이 reconcile한다. CLI는 두 state lock을
+해제한 뒤 기존 Sites deliver_report를 호출하고 sender mutex로 중복 callback을 막는다.
+기존 day는 덮어쓰기/자동 재전달하지 않는다. catchup은 오늘 날짜 하나만이며 모델 몰아호출은 없다.
+tick의 loop 설정·Store 생성·저장소 readiness 실패는 bounded 정제 paused로 반환하고 모델·키 조회·
+보고 확정·publisher·fallback을 실행하지 않는다. 원문 예외를 노출하지 않으며 child/discovery
+권한 거부는 이 처리 바깥에 유지한다. 저장소/lock 준비 후 source/config 미준비의 실패 보고와 구분한다.
 
 private 원본에는 모든 읽기 의존성의 SHA256·크기·POSIX mode·존재와 scope/config fingerprint,
 실제 모델 참여·실패를 보존한다. 한국어 한 장 요약과 `improvement-web-v1`은 별도 정제 projection이다.
@@ -88,7 +139,8 @@ review reason·후보별 documentation reason·전체 documentation reason도 pu
 1440/1441 및 public 360/361·render 경계를 다룬다. worker는 이를 실행하지 않았다.
 HTML/Markdown의 최대 3카드 한 장 요약도 유지한다. 전체 응답 64KiB·source/context·구조·경로·근거 줄·배열 상한은
 완화하지 않으며 private 초과나 invalid 후보는 기존 partial 경계로 거부한다.
-역할·예산·재시도·daily 재사용/수동 재점검·storage·권한 결정은 변경하지 않는다.
+이 서술 수리는 당시 역할·예산·재시도·storage·권한 결정을 바꾸지 않았다. 최신 자동 연구의
+스케줄/추정 ledger는 위 ADR0017을 따르며 legacy daily 재사용 의미는 유지한다.
 모델 응답은 `_call_role`에서만 strict bare JSON 또는 전체를 감싼 단일 소문자 `json` 태그의
 3-backtick fence를 수용한다. 각 delimiter 줄 경계는 LF 또는 CRLF, 바깥 공백은
 space/tab/CR/LF만 허용한다. 원래 UTF-8 bytes를 설정 상한으로 검사한 뒤 wrapper만 벗겨
@@ -97,7 +149,7 @@ space/tab/CR/LF만 허용한다. 원래 UTF-8 bytes를 설정 상한으로 검�
 추출·salvage·retry는 없다. JSON 문자열의 backtick은 보존한다. 같은 내부 JSON의 후보/검토
 내용·proposal ID/digest는 같으며 genuine redacted runner result는 원래 wrapper까지 private에 둔다.
 prompt는 계속 bare JSON을 요청한다. 이는 제한된 private 서술을 보존하는 transport 호환 수리다.
-이번 `GIT=0` continuation은 새 Claude 검토·전체 검증·local apply 후 메인의 실제 재점검과
+다음은 2026-10-15 서술 수리의 역사적 인계다. 당시 `GIT=0` continuation은 새 Claude 검토·전체 검증·local apply 후 메인의 실제 재점검과
 private 보고 전달을 기다린다. GitHub create_tree의 자동 승인 거부(명시적 공개 동의 부족)는
 유지되며 Git 쓰기·재요청·journal 변경은 하지 않는다. 별도 공개 승인 전 게시하지 않는다.
 새 실제 점검 성공을 주장하지 않으며 발견 제안은 각각 사용자 승인 전 실행하지 않는다.
@@ -105,6 +157,16 @@ private 보고 전달을 기다린다. GitHub create_tree의 자동 승인 거�
 runner가 성공했으나 416자 review reason의 기존 360자 검증으로 partial이었다.
 이전 3215 passed는 이번 수리 검증이 아니다. 새 Claude 검토·전체 검증·local apply·
 읽기 전용 실제 재점검·정제 private inbox 전달은 메인/실행기의 후속 작업이다.
+
+2026-10-16 최신 인계는 [운영 문서](improvements.md)·[MLX](local-models.md)를 따른다.
+MLX 서비스/터널 설치·재시작과 새 adapter 합성 소스의 실제 추론은 메인 제공 성공 관측이다
+(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계와 hourly 활성화는
+대기다. 직전 NFS full check1800초 timeout/applied=[]로 원본 baseline은 보존되었으며 부분
+검사 결과를 전체 성공으로 쓰지 않는다. 기존09:00 daily는 유지 중이다. worker는 검사·실모델·네트워크·Git·cron을
+실행하지 않았다. 새 Claude 의미검토/full make check·두 umask 권한 fixture 검증/scoped apply는 실행기, 첫9단계/운영/
+검증된 GitHub 전달/보고 게시 확인은 메인 책임이다. 과거 자동승인 거부는 보존하고 이번 직접
+요청의 기존 Git 역할 인계는 baseline 불일치·명시 거부 시 중단한다. 매 reviewer는 실제 수정
+Markdown을 documentation.files에 넣고 의미 완전성을 평가하며 확장자 검사를 증거로 쓰지 않는다.
 
 모델의 적격 판정과 인간의 승인은 다르다. 메인만 구체적인 사용자 지시로 서명된 private 승인을
 발급하고, `execute`가 만료·원본 staleness·정확한 편집 범위·일회성 claim을 검증한 뒤 기존

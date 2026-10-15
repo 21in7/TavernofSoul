@@ -3,6 +3,7 @@ import argparse
 from contextlib import contextmanager, nullcontext
 import getpass
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -369,10 +370,42 @@ def scoped_codex_config(workspace, write=False, cli=None, shell=None, runtime_ro
     return [item for value in values for item in ('-c', value)]
 
 
+def _validated_budget_override(spec, max_budget_usd, smoke):
+    """Accept only an explicit downward Claude CLI estimate cap, never a fallback.
+
+    The automatic exploration parent owns durable reservations and settlement;
+    this option does not impose a provider billing limit or change role defaults.
+    """
+    if max_budget_usd is None:
+        return None
+    if spec['provider'] != 'claude':
+        raise ValueError('Budget override requires the Claude provider.')
+
+    def positive_finite(value):
+        if type(value) not in (int, float):
+            return False
+        try:
+            return math.isfinite(value) and value > 0
+        except OverflowError:
+            return False
+
+    configured = spec.get('max_budget_usd')
+    if not positive_finite(configured):
+        raise ValueError('Budget override requires a positive finite configured Claude limit.')
+    if not positive_finite(max_budget_usd):
+        raise ValueError('Budget override must be a positive finite number.')
+    limit = min(configured, 0.25) if smoke else configured
+    if max_budget_usd > limit:
+        raise ValueError('Budget override must not increase the existing Claude limit.')
+    return max_budget_usd
+
+
 def command_for(role, write=False, smoke=False, compaction=None, workspace=None, scoped=False,
-                codex_cli=None, codex_shell=None, runtime_root=None, auth_home=None):
+                codex_cli=None, codex_shell=None, runtime_root=None, auth_home=None, *,
+                max_budget_usd=None):
     spec = load_config()['roles'][role]
     provider = spec['provider']
+    budget_override = _validated_budget_override(spec, max_budget_usd, smoke)
     if write and role in ('reviewer', 'escalation', 'git'):
         raise ValueError('Reviewer, escalation and Git roles are read-only.')
     work_root = Path(workspace) if workspace is not None else ROOT
@@ -415,7 +448,8 @@ def command_for(role, write=False, smoke=False, compaction=None, workspace=None,
                '--permission-mode', 'acceptEdits' if write else 'dontAsk']
     if provider == 'claude':
         command += ['--effort', spec['effort'], '--max-budget-usd',
-                    str(0.25 if smoke else spec['max_budget_usd'])]
+                    str(budget_override if budget_override is not None else
+                        (0.25 if smoke else spec['max_budget_usd']))]
     return command
 
 
@@ -468,13 +502,18 @@ def response_text(provider, output):
 
 
 def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None, workspace=None,
-        scoped=False):
+        scoped=False, *, max_budget_usd=None):
+    """Run one role; invalid budget overrides raise before any runtime or model call.
+
+    Exploration callers must persist their reservation before entry. Ordinary
+    workflows omit the override and retain their configured per-call budgets.
+    """
     spec = load_config()['roles'][role]
     provider = spec['provider']
     enabled = uses_compaction(provider, smoke, compaction)
     work_root = Path(workspace) if workspace is not None else ROOT
     command = command_for(role, write=write, smoke=smoke, compaction=compaction, workspace=workspace,
-                          scoped=scoped)
+                          scoped=scoped, max_budget_usd=max_budget_usd)
     nonce = 'TAVERN_MODEL_OK_' + secrets.token_hex(8)
     prompt = ('Reply with exactly {}. Do not use any tools.'.format(nonce) if smoke
               else task_prompt(role, task, workspace=workspace, scoped=scoped))
@@ -499,7 +538,7 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                 command = command_for(role, write=write, smoke=smoke, compaction=compaction,
                                       workspace=workspace, scoped=scoped, codex_cli=runtime['cli'],
                                       codex_shell=runtime['shell'], runtime_root=runtime['root'],
-                                      auth_home=runtime['source_home'])
+                                      auth_home=runtime['source_home'], max_budget_usd=max_budget_usd)
             else:
                 status = connection_status(provider, keys)
                 if status['status'] != 'ready':

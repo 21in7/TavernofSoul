@@ -218,6 +218,68 @@ Coding Lite를 자체 범용 HTTP 클라이언트로 호출하거나 일반 API 
 한도 소진·인증 실패 시 다른 유료 공급자로 자동 전환하지 않는다.
 지원 모델을 계정에서 사용할 수 없으면 보고서의 실패를 확인하고 manifest를 명시적으로 수정한다.
 
+## 자동 개선 연구의 모델·비용 계약
+
+최신 직접 선택은 [ADR0017](adr/0017-budgeted-continuous-improvement.md)의 hourly 연구와
+09:00 once 보고다. 기존 cloud roles/provider/model/effort/compaction/auth를 변경하지 않는다.
+Codex는 기존 ChatGPT 로그인, GLM은 Claude Code의 기존 Coding Lite
+`https://api.z.ai/api/anthropic` 연결이다. 새 요금제/계정/유료 balance fallback은 없다.
+별도 [mlx-lm adapter](local-models.md)는 Mac의 preload text model 초안을 담당하며 cloud
+역할이나 독립 reviewer로 배정하지 않는다. Linux Python3.8 표준라이브러리 HTTP만 사용한다.
+
+기본 round는 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
+local(django)→django→independent Claude reviewer다. 한 hourly tick에서 모델 최대1회·로컬 포함
+KST 하루24회이며 specialist는 local 초안을 기존 승인 소스로 검증해 정식 후보로 만든다.
+local 실패/빈 초안의 관련 specialist는 미호출로 기록하고 다음 round prompt에 정제 issue와
+specialist/Claude review.reason을 이어받는다. private local_participation은 provider=mlx-lm,
+설정된 실제 model identity/stage=local_explorer/owner_role을 보존하며 기존5역할 참여를 위장하지 않는다.
+API alias default_model은 실제 identity의 증명이 아니므로 메인이 preload를 확인한다.
+
+Claude 탐색은 KST calendar day 추정 ledger US$1·reviewer1회 cap<=US$0.20이다.
+호출 직전 durable reservation/count를 저장하고 cap=`min(0.20, 잔액, 기존 role cap)`를
+`run(..., max_budget_usd=...)`와 `command_for(..., max_budget_usd=...)`에 넘겨 실제 CLI
+`--max-budget-usd`로 연결한다. optional override는 Claude 전용 finite 양수·downward-only다.
+bool/NaN/Inf/0/음수/기존 cap 증가/다른 provider를 거부하며 smoke에는 기존0.25 cap도 적용한다.
+override 생략 시 reviewer2USD/escalation5USD 등 공통 설정과 다른 workflow 예산은 그대로다.
+**이 기능 구현 workflow의 모델 비용은 자동 탐색 하루1USD ledger와 별도다.**
+
+성공한 finite/nonnegative CLI estimate만 settlement하며 실패/timeout/unknown/중단은 예약을
+전액 소비 처리한다. 관측 estimate가 예약을 넘으면 실제 추정을 기록하고 당일 전체 연구를
+중단한다. 일반 잔액 소진은 reviewer admission에서 판단한다. 그 차례 전 local/구독 역할은
+다른 gate와 일일 call cap 내에서 진행할 수 있다. reviewer 예산 보류는 stage_index를 유지해
+새 slot에서도 reviewer를 다시 판단하며 이후 local/구독 역할은 대기가 풀릴 때까지 호출하지
+않는다. 09:00 보고 확정은 독립적이다. unknown 비용을0USD로 표기하지 않는다. CLI estimate/cap·ledger는 실청구
+강제상한 보장이 아니다. 자정600초 guard·rollback 방지·cross-day 보수적 이중 count/charge·
+당일 legacy 비용/호출의 scan_id 중복 제거 carry-in은 [운영 계약](improvements.md)을 따른다.
+이 budget/quota gate는 자동 탐색에만 적용하며 사람 승인 후 execute에는 적용하지 않는다.
+
+GLM admission마다 trusted parent만 기존 ZAI_API_KEY로 고정
+`GET https://api.z.ai/api/monitor/usage/quota/limit`를 조회한다. 기본15초/최대20초·response64KiB·
+bounded headers·redirect/proxy/retry 금지이며 key/raw body/원문 예외를 모델/로그/웹에 주지 않는다.
+legacy TOKENS_LIMIT/신형 CREDIT_LIMIT의5h(unit3/number5) finite percentage0..100·미래 정수
+epoch-ms reset을 검증한다. 두 type 모두5h의 정확한 finite numeric0%(bool 제외)에만 absent/null
+reset을 idle로 허용하고 private nextResetTime=null(미상·미활성)을 유지한다. 그 외 유효한 미래
+reset을 요구하며 weekly(unit6/number1)는0%라도 예외가 없다. weekly/CREDIT_LIMIT 존재는
+가정하지 않는다. envelope success/code가 있으면 true/정수200을 요구한다. TIME_LIMIT 단독·
+model limit 부재·HTTP/응답 실패를0%로 해석하지 않으며 unknown/중복/미지원 window·malformed/
+조회 실패는 GLM 보류다. 모델 window 하나라도>=80%면 pause해 명목20% 개발 여유를 남긴다.
+호출 도중 사용까지 절대 보장하지 않는다. 과거1% 관측 재사용·새 credit 가격 하드코딩·quota 구매·
+reset 소비는 없다. 공식 FAQ에 따라 Coding Plan 소진 시 balance 자동 차감으로 전환하지 않는다.
+
+기존37개 읽기 승인과 role ownership/shared는 유지한다. 로컬은 exact path/원래 line 번호의
+작은 연속 window와 sanitized feedback만 받으며 전체 소스·SSH/home/key·도구·remote_code를
+받지 않는다. private0600 endpoint/model config digest도 loop freshness와 signed authorization에
+결합한다. source/scope/config 변경은 pool/review/feedback/cursor를 무효화하며 실제 원문이나
+비용/로컬 설정을 기존 web-v1 public shape에 추가하지 않는다.
+
+최신 메인 관측으로 MLX 서비스/터널 설치·재시작과 새 adapter의 합성 소스 실제 추론은
+성공했다(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계와 hourly 예약은
+대기다. 직전 NFS full check1800초 timeout/applied=[]의 부분 결과는 전체 검증 성공이 아니다.
+worker는 실모델/네트워크/검사/Git/cron을 실행하지 않았다.
+새 Claude 의미검토/full make check·두 umask 권한 fixture 검증/scoped apply는 실행기, 첫9단계/예약/GitHub 전달/보고
+게시 확인은 메인 책임이다. 매 review는 실제 변경 Markdown과 계약의 의미적 완전성을
+documentation={status,files,reason}으로 평가하며 확장자 검사로 대체하지 않는다.
+
 ## 검증과 공식 근거
 
 `make check`의 오프라인 테스트는 키 파일 보호·공급자 간 인증 분리·API 과금 로그인 거부·오류 응답·
@@ -244,4 +306,7 @@ scoped workflow의 담당 worker는 테스트를 실행하지 않으며 orchestr
 - [Claude Code bare 실행과 API 키 인증](https://code.claude.com/docs/en/headless)
 - [Z.ai Coding Lite 모델·사용량](https://docs.z.ai/devpack/overview)
 - [Z.ai의 Claude Code 연결](https://docs.z.ai/devpack/tool/claude)
+- [Z.ai 공식 quota 조회 script](https://github.com/zai-org/zai-coding-plugins/blob/main/plugins/glm-plan-usage/skills/usage-query-skill/scripts/query-usage.mjs)
+- [Coding Plan FAQ·balance 자동차감 없음](https://docs.z.ai/devpack/faq)
+- [기존 구독 quota 보존](https://docs.z.ai/devpack/notice/usage-revision)
 - [Claude 모델과 API 가격](https://platform.claude.com/docs/en/about-claude/pricing)

@@ -51,50 +51,108 @@ PYTHONPATH=TavernofSoul:parser_tidy TavernofSoul/itos/3.8/bin/python -m harness.
 공개 적용은 격리 적재·재적재·롤백 검증과 백업을 갖춘 별도 작업이다.
 세부 호환 규칙과 단위는 [데이터 계약](data-contracts.md)을 따른다.
 
-## 승인 대기 일일 개선 점검
+## 승인 대기 시간별 연구와 오전 보고
 
-실행·JSON 계약·승인 복구는 [일일 개선 점검](improvements.md), 권한 결정은
-[ADR 0015](adr/0015-approval-gated-improvement-discovery.md)를 따른다. Python 3.8에서 기존
-역할·provider·compaction과 storage API를 사용하며 새 provider·credential은 설치하지 않는다.
-아래는 메인/신뢰한 운영자의 명령 예시다. worker는 실행하지 않는다.
+계약·정확한 scheduler 교체·실패 복구는 [improvements](improvements.md), 로컬 준비와
+서비스 운영은 [local-models](local-models.md)를 따른다. [ADR0015](adr/0015-approval-gated-improvement-discovery.md)의
+개별 승인/claim 권한은 유지하고 [ADR0017](adr/0017-budgeted-continuous-improvement.md)이
+기존 daily-only/하루5회/one-pass 정책을 bounded hourly 연구로 대체한다. 기존 역할/model/auth/
+compaction을 유지하고 Python3.8 표준라이브러리 MLX HTTP adapter만 별도로 추가한다.
+Linux requirements에 MLX를 넣지 않는다. 아래는 메인/신뢰한 운영자용이며 worker는 실행하지 않는다.
 
 ```bash
-make agent-improve PYTHON=/ABS/VENV/bin/python
-make agent-improve-daily PYTHON=/ABS/VENV/bin/python DELIVER=1
-make agent-improve-status PYTHON=/ABS/VENV/bin/python DATE=2026-10-15
+# 기존 daily용 명시 local storage를 tick/status/publish에 동일하게 사용한다.
+HARNESS_STORAGE_CONFIG=/ABS/REPO/logs/harness/improvement-storage.json make agent-improve-tick PYTHON=/ABS/VENV/bin/python
+HARNESS_STORAGE_CONFIG=/ABS/REPO/logs/harness/improvement-storage.json make agent-improve-loop-status PYTHON=/ABS/VENV/bin/python
+HARNESS_STORAGE_CONFIG=/ABS/REPO/logs/harness/improvement-storage.json make agent-improve-publish PYTHON=/ABS/VENV/bin/python
+# 전송 unknown의 실제 상태 확인 후에만 같은 frozen digest를 명시 조정
+HARNESS_STORAGE_CONFIG=/ABS/REPO/logs/harness/improvement-storage.json make agent-improve-publish PYTHON=/ABS/VENV/bin/python RECONCILE=1
+
+make agent-improve-status PYTHON=/ABS/VENV/bin/python DATE=2026-10-16
 make agent-improve-approve PYTHON=/ABS/VENV/bin/python PROPOSAL_ID=IMP-0123456789abcdef INSTRUCTION_FILE=/ABS/PRIVATE/instruction.txt
 make agent-improve-reject PYTHON=/ABS/VENV/bin/python PROPOSAL_ID=IMP-0123456789abcdef
 make agent-improve-execute PYTHON=/ABS/VENV/bin/python PROPOSAL_ID=IMP-0123456789abcdef
 ```
 
-ID·날짜·경로는 실제 값으로 지정한다. instruction 파일은 소유자 소유 nonsymlink·단일 hardlink·
-0600 UTF-8이어야 하며 비어 있지 않은 명시적 사용자 지시를 담는다. 한 ID씩 승인하며
-`LOCAL_ONLY=1`은 승인 시에만 게시 범위를 바꾼다. execute는 다른 task/files를 받지 않는다.
-`SCOPE_FILE=...`은 사용자가 명시 승인한 개별 파일 목록의 수동 재점검에만 사용한다.
-daily target은 unattended marker를 설정해 승인·실행을 거부한다. 점검은 검증/수정을 수행하지 않는다.
-기본 `READ_ONLY=1` workflow와 혼동하지 않는다. 같은 KST 날짜 재호출은 failed/partial도 재사용한다.
+보고/승인/실행도 메인이 선택한 동일 storage 환경을 붙여 사용한다. ID·날짜·경로는 실제 값이다.
+instruction은 소유자 소유 nonsymlink·단일 hardlink·0600 UTF-8의 구체적 사용자 지시여야 한다.
+한 ID씩 승인하며 LOCAL_ONLY=1은 승인 때만 선택한다. execute는 task/files override를 받지 않는다.
+loop 제안의 source/scope/discovery/loop/local/agent/workflow config freshness와 independent
+review·signed discovery_fingerprint·review_digest·만료·일회성 claim을 기존 API가 재검증한다.
+rediscovery로 human state를 덮어쓰거나 옛 승인을 새 설정에 결합하지 않는다.
 
-보고는 storage 정책의 improvements 산출물 아래 private JSON과 `web/<date>.json|html|md`로
-저장한다. HTML은 최대 세 카드·A4 인쇄 스타일이며 웹에는 정제 JSON만 보낸다.
-`daily --deliver`는 기존 당일 보고 재전송에도 사용한다. 다른 날짜의 전달만 재시도하려면
-신뢰한 parent의 `deliver_report(date)` API를 사용한다. 전달 실패는 로컬 보고를 보존한다.
-`partial|failed` 점검 또는 `delivery_failed`는 CLI nonzero다. readiness/lock 오류도 nonzero이며,
-저장 준비 실패가 day record 전에 일어나면 보고 자체가 없을 수 있으므로 wrapper 로그를 확인한다.
-`awaiting_github`는 non-success 인계 상태이며 CLI exit0만으로 완료라 보고하지 않는다.
+hourly tick은 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
+local(django)→django→독립 Claude의9단계 중 하나만 진행하며 모델 최대1회·로컬 포함 하루24회다.
+local은 owner 승인 파일의 작은 연속 numbered window만 받고 durable cursor로 순환한다.
+긴 한 줄은 slice 없이 skip하며 실패/빈 초안이면 관련 specialist를 미호출한다. 정식 후보는 기존
+specialist가 소스 확인 후 만들고 다음 round의 실제 prompt에 정제 issue와 specialist/Claude
+review.reason을 이어받는다. local 참여는 private에서 mlx-lm/model/stage/owner_role로 구분한다.
+web-v1 agents는 기존5역할만 담고 원문/endpoint/비용을 공개하지 않는다. 기존37개 읽기 scope를 늘리지 않는다.
 
-2026-10-15 메인 제공 관찰: owner-private Site 배포 후 익명 API는 403, service 인증
-page/upload/readback/index는 200이었다. 메인이 ignored private 0600 inbox credential과 별도
-일일 local storage 정책을 준비하고 storage-status ready, host Asia/Seoul 및 cron active를 확인했다.
-문서 worker는 private 파일을 읽거나 이 결과를 독립 검증하지 않았다. persistent NFS 설정은 유지한다.
-이번 구현 실행의 명시적 one-off local 선택과 향후 daily 정책 선택도 자동 fallback이 아니다.
-최종 구현/문서 의미 검토·전체 checks·첫 실제 scan·cron 설치/활성화·구현 GitHub CI/merge/cleanup은 대기다.
+한 slot claim을 먼저 남기고 모델 전 count/reservation/cursor/inflight를 atomic 저장한다.
+Claude는 KST 하루 추정US$1·reviewer cap min(0.20, 잔액, 기존한도)로 CLI downward override를
+사용한다. 성공 finite estimate만 정산하고 실패/unknown/중단은 예약 소비, 초과액은 기록 후
+당일 중단이다. 일반 소진은 reviewer admission에서 판단한다. 그 차례 전 local/구독 역할은
+다른 gate와 call cap 내 진행할 수 있지만 reviewer 예산 보류는 stage_index를 유지한다.
+새 slot에서도 reviewer만 재판단하며 이후 local/구독 역할도 대기가 풀릴 때까지 호출하지 않는다.
+09:00 보고 확정은 독립적이다.
+CLI cap은 실청구 강제상한 보장이 아니며 구현 workflow 비용은 자동 탐색 ledger와 별도다.
+GLM은 기존 Coding Lite 인증/endpoint를 유지하고 trusted parent의 bounded quota 조회에서
+TOKENS_LIMIT/CREDIT_LIMIT의5h·있으면weekly percentage/reset을 검증한다. >=80%·unknown/
+malformed/조회 실패는 GLM 보류로 명목20% 개발 여유를 남긴다. 두 model type 모두 인식된5h의
+정확한 finite numeric0%(bool 제외)에만 absent/null reset을 idle로 허용하고 private null을 미상·
+미활성으로 유지한다. weekly는0%라도 유효한 미래 reset을 요구한다. 비영 reset 누락·존재하는
+잘못된 reset·실패 envelope는 계속 거부하며 TIME_LIMIT 단독·model limit 부재·HTTP 실패를0%로 해석하지 않는다.
+quota/budget은 자동 탐색용이며 승인 실행에 적용하지 않는다. fallback/자동 retry는 없다.
 
-검증 후 메인이 실제 venv·작업 디렉터리·절대 `HARNESS_STORAGE_CONFIG`와 readiness를 확인하고
-09:00 Asia/Seoul의 표식 있는 daily 읽기 전용 job 하나만 설치한다. 제공된 wrapper는 준비 상태이며
-설치 완료가 아니다. 기존 job·게임 cron을 보존하고 credential을 cron 인자/로그에 넣지 않는다.
-정확한 template와 재점검·재전송·reconciliation 절차는 [운영 절차](improvements.md#운영과-09시-예약)에 둔다.
-오프라인 회귀 명세는 `harness/test_improvements.py`와 `harness/test_workflow.py`에 추가되었으며
-실제 실행·전체 `make check`·필수 CI 결과는 오케스트레이터/메인이 별도 확인한다.
+기본 자정600초 전부터 모든 admission을 막고 clock rollback/cross-day는 보수적으로 양일
+count/charge/중단한다. legacy 같은날 비용/호출은 scan_id로 중복 제거 carry-in하며 unknown을
+0으로 간주하지 않는다. 같은 slot은 실패·재시작 후에도 재호출하지 않는다. storage/lock/runtime
+실패는 paused이며 성공 scan이 아니다. tick의 설정 로드·Store 생성·readiness 준비 실패는
+bounded 정제 `lock_storage_or_runtime_unavailable`이며 모델·키 조회·보고 확정·publisher·
+fallback을 실행하지 않는다. child/discovery 권한 거부는 이 처리 바깥에 유지하고 원문 예외를
+노출하지 않는다. daemon/무한 polling은 없다.
+
+09:00 이후 첫 tick은 이전09:00~현재09:00의 현재 fingerprint 일치 최신 완료 review 하나로
+모델 없이 오늘 보고를 불변 확정한다. 최대8 distinct 후보 중 priority/ID순 최대3카드 web-v1을
+사용한다. 미완료는0카드 partial/failed이며 옛날 참여를 오늘 성공으로 표시하지 않는다.
+기존 days/<date>.json은 보존하고 자동 재전달하지 않는다. catchup은 오늘 하나뿐이다.
+prepared publication journal로 crash를 복구하고 CLI는 두 state lock 밖에서 deliver_report를
+호출한다. sender mutex·sending attempt로 중복 callback을 막는다. unknown 전송은 자동 retry하지
+않고 메인이 같은 digest만 명시 reconcile한다. 별도 publish cron은 없다.
+status는 모델/키/quota 없이 한국어 추정 잔액·보류·다음 역할·마지막 검토·다음 보고·journal을
+보여준다. 실시간 소스 freshness/실청구 잔액 확인은 아니다.
+
+legacy make agent-improve/discover와 daily는 수동 호환으로 남지만 활성 cron에 병행하지 않는다.
+loop state가 생기면 daily는 기존 day 재사용만 가능하고 delivery는 loop_managed로 넘긴다.
+manual discover도 frozen day를 덮어쓰지 못한다. tick/publish targets는 unattended marker를
+설정하며 approve/reject/execute와 일반 쓰기 workflow를 거부한다. 일반 READ_ONLY workflow는
+checks를 수행하지만 자동 발견은 소스 수정·검사·Git·workflow·운영 파이프라인을 호출하지 않는다.
+
+최신 메인 관측으로 기존09:00 daily marked block은 유지 중이고 새 hourly 의견 교환은 미가동이다.
+MLX 서비스/터널 설치·재시작과 새 adapter의 합성 소스 실제 추론은 메인 제공 성공 관측이다
+(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계·아침 게시 검증은 대기다.
+메인만 최종review/full check/scoped apply 후 기존 private wrapper를 새 tick으로 바꾸고
+marked block 하나를 hourly로 교체한다. 게임 jobs·명시 daily local storage·persistent NFS default를
+보존한다. private settings/cron/SSH/key는 이 worker가 읽거나 수정하지 않았다.
+이 worker는 검사/실모델/네트워크/Git/cron/재위임하지 않았다. 실행기의 새 Claude 문서 의미검토·
+전체 make check·두 umask077/022 권한 fixture 검증·범위 반영, 메인의 첫9단계/운영활성화/
+GitHub 전달/아침 게시 확인은 각각 대기다. 직전 run1792078026182747557-b4f614은8개 구현 작업·
+Claude 검토 뒤 NFS full check1800초 timeout으로 failed/applied=[]였다. doctor/downloader103개
+성공과 parser+harness3439 passed/63 failed/skip0은 전체 check 성공이 아니고 Django/pipeline은
+확인되지 않았다. 원본 baseline·운영·GitHub는 그대로이며 복원 초안도 검증 완료를 뜻하지 않는다.
+정상 local JSON Content-Type·한국어 후보·trusted-parent CLI 환경·독립 feedback/context 제한·
+umask와 무관한 chmod0755 초기 상태를 fixture에서 바로잡되 production 검증은 유지한다.
+이번에만 메인이 agent_timeout_seconds1800/check_timeout_seconds3600/max_rounds3을 선택하며
+저장소 workflow-config·다른 한도·NFS/temporary 정책은 유지한다.
+기존 공개 자동승인 거부 이력은 유지하며 이번 직접 요청은 기존 Git 역할/검증된 인계로 메인이
+처리한다. baseline 불일치·명시 승인 거부 시 중단한다.
+
+runner의 parser 그룹은 harness/test_*.py를 수집하므로 신규 adapter/loop·모델 예산·기존 승인
+회귀가 전체 make check에 포함된다. pytest.ini는 이를 제외하지 않는다. fake clock/runner/HTTP와
+임시 isolated storage만 사용한 경계 명세이며 이 worker가 실행한 검증이 아니다. 매 reviewer는
+실제 수정된 Markdown과 구조/권한/비용/복구의 의미적 완전성을 documentation={status,files,reason}으로
+평가한다. 확장자 검사나 문서 존재만으로 완료를 주장하지 않는다.
 
 ## IPF 추출기 명시적 준비와 재실행 역할
 

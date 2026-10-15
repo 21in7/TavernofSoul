@@ -4,6 +4,13 @@ The CLI cannot identify a human. Only the trusted parent may call approve on an
 explicit user instruction, or execute that authorization. Scheduler invocations
 must set TAVERN_IMPROVEMENT_UNATTENDED=1. Model children are always leaf workers.
 Private signed authority records are never model inputs or web report fields.
+
+Hourly exploration lives in improvement_loop. Its frozen morning publication
+uses this module's existing Sites transport, outside the engine's state locks.
+Loop approval signatures additionally bind every loop control dependency; legacy
+discovery signatures retain their original exact fields. Documentation impact:
+docs/improvements.md, docs/workflow.md, docs/harness-design.md and ADR0017 must
+describe immutable days, same-digest delivery reconciliation and this binding.
 """
 import argparse
 from contextlib import contextmanager
@@ -462,6 +469,12 @@ def _persist_report(store, report, config):
     date, scan_id = report['date'], report['scan_id']
     # Persist private report before deriving any deliverable; a crash is visible.
     store.write('scans/' + scan_id + '.json', report)
+    # Manual legacy discovery can still create a private scan, but cannot
+    # replace a frozen morning day (including a prepared crash journal).
+    if (store.exists('loop/publications/' + date + '.json') or
+            (store.exists('days/' + date + '.json') and
+             store.read('days/' + date + '.json').get('loop_engine'))):
+        return None
     store.write('days/' + date + '.json', report)
     store.write('latest.json', {'date': date})
     payload = contract.build_web_report(report, config['limits']['max_reported_proposals'])
@@ -486,6 +499,8 @@ def discover(scope_file=None, *, runner=None, keys=None, now=None, selected=None
     with store.lock(), store.lock(project=True):
         if _daily and store.exists('days/' + date + '.json'):
             return store.read('days/' + date + '.json')
+        if _daily and store.exists('loop/state.json'):
+            raise ImprovementError('Hourly exploration is active; use tick instead of daily.')
         config = load_config()
         limits = config['limits']
         report = {'version': 'improvement-private-v1', 'date': date,
@@ -585,10 +600,32 @@ def daily(deliver=False, *, runner=None, keys=None, now=None, selected=None,
           inbox_config=None, transport=None):
     _parent()
     report = discover(runner=runner, keys=keys, now=now, selected=selected, _daily=True)
+    # A stale daily wrapper must not bypass the hourly publication journal or
+    # repost a pre-activation legacy day. Normal legacy daily retry semantics
+    # remain unchanged until a loop state/publication exists.
+    store = Store(selected)
+    if (store.exists('loop/state.json') or
+            store.exists('loop/publications/' + report['date'] + '.json') or
+            report.get('loop_engine')):
+        return {'date': report['date'], 'status': report['status'], 'scan_id': report['scan_id'],
+                'delivery': {'date': report['date'], 'status': 'loop_managed'} if deliver else None}
     delivery = deliver_report(report['date'], selected=selected, inbox_config=inbox_config,
                               transport=transport) if deliver else None
     return {'date': report['date'], 'status': report['status'], 'scan_id': report['scan_id'],
             'delivery': delivery}
+
+
+def tick(*, now=None, selected=None):
+    """Production entry: bounded research plus the existing Sites publisher.
+
+    Import lazily: the engine also uses this module's stores and legacy APIs.
+    Its publisher runs after releasing improvement/project locks, and owns the
+    durable sending/unknown journal. Never call this wrapper inside Store.lock.
+    """
+    _parent()
+    from harness import improvement_loop
+    return improvement_loop.tick(now=now, selected=selected, deliver=True,
+                                 publisher=deliver_report)
 
 
 def status(date=None, *, selected=None):
@@ -630,6 +667,13 @@ def _eligible(store, proposal_id):
     if not isinstance(saved.get('scan_id'), str) or not storage.RUN_ID.fullmatch(saved['scan_id']):
         raise ImprovementError('Invalid discovery provenance.')
     scan = store.read('scans/' + saved['scan_id'] + '.json')
+    if scan.get('loop_engine') or 'loop_dependencies' in scan:
+        from harness import improvement_loop
+        context = improvement_loop.authorization_context(scan)
+        if (saved.get('discovery_fingerprint') != context or
+                record['source_fingerprints'] != scan.get('source_fingerprints') or
+                scan.get('source_fingerprints') != scan['loop_dependencies'].get('source_fingerprints')):
+            raise ImprovementError('Loop proposal provenance does not bind its discovery dependencies.')
     if not scan.get('review_complete') or not any(
             a['role'] == 'reviewer' and a['status'] == 'succeeded' for a in scan['agents']):
         raise ImprovementError('Successful independent review is required.')
@@ -656,6 +700,19 @@ def _fresh(record, store):
                    'paths': contract.validate_scope_paths(scope_bytes.decode('utf-8').splitlines())}
     if fingerprint != scan['scope_fingerprint'] or contract.digest(load_config()) != scan['config_fingerprint']:
         raise ImprovementError('Discovery scope/configuration changed; new analysis is required.')
+    if scan.get('loop_engine') or 'loop_dependencies' in scan:
+        from harness import improvement_loop
+        improvement_loop.validate_scan_freshness(scan, selected=store.policy)
+
+
+def _discovery_context(store, record):
+    """Additional signed approval binding, absent for legacy v1 discoveries."""
+    saved = store.read('proposals/' + record['id'] + '.json')
+    scan = store.read('scans/' + saved['scan_id'] + '.json')
+    if scan.get('loop_engine') or 'loop_dependencies' in scan:
+        from harness import improvement_loop
+        return improvement_loop.authorization_context(scan)
+    return None
 
 
 def _reconcile(store, proposal_id, run_id):
@@ -714,6 +771,9 @@ def approve(proposal_id, instruction_file, local_only=False, *, now=None, select
                     'instruction': instruction, 'issued_at': now.isoformat(),
                     'expires_at': (now + dt.timedelta(days=config['limits']['approval_expiry_days'])).isoformat(),
                     'authorization_id': secrets.token_hex(24), 'consumption': 'unconsumed'}
+        context = _discovery_context(store, record)
+        if context is not None:
+            approval['discovery_fingerprint'] = context
         store.write('approvals/' + proposal_id + '.json', store.sign(approval, create=True))
         store.write('decisions/' + proposal_id + '.json', {'status': 'approved', 'at': now.isoformat(),
                     'authorization_id': approval['authorization_id']})
@@ -741,6 +801,11 @@ def _authorization(store, proposal_id, now, claimed=False):
     fields = {'version', 'authority', 'proposal_id', 'proposal_digest', 'review_digest',
               'source_fingerprints', 'allowed_edit_files', 'publication', 'instruction',
               'issued_at', 'expires_at', 'authorization_id', 'consumption'}
+    context = _discovery_context(store, record)
+    if context is not None:
+        fields.add('discovery_fingerprint')
+    if context is not None and approval.get('discovery_fingerprint') != context:
+        raise ImprovementError('Approval discovery controls changed; fresh human authorization is required.')
     if (set(approval) != fields or approval['version'] != 'improvement-approval-v1' or
             approval['authority'] != 'trusted-parent' or approval['proposal_id'] != proposal_id or
             approval['proposal_digest'] != record['digest'] or
@@ -897,7 +962,15 @@ def http_transport(method, origin, path, headers, body, timeout, max_bytes):
 
 
 def deliver_report(date, *, inbox_config=None, transport=None, selected=None):
-    """Trusted parent HTTP delivery only. Failure never reruns analysis."""
+    """Sites delivery; loop retries require a new same-digest journal attempt.
+
+    The engine calls this AFTER releasing both state locks. This lock covers
+    the bounded HTTP operation, so another sender cannot enter concurrently.
+    Legacy daily's explicit transport retry remains compatible. For loop days,
+    persist the attempt BEFORE HTTP; an interrupted/unknown attempt cannot be
+    replayed by a direct call or ordinary tick. Only engine publish(reconcile)
+    assigns a new attempt ID while keeping the frozen digest unchanged.
+    """
     _parent()
     date = _date(date)
     store = Store(selected)
@@ -906,12 +979,41 @@ def deliver_report(date, *, inbox_config=None, transport=None, selected=None):
         limits = config['limits']
         # Immutable local report must already exist. Only the exact web-v1
         # projection is transmitted, never private records, user text or logs.
-        store.read('days/' + date + '.json')
+        private = store.read('days/' + date + '.json')
         payload = contract.validate_web_report(store.read('web/' + date + '.json'))
         if payload['date'] != date:
             raise ImprovementError('Local report date mismatch.')
+        publication_name = 'loop/publications/' + date + '.json'
+        publication = store.read(publication_name) if store.exists(publication_name) else None
+        attempt_id = None
+        if publication is not None or private.get('loop_engine'):
+            if publication is not None and publication.get('status') == 'legacy_preserved':
+                return {'date': date, 'status': 'legacy_preserved', 'digest': payload['digest']}
+            if (not isinstance(publication, dict) or publication.get('date') != date or
+                    publication.get('digest') != payload['digest'] or
+                    publication.get('report') != private or publication.get('payload') != payload):
+                raise ImprovementError('Frozen publication does not match the local day and digest.')
+            limit = publication.get('projection_limit')
+            if (type(limit) is not int or not 1 <= limit <= contract.MAX_PROPOSALS or
+                    contract.build_web_report(private, limit) != payload):
+                raise ImprovementError('Frozen publication projection mismatch.')
+            prior_name = 'delivery/' + date + '.json'
+            prior = store.read(prior_name) if store.exists(prior_name) else None
+            if prior is not None and prior.get('digest') != payload['digest']:
+                raise ImprovementError('Delivery digest changed; automatic replacement is forbidden.')
+            if prior is not None and prior.get('status') == 'delivered':
+                return prior
+            attempt_id = publication.get('attempt_id')
+            if (publication.get('status') != 'sending' or not isinstance(attempt_id, str) or
+                    not storage.RUN_ID.fullmatch(attempt_id)):
+                return {'date': date, 'digest': payload['digest'], 'status': 'publication_pending'}
+            if prior is not None and prior.get('publication_attempt_id') == attempt_id:
+                return {'date': date, 'digest': payload['digest'], 'status': 'delivery_unknown'}
         result = {'date': date, 'digest': payload['digest'], 'status': 'delivery_failed',
                   'at': _now().isoformat()}
+        if attempt_id is not None:
+            result['publication_attempt_id'] = attempt_id
+            store.write('delivery/' + date + '.json', dict(result, status='sending'))
         try:
             origin, token = _inbox_config(inbox_config or ROOT / 'logs/harness/improvement-inbox.json')
             body = contract.canonical_json(payload)
@@ -949,6 +1051,10 @@ def main(argv=None):
     manual.add_argument('--scope-file', type=Path)
     scheduled = commands.add_parser('daily')
     scheduled.add_argument('--deliver', action='store_true')
+    commands.add_parser('tick')
+    commands.add_parser('loop-status')
+    publication = commands.add_parser('publish')
+    publication.add_argument('--reconcile', action='store_true')
     for name in ('status', 'report'):
         display = commands.add_parser(name)
         display.add_argument('--date')
@@ -968,6 +1074,12 @@ def main(argv=None):
             result = {'date': private['date'], 'status': private['status'], 'scan_id': private['scan_id']}
         elif args.command == 'daily':
             result = daily(deliver=args.deliver)
+        elif args.command == 'tick':
+            result = tick()
+        elif args.command in ('loop-status', 'publish'):
+            from harness import improvement_loop
+            result = (improvement_loop.status() if args.command == 'loop-status' else
+                      improvement_loop.publish(publisher=deliver_report, reconcile=args.reconcile))
         elif args.command == 'status':
             result = status(args.date)
         elif args.command == 'report':
@@ -980,7 +1092,9 @@ def main(argv=None):
         else:
             result = execute(args.proposal_id)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        if (result.get('status') in ('failed', 'partial', 'interrupted', 'cleanup_pending') or
+        if (result.get('status') in ('failed', 'partial', 'interrupted', 'cleanup_pending',
+                                    'paused', 'publication_unknown') or
+                (result.get('publication') or {}).get('status') == 'publication_unknown' or
                 (result.get('delivery') or {}).get('status') == 'delivery_failed'):
             return 1
         # awaiting_github explicitly hands control to main, never means complete.

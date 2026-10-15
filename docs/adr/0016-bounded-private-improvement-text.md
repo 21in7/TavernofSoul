@@ -5,6 +5,14 @@
 - 기록 성격: 새 데이터 계약 결정
 - 대체 관계: 없음. [ADR 0015](0015-approval-gated-improvement-discovery.md)의 권한 경계를 유지한다.
 
+2026-10-16 연계: 이 ADR의 private/public 서술·review digest·strict JSON envelope 결정과
+아래 과거 수리/공개 자동승인 거부 기록은 보존한다. 아래의 daily/호출 정책 유지 및 `GIT=0`
+인계는 당시 수리의 범위다. 최신 자동 연구의 스케줄·호출/추정 예산·MLX adapter는
+[ADR 0017](0017-budgeted-continuous-improvement.md)을 따른다. 이번 직접 요청의 전달은 기존
+Git 역할·검증된 앱 요청을 메인에게 인계하며 baseline 불일치·명시 승인 거부 시 중단한다.
+과거 거부를 지우거나 worker가 쓰기를 재요청하지 않는다. 이번에 이 ADR을 갱신한 이유는
+계약을 바꾸기 위해서가 아니라 유지되는 결정과 대체된 운영 정책의 적용 시점을 구분하기 위해서다.
+
 ## 문맥
 
 메인이 제공한 첫 실제 점검 관찰에서 downloader runner는 passed였으나 두 후보 중 하나의
