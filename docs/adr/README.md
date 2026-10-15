@@ -19,8 +19,19 @@
 | [0012](0012-importer-single-run-snapshot.md) | 호출 소유 importer snapshot·consumed-only retention·복사 소비자·fresh direct/prev·SELECT 인덱스와 ORM 의미 보존 | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0013](0013-owned-validation-temporary-cleanup.md) | 고유 임시 tree의 진입/최종 readiness와 매 destructive 작업 attachment·ownership·kernel mount proof | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0014](0014-streaming-pak-extraction.md) | PAK의 bounded read/inflate와 파일별 원자 공개·부분 실패·재시도 경계 | 제안(proposed), 새 검토·전체 검증·전달 대기 | 2026-10-14 |
+| [0015](0015-approval-gated-improvement-discovery.md) | 일일 읽기 전용 발견·독립 검토·private Sites 보고와 사람의 개별 서명 승인·일회성 기존 workflow 실행 | 제안(proposed), 기반 구현 승인됨·최종 검토/전체 검증/전달 대기 | 2026-10-15 |
 
 ## 상태와 근거의 의미
+
+0015는 기존 직접 개발 요청의 GitHub 허가를 자율 발견 제안에 적용하지 않는 새 권한 결정이다.
+이번 기반 기능 구현·전달은 명시 승인되었지만 후속 제안은 specific ID별 인간 지시가 필요하다.
+소스/전체 읽기 의존성 digest·mode·존재와 7일 이내 승인·atomic claim을 기존 workflow에 연결하며
+새 의미 검토·필수 검사·journal·CI 3개·squash merge·cleanup 경계는 유지한다.
+메인이 제공한 owner-private Site 배포/익명 403·service-auth 200과 별도 daily local storage ready,
+Asia/Seoul·cron active는 준비 관찰이다. worker가 독립 검증한 결과가 아니며 persistent NFS는 유지한다.
+최종 구현 review/full checks·구현 GitHub 전달/CI/merge/cleanup·첫 scan·job 설치/활성화는 대기다.
+proposed는 기반 구현 승인을 부정하거나 기존 ADR 상태를 바꾸지 않는다. 상세 계약·운영·
+문서 영향은 [일일 개선 점검](../improvements.md)에 둔다. 기존 역사적 실행의 저장 선택은 아래에 보존한다.
 
 0001~0005는 현 소스에서 복원한 기록이다. 승인(accepted)은 **관측된 구현 결정으로 기록한다**는
 뜻이며 과거 도입 당시 승인을 증명하지 않는다. 기록일은 이번 문서 작성일이고 실제 도입일·당시 의도·

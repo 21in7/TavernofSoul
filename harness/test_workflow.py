@@ -29,7 +29,7 @@ def isolated_storage(monkeypatch):
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     for key in list(os.environ):
-        if key.startswith(('GIT_', 'SSH_', 'GCM_')) or key in ('GH_TOKEN', 'GITHUB_TOKEN', 'EMAIL'):
+        if key.startswith(('GIT_', 'SSH_', 'GCM_')) or key in ('GIT', 'GH_TOKEN', 'GITHUB_TOKEN', 'EMAIL'):
             monkeypatch.delenv(key, raising=False)
     home = tmp_path / 'git-home'
     home.mkdir()
@@ -1516,3 +1516,109 @@ def test_root_only_test_seam_keeps_local_reports_inside_isolated_project(project
     assert report['status'] == 'passed'
     assert Path(report['report']).parent.parent == project / 'logs/harness/workflows'
     assert Path(report['model_workspace']).parent.parent == Path('/tmp')
+
+
+# Improvement entrypoint regressions intentionally avoid the Git-initializing
+# project fixture. Existing explicit-user workflow cases above remain intact.
+@pytest.fixture
+def improvement_guard_project(tmp_path, monkeypatch):
+    root = tmp_path / 'guard-sources'
+    (root / 'parser_tidy').mkdir(parents=True)
+    (root / 'parser_tidy/example.py').write_text('existing user edit\n', encoding='utf-8')
+    selected = storage.Storage(root=root, env={})
+    monkeypatch.setattr(workflow, 'ROOT', root)
+    monkeypatch.setattr(workflow, 'REPORTS', root / 'logs/harness/workflows')
+    monkeypatch.setattr(workflow, 'storage_policy', lambda: selected)
+    monkeypatch.setattr(workflow, 'load_policy', lambda: {'version': 'workflow-v1'})
+    monkeypatch.setattr(triage, 'load_policy', lambda: {'max_task_bytes': 24000, 'max_files': 128})
+    monkeypatch.setattr(git_publish, 'load_config', lambda: {'enabled': False})
+    for flag in ('TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY', 'TAVERN_IMPROVEMENT_UNATTENDED'):
+        monkeypatch.delenv(flag, raising=False)
+    return root, selected
+
+
+@pytest.mark.parametrize('flag,read_only', [
+    ('TAVERN_WORKFLOW_CHILD', False), ('TAVERN_WORKFLOW_CHILD', True),
+    ('TAVERN_IMPROVEMENT_DISCOVERY', False), ('TAVERN_IMPROVEMENT_DISCOVERY', True),
+    ('TAVERN_IMPROVEMENT_UNATTENDED', False),
+])
+def test_improvement_environment_rejects_before_config_storage_checks_or_models(monkeypatch, flag, read_only):
+    for marker in ('TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY', 'TAVERN_IMPROVEMENT_UNATTENDED'):
+        monkeypatch.delenv(marker, raising=False)
+    monkeypatch.setenv(flag, '1')
+    def forbidden(*args, **kwargs):
+        pytest.fail('Untrusted improvement caller reached workflow preparation')
+    monkeypatch.setattr(workflow, 'load_policy', forbidden)
+    monkeypatch.setattr(workflow, 'storage_policy', forbidden)
+    with pytest.raises(ValueError, match='workers|discovery'):
+        workflow.execute('Try an unapproved edit.', ['parser_tidy/example.py'], read_only=read_only,
+                         keys={}, runner=forbidden, checker=forbidden, _improvement_guard=forbidden)
+
+
+def test_improvement_guard_runs_under_project_lock_before_source_copy_or_checks(
+        improvement_guard_project, monkeypatch):
+    import fcntl
+    root, selected = improvement_guard_project
+    events = []
+    class AuthorizationRejected(ValueError):
+        pass
+    def forbidden(*args, **kwargs):
+        pytest.fail('Rejected authority reached source copy/check/model')
+    monkeypatch.setattr(workspace, 'copy_validation_sources', forbidden)
+    def guard(run_id):
+        events.append(run_id)
+        assert storage.RUN_ID.fullmatch(run_id)
+        assert not (selected.workflow_root() / run_id).exists()
+        with selected.project_lock_path.open('a') as competing:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(competing, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        raise AuthorizationRejected('expired approval')
+    with pytest.raises(AuthorizationRejected, match='expired approval'):
+        workflow.execute('Approved immutable task.', ['parser_tidy/example.py'], keys={},
+                         runner=forbidden, checker=forbidden, _improvement_guard=guard)
+    assert len(events) == 1
+    assert (root / 'parser_tidy/example.py').read_text() == 'existing user edit\n'
+    assert not (selected.workflow_root() / events[0]).exists()
+    with selected.project_lock_path.open('a') as released:
+        fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@pytest.mark.parametrize('guarded', [False, True])
+def test_guard_is_optional_for_explicit_user_work_and_retains_run_identity(
+        improvement_guard_project, monkeypatch, guarded):
+    root, selected = improvement_guard_project
+    events = []
+    def stop_after_gate(*args, **kwargs):
+        events.append(('copy', None))
+        raise ValueError('fixture stops before any model or check')
+    def forbidden(*args, **kwargs):
+        pytest.fail('Fixture must stop before a model or check')
+    monkeypatch.setattr(workspace, 'copy_validation_sources', stop_after_gate)
+    def guard(run_id):
+        events.append(('guard', run_id))
+    options = {'_improvement_guard': guard} if guarded else {}
+    report = workflow.execute('Explicit user development request.', ['parser_tidy/example.py'],
+                              keys={}, runner=forbidden, checker=forbidden, **options)
+    assert report['status'] == 'failed' and report['error'] == 'fixture stops before any model or check'
+    assert [event[0] for event in events] == (['guard', 'copy'] if guarded else ['copy'])
+    if guarded:
+        assert events[0][1] == report['run_id']
+    assert report['applied'] == [] and report['validation'] == []
+    assert (root / 'parser_tidy/example.py').read_text() == 'existing user edit\n'
+    assert not (root / 'logs/harness/improvements').exists()
+
+
+def test_workflow_and_cleanup_lock_is_shared_with_improvement_discovery(
+        improvement_guard_project, monkeypatch):
+    from harness import improvements
+    root, selected = improvement_guard_project
+    monkeypatch.setattr(improvements, 'ROOT', root)
+    monkeypatch.setattr(improvements, 'REPORTS', root / 'logs/harness/improvements')
+    store = improvements.Store(selected)
+    def forbidden(*args, **kwargs):
+        pytest.fail('Overlapping improvement lock allowed workflow preparation')
+    monkeypatch.setattr(workspace, 'copy_validation_sources', forbidden)
+    with store.lock(project=True):
+        with pytest.raises(ValueError, match='Another workflow'):
+            workflow.execute('Explicit request during analysis.', ['parser_tidy/example.py'],
+                             keys={}, runner=forbidden, checker=forbidden)

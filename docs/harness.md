@@ -51,6 +51,51 @@ PYTHONPATH=TavernofSoul:parser_tidy TavernofSoul/itos/3.8/bin/python -m harness.
 공개 적용은 격리 적재·재적재·롤백 검증과 백업을 갖춘 별도 작업이다.
 세부 호환 규칙과 단위는 [데이터 계약](data-contracts.md)을 따른다.
 
+## 승인 대기 일일 개선 점검
+
+실행·JSON 계약·승인 복구는 [일일 개선 점검](improvements.md), 권한 결정은
+[ADR 0015](adr/0015-approval-gated-improvement-discovery.md)를 따른다. Python 3.8에서 기존
+역할·provider·compaction과 storage API를 사용하며 새 provider·credential은 설치하지 않는다.
+아래는 메인/신뢰한 운영자의 명령 예시다. worker는 실행하지 않는다.
+
+```bash
+make agent-improve PYTHON=/ABS/VENV/bin/python
+make agent-improve-daily PYTHON=/ABS/VENV/bin/python DELIVER=1
+make agent-improve-status PYTHON=/ABS/VENV/bin/python DATE=2026-10-15
+make agent-improve-approve PYTHON=/ABS/VENV/bin/python PROPOSAL_ID=IMP-0123456789abcdef INSTRUCTION_FILE=/ABS/PRIVATE/instruction.txt
+make agent-improve-reject PYTHON=/ABS/VENV/bin/python PROPOSAL_ID=IMP-0123456789abcdef
+make agent-improve-execute PYTHON=/ABS/VENV/bin/python PROPOSAL_ID=IMP-0123456789abcdef
+```
+
+ID·날짜·경로는 실제 값으로 지정한다. instruction 파일은 소유자 소유 nonsymlink·단일 hardlink·
+0600 UTF-8이어야 하며 비어 있지 않은 명시적 사용자 지시를 담는다. 한 ID씩 승인하며
+`LOCAL_ONLY=1`은 승인 시에만 게시 범위를 바꾼다. execute는 다른 task/files를 받지 않는다.
+`SCOPE_FILE=...`은 사용자가 명시 승인한 개별 파일 목록의 수동 재점검에만 사용한다.
+daily target은 unattended marker를 설정해 승인·실행을 거부한다. 점검은 검증/수정을 수행하지 않는다.
+기본 `READ_ONLY=1` workflow와 혼동하지 않는다. 같은 KST 날짜 재호출은 failed/partial도 재사용한다.
+
+보고는 storage 정책의 improvements 산출물 아래 private JSON과 `web/<date>.json|html|md`로
+저장한다. HTML은 최대 세 카드·A4 인쇄 스타일이며 웹에는 정제 JSON만 보낸다.
+`daily --deliver`는 기존 당일 보고 재전송에도 사용한다. 다른 날짜의 전달만 재시도하려면
+신뢰한 parent의 `deliver_report(date)` API를 사용한다. 전달 실패는 로컬 보고를 보존한다.
+`partial|failed` 점검 또는 `delivery_failed`는 CLI nonzero다. readiness/lock 오류도 nonzero이며,
+저장 준비 실패가 day record 전에 일어나면 보고 자체가 없을 수 있으므로 wrapper 로그를 확인한다.
+`awaiting_github`는 non-success 인계 상태이며 CLI exit0만으로 완료라 보고하지 않는다.
+
+2026-10-15 메인 제공 관찰: owner-private Site 배포 후 익명 API는 403, service 인증
+page/upload/readback/index는 200이었다. 메인이 ignored private 0600 inbox credential과 별도
+일일 local storage 정책을 준비하고 storage-status ready, host Asia/Seoul 및 cron active를 확인했다.
+문서 worker는 private 파일을 읽거나 이 결과를 독립 검증하지 않았다. persistent NFS 설정은 유지한다.
+이번 구현 실행의 명시적 one-off local 선택과 향후 daily 정책 선택도 자동 fallback이 아니다.
+최종 구현/문서 의미 검토·전체 checks·첫 실제 scan·cron 설치/활성화·구현 GitHub CI/merge/cleanup은 대기다.
+
+검증 후 메인이 실제 venv·작업 디렉터리·절대 `HARNESS_STORAGE_CONFIG`와 readiness를 확인하고
+09:00 Asia/Seoul의 표식 있는 daily 읽기 전용 job 하나만 설치한다. 제공된 wrapper는 준비 상태이며
+설치 완료가 아니다. 기존 job·게임 cron을 보존하고 credential을 cron 인자/로그에 넣지 않는다.
+정확한 template와 재점검·재전송·reconciliation 절차는 [운영 절차](improvements.md#운영과-09시-예약)에 둔다.
+오프라인 회귀 명세는 `harness/test_improvements.py`와 `harness/test_workflow.py`에 추가되었으며
+실제 실행·전체 `make check`·필수 CI 결과는 오케스트레이터/메인이 별도 확인한다.
+
 ## IPF 추출기 명시적 준비와 재실행 역할
 
 native 소스 `IPFUnpacker/src/ipf_unpack`과 Git ignore 대상인 설치 바이너리

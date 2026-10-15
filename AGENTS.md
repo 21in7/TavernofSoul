@@ -14,6 +14,8 @@
   [docs/agent-models.md](docs/agent-models.md). 인증 점검은 `make agent-doctor`로 한다.
 - 개발 작업 자동 배정·실행: `harness/workflow.py`, `harness/workflow-config.json`,
   [docs/workflow.md](docs/workflow.md). 실행은 `make agent-workflow`, 진행 확인은 `make agent-workflow-status`.
+- 승인 대기 일일 개선 점검: `harness/improvements.py`, `harness/improvement_report.py`,
+  [docs/improvements.md](docs/improvements.md). 발견·보고와 사람의 승인·실행을 분리한다.
 - GitHub 자동 게시·병합·정리: `harness/git_publish.py`, `harness/git_cleanup.py`, `harness/git-publish-config.json`.
   Git 역할은 PR 설명을 작성하며, 실제 게시와 머지는 메인 Codex의 GitHub 앱 연결을 사용한다.
 - 작업 접수·배정 추천: `harness/triage.py`, `harness/triage-config.json`,
@@ -49,7 +51,28 @@ Jev 판단 → 필요 시 Codex 계획 → 영역 담당 모델 → Claude 검�
 승인 밖 소스를 외부 모델에 추가 제공해야 하면 구체적인 개별 파일 목록에 대한 승인을 받아 새 실행을 준비한다.
 사용자가 직접 처리나 특정 실행 방식을 지정하면 그 지시를 우선한다.
 
-사용자는 요청한 개발 작업의 GitHub 커밋·브랜치 게시·PR 생성·CI 성공 후 머지까지 허용했다.
+사용자는 직접 요청한 개발 작업의 GitHub 커밋·브랜치 게시·PR 생성·CI 성공 후 머지까지 허용했다.
+이 허가는 에이전트가 자율 발견한 개선 제안에는 적용하지 않는다. 이번 승인 게이트 기반 기능의
+구현과 GitHub 전달은 명시적으로 승인되었지만 이후 발견된 제안은 각각 별도 승인 대상이다.
+자동 점검은 승인된 개별 파일만 읽고 서로 검토하여 한국어 비유를 담은 한 장 보고서를 만든다.
+점검 중 소스 수정·검사·Git·workflow 실행·운영 파이프라인·cron 설치를 하지 않는다.
+보고서의 `eligible`이나 '제안 <ID> 승인' 문구는 실행 허가가 아니다. 메인은 사용자의 구체적인
+제안 ID별 명시적 지시를 확인하고 private 0600 UTF-8 instruction 파일로 `approve`를 호출한 뒤,
+그 승인에 묶인 정확한 파일·내용만 `execute`로 실행한다. task/files 덮어쓰기나 approve-all은 없다.
+7일 이내 승인도 읽은 소스의 bytes·mode·존재, scope/config, 독립 검토가 바뀌면 사용할 수 없다.
+일회성 claim 이후 실패·중단·대기는 재실행 허가가 아니다. 기존 run/journal을 먼저 조정하고,
+필요하면 새 명시적 승인으로 복구한다. 직접 요청한 일반 개발 작업의 기존 권한은 유지한다.
+
+신뢰한 parent만 사람의 지시를 승인으로 기록한다. CLI·환경 변수·보고서는 사람의 신원을 증명하지
+못하며 같은 OS 계정을 장악한 공격자까지 방어하는 경계가 아니다. scheduler는 반드시
+`TAVERN_IMPROVEMENT_UNATTENDED=1`로 `daily`만 호출하며 approve/reject/execute를 호출하지 않는다.
+`TAVERN_WORKFLOW_CHILD` 또는 `TAVERN_IMPROVEMENT_DISCOVERY` 세션은 개선 orchestration을 금지한다.
+owner-private Sites 보고함에는 정제된 `improvement-web-v1`만 전달한다. 승인 지시·키·절대 호스트
+경로·소스·diff·프롬프트·원문 응답·로그는 보내지 않는다. credential은 메인만 관리하며 모델에 제공하지 않는다.
+일일 09:00 Asia/Seoul job은 메인이 검토·검증 후 하나의 표식 있는 읽기 전용 job으로 설치한다.
+기존 job과 게임 cron은 보존한다. 설정된 저장소 readiness 실패 시 자동 fallback하거나 점검을 재시도하지 않는다.
+구체적인 명령·전달 계약·메인 제공 준비 관찰과 아직 대기 중인 검증은 [일일 개선 점검](docs/improvements.md)에 둔다.
+
 기본 쓰기 작업은 `git` 역할(Codex `gpt-6.1-sol`, `medium`)까지 실행한다. 보고서가
 `awaiting_github`이면 메인 `/root`는 완료로 보고하거나 다시 허락을 묻지 않고 다음을 이어 실행한다.
 `make agent-git-request RUN_ID=...`의 JSON `request`에 지정된 GitHub 앱 도구와 인자를 그대로 사용하고,
