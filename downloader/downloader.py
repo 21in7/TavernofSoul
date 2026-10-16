@@ -1,6 +1,6 @@
 import logging
 import sys
-import urllib.request, urllib.error, urllib.parse
+import urllib.request
 import os
 import json
 import struct
@@ -9,8 +9,7 @@ if __package__:
 else:
     import blowfish
     import unpacker_pak
-import shutil
-from shutil import copyfile, move, rmtree
+from shutil import copyfile, rmtree
 import subprocess 
 from os.path import join
 import csv
@@ -23,15 +22,6 @@ EXIT_CHANGED = 0
 EXIT_UNCHANGED = 1
 EXIT_FAILED = 2
 
-
-def git_sync(patch_name):
-    pass
-    # cwd= os.getcwd()
-    # os.chdir(join("..", "{}_unpack".format(region)))
-    # subprocess.run(['git', 'add', '.'])
-    # subprocess.run(['git', 'commit', '-m', patch_name])
-    # subprocess.run(['git', 'push'])
-    # os.chdir(cwd)
 
 def copyfiles(output):
     if not os.path.exists(output):
@@ -197,7 +187,6 @@ def unpack(f):
             os.remove(f)
         if os.path.exists('extract'):
             rmtree('extract')
-    git_sync(f)
     
             
 
