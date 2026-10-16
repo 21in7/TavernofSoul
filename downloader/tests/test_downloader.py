@@ -1,5 +1,6 @@
 """Offline download → extraction → version → retry regressions."""
 from pathlib import Path
+import os
 import random
 import shutil
 import struct
@@ -288,16 +289,14 @@ def test_second_patch_failure_resumes_from_last_success(workspace, server, exten
 
 
 def test_output_copy_failure_does_not_delete_retry_archive(workspace, server, monkeypatch):
-    real_run = client.subprocess.run
-    def fail_copy(args, **kwargs):
-        if args[0] == 'cp':
-            raise subprocess.CalledProcessError(9, args)
-        return real_run(args, **kwargs)
-    monkeypatch.setattr(client.subprocess, 'run', fail_copy)
+    real_copy_tree = client.copy_tree
+    def fail_copy(source, destination):
+        raise RuntimeError('simulated output copy failure: {}'.format(destination))
+    monkeypatch.setattr(client, 'copy_tree', fail_copy)
     assert client.main(['itos']) == 2
     assert client.read_version('revision.csv')['itos'] == '0'
     assert (workspace / 'itos_patch/1_001001.ipf').exists()
-    monkeypatch.setattr(client.subprocess, 'run', real_run)
+    monkeypatch.setattr(client, 'copy_tree', real_copy_tree)
     assert client.main(['itos']) == 0
     assert server.calls.count('1_001001.ipf') == 1
 
@@ -601,20 +600,203 @@ def test_pak_publication_failure_preserves_output_and_archive(tmp_path, pak_io_g
 
 
 def test_translation_copy_failure_keeps_release_pending_for_retry(workspace, server, monkeypatch):
-    real_run = client.subprocess.run
-    def fail_language(args, **kwargs):
-        if args[0] == 'cp' and 'languageData' in args[2]:
-            raise subprocess.CalledProcessError(9, args)
-        return real_run(args, **kwargs)
-    monkeypatch.setattr(client.subprocess, 'run', fail_language)
+    real_copy_tree = client.copy_tree
+    def fail_language(source, destination):
+        if 'languageData' in source:
+            raise RuntimeError('simulated translation copy failure: {}'.format(source))
+        return real_copy_tree(source, destination)
+    monkeypatch.setattr(client, 'copy_tree', fail_language)
     assert client.main(['itos']) == 2
     assert client.read_version('revision.csv')['itos'] == '2'
     assert client.read_version('release.csv')['itos'] == '0'
-    monkeypatch.setattr(client.subprocess, 'run', real_run)
+    monkeypatch.setattr(client, 'copy_tree', real_copy_tree)
     server.calls.clear()
     assert client.main(['itos']) == 0
     assert server.calls == ['data.revision.txt', 'release.revision.txt', '1_001001.pak', '2_001001.pak']
     assert (workspace / 'Translation/English/items.tsv').read_text() == 'harness_ore\tHarness Ore\n'
+
+
+# The in-process copy helper replaced the two external 'cp -r' calls. These
+# assertions pin the filesystem semantics the copy must keep: regular-file
+# overwrite, directory merge retaining unrelated entries, source symlinks
+# (dangling ones included) recreated as symlinks, directory access modes of
+# newly created directories, and the destination conflicts that must fail
+# without unintended side effects — at the top level and at nested levels.
+
+def write_file(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def test_copy_tree_merges_directories_and_overwrites_regular_files(tmp_path):
+    source = tmp_path / 'source'
+    write_file(source / 'kept.txt', b'new kept\n')
+    write_file(source / 'replaced.txt', b'new replaced\n')
+    write_file(source / 'nested' / 'inner.txt', b'new inner\n')
+    destination = tmp_path / 'output' / 'source'
+    write_file(destination / 'unrelated.txt', b'unrelated\n')
+    write_file(destination / 'replaced.txt', b'old replaced\n')
+    write_file(destination / 'nested' / 'inner.txt', b'old inner\n')
+
+    client.copy_tree(str(source), str(destination))
+
+    assert (destination / 'unrelated.txt').read_bytes() == b'unrelated\n'
+    assert (destination / 'kept.txt').read_bytes() == b'new kept\n'
+    assert (destination / 'replaced.txt').read_bytes() == b'new replaced\n'
+    assert (destination / 'nested' / 'inner.txt').read_bytes() == b'new inner\n'
+    assert not (destination / 'kept.txt').is_symlink()
+
+
+def test_copy_tree_identical_nested_link_trees_copy_twice(tmp_path):
+    source = tmp_path / 'source'
+    write_file(source / 'nested' / 'real.txt', b'real\n')
+    (source / 'nested' / 'alias.txt').symlink_to('real.txt')
+    (source / 'nested' / 'dangling.txt').symlink_to('nowhere.txt')
+    destination = tmp_path / 'output' / 'source'
+    destination.parent.mkdir()
+
+    client.copy_tree(str(source), str(destination))
+    # The second copy applies the same tree over its own previous output.
+    client.copy_tree(str(source), str(destination))
+
+    alias = destination / 'nested' / 'alias.txt'
+    assert os.path.islink(alias)
+    assert os.readlink(alias) == 'real.txt'
+    assert alias.read_bytes() == b'real\n'
+    dangling = destination / 'nested' / 'dangling.txt'
+    assert os.path.islink(dangling)
+    assert os.readlink(dangling) == 'nowhere.txt'
+    assert not dangling.exists()
+    assert (destination / 'nested' / 'real.txt').read_bytes() == b'real\n'
+
+
+def test_copy_tree_source_symlink_replaces_destination_file_and_link(tmp_path):
+    target = write_file(tmp_path / 'target.txt', b'target\n')
+    source = tmp_path / 'source'
+    source.mkdir()
+    (source / 'link.txt').symlink_to(target)
+    (source / 'dangling.txt').symlink_to('missing.txt')
+    destination = tmp_path / 'output' / 'source'
+    write_file(destination / 'link.txt', b'old file\n')
+    (destination / 'dangling.txt').symlink_to('other.txt')
+
+    client.copy_tree(str(source), str(destination))
+
+    assert os.path.islink(destination / 'link.txt')
+    assert os.readlink(destination / 'link.txt') == str(target)
+    assert (destination / 'link.txt').read_bytes() == b'target\n'
+    assert os.path.islink(destination / 'dangling.txt')
+    assert os.readlink(destination / 'dangling.txt') == 'missing.txt'
+    assert not (destination / 'dangling.txt').exists()
+
+
+def test_copy_tree_updates_target_of_live_destination_file_symlink(tmp_path):
+    source = write_file(tmp_path / 'source.bin', b'next\n')
+    target = write_file(tmp_path / 'output' / 'target.txt', b'old\n')
+    destination = tmp_path / 'output' / 'link.bin'
+    destination.symlink_to(target)
+
+    client.copy_tree(str(source), str(destination))
+
+    assert destination.is_symlink()
+    assert os.readlink(destination) == str(target)
+    assert target.read_bytes() == b'next\n'
+
+
+def test_copy_tree_preserves_new_directory_access_modes(tmp_path):
+    source = tmp_path / 'source'
+    write_file(source / 'nested' / 'file.txt', b'content\n')
+    os.chmod(source, 0o755)
+    os.chmod(source / 'nested', 0o750)
+    destination = tmp_path / 'output' / 'source'
+    destination.parent.mkdir()
+
+    client.copy_tree(str(source), str(destination))
+
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o755
+    assert stat.S_IMODE((destination / 'nested').stat().st_mode) == 0o750
+
+
+@pytest.mark.parametrize('nested', [False, True])
+def test_copy_tree_file_over_destination_directory_fails_without_side_effects(tmp_path, nested):
+    source = tmp_path / 'source'
+    write_file(source / 'child', b'next\n')
+    write_file(source / 'aaaa_first.txt', b'first\n')
+    destination = tmp_path / 'output' / 'source'
+    conflicting = destination / 'child'
+    write_file(conflicting / 'original.txt', b'original\n')
+    write_file(destination / 'keep.txt', b'keep\n')
+
+    source_path, destination_path = str(source / 'child'), str(conflicting)
+    if nested:
+        source_path, destination_path = str(source), str(destination)
+    with pytest.raises(RuntimeError):
+        client.copy_tree(source_path, destination_path)
+
+    assert (conflicting / 'original.txt').read_bytes() == b'original\n'
+    assert not (conflicting / 'child').exists()
+    assert (destination / 'keep.txt').read_bytes() == b'keep\n'
+    if nested:
+        # Entries reached before the conflict are already applied, like cp -r.
+        assert (destination / 'aaaa_first.txt').read_bytes() == b'first\n'
+
+
+@pytest.mark.parametrize('nested', [False, True])
+def test_copy_tree_directory_over_destination_directory_symlink_fails_without_side_effects(tmp_path, nested):
+    source = tmp_path / 'source'
+    write_file(source / 'child' / 'inner.txt', b'next\n')
+    elsewhere = tmp_path / 'elsewhere'
+    write_file(elsewhere / 'guarded.txt', b'guarded\n')
+    destination = tmp_path / 'output' / 'source'
+    destination.mkdir(parents=True)
+    link = destination / 'child'
+    link.symlink_to(elsewhere)
+
+    source_path, destination_path = str(source / 'child'), str(link)
+    if nested:
+        source_path, destination_path = str(source), str(destination)
+    with pytest.raises(RuntimeError):
+        client.copy_tree(source_path, destination_path)
+
+    assert link.is_symlink()
+    assert os.readlink(link) == str(elsewhere)
+    assert (elsewhere / 'guarded.txt').read_bytes() == b'guarded\n'
+    assert not (elsewhere / 'inner.txt').exists()
+
+
+@pytest.mark.parametrize('nested', [False, True])
+def test_copy_tree_file_over_dangling_destination_symlink_fails_without_side_effects(tmp_path, nested):
+    source = tmp_path / 'source'
+    write_file(source / 'child', b'next\n')
+    destination = tmp_path / 'output' / 'source'
+    destination.mkdir(parents=True)
+    link = destination / 'child'
+    link.symlink_to('missing_target.txt')
+
+    source_path, destination_path = str(source / 'child'), str(link)
+    if nested:
+        source_path, destination_path = str(source), str(destination)
+    with pytest.raises(RuntimeError):
+        client.copy_tree(source_path, destination_path)
+
+    assert link.is_symlink()
+    assert os.readlink(link) == 'missing_target.txt'
+    assert not link.exists()
+    # Neither the link path nor its dangling target text gained a file.
+    assert not (destination / 'missing_target.txt').exists()
+
+
+def test_translation_merge_retains_unrelated_entries_and_overwrites(workspace, server):
+    existing = workspace / 'Translation' / 'English'
+    existing.mkdir(parents=True)
+    (existing / 'items.tsv').write_bytes(b'PREVIOUS\n')
+    (existing / 'custom.txt').write_bytes(b'custom\n')
+
+    assert client.main(['itos']) == 0
+
+    assert (workspace / 'Translation/English/items.tsv').read_bytes() == b'harness_ore\tHarness Ore\n'
+    assert (workspace / 'Translation/English/custom.txt').read_bytes() == b'custom\n'
 
 
 @pytest.mark.parametrize('bad_bytes', [b'', b'bad', struct.pack('<ii', 8, 16) + b'12345678'])
