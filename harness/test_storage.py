@@ -16,6 +16,7 @@ class FakeFS(storage.FileSystem):
         self.mounts = set(mounts)
         self.free = free
         self.created = []
+        self.temporary_created = []
         self.probes = []
         self.fail_probe = False
         self.mount_queries = []
@@ -30,7 +31,7 @@ class FakeFS(storage.FileSystem):
 
     def free_bytes(self, path):
         self.space_queries.append(path)
-        return self.free
+        return self.free[path] if isinstance(self.free, dict) else self.free
 
     def mount_identity(self, directory, name=''):
         # Synthetic kernel identities keep these tests independent of real
@@ -55,6 +56,11 @@ class FakeFS(storage.FileSystem):
         if self.fail_probe:
             raise PermissionError('sensitive OS diagnostic must not escape')
         super().probe(path)
+
+    def create_temporary(self, parent, prefix):
+        path = super().create_temporary(parent, prefix)
+        self.temporary_created.append(path)
+        return path
 
 
 @pytest.fixture
@@ -89,6 +95,20 @@ def configured(project, tmp_path):
     save_config(project, data)
     policy = storage.resolve_storage(project, env={}, fs=fs)
     return policy, fs, data
+
+
+@pytest.fixture(params=['shared', 'distinct'])
+def storage_layout(configured, tmp_path, request):
+    policy, fs, data = configured
+    if request.param == 'distinct':
+        mount = tmp_path / 'second-mount'
+        mount.mkdir()
+        fs.mounts.add(mount)
+        data['temporary'].update(required_mount=str(mount), path=str(mount / 'temporary'))
+    # A shared measurement must still satisfy two independently configured floors.
+    data['temporary']['min_free_bytes'] = 2000
+    save_config(policy.root, data)
+    return storage.resolve_storage(policy.root, env={}, fs=fs), fs
 
 
 def make_run(root, run_id='100-abcdef', *, report=True, time_ns=1000):
@@ -532,13 +552,13 @@ def test_mount_appearing_between_selection_and_creation_is_rechecked(configured,
     nested = policy.artifact_root / 'nested'
     nested.mkdir(mode=0o700)
     output = policy.report_dir(explicit=nested / 'reports')
-    prepare = policy.prepare
+    prepare_roots = policy._prepare_roots
 
-    def prepare_then_mount(*, probe=True):
-        prepare(probe=False)
+    def prepare_then_mount(**kwargs):
+        prepare_roots(**kwargs)
         fs.mounts.add(nested)
 
-    monkeypatch.setattr(policy, 'prepare', prepare_then_mount)
+    monkeypatch.setattr(policy, '_prepare_roots', prepare_then_mount)
     fs.created.clear()
     with pytest.raises(storage.StorageError, match='different mount'):
         policy.ensure_directory(output)
@@ -742,6 +762,452 @@ def test_cli_validates_raw_path_spelling(project, monkeypatch, capsys, option, s
     assert 'absolute normalized path' in json.loads(captured.err)['error']
     assert not (project / 'output').exists()
     assert not (project / 'logs').exists()
+
+
+@pytest.mark.parametrize('operation', ['ensure', 'prepare', 'status', 'temporary'])
+def test_storage_operation_counts_cold_and_warm(storage_layout, operation):
+    policy, fs = storage_layout
+    mount_count = len(fs.mounts)
+    output = policy.artifact_root / 'reports'
+    # Expected (read-only boundaries, probes, create_directory calls).
+    # Supplied shared-mount baseline: ensure 14/3/3 on both calls,
+    # prepare 10/2/2, status 4/0/0. These are call counts, not latency.
+    expected = {'ensure': [(6, 3, 3), (1, 1, 0)],
+                'prepare': [(4, 2, 2), (2, 2, 0)],
+                'status': [(1, 0, 0), (1, 0, 0)],
+                'temporary': [(6, 3, 2), (2, 1, 0)]}
+    for warm, (boundaries, probes, creates) in enumerate(expected[operation]):
+        if warm and operation == 'status':
+            policy.prepare(probe=False)
+        fs.space_queries.clear()
+        fs.created.clear()
+        fs.probes.clear()
+        fs.temporary_created.clear()
+        if operation == 'ensure':
+            assert policy.ensure_directory(output) == output
+            assert fs.probes[-1] == output
+        elif operation == 'prepare':
+            assert policy.prepare() is policy
+            assert fs.probes == [policy.artifact_root, policy.temp_root]
+        elif operation == 'status':
+            assert policy.status(probe=False)['status'] == 'ready'
+        else:
+            directory = policy.mkdtemp()
+            assert directory.parent == policy.temp_root
+            assert fs.temporary_created == [directory]
+            assert fs.probes[-1] == directory
+        assert len(fs.space_queries) == boundaries * mount_count
+        for mount in fs.mounts:
+            assert fs.space_queries.count(mount) == boundaries
+        assert len(fs.probes) == probes
+        assert len(fs.created) == creates
+        if mount_count == 1 and operation != 'temporary':
+            assert len(fs.space_queries) < {'ensure': 14, 'prepare': 10, 'status': 4}[operation]
+
+
+def test_shared_mount_status_enforces_both_floors_and_preserves_failed_diagnostics(configured):
+    policy, fs, data = configured
+    data['temporary']['min_free_bytes'] = 2000
+    save_config(policy.root, data)
+    policy = storage.resolve_storage(policy.root, env={}, fs=fs)
+    fs.free = 1500
+    for _ in range(2):
+        fs.space_queries.clear()
+        result = policy.status()
+        assert result['status'] == 'failed'
+        assert len(fs.space_queries) == 1
+        artifact, temporary = (result['directories'][name] for name in ('artifacts', 'temporary'))
+        assert artifact['free_bytes'] == temporary['free_bytes'] == 1500
+        assert artifact['mount_ready'] and temporary['mount_ready']
+        assert artifact['min_free_bytes'] == 1000
+        assert temporary['min_free_bytes'] == 2000
+        assert 'error' not in artifact
+        assert 'below min_free_bytes' in temporary['error']
+    assert fs.created == fs.probes == []
+    fs.free = 2000
+    assert policy.status()['status'] == 'ready'
+
+
+def test_failed_shared_space_measurement_is_bounded_and_not_cached_across_status_calls(
+        configured, monkeypatch):
+    policy, fs, _ = configured
+    attempted = []
+
+    def fail_space(path):
+        attempted.append(path)
+        raise OSError('PRIVATE-SPACE-DIAGNOSTIC')
+
+    monkeypatch.setattr(fs, 'free_bytes', fail_space)
+    for count in (1, 2):
+        result = policy.status()
+        assert result['status'] == 'failed'
+        assert len(attempted) == count
+        for state in result['directories'].values():
+            assert state['mount_ready']
+            assert state['free_bytes'] is None
+            assert state['min_free_bytes'] == 1000
+            assert 'PRIVATE-SPACE-DIAGNOSTIC' not in state['error']
+    assert fs.created == fs.probes == []
+
+
+@pytest.mark.parametrize('change', ['device', 'inode'])
+@pytest.mark.parametrize('operation', ['ready', 'ensure', 'prepare', 'temporary', 'status'])
+def test_shared_measurement_refuses_mount_replacement_within_boundary(
+        configured, monkeypatch, change, operation):
+    policy, fs, _ = configured
+    mount = policy.artifacts.required_mount
+    lstat, free_bytes = fs.lstat, fs.free_bytes
+    measured = []
+
+    def replace_after_measurement(path):
+        free = free_bytes(path)
+        measured.append(path)
+        return free
+
+    def replaced_mount(path):
+        info = lstat(path)
+        if path == mount and measured:
+            return _changed_stat(info, **({'st_dev': info.st_dev + 1} if change == 'device'
+                                         else {'st_ino': info.st_ino + 1}))
+        return info
+
+    monkeypatch.setattr(fs, 'free_bytes', replace_after_measurement)
+    monkeypatch.setattr(fs, 'lstat', replaced_mount)
+    if operation == 'status':
+        result = policy.status()
+        assert result['status'] == 'failed'
+        assert result['directories']['artifacts']['free_bytes'] == 10000
+        assert all('required mount changed' in state['error']
+                   for state in result['directories'].values())
+    else:
+        with pytest.raises(storage.StorageError, match='required mount changed'):
+            if operation == 'ready':
+                policy.check_ready()
+            elif operation == 'ensure':
+                policy.ensure_directory(policy.artifact_root / 'reports')
+            elif operation == 'prepare':
+                policy.prepare()
+            else:
+                policy.mkdtemp()
+    assert measured == [mount]
+    assert fs.created == fs.probes == fs.temporary_created == []
+
+
+def test_comprehensive_diagnostics_remain_fresh_for_both_roots(storage_layout):
+    policy, fs = storage_layout
+    policy.prepare(probe=False)
+    for _ in range(2):
+        fs.probes.clear()
+        fs.created.clear()
+        fs.space_queries.clear()
+        result = policy.status(probe=True)
+        assert result['status'] == 'ready'
+        assert all(state['probe'] == 'passed' for state in result['directories'].values())
+        assert fs.probes == [policy.artifact_root, policy.temp_root]
+        assert fs.created == []
+        # Diagnostic snapshot and two independent probe write boundaries.
+        assert len(fs.space_queries) == 3 * len(fs.mounts)
+
+
+@pytest.mark.parametrize('target', ['artifacts', 'temporary'])
+def test_target_root_probe_is_deferred_to_output_boundary(storage_layout, target):
+    policy, fs = storage_layout
+    output = policy.artifact_root if target == 'artifacts' else policy.temp_root
+    for warm in (False, True):
+        fs.probes.clear()
+        fs.created.clear()
+        fs.space_queries.clear()
+        assert policy.ensure_directory(output) == output
+        assert fs.probes[-1] == output
+        assert fs.probes.count(output) == 1
+        assert len(fs.probes) == (1 if warm else 2)
+        assert len(fs.created) == (0 if warm else 2)
+        assert len(fs.space_queries) == (1 if warm else 4) * len(fs.mounts)
+
+
+def test_empty_cleanup_keeps_two_independent_readiness_boundaries(storage_layout, monkeypatch):
+    policy, fs = storage_layout
+    with policy.temporary_directory() as root:
+        fs.space_queries.clear()
+        operations = _observe_cleanup(monkeypatch)
+    assert not root.exists()
+    assert operations == [('rmdir', root.name)]
+    assert len(fs.space_queries) == 2 * len(fs.mounts)
+    for mount in fs.mounts:
+        assert fs.space_queries.count(mount) == 2
+
+
+def test_only_missing_components_receive_mkdir_attempts(configured, monkeypatch):
+    policy, fs, _ = configured
+    mkdir = os.mkdir
+    created = []
+
+    def missing_only(name, mode=0o777, *, dir_fd=None):
+        with pytest.raises(FileNotFoundError):
+            os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        created.append(name)
+        return mkdir(name, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, 'mkdir', missing_only)
+    output = policy.artifact_root / 'reports'
+    policy.ensure_directory(output)
+    assert created == ['private', 'artifacts', 'temporary', 'reports']
+    created.clear()
+    fs.created.clear()
+    policy.ensure_directory(output)
+    assert created == fs.created == []
+
+
+@pytest.mark.parametrize('fail_fsync', [False, True])
+def test_routine_destination_probe_files_are_private_unique_and_cleaned(
+        configured, monkeypatch, fail_fsync):
+    policy, fs, _ = configured
+    policy.prepare(probe=False)
+    output = policy.ensure_directory(policy.artifact_root / 'reports', probe=False)
+    sentinel = output / 'preserve'
+    sentinel.write_bytes(b'user data')
+    unlink, fsync = os.unlink, os.fsync
+    observed, flushed = [], []
+
+    def observe_unlink(name, *args, **kwargs):
+        if isinstance(name, str) and name.startswith('.harness-storage-probe-'):
+            parent = os.fstat(kwargs['dir_fd'])
+            info = os.stat(name, dir_fd=kwargs['dir_fd'], follow_symlinks=False)
+            assert parent.st_uid == info.st_uid == os.geteuid()
+            assert stat.S_IMODE(parent.st_mode) == 0o700
+            assert stat.S_IMODE(info.st_mode) == 0o600
+            observed.append(name)
+        return unlink(name, *args, **kwargs)
+
+    def flush_probe(fd):
+        flushed.append(True)
+        if fail_fsync:
+            raise OSError('PRIVATE-FSYNC-DIAGNOSTIC')
+        return fsync(fd)
+
+    monkeypatch.setattr(os, 'unlink', observe_unlink)
+    monkeypatch.setattr(os, 'fsync', flush_probe)
+    for _ in range(2):
+        for operation in (lambda: policy.ensure_directory(output), policy.mkdtemp):
+            if fail_fsync:
+                with pytest.raises(storage.StorageError, match='writeability probe failed') as error:
+                    operation()
+                assert 'PRIVATE-FSYNC-DIAGNOSTIC' not in str(error.value)
+            else:
+                operation()
+    assert len(flushed) == len(observed) == len(set(observed)) == 4
+    assert list(output.iterdir()) == [sentinel]
+    assert sentinel.read_bytes() == b'user data'
+    assert all(list(path.iterdir()) == [] for path in fs.temporary_created)
+
+
+@pytest.mark.parametrize('operation', [
+    'check_ready', 'prepare', 'ensure', 'report', 'workflow_roots', 'find_run',
+    'latest_run', 'validate_run', 'record', 'temporary', 'context', 'status', 'diagnostic'])
+@pytest.mark.parametrize('invalid', ['mount', 'floor', 'mode', 'owner', 'symlink'])
+def test_each_call_rechecks_both_specs_before_first_mutation(
+        storage_layout, tmp_path, monkeypatch, operation, invalid):
+    policy, fs = storage_layout
+    policy.prepare(probe=False)
+    run = make_run(policy.artifact_root / 'workflows')
+
+    def invoke():
+        if operation == 'check_ready':
+            return policy.check_ready()
+        if operation == 'prepare':
+            return policy.prepare()
+        if operation == 'ensure':
+            return policy.ensure_directory(policy.artifact_root / 'reports')
+        if operation == 'report':
+            return policy.report_dir('reports')
+        if operation == 'workflow_roots':
+            return policy.workflow_roots()
+        if operation == 'find_run':
+            return policy.find_run(run.name)
+        if operation == 'latest_run':
+            return policy.latest_run()
+        if operation == 'validate_run':
+            return policy.validate_run_directory(run)
+        if operation == 'record':
+            return policy.record_path(run, 'report.json')
+        if operation == 'temporary':
+            return policy.mkdtemp()
+        if operation == 'context':
+            with policy.temporary_directory(purpose='context') as path:
+                assert path.parent == policy.temp_root
+            return None
+        return policy.status(probe=operation == 'diagnostic')
+
+    # Prior success, including successful probes, never authorizes a later call.
+    invoke()
+    invoke()
+    fs.created.clear()
+    fs.probes.clear()
+    fs.temporary_created.clear()
+    if invalid == 'mount':
+        fs.mounts.remove(policy.temporary.required_mount)
+    elif invalid == 'floor':
+        fs.free = {mount: (1500 if mount == policy.temporary.required_mount else 10000)
+                   for mount in fs.mounts}
+    elif invalid == 'mode':
+        policy.temp_root.chmod(0o755)
+    elif invalid == 'owner':
+        lstat = fs.lstat
+
+        def foreign_temporary(path):
+            info = lstat(path)
+            return (_changed_stat(info, st_uid=os.geteuid() + 1)
+                    if path == policy.temp_root else info)
+
+        monkeypatch.setattr(fs, 'lstat', foreign_temporary)
+    else:
+        outside = tmp_path / 'outside-private'
+        outside.mkdir(mode=0o700)
+        policy.temp_root.rename(policy.temp_root.with_name('retained-temporary'))
+        policy.temp_root.symlink_to(outside, target_is_directory=True)
+    if operation in ('status', 'diagnostic'):
+        assert invoke()['status'] == 'failed'
+    else:
+        with pytest.raises(storage.StorageError):
+            invoke()
+    assert fs.created == fs.probes == fs.temporary_created == []
+    assert not (policy.root / 'logs/harness/workflows').exists()
+
+
+@pytest.mark.parametrize('operation', ['ensure', 'prepare', 'temporary', 'diagnostic'])
+@pytest.mark.parametrize('invalid', ['mount', 'floor'])
+def test_invalid_second_spec_blocks_first_cold_mutation(storage_layout, operation, invalid):
+    policy, fs = storage_layout
+    if invalid == 'mount':
+        fs.mounts.remove(policy.temporary.required_mount)
+    else:
+        fs.free = {mount: (1500 if mount == policy.temporary.required_mount else 10000)
+                   for mount in fs.mounts}
+    if operation == 'diagnostic':
+        assert policy.status(probe=True)['status'] == 'failed'
+    else:
+        with pytest.raises(storage.StorageError):
+            if operation == 'ensure':
+                policy.ensure_directory(policy.artifact_root / 'reports')
+            elif operation == 'prepare':
+                policy.prepare()
+            else:
+                policy.mkdtemp()
+    assert fs.created == fs.probes == fs.temporary_created == []
+    assert not policy.artifact_root.exists()
+    assert not policy.temp_root.exists()
+
+
+@pytest.mark.parametrize('boundary', ['root-create', 'root-probe', 'output-create',
+                                      'prepare-create', 'temporary-create', 'diagnostic-probe'])
+@pytest.mark.parametrize('invalid', ['mount', 'floor', 'mode'])
+def test_deterioration_stops_next_write_boundary(storage_layout, monkeypatch, boundary, invalid):
+    policy, fs = storage_layout
+    if boundary in ('output-create', 'temporary-create', 'diagnostic-probe') or invalid == 'mode':
+        policy.prepare(probe=False)
+        if boundary in ('root-create', 'root-probe', 'prepare-create'):
+            policy.artifact_root.rmdir()
+    events = []
+    trigger = {'root-create': 'create_directory', 'root-probe': 'probe',
+               'output-create': 'create_directory', 'prepare-create': 'create_directory',
+               'temporary-create': 'create_temporary', 'diagnostic-probe': 'probe'}[boundary]
+
+    def invalidate():
+        if invalid == 'mount':
+            fs.mounts.remove(policy.temporary.required_mount)
+        elif invalid == 'floor':
+            fs.free = 1500
+        else:
+            policy.temp_root.chmod(0o755)
+
+    for action in ('create_directory', 'probe', 'create_temporary'):
+        original = getattr(fs, action)
+
+        def mutate(*args, _action=action, _original=original):
+            result = _original(*args)
+            events.append(_action)
+            if _action == trigger:
+                invalidate()
+            return result
+
+        monkeypatch.setattr(fs, action, mutate)
+    if boundary == 'diagnostic-probe':
+        assert policy.status(probe=True)['status'] == 'failed'
+    else:
+        with pytest.raises(storage.StorageError):
+            if boundary == 'temporary-create':
+                policy.mkdtemp()
+            elif boundary == 'prepare-create':
+                policy.prepare()
+            else:
+                policy.ensure_directory(policy.artifact_root / 'reports')
+    assert events == (['create_directory', 'probe'] if boundary == 'root-probe' else [trigger])
+    assert not (policy.root / 'logs/harness/workflows').exists()
+
+
+@pytest.mark.parametrize('existing', [False, True])
+@pytest.mark.parametrize('probe', [False, True])
+def test_outside_override_probes_actual_destination_only(configured, tmp_path, existing, probe):
+    policy, fs, _ = configured
+    policy.prepare(probe=False)
+    output = tmp_path / 'outside-override'
+    if existing:
+        output.mkdir(mode=0o700)
+        (output / 'preserve').write_bytes(b'user data')
+    for warm in (False, True):
+        fs.created.clear()
+        fs.probes.clear()
+        assert policy.ensure_directory(output, probe=probe) == output
+        assert fs.probes == ([output] if probe else [])
+        assert fs.created == ([] if existing or warm else [output])
+    if existing:
+        assert (output / 'preserve').read_bytes() == b'user data'
+
+
+@pytest.mark.parametrize('target', ['output', 'temporary'])
+def test_target_probe_failure_is_fresh_sanitized_and_has_no_fallback(configured, target):
+    policy, fs, _ = configured
+    policy.prepare(probe=False)
+    output = policy.artifact_root / 'reports'
+    policy.ensure_directory(output)
+    fs.probes.clear()
+    fs.fail_probe = True
+    with pytest.raises(storage.StorageError, match='writeability probe failed') as error:
+        policy.ensure_directory(output) if target == 'output' else policy.mkdtemp()
+    assert 'sensitive' not in str(error.value)
+    assert len(fs.probes) == 1
+    assert fs.probes[0] == (output if target == 'output' else fs.temporary_created[-1])
+    assert list(fs.probes[0].iterdir()) == []
+    assert not (policy.root / 'logs/harness/workflows').exists()
+
+
+@pytest.mark.parametrize('change', ['symlink', 'mode', 'nested-mount'])
+def test_output_revalidated_between_creation_and_probe(configured, tmp_path, monkeypatch, change):
+    policy, fs, _ = configured
+    policy.prepare(probe=False)
+    output = policy.artifact_root / 'reports'
+    outside = tmp_path / 'outside'
+    outside.mkdir(mode=0o700)
+    sentinel = outside / 'preserve'
+    sentinel.write_bytes(b'user data')
+    create = fs.create_directory
+
+    def create_then_replace(path):
+        create(path)
+        if path == output:
+            if change == 'symlink':
+                output.rename(output.with_name('retained-output'))
+                output.symlink_to(outside, target_is_directory=True)
+            elif change == 'mode':
+                output.chmod(0o755)
+            else:
+                fs.mounts.add(output)
+
+    monkeypatch.setattr(fs, 'create_directory', create_then_replace)
+    with pytest.raises(storage.StorageError, match='symlink|mode 0700|different mount'):
+        policy.ensure_directory(output)
+    assert fs.probes == []
+    assert sentinel.read_bytes() == b'user data'
 
 
 def _observe_cleanup(monkeypatch, before=None):

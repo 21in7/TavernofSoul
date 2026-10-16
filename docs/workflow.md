@@ -294,9 +294,26 @@ private JSON·events·logs·lock `0600` 정책을 유지한다.
 
 모든 configured mount·free-space floor·기존 application의 소유자/0700을 mkdir나 출력 전에
 확인한다. 실제 private probe는 application 안의 고유 0600 파일만 write/fsync/read/delete한다.
-`python -m harness.storage doctor`는 읽기 전용이고 `doctor --probe`는 기존 application만 검사한다.
-`python -m harness.storage resolve artifacts --prepare`는 prerequisites 확인 뒤 두 application을
-만들고 probe한다. 없는 mount 아래 로컬 디렉터리 생성, mount root/unrelated 디렉터리 chmod,
+한 읽기 전용 경계 안에서만 shared required mount의 공간 측정을 공유하고 두 spec의 floor를
+각각 적용한다. 별도 mount는 각각 측정하며 경로·nested mount·private 검사는 생략하지 않는다.
+측정과 probe 성공은 public 호출·별도 쓰기·시간 간격·cleanup 경계 간 cache/lease가 아니다.
+두 번째 spec 장애도 첫 mutation을 차단하며 생성 뒤 probe 등 다음 쓰기 gate에서도 새로 검사한다.
+
+`python -m harness.storage status|doctor`와 `status(probe=False)`는 mkdir·chmod·probe 없는
+조회다. 실패해도 각 spec의 `mount_ready`·측정된 `free_bytes`(floor 미달 값 포함)·
+`min_free_bytes` 진단을 유지하며 공간 측정 실패는 null이다. public 반환 형태와 CLI schema는
+그대로다. `status/doctor --probe`는 두 기존 private root를 요구하고 각각 새 gate에서 probe한다.
+명시적 `prepare()`는 두 root를 준비해 모두 새로 probe한다.
+
+`python -m harness.storage resolve artifacts --prepare`와 일상 `ensure_directory`/임시 할당은
+필요한 두 root를 만들되 새 root와 실제 출력/고유 임시 디렉터리만 probe한다. 목적지가 새 root면
+최종 출력 gate에서 한 번 probe한다. 올바른 기존 디렉터리의 mkdir 시도와 무관한 기존 root의
+반복 probe는 생략하지만 모든 configured readiness/private 검사는 유지한다. 부모 probe에서
+자식 writeability를 추정하지 않으며 configured mount 밖의 explicit override도 자신의 private
+목적지에서 독립 probe한다. 실패는 다른 root의 성공으로 대체하지 않는다. `probe=False`는
+probe를 생략하되 준비 검사는 유지하고 local 기본 동작도 유지한다. 선택 근거와 남은 NFS 지연은
+[ADR 0018](adr/0018-storage-check-probe-deduplication.md)에 둔다.
+없는 mount 아래 로컬 디렉터리 생성, mount root/unrelated 디렉터리 chmod,
 readiness 실패의 legacy fallback을 금지한다. durable checkpoint/snapshot 쓰기 전에도 다시
 확인하며 실패한 mount가 돌아올 때까지 승인·merge SHA·복구 기록을 보존하고 성공을 주장하지 않는다.
 
@@ -305,6 +322,12 @@ main이 확인한 별도 운영 작업이다. 역사적 absolute 경로를 임�
 설정 작업의 부수 효과로 journal/workspace/backup을 이동·삭제하지 않는다. 기존 사용자 편집과
 운영 cron·unpack·JSON·DB는 보존한다. 이번 실행은 최신 사용자 선택대로 기존 configured NFS
 설정·mount·floor를 유지하며 activation 변경이나 local storage override를 하지 않는다.
+private 설정 bytes/mode·mount options·required mounts·환경·모델/provider 및 기존 GitHub 정책도
+유지한다. 합성 FakeFS의 공유/별도 mount·cold/warm 호출 수 회귀는 실제 NFS benchmark가 아니다.
+새 Claude 의미 검토와 mandatory full offline `make check`(selected skip/xfail 0), 충돌을 확인한
+scoped apply는 orchestrator가 맡는다. 최종 소스의 호출 수 감소·private 설정 불변 확인과 기본
+Git 역할, 기존 request/accept·실제 required CI success 세 개·고정 head squash merge·정확한
+branch cleanup은 main/orchestrator의 기존 책임 경계를 유지한다.
 현재 문서 작성은 checks·CI·merge 성공의 증거가 아니다.
 
 ## 검토와 검증 기준
@@ -695,6 +718,10 @@ removed tree and the root; it does not undo earlier deletions. The decision and
 counting-FakeFS regression requirements are in
 [ADR 0013](adr/0013-owned-validation-temporary-cleanup.md), which refines
 [ADR 0011](adr/0011-configurable-harness-storage.md)'s operation boundaries.
+[ADR 0018](adr/0018-storage-check-probe-deduplication.md) only shares space
+measurements within each read-only boundary. Cleanup entry and final readiness
+remain independent; neither shares measurements with allocation, probes or the
+other cleanup boundary. Per-entry identity and kernel mount proofs remain fresh.
 
 The validation workspace, report, `model-context.json` approved-source manifest,
 approval snapshots, backups and journals remain on the permanent artifact root.

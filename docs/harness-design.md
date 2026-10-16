@@ -169,9 +169,30 @@ override는 인증 home을 선택하지 않으며 설정의 readiness 검사도 
 이를 mkdir·probe·산출물 쓰기 전에 수행하고 각 쓰기 경계에서 재확인한다. required mount가 없는
 디렉터리를 로컬 출력 디렉터리로 만드는 것을 금지하며 application과 출력까지의 symlink·다른
 nested mount도 거부한다. 준비 상태는 이후 쓰기를 보장하는 lease가 아니다.
+경로/mount proof와 공간 측정을 분리하여 한 읽기 전용 경계 안에서만 required mount별 측정을
+공유한다. shared mount의 두 spec은 서로 다른 floor도 각각 적용하고, 별도 mount는 각각
+측정한다. 공유 중 mount device/inode가 바뀌면 실패한다. 측정/실패/probe 성공을 public 호출,
+별도 쓰기, 시간 간격이나 cleanup 경계에 걸쳐 cache하지 않는다. 두 configured mount·floor와
+기존 private root를 모두 확인한 뒤 첫 mutation을 허용하며 다음 실제 쓰기 gate에서도 다시
+검사한다. 출력까지의 경로·nested mount 검사는 공간 조회 공유로 대체하지 않는다.
 application 디렉터리는 프로세스 소유·0700을 요구하며 새 디렉터리만 private mode로 만든다.
 기존 mount root나 unrelated 디렉터리를 chmod해 준비를 통과시키지 않는다.
 실제 writeability probe는 application 안의 고유한 0600 파일을 쓰고 fsync·읽기·삭제한다.
+`ensure_directory`와 임시 할당은 필요한 두 root의 생성을 유지하되 이미 검증된 디렉터리에
+mkdir를 반복 시도하지 않는다. 새 root는 probe하고, 출력 자식·고유 임시 디렉터리는 실제 목적지에서
+독립 probe한다. 목적지 자체가 새 root이면 그 probe는 출력 gate에서 한 번 수행한다. 무관한
+기존 root의 반복 probe는 생략하지만 그 root의 mount/floor/소유자/0700 검사는 유지한다.
+부모 성공을 자식 writeability로 해석하지 않으며 configured mount 밖의 explicit override도
+자신의 private 목적지 probe를 요구한다. `probe=False`와 미설정 local 동작은 유지한다.
+명시적 `prepare()`는 두 application을 준비해 모두 새로 probe하는 종합 진단이다. 각 생성과
+뒤따르는 probe는 독립된 fresh gate를 거치므로 중간 악화는 다음 쓰기에서 차단한다. probe 실패는
+고정 진단으로 노출하고 local fallback하지 않는다. 선택 근거와 비용은
+[ADR 0018](adr/0018-storage-check-probe-deduplication.md)에 둔다.
+
+호출 소유 tree cleanup의 진입과 최종 root 제거 직전 readiness는 독립된 두 경계다. 각 경계에서만
+mount 측정을 공유하며 매 destructive 작업의 attachment·owner·no-follow·device·kernel mount
+identity proof와 statx 실패 시 fail closed는 그대로다. cleanup의 범위와 부분 실패 계약은
+[ADR 0013](adr/0013-owned-validation-temporary-cleanup.md)을 유지한다.
 JSON·이벤트·로그 0600과 실행 디렉터리 0700 정책을 유지한다.
 MySQL/Chromium wrapper는 초기 상태 쓰기·trap의 결과 쓰기·Docker 시작 전에 이 정책을 해석/준비한다.
 Docker 데이터베이스·운영 저장소·컨테이너의 기존 tmpfs 정책은 이 설정으로 옮기지 않는다.
@@ -179,8 +200,14 @@ Docker 데이터베이스·운영 저장소·컨테이너의 기존 tmpfs 정책
 유료 모델 없이 `make storage-status`, `make storage-doctor` 또는
 `python -m harness.storage status|doctor`로 유효 artifact/temp/context/local lock 경로와 mount·공간
 하한을 조회한다. 기본 조회는 읽기 전용이며 application이 아직 없어도 쓰기 가능성을 증명하지 않는다.
-`doctor --probe`/`make storage-doctor PROBE=1`은 이미 존재하는 private application 안에서만 probe하고,
-`python -m harness.storage resolve artifacts --prepare`는 준비 검사를 거쳐 application을 만들고 probe한다.
+`status(probe=False)`는 mkdir·chmod·probe를 하지 않고 실패 시에도 각 spec의 `mount_ready`,
+측정된 `free_bytes`(floor 미달 값 포함), `min_free_bytes`를 유지한다. 공간 조회 실패는 null이다.
+`status/doctor --probe`/`make storage-doctor PROBE=1`은 두 기존 private application을 모두 요구하고
+각각 새 gate에서 probe한다. `python -m harness.storage resolve artifacts --prepare`는 필요한
+두 root를 만들되 새 root와 요청한 실제 목적지를 probe하며 무관한 기존 root는 probe하지 않는다.
+public 서명/반환 형태·CLI schema, 설정 bytes/mode·NFS 선택·mount options·required mounts·floor와
+기존 환경/credential/lock·모델/provider·게시 정책은 유지한다. 남은 NFS RPC 지연은 제거하지 않으며
+합성 회귀의 호출 수 감소는 end-to-end 성능이나 필수 검증 통과의 증거가 아니다.
 명령 성공은 모델·검증·게시 성공이 아니다. 설정 준비/복구 절차는 [하네스 사용법](harness.md)과
 [workflow](workflow.md), 외부 저장·로컬 lock·인증 유지 결정은 예정
 [ADR 0011](adr/0011-configurable-harness-storage.md)에 기록한다.

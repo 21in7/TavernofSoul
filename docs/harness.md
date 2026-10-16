@@ -366,13 +366,31 @@ status/doctor는 effective artifact/temp/context/local lock과 로컬 credential
 쓰기 가능성을 증명하지 않는다. local 모드의 `temp_root=null`은 기존 `tempfile` 기본 선택을 뜻한다.
 설정/준비 실패는 0이 아닌 종료 코드와 고정된 유용한 오류를 반환하며 설정 원문·비밀값·임의 OS
 오류를 출력하지 않는다. `doctor --probe`와 `PROBE=1`은 이미 존재하는 private application만
-probe한다. `resolve artifacts --prepare`는 모든 prerequisites를 검사한 뒤 **두** configured
-application을 만들고 probe하며 요청한 경로를 출력한다.
+probe하며 두 root가 모두 존재해야 한다. CLI `status --probe`도 두 root를 각각 새로 검사한다.
+실패 status도 각 spec의 `mount_ready`, 측정된 `free_bytes`(floor 미달 값 포함),
+`min_free_bytes`를 보존한다. 공간 측정 실패의 `free_bytes`는 null이다. 기본
+`status(probe=False)`는 mkdir·chmod·probe가 없는 조회이며 JSON schema와 반환 형태는 유지한다.
+
+`resolve artifacts --prepare`와 `ensure_directory()`는 모든 prerequisites를 검사한 뒤 필요한
+두 configured root를 만들고 **새 root와 실제 요청 목적지**를 probe한다. 목적지가 새 root
+자체이면 출력 경계에서 한 번 probe한다. 기존의 무관한 root는 반복 probe하지 않지만 모든 쓰기
+gate에서 그 root의 mount/floor/소유자/0700은 계속 검사한다. 임시 할당도 새 root와 실제 고유
+작업 디렉터리를 probe한다. 부모 probe는 자식 writeability를 증명하지 않는다. 출력 자식과
+configured mount 밖의 명시적 override도 자신의 private 목적지에서 새로 probe하며 실패를
+부모나 다른 application의 성공으로 대신하지 않는다. 두 application의 종합 writeability 진단은
+명시적 `prepare()` 또는 기존 두 root에 대한 `status/doctor --probe`로 수행한다.
+`prepare(probe=False)`/`ensure_directory(probe=False)`는 필요한 디렉터리를 준비하되 probe를
+하지 않고 안전 검사를 유지한다. 미설정 local 기본 동작도 유지한다.
 
 모든 configured mount는 단순히 존재하는 디렉터리가 아니라 정확한 경로의 실제 mount여야 한다.
 공간 하한은 각 required mount의 실제 free bytes와 비교한다. 모든 mount·공간·기존 application
 mode를 mkdir/probe/출력 전에 확인하고 쓰기 경계마다 재확인한다. 출력까지의 symlink와 configured
 mount 아래의 다른 nested mount를 거부한다. mount 부재 시 로컬 mountpoint 아래를 만들지 않는다.
+한 읽기 전용 검사 경계 안에서만 shared mount의 공간 조회를 한 번으로 합치며 두 application의
+floor를 각각 적용한다. 별도 mount는 각각 조회하고 경로/mount/private 검사는 생략하지 않는다.
+다음 public 호출, mkdir 뒤 probe, 임시 할당 뒤 probe, cleanup의 진입과 최종 경계에는 새 측정을
+요구한다. cache/TTL/probe 성공 lease를 두지 않는다. 올바르게 검증된 기존 디렉터리에는 불필요한
+mkdir를 시도하지 않는다. 중간 mount/공간/권한 악화는 다음 쓰기 gate에서 fail closed한다.
 application은 실행 사용자 소유의 `0700`, probe 파일은 고유 이름의 `0600`이며 실제
 write·fsync·readback·delete를 수행한다. private JSON·이벤트·로그도 `0600`을 유지한다.
 기존 application mode가 다르면 실패하며 mount root나 무관한 기존 디렉터리를 chmod하지 않는다.
@@ -399,6 +417,11 @@ main이 제공한 호스트의 NFS 경로는 소스 기본값이 아니다. 이�
 기존 configured NFS 설정·mount·floor를 유지한다. activation 변경이나 local storage override를
 제안하지 않으며 private 설정을 읽지 않았다. 이 문서는 mount 확인·검토·검증·GitHub 전달
 완료를 주장하지 않는다.
+이 최적화는 private 설정 bytes/mode, mount options·required mounts·floors, 모델/provider와
+GitHub 정책을 바꾸지 않는다. 결정·대안·probe 선택의 안전 근거는
+[ADR 0018](adr/0018-storage-check-probe-deduplication.md)에 둔다. `test_storage.py`는 공유/별도
+mount와 cold/warm 호출 수 및 장애 경계를 합성 FakeFS로 명세한다. 호출 수 감소는 실제 NFS
+지연이나 전체 실행 시간의 보장이 아니며 fresh review/full offline 검증을 대신하지 않는다.
 
 ### 호출 소유 임시 tree의 cleanup 경계
 

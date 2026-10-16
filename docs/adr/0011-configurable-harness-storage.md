@@ -13,6 +13,15 @@ local temporary override 제안은 실행하지 않는다. private host 설정�
 [0013](0013-owned-validation-temporary-cleanup.md)은 이 ADR를 대체하지 않고 고유 tree 정리의
 readiness 경계와 매 항목 identity/mount 증명을 구체화한다.
 
+2026-10-16 보충: [0018](0018-storage-check-probe-deduplication.md)은 아래 준비/probe 설명 중
+일상 호출의 대상을 정밀화한다. 한 읽기 전용 경계에서만 shared mount의 공간 측정을 공유하며
+두 spec의 floor는 각각 검사한다. `resolve … --prepare`/`ensure_directory`와 임시 할당은
+새 root와 실제 목적지를 probe하고 무관한 기존 root는 반복 probe하지 않는다. 자식·외부 override는
+부모 probe와 별개로 자신의 probe를 요구한다. 명시적 `prepare()`와 probe 진단은 여전히 두
+application을 모두 검사한다. 각 쓰기와 다음 호출에는 fresh readiness가 필요하며 lease/cache는
+없다. `status(probe=False)`의 무변경 조회와 실패 시 mount/측정 공간/floor 진단, 설정·격리·
+fallback 금지와 0013 cleanup 경계는 유지한다. 아래 원래 결정과 비용 기록은 역사로 보존한다.
+
 ## 문맥
 
 사용자는 하네스 작업물이 로컬 디스크를 채워 당일 운영 cron이 중단된 문제를 보고했다.
