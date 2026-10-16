@@ -136,6 +136,14 @@ REVIEW_PRIVATE_LIMIT = REVIEW_DISPLAY_LIMIT * PRIVATE_PROSE_MULTIPLIER
 class ValidationError(ValueError):
     """Bounded contract failure; messages never include raw model responses."""
 
+    def __init__(self, message, *, reason=None):
+        # Optional private metadata, never model values or exception text. The
+        # local adapter still allowlists this independently before persisting it.
+        self.reason = reason if reason in (
+            'candidate_edit_files_invalid', 'candidate_edit_files_duplicate',
+            'candidate_edit_files_outside_scope') else None
+        super().__init__(message)
+
 
 def _object(value: Any, required: Iterable[str], optional: Iterable[str] = ()) -> dict:
     if not isinstance(value, dict):
@@ -332,11 +340,20 @@ def _fingerprints(value: Mapping[str, dict]) -> dict:
 
 
 def _paths(value: Any, allowed: Iterable[str], maximum: int = 12,
-           minimum: int = 0) -> list:
+           minimum: int = 0, *, edit_targets: bool = False) -> list:
     allowed = set(allowed)
-    paths = [validate_path(x) for x in _list(value, maximum, minimum)]
-    if len(set(paths)) != len(paths) or not set(paths).issubset(allowed):
-        raise ValidationError("duplicate or out-of-scope file")
+    try:
+        paths = [validate_path(x) for x in _list(value, maximum, minimum)]
+    except ValidationError as exc:
+        if edit_targets:
+            exc.reason = 'candidate_edit_files_invalid'
+        raise
+    if len(set(paths)) != len(paths):
+        raise ValidationError("duplicate or out-of-scope file", reason=(
+            'candidate_edit_files_duplicate' if edit_targets else None))
+    if not set(paths).issubset(allowed):
+        raise ValidationError("duplicate or out-of-scope file", reason=(
+            'candidate_edit_files_outside_scope' if edit_targets else None))
     return paths
 
 
@@ -398,9 +415,10 @@ def validate_candidate(value: Any, sources: Mapping[str, Optional[str]],
     analogy = _candidate_text(value["analogy"], "analogy")
     if not re.search(r"[가-힣]", title) or not re.search(r"[가-힣]", analogy):
         raise ValidationError("title and everyday analogy must include Korean text")
-    edit_files = _paths(value["edit_files"], allowed, minimum=1)
+    edit_files = _paths(value["edit_files"], allowed, minimum=1, edit_targets=True)
     if sum(len(path) for path in edit_files) > 600:
-        raise ValidationError("edit file list exceeds one-page character budget")
+        raise ValidationError("edit file list exceeds one-page character budget",
+                              reason='candidate_edit_files_invalid')
     benefit = _object(value["benefit"], ("kind", "text", "evidence"))
     kind = _enum(benefit["kind"], ("estimated", "measured"))
     return {
@@ -620,7 +638,7 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
         seen_roles.add(role)
         state = _enum(item["status"], AGENT_STATUSES)
         provider, model = item.get("provider"), item.get("model")
-        if item.get("stage") == "local_explorer" or provider == "mlx-lm":
+        if item.get("stage") == "local_explorer" or provider in ("mlx-lm", "mlx-vlm"):
             raise ValidationError("local exploration is private participation, not a cloud role")
         if window is not None and state == "succeeded":
             try:

@@ -47,6 +47,51 @@ def forbidden(*args, **kwargs):
     pytest.fail('Offline improvement test crossed a model/check/workflow/network boundary')
 
 
+@pytest.mark.parametrize('targets,reason,message', [
+    ('harness/example.py', 'candidate_edit_files_invalid', 'collection outside permitted range'),
+    ([], 'candidate_edit_files_invalid', 'collection outside permitted range'),
+    ([{}], 'candidate_edit_files_invalid', 'empty or oversized text'),
+    ([' harness/example.py'], 'candidate_edit_files_invalid', 'unsafe individual file path'),
+    (['harness/example.py'] * 2, 'candidate_edit_files_duplicate', 'duplicate or out-of-scope file'),
+    (['harness/outside.py'], 'candidate_edit_files_outside_scope', 'duplicate or out-of-scope file'),
+    (['harness/outside.py'] * 2, 'candidate_edit_files_duplicate', 'duplicate or out-of-scope file'),
+])
+def test_candidate_edit_path_diagnostics_preserve_shared_rejections(targets, reason, message):
+    item = candidate()
+    item['edit_files'] = targets
+    original = copy.deepcopy(item)
+    with pytest.raises(contract.ValidationError) as error:
+        contract.validate_candidates({'candidates': [item]}, {'harness/example.py': 'one\ntwo\n'})
+    assert error.value.reason == reason
+    assert str(error.value) == message
+    assert item == original
+
+
+def test_candidate_edit_budget_metadata_does_not_relax_existing_limit():
+    item = candidate()
+    item['edit_files'] = ['harness/' + 'a' * 195 + str(i) + '.py' for i in range(3)]
+    allowed = ['harness/example.py'] + item['edit_files']
+    with pytest.raises(contract.ValidationError) as error:
+        contract.validate_candidate(item, {'harness/example.py': 'one\ntwo\n'}, allowed)
+    assert error.value.reason == 'candidate_edit_files_invalid'
+    assert str(error.value) == 'edit file list exceeds one-page character budget'
+
+
+def test_edit_diagnostics_leave_documentation_and_unknown_failures_unclassified():
+    with pytest.raises(contract.ValidationError) as error:
+        contract.validate_documentation(dict(DOC, files=['docs/outside.md']), ['docs/architecture.md'])
+    assert error.value.reason is None
+    item = candidate()
+    item['priority'] = 'unknown'
+    with pytest.raises(contract.ValidationError) as error:
+        contract.validate_candidate(item, {'harness/example.py': 'one\ntwo\n'})
+    assert error.value.reason is None
+    item['priority'] = 'medium'
+    item['edit_files'] = ['harness/unread.py', 'harness/example.py']
+    assert contract.validate_candidate(item, {'harness/example.py': 'one\ntwo\n'},
+                                       item['edit_files']) == item
+
+
 @pytest.fixture
 def offline_source_limits(monkeypatch):
     """Read shipped config only; never resolve operational storage or credentials."""
@@ -1061,7 +1106,7 @@ def loop_pool(lab, candidates=None):
                         workflow_config_fingerprint=contract.digest({'synthetic': True}))
     value.update(loop_engine=loop.STATE_VERSION, loop_dependencies=dependencies,
                  review_completed_at=NOW.isoformat(), local_participation=[{
-                     'provider': 'mlx-lm', 'model': 'synthetic-local', 'stage': 'local_explorer',
+                     'provider': 'mlx-vlm', 'model': 'synthetic-local', 'stage': 'local_explorer',
                      'owner_role': 'coordinator', 'status': 'succeeded', 'called': True,
                      'started_at': value['generated_at'], 'finished_at': value['generated_at'],
                      'read_windows': [{'path': 'harness/example.py', 'start_line': 1, 'end_line': 2}],
@@ -1113,7 +1158,7 @@ def test_morning_selects_latest_current_review_and_keeps_all_provenance(lab):
     assert public['status'] == 'partial' and public['agents'][0]['status'] == 'not_called'
     assert public['counts'] == {'candidates': 8, 'reported': 3, 'additional_candidates': 5, 'eligible': 8}
     assert private['local_participation'][0]['model'] == 'synthetic-local'
-    assert all(a['provider'] != 'mlx-lm' for a in public['agents'])
+    assert all(a['provider'] != 'mlx-vlm' for a in public['agents'])
     public_text = json.dumps(public)
     for sensitive in ('local_participation', 'loop_dependencies', 'synthetic-local', 'cost_status'):
         assert sensitive not in public_text
@@ -1351,7 +1396,8 @@ def test_improvements_tick_cli_explicitly_connects_sites_publisher(monkeypatch, 
     assert len(calls) == 1 and json.loads(capsys.readouterr().out)['publication']['status'] == 'delivered'
 
 
-@pytest.mark.parametrize('damage', ['before_nine', 'wrong_window', 'old_success', 'missing_time', 'local_agent'])
+@pytest.mark.parametrize('damage', ['before_nine', 'wrong_window', 'old_success', 'missing_time',
+                                   'local_agent', 'legacy_local_agent'])
 def test_morning_projection_rejects_invalid_window_or_fabricated_participation(damage):
     private = private_report(records_for())
     private.update(generated_at=MORNING.isoformat(), report_window={
@@ -1367,7 +1413,7 @@ def test_morning_projection_rejects_invalid_window_or_fabricated_participation(d
     elif damage == 'missing_time':
         private['agents'][0].pop('finished_at')
     else:
-        private['agents'][0]['provider'] = 'mlx-lm'
+        private['agents'][0]['provider'] = 'mlx-lm' if damage == 'legacy_local_agent' else 'mlx-vlm'
     with pytest.raises(contract.ValidationError):
         contract.build_web_report(private)
 

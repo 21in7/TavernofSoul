@@ -1,6 +1,6 @@
 # 0017. 예산 우선의 시간별 연구와 불변 오전 보고 분리
 
-- 상태: 제안(proposed), 사용자 직접 구현·읽기 전용 예약 요청에 따른 결정; 새 의미 검토·전체 검사·범위 반영·운영 검증 대기
+- 상태: 제안(proposed), 사용자 승인 방향의 구현 결정 기록; mlx-vlm 최종 어댑터의 새 의미 검토·전체 검사·범위 반영·운영 검증 대기
 - 기록일: 2026-10-16
 - 대체 관계: [0015](0015-approval-gated-improvement-discovery.md)의 daily-only 예약·하루 한 scan/5회 호출·one-pass 정책만 대체한다. 개별 승인·claim·workflow·GitHub 권한은 유지한다. [0016](0016-bounded-private-improvement-text.md)의 private/public 서술·strict envelope 계약도 유지한다.
 
@@ -9,9 +9,17 @@
 사용자는 매일 09:00 Asia/Seoul에 보고서를 한 번 게시하면서 다른 시간에는 앞선 의견을 이어
 비판·보완하기를 직접 요청했다. 횟수보다 예산을 우선하며 GLM은 기존 Coding Lite 구독,
 Claude 자동 탐색은 KST 하루 최대 US$1의 추정 ledger를 선택했다. 최신 결정은 항상 켜둘
-Mac mini의 mlx-lm이 작은 소스 부분에서 탐색하고 기존 역할들이 검토하는 방식이다.
+Mac mini의 mlx-vlm이 작은 소스 부분에서 탐색하고 기존 역할들이 검토하는 방식이다.
 이번 구현 workflow의 모델 비용은 자동 탐색 ledger 밖의 별도 비용이다. 발견된 제안의
 수정·승인·실행 권한은 추가되지 않는다.
+
+2026-10-16 프로토콜 정정: 종전 mlx-lm/default_model·prompt 준수에 의존한 초안 생성을
+사용자 승인 방향인 mlx-vlm 네이티브 JSON Schema constrained generation으로 바꾼다.
+최초 자동 초안은 JSON 파싱 뒤 `candidate_invalid`로 거절됐으므로 형식 검증에서 제외된 것이
+아니다. 원문을 보존하지 않아 정확한 당시 실패 필드·값은 알 수 없다. 같은 입력의 별도 재현에서
+edit_files 검증 거절과 evidence window 위반을 각각 관측했으나 최초 응답의 확정 원인은 아니다.
+prompt/order 보강만으로 승인 범위 준수가 보장되지 않아 생성 단계에도 제약을 둔다.
+이 정정은 승인된 기존 ADR0017 안에 기록하며 신규 ADR은 만들지 않는다.
 
 ## 결정
 
@@ -20,8 +28,8 @@ Mac mini의 mlx-lm이 작은 소스 부분에서 탐색하고 기존 역할들�
 Python 3.8 `harness/improvement_loop.py`는 `tick/status/publish`와 durable state를,
 `harness/local_model.py`는 표준라이브러리 HTTP와 작은 line window 검증만 담당한다.
 `improvements.py`는 기존 private store·후보/승인·Sites 전달을, `improvement_report.py`는
-순수 schema·fingerprint·web-v1 projection을 맡는다. 기존 역할/provider/model/effort/
-compaction/auth/storage 설정을 바꾸지 않는다. MLX는 별도 로컬 초안 참여자다.
+순수 schema·fingerprint·web-v1 projection을 맡는다. 기존 cloud 역할/provider/model/effort/
+compaction/auth/storage 설정을 바꾸지 않는다. mlx-vlm은 별도 로컬 초안 참여자다.
 
 versioned `improvement-loop-config-v1`은 정확한 필드·타입·finite·상한과 필드 간 관계를 검사한다.
 기본 hourly tick 한 번에 모델 최대 1회, 로컬 포함 KST 하루 최대 24회, 전체 tick 600초,
@@ -47,11 +55,56 @@ reviewer는 별도 context의 전체 승인 범위와 후보 전체를 검토한
 adapter는 owner별 승인 파일의 한 연속 line window만 전달한다. 요청 전체 UTF-8 bytes
 최대 24576, 출력 max_tokens 3072, HTTP 180초, 응답 body 65536 bytes, header 8192 bytes다.
 기본 window 96줄·feedback 4096 bytes이며 정확한 path와 원래 inclusive line 번호를 보낸다.
-system 지시와 user JSON 데이터(`approved_files/sources/feedback`)를 분리한다.
+system 지시와 user JSON 데이터를 분리하고 `owner_role,sources,feedback,candidate_limit,approved_files`
+순서로 비신뢰 소스·feedback 뒤에 편집 허용 목록을 둔다. 프롬프트는 스키마와 모순 없이 간결하게
+유지하며 소스·feedback의 경로·지시가 권한을 만들지 않는다. strict JSON parser도 유지한다.
 후보와 benefit의 evidence 모두 실제 전달 범위 안이어야 한다. basename 추정·경로 보정·
 전체 파일 열람 주장은 거부한다. edit_files/문서 대상은 owner의 승인 범위 안에서만 허용한다.
 큰 파일은 owner별 durable `{file_index,line}` cursor로 순환하며 호출 실패에도 앞선 window를
 자동 반복하지 않는다. 긴 single line은 `line_too_long`으로 명시 skip하며 slice하지 않는다.
+
+### 네이티브 schema·전송 전 검증·설정 이행
+
+메인이 설치한 mlx-vlm 0.7.8은 요청의
+`response_format={"type":"json_schema","json_schema":{"name":...,"strict":true,"schema":...}}`를
+llguidance logits processor로 강제한다. `enable_thinking=false`는 request top-level에 둔다.
+실제 전체 HTTP 요청에 다음 제약을 포함한다.
+
+- root는 정확히 `{candidates:[...]}`이며 후보 최대2개와 빈 배열 기권을 허용한다.
+  기존 canonical 후보의 모든 필드·타입·필수 항목과 객체별 `additionalProperties=false`,
+  지원되는 배열·텍스트 상한을 명시한다. 후보 필드 생략·다른 축약 계약은 허용하지 않는다.
+- edit_files enum은 현재 owner 승인 목록이다. 승인됐으나 미전송인 파일은 편집 대상만 될 수 있다.
+  후보 evidence와 benefit.evidence의 path는 실제 전달한 단일 window 경로만 허용하고
+  start_line/end_line은 그 window 원문 번호의 최소·최대 범위로 제한한다.
+- `_validate_request`는 전달 window와 owner 승인 목록에서 재구성한 정확한 canonical schema와
+  대조한다. schema 누락·완화·변조와 owner/window/scope·enable_thinking 변조를 transport 전에
+  거절한다. 외부 호출자가 준비된 요청에 느슨한 schema를 주입해도 호출하지 않는다.
+- window 선택은 schema overhead를 포함한 전체 직렬화 HTTP request24576bytes 상한을 지킨다.
+  whole line만 선택하고 원문 번호를 유지한다. schema만으로 상한을 넘으면 bounded
+  `context_too_large`로 호출하지 않는다. 소스 줄을 slice하거나 번호를 다시 매기지 않는다.
+
+서버 제약은 클라이언트 검증의 대체가 아니다. `start_line<=end_line`, 중복, 문자열 총량,
+비어 있거나 무의미한 내용 등 cross-field/semantic 검사와 실제 window 검증은 기존 공유
+후보 validator가 최종 권위다. llguidance1.9.1이 지원하지 않는 `uniqueItems:true`는 넣지 않고
+중복을 클라이언트에서 거절한다. 서버가 schema를 무시하거나 위반하면 응답을 그대로 거절한다.
+자동 경로 보정·잘라내기·줄 번호 보정·근거 합성·재시도·fallback은 없다. 숫자 파일 ID나 window
+evidence 합성 실험은 실패했고 어떤 소스에도 구현하지 않는다. canonical 경로·원문 번호를 유지한다.
+
+local config는 명시적으로 `local-model-config-v2`, provider는 `mlx-vlm`으로 이행하며
+`api_model == model`을 요구한다. 기존 model repository ID validation을 유지한다.
+서버에는 `default_model` 별칭이 없고 메인은 기존 다운로드 모델을 같은 상대 repository ID 경로에
+연결하여 로드한다. 요청의 model은 그 repository ID이며 절대 호스트 경로가 아니다.
+v1 mlx-lm 설정은 자동 변환·대체하지 않고 `config_invalid`로 보류한다. config digest에 이
+프로토콜 전환이 반영되어 이전 loop fingerprint·후보 승인 재사용이 불가능해야 한다.
+Linux 어댑터는 Python3.8 표준라이브러리만 유지하며 서버 패키지 의존성을 추가하지 않는다.
+private config·설치·SSH·서비스 전환과 실제 추론 검증은 메인 책임이다.
+
+메인이 관측한 네이티브 서버의 assistant message에서 정확히 `tool_calls:null`과
+`tool_call_id:null`은 무동작 메타데이터로 취급한다. 두 필드의 non-null 값(빈 배열/문자열 포함),
+그 밖의 도구/함수 필드와 다른 위치의 도구 필드는 계속 거절한다. 요청의 text-only/no-tools
+경계와 실제 응답 그대로의 검증을 유지한다.
+
+### 초안 실패·참여·의견 계승
 
 로컬 실패·빈 초안·missing/empty/긴 줄 skip이면 다음 slot의 관련 specialist는
 `local_draft_unavailable`로 미호출한다. skip도 한 hourly slot을 쓴다. 다른 owner 단계는 이어지고,
@@ -65,11 +118,16 @@ admission하며 실패한 호출을 같은 slot에서 재시도하지 않는다.
 완전한 요약이 안 들어가면 표시된 축약을 시도하고 전혀 담을 수 없으면 `feedback_cannot_fit`으로
 보류한다. 원본 private 후보/검토는 자르지 않는다. 무제한 prompt/response 캐시는 없다.
 
-private `local_participation`에는 `provider=mlx-lm`, 설정된 실제 model identity,
+private `local_participation`에는 `provider=mlx-vlm`, 설정된 실제 model identity,
 `stage=local_explorer`, owner_role, called/status/reason/read_windows/skipped_lines를 보존한다.
-시도는 서버 수신·성공의 증거가 아니다. API alias는 `default_model`이며 preload identity는
+시도는 서버 수신·성공의 증거가 아니다. API model과 서버가 로드한 repository ID의 일치는
 메인이 별도 확인한다. local 초안을 eligible 제안이나 cloud specialist 성공으로 표시하지 않는다.
 web-v1 agents에는 기존 coordinator/downloader/parser/django/reviewer 5역할의 실제 참여만 넣는다.
+편집 목록 실패의 bounded reason `candidate_edit_files_invalid`, `candidate_edit_files_duplicate`,
+`candidate_edit_files_outside_scope`를 유지한다. 그 외 미분류 계약 오류는 `candidate_invalid`,
+공유 검증 통과 후 전달 window 위반은 `evidence_outside_window`다. 진단은 첫 실패 분류일 뿐
+모든 오류나 정확한 값을 복원하지 않는다. 사용자 노출은 코드 allowlist만 허용하며 원문 응답·
+프롬프트·소스·절대 호스트 경로를 로그·보고서·public web-v1에 넣지 않는다.
 
 ### 비용·quota·자정·legacy 이행
 
@@ -172,39 +230,64 @@ host·0.0.0.0·userinfo/query/fragment·redirect·proxy를 거부한다. SSH/hom
 - 매 tick 전체 5역할 scan: 예산과 hourly 1회 호출 제한을 넘으므로 채택하지 않는다.
 - 09:00 모델 호출로 보고 작성: 장애/지연에 보고가 종속되므로 완료 review를 재사용한다.
 - 로컬 초안을 정식 제안으로 직접 승격: 실제 담당자 검토·독립 검토 경계를 잃으므로 거부한다.
+- prompt/order 보강만 사용: 실제 추론에서 다시 승인 밖 edit_files를 관측하여 생성 단계 제약을 추가한다.
+- 숫자 파일 ID/window evidence 합성: 실패한 실험이며 canonical 경로·원문 줄 번호 계약을 바꾸므로 채택하지 않는다.
 - 실패 자동 재호출/다른 cloud balance: 예산·구독 선택을 우회하므로 거부한다.
 
 단계별로 지속 가능한 의견 교환과 하루 한 보고를 분리한다. skip·quota 보류로 round는 9시간보다
 길어질 수 있고 유효 review 부재의 partial/failed 보고가 정상적인 실패 표현이다. locks는 협력
 프로세스를 직렬화하며 같은 OS 계정 탈취나 외부 편집 전체를 막는 VM/신원 경계는 아니다.
+네이티브 schema는 요청 bytes와 서버의 제약 컴파일 비용을 늘린다. whole-line window가 작아질
+수 있고 schema만으로 상한을 넘으면 no-call이다. 의미적 타당성과 승인 수용 기준은 완화하지 않는다.
 
 ## 운영·검증 상태와 문서 평가
 
 정확한 명령·legacy cron 교체·상태/복구는 [improvements](../improvements.md), MLX와 서비스
 운영은 [local-models](../local-models.md)에 둔다. 메인은 최종 새 Claude 의미검토·전체
-make check·scoped apply 후 실제 repository의 첫9단계 운영을 확인하며, 기존 private daily wrapper와
-단일 marked block만 hourly tick으로 교체한다. 게임 jobs·명시 daily local storage·persistent
-NFS default를 보존한다. 현재 기존 09:00 daily cron은 유지 중이며 새 의견 교환은 미가동이다.
+make check·scoped apply 후 최종 adapter 실추론·서비스/private config 전환과 실제9단계 운영을
+확인한다. 단일 hourly marked block·게임 jobs·명시 daily local storage·persistent NFS default를
+보존한다. 메인 제공 기존 상태는 hourly wrapper 활성과2026-10-16 09:00 partial/제안0개 보고1회
+전달이다. 확정 보고는 재생성하지 않으며 새 프로토콜의 운영/다음 아침 게시 성공과 구분한다.
 
-메인 제공 관측으로 Mac 전용 venv·가중치·loopback launchd 서비스/Linux SSH tunnel의 설치·
-재시작을 확인했고 새 adapter로 합성 소스 실제 추론도 성공했다(약19.54초·정확한 승인 경로와
-줄 범위·후보1개). 실제 repository 첫9단계·새 예약·아침 게시 검증과는 구분한다.
-이 worker는 검사·실모델·네트워크·Git·cron·재위임을 실행하지 않았다. 직전 timeout run의
-applied=[]도 새 검토/검사 성공으로 사용하지 않는다. 직전 run1792078026182747557-b4f614은
-8개 구현 작업·Claude 검토 뒤 NFS full check1800초 timeout으로 failed였고 원본 baseline·
-운영·GitHub는 반영되지 않았다. doctor/downloader 성공과 남은 parser+harness 결과
-3439 passed/63 failed/skip0(3502개)는 전체 check 성공이 아니며 Django/pipeline은 확인되지 않았다.
-복원 초안도 새 검토/승인 증거가 아니다. 이번만 메인이 agent_timeout_seconds1800/
-check_timeout_seconds3600/max_rounds3을 선택하고 저장소 workflow-config·NFS/temporary 정책·
-다른 한도는 유지한다. 실행기의 새 Claude 의미검토/full check·두 umask077/022 권한 fixture 검증/
-scoped apply·기존 Git 역할과 메인의 첫9단계/예약 활성화/GitHub 전달/보고 게시가 대기다. 기존 GitHub
-create_tree 자동승인 거부(명시 공개 동의 부족)는 역사적 기록으로 보존한다. 이번 직접 요청의
-기존 Git 역할·검증된 앱 요청은 메인에게 인계하되 원격 baseline 불일치·명시 승인 거부 시
-중단한다. 이 worker가 그 요청을 재실행하거나 공개 허가를 새로 얻지는 않는다.
+메인 제공 과거 설치·서비스/터널 준비와 약19.54초 합성 소스 추론 성공은 이전 어댑터의 관측이다.
+별도 mlx-vlm 0.7.8 네이티브 schema 프로토타입에서는 enum·integer 범위 준수와 canonical
+후보/전달 window 검증 통과를 관측했다. 이는 서버 프로토콜의 호환 관측이며 최종 어댑터의
+최종 bytes의 새 서버 실추론·회귀/전체 검증·실제 repository round의 성공이 아니다.
+별도 특정 미검토 초안의 합성 HTTP 전체 경로 사전 관측도 같은 한계를 가지며 최종 변경 뒤
+메인의 재확인이 필요하다. compiler 지원·null metadata·실제입력과 합성입력의 근거 수준은
+위 local-models 문서의 관측을 따른다. 상세 관측은
+[local-models](../local-models.md)에 두고 raw 응답은 복사하지 않는다.
+
+prompt/order 수리 두 실행은 Claude 검토를 받았지만 실제 추론에서 다시 승인 밖 edit_files를
+생성했고 full check 중 중단되어 모두 `applied=[]`다. 성공·완료로 표시하지 않는다. 기존 NFS
+full check timeout이나 일부 검사 성공도 전체 성공 증거가 아니다. 현재 격리 모델 사본에
+복원된 마지막 승인 범위 초안은 참고용이며 새 독립 검토·전체 검증이 필수다.
+검증 사본은 parent가 NFS 원본 baseline과 같음을 재확인한 뒤 이동·재사용하는 준비 절차이며
+검증 성공이나 local fallback이 아니다.
+이번 worker는 검사·네트워크·Git·SSH·서비스·재위임·workflow를 실행하지 않는다.
+실행기의 새 Claude 의미검토·전체 make check·두 umask077/022 권한 fixture 검증·scoped apply와
+메인의 최종 어댑터 실제 추론·신규 서비스/private config 전환·실제 repository 첫9단계·다음 아침 게시가 대기다.
+런타임 private config·서비스 전환은 메인이 검증 후 수행한다. 이 작업은 스케줄·ledger·이미
+확정한 보고서·게임 cron을 편집하지 않는다. 기존 GitHub create_tree 자동승인 거부(명시 공개
+동의 부족)는 역사적 기록으로 보존한다. 이번 직접 요청의 기존 Git 역할·검증된 앱 요청은
+메인에게 인계하되 원격 baseline 불일치·명시 승인 거부 시 중단한다. 실제 CI/머지/정리 완료는
+메인이 확인하며 worker가 게시 요청을 재실행하거나 공개 허가를 새로 얻지 않는다.
 
 offline 회귀는 fake clock/runner/HTTP와 isolated temporary storage로 slot/restart/locks,
 자정/09:00·legacy carry-in·reservation crash/정산·quota 두 형식·cursor/feedback·초안 실패·
 fingerprint 변경·전송 unknown/동시 sender·기존 승인 불변식을 다룬다. runner의 기존
 `harness/test_*.py` 수집으로 전체 make check에 포함되며 실행 결과는 별도 확인해야 한다.
-매 review는 `documentation={status,files,reason}`을 필수로 반환하고 실제 수정된 승인 Markdown과
-구조·권한·비용·운영 설명의 의미적 완전성을 평가한다. 확장자 검사·문서 존재는 그 증거가 아니다.
+네이티브 프로토콜의 오프라인 회귀 요구는 실제 window/schema 일치, 승인 밖·중복·잘못된 타입·
+후보/benefit 양쪽 evidence 위반 거절, tampered/no schema의 no-transport, request byte 경계·
+whole-line 선택·schema-only 초과 no-call, 서버가 schema를 무시한 응답 거절, 유효 canonical
+후보·`empty_draft`, 단일 호출/no retry, v1 거절·v2/provider 이행·fingerprint 무효화,
+loop specialist 미호출과 진단 privacy다. 이는 전체 make check의 요구 명세이며 실행 성공 기록이 아니다.
+
+시작과 최종 자체 검토에서 문서 영향은 요청 계약·검증·책임·배포 이행 변경으로 판단했다.
+이번21개 범위는 coordinator 단일 작업이며 승인된 이 ADR을 갱신하고 새 ADR을 만들지 않는다.
+AGENTS·ADR index·모델 연결·운영·구조/격리/검증/워크플로 문서를 같은 계약으로 갱신한다.
+파일별 이유는 [운영 인계](../improvements.md#이번-프로토콜-수리의-문서-영향)에 기록한다.
+매 후속 review도 `documentation={status,files,reason}`을 새로 반환하고 최종 소스와 실제 수정
+문서의 구조·계약·격리·검증·실패 복구·게시 설명을 의미적으로 평가한다. 앞선 updated·확장자
+검사·문서 존재는 완전성 증거가 아니다. 필요한 문서가 승인 밖이면 정확한 경로와 기존 승인
+파일에 귀속한 finding을 보고하며 범위를 넓히지 않고 메인이 새 실행을 준비한다.

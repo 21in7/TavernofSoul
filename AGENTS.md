@@ -40,6 +40,8 @@
 실제 변경 `.md` 파일을 하나 이상, `not_required`는 빈 files와 구체적 생략 이유를 요구한다.
 `missing`은 `changes_requested`와 승인 파일 finding을 요구한다. 누락·형식 오류·모순은 실패이며
 문서의 의미적 완전성은 reviewer가 판단한다. 읽기 전용·데모도 같은 판단 형식을 사용한다.
+후속 수리 검토에서도 매번 최종 코드와 문서의 의미적 완전성을 새로 판단한다. 앞선
+`documentation.updated`나 Markdown 확장자 검사를 다음 검토의 승인 근거로 재사용하지 않는다.
 
 코드 수정·기능 구현 요청에서는 메인 `/root`가 조정 역할을 맡는다. 관련 파일을 먼저 조사하고,
 사용자 요청을 UTF-8 작업 파일로, 외부 모델이 읽거나 수정할 소스·테스트·문서의 **개별 파일 경로**를 범위 파일로
@@ -85,6 +87,23 @@ absent/null reset을 idle로 허용하며 private null을 미상·미활성으�
 local(django)→django→Claude 독립 검토다. local은 작은 연속 line window와 정제 feedback만 받고,
 초안은 기존 specialist 근거 확인 전까지 정식 proposal이 아니다. local 실패/빈 초안의 관련
 specialist는 미호출로 기록한다. 기존 37개 읽기 승인과 ownership/shared는 확대하지 않는다.
+로컬 초안의 최종 프로토콜은 mlx-vlm 0.7.8 네이티브 JSON Schema constrained generation이다.
+`local-model-config-v2`의 provider는 `mlx-vlm`, `api_model`은 `model`의 상대 repository ID와
+정확히 같아야 한다. `default_model` 별칭이나 절대 호스트 경로를 요청하지 않으며 v1 mlx-lm
+설정을 자동 변환하지 않고 `config_invalid`로 보류한다. config digest의 프로토콜 전환은 기존
+loop fingerprint와 승인을 무효화한다. Linux 어댑터는 Python3.8 표준라이브러리만 사용한다.
+전체 요청에는 `response_format={"type":"json_schema","json_schema":{"name":...,"strict":true,"schema":...}}`와
+top-level `enable_thinking=false`를 넣는다. 서버는 llguidance logits processor로 스키마를 강제한다.
+스키마는 정확한 `{candidates:[...]}`와 기존 후보 계약, owner 승인 edit_files, 실제 한 window의
+evidence 경로·원문 줄 범위를 표현한다. benefit.evidence도 같은 범위다. 전송 전 전달 window와
+승인 목록에서 canonical schema를 다시 구성해 대조하며 schema 제거·완화나 window/scope/
+enable_thinking 변조를 거절한다. schema를 포함한 전체 HTTP 요청 상한24576bytes 안에서
+whole-line window를 선택하며 스키마만으로 넘으면 `context_too_large`로 호출하지 않는다.
+기존 strict parser·공유 후보 검증·실제 읽은 줄 검증이 최종 권위다. 스키마는 의미 오류를 모두
+막지 못하며 서버가 무시하거나 위반해도 거절한다. 경로/줄 보정·근거 합성·재시도·fallback은 없다.
+편집 목록의 고정 진단 `candidate_edit_files_invalid`, `candidate_edit_files_duplicate`,
+`candidate_edit_files_outside_scope`를 유지한다. 노출은 allowlist 코드만 허용하고 원문·프롬프트·소스·절대 호스트 경로를
+로그·보고서·public web-v1에 넣지 않는다. 상세 요청·배포 계약은 [로컬 모델 문서](docs/local-models.md)를 따른다.
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
 대기가 풀릴 때까지 멈춘다. 09:00 보고 확정은 이 대기와 독립적이다.
@@ -92,12 +111,27 @@ specialist는 미호출로 기록한다. 기존 37개 읽기 승인과 ownership
 09:00 이후 첫 tick에 불변 확정한다. 기존 day는 보존하고 그날 다시 생성·중복 게시하지 않는다.
 최대8 후보/3카드 web-v1을 유지하고 local 참여·endpoint·비용은 private에만 둔다. 미완료는
 partial/failed로 표시한다. 전송 unknown은 자동 재시도하지 않고 메인이 같은 digest만 조정한다.
-새 adapter의 합성 소스 실제 추론 성공(약19.54초·정확한 승인 경로/줄 범위·후보1개)은 메인 제공
-관측이다. 실제 repository 첫9단계·새 예약·아침 게시 검증은 대기다. 직전 NFS full check의
-1800초 timeout/failed/applied=[]와 복원 초안은 전체 검증 성공이나 원본 반영을 뜻하지 않는다.
-메인은 새 의미 검토·full make check·두 umask077/022 권한 fixture 검증·scoped apply 후 기존 private wrapper와
-단일 marked cron block을 hourly로 교체한다. 다른 jobs·게임 cron·명시 daily local storage 선택·
-persistent NFS default는 보존한다. 현재 기존09:00 daily는 유지 중이며 새 연구 예약은 대기다.
+2026-10-16 정정: 최초 로컬 초안은 JSON 파싱 뒤 `candidate_invalid`로 검증 거절됐다.
+형식 검증에서 제외된 것이 아니며 원문 미보존으로 당시 정확한 실패 필드·값은 알 수 없다.
+별도 재현의 edit_files 거절과 evidence window 위반은 최초 응답의 확정 원인이 아니다.
+과거 약19.54초 합성 추론 성공과 메인이 제공한 mlx-vlm 네이티브 schema 프로토타입 관측은
+최종 어댑터 검증과 구분한다. prompt/order 수리 두 실행은 Claude 검토 뒤 실제 추론에서 다시
+승인 밖 edit_files를 냈고 full check 중 중단되어 모두 `applied=[]`다. 성공·완료가 아니며
+마지막 승인 범위의 복원 초안은 참고용으로 새 검토·전체 검증이 필요하다. 숫자 파일 ID/window
+evidence 합성 실험은 실패했고 구현하지 않는다. canonical 경로와 원문 줄 번호 계약을 유지한다.
+최종 어댑터의 신규 서버 실제 추론·전체 make check·실제 repository 첫9단계·다음 아침 게시
+성공은 메인의 관측 전까지 주장하지 않는다. 서버 설치·SSH·서비스·실제 추론·private config
+전환은 메인이 담당하며 작업자·검토자는 검사·네트워크·Git·SSH·서비스·재위임·workflow를 실행하지 않는다.
+메인의 서버 compiler/null metadata·실제입력/합성입력 및 특정 미검토 초안의 사전 추론 관측은
+[로컬 관측](docs/local-models.md#메인이-제공한-서버-호환-관측과-남은-검증)의 근거 수준으로 한정한다.
+정상 assistant의 tool_calls:null/tool_call_id:null만 무동작 metadata로 받고 non-null/다른 도구
+필드는 거절한다. uniqueItems는 서버 미지원이므로 client 중복 검증을 유지한다.
+현재 승인21개는 coordinator 작업1개로 완성한다. 검증 사본 재사용은 parent의 NFS 원본 baseline
+동일성 재확인 후 준비 절차이며 성공이나 local fallback이 아니다. 새 Claude 의미검토·full make
+check·두 umask077/022 권한 fixture 검증·scoped apply와 메인의 최종 추론/서비스·private config
+전환은 별도 필수다. 다른 jobs·게임 cron·명시 daily local storage·persistent NFS default를 보존한다.
+메인 제공 기존 상태는 hourly wrapper 활성·2026-10-16 09:00 partial/제안0개 보고1회 전달이며
+확정 보고는 재생성하지 않는다. 신규 프로토콜의 최종9단계·다음 아침 게시 성공과 구분한다.
 tick의 설정 로드·Store 생성·저장소 readiness 실패는 bounded 정제 paused로 처리하고 모델·키 조회·
 보고 확정·publisher·fallback을 하지 않는다. child/discovery 거부는 이 처리 바깥에 유지한다.
 설정된 저장소 readiness 실패 시 자동 fallback하거나 점검을 재시도하지 않는다. 정확한 CLI·

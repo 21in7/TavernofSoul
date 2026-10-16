@@ -21,7 +21,7 @@
 | [0014](0014-streaming-pak-extraction.md) | PAK의 bounded read/inflate와 파일별 원자 공개·부분 실패·재시도 경계 | 제안(proposed), 새 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0015](0015-approval-gated-improvement-discovery.md) | 사람의 개별 서명 승인·일회성 기존 workflow 실행; daily-only/5회/one-pass 정책은 0017로 대체 | 권한 결정 유지, 스케줄·호출 부분 대체됨 | 2026-10-15 |
 | [0016](0016-bounded-private-improvement-text.md) | 표시 상한 4배의 무축약 private 후보·review(1440/360)와 web-v1 projection 분리, 모델 전용 bounded strict JSON envelope | 제안(proposed), 명시 요청 수리·새 Claude 검토/전체 검증/local 전달 대기·공개 승인 차단 유지 | 2026-10-15 |
-| [0017](0017-budgeted-continuous-improvement.md) | bounded hourly 9단계·reviewer 예산 대기, 좁은 zero-idle quota·정제 준비 실패와 불변09:00 보고·동일 digest 복구 | 제안(proposed), adapter 합성 추론 성공 관측; 새 review/full check/apply/운영 첫9단계·예약·전달 대기 | 2026-10-16 |
+| [0017](0017-budgeted-continuous-improvement.md) | bounded hourly 9단계·불변09:00 보고·동일 digest 복구, mlx-vlm 네이티브 JSON Schema·v2 config와 기존 후보/승인 경계 | 제안(proposed), 승인 방향 기록; 최종 adapter 새 review/full check/apply·실추론/운영 검증 대기 | 2026-10-16 |
 
 ## 상태와 근거의 의미
 
@@ -39,23 +39,50 @@ private null(미상·미활성)을 유지한다. weekly에는 이 예외가 없�
 model limit 부재를0%로 해석하지 않는다. tick의 설정/Store/readiness 준비 실패는 bounded 정제
 paused로 반환하며 모델·키 조회·보고 확정·publisher·fallback을 하지 않는다. child/discovery 거부는 유지한다.
 
-최신 메인 관측으로 MLX 서비스/터널 설치·재시작과 새 adapter 합성 소스의 실제 추론은 성공했다
-(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계와 hourly 활성화는 대기다.
-기존09:00 daily 유지 중이다. 직전 run1792078026182747557-b4f614은8개 구현 작업·Claude 검토 후
-NFS full check1800초 timeout으로 failed/applied=[]였다. 원본 baseline·GitHub·운영은 그대로다.
-doctor/downloader103개 성공과 parser+harness3439 passed/63 failed/skip0은 전체 성공이 아니며
-Django/pipeline은 확인되지 않았다. private checkpoint로 복원한33개 초안도 새 검토/승인 증거가 아니다.
-이번에만 메인이 agent_timeout_seconds1800/check_timeout_seconds3600/max_rounds3을 선택하고
-저장소 workflow-config·다른 한도·NFS/temporary 정책은 유지한다. worker는 검사를 실행하지 않았다.
-새 Claude 의미검토/full make check·두 umask077/022 권한 fixture 검증/scoped apply는 실행기, 첫9단계/예약/GitHub 전달/보고
-게시 확인은 메인 책임이다. 구현 workflow 비용은 자동 탐색 ledger와 별도다.
-전체33개 구현 초안의 승인 Markdown 검토 범위12개는 AGENTS, architecture, harness-design,
-harness, workflow, agent-models, improvements, local-models, ADR0015/0016/0017 및 이 index다.
-이번 후속 보정은10개를 정정하고 ADR0015의 승인 결정·대체 범위와 ADR0016의 기존 변경·
-역사적 거부 기록을 보존한다. 두 ADR은 이미 최신 운영 상태를0017/운영 문서로 연결한다. 매 reviewer는
-실제 경로를 files에 열거하고 `documentation={status,files,reason}`으로 구조·경계·복구의 의미적
-완전성을 판단한다. 확장자만으로 완전성을 증명하지 않는다. 아래는 이전 수리 당시 기록이다.
-특히 과거 GitHub 자동승인 거부는 보존하며 이번 직접 요청의 검증된 인계와 구분한다.
+2026-10-16 프로토콜 정정은 승인된 기존0017에 기록하며 신규 ADR을 만들지 않는다.
+로컬 초안은 mlx-vlm 0.7.8의 llguidance 네이티브 JSON Schema constrained generation을 쓴다.
+`response_format.json_schema`의 strict canonical schema와 top-level `enable_thinking=false`를
+요청하고 전송 전 window/owner 승인 목록에서 schema를 재구성해 변조·누락을 거절한다.
+schema overhead를 포함한 전체 요청24576bytes 안에서 whole-line window를 선택한다.
+후보와 benefit 양쪽 evidence는 그 단일 window의 canonical 경로·원문 줄 번호를 유지한다.
+중복·줄 순서·문자 총량·의미와 실제 읽은 줄 검증은 기존 클라이언트가 최종 권위다.
+schema 무시·위반도 거절하며 경로/줄 보정·근거 합성·재시도·fallback은 없다.
+`local-model-config-v2`/`provider=mlx-vlm`으로 명시 이행하고 `api_model==model`인 상대
+repository ID만 요청한다. `default_model`이나 절대 호스트 경로를 사용하지 않는다.
+v1 mlx-lm 설정은 자동 변환하지 않고 `config_invalid`로 보류하며 config digest 전환으로
+기존 loop fingerprint·승인 재사용을 막는다. Linux에는 서버 패키지를 추가하지 않는다.
+uniqueItems는 llguidance1.9.1 미지원이므로 client 중복 검증을 유지한다. 정상 assistant의
+정확한 tool_calls:null/tool_call_id:null만 무동작 metadata로 받고 non-null·다른 도구 필드는 거절한다.
+
+최초 자동 초안은 JSON 파싱 후 `candidate_invalid`로 검증 거절됐다. 형식 검증 제외가 아니며
+원문 미보존으로 당시 정확한 실패 필드·값은 알 수 없다. 별도 재현의 edit_files 거절과 evidence
+window 위반을 최초 응답의 확정 원인으로 기술하지 않는다. 편집 목록의 bounded
+`candidate_edit_files_invalid`, `candidate_edit_files_duplicate`, `candidate_edit_files_outside_scope`와
+사용자 노출 코드 allowlist를 유지한다. 원문·프롬프트·소스·절대 호스트 경로를 로그·보고서·public
+web-v1에 넣지 않는다. 숫자 파일 ID/window evidence 합성 실험은 실패했고 구현하지 않는다.
+
+과거 약19.54초 합성 추론 성공과 별도 mlx-vlm 네이티브 schema 프로토타입의 메인 관측은
+최종 어댑터 성공과 구분한다. prompt/order 수리 두 실행은 Claude 검토 뒤 실제 추론에서 다시
+승인 밖 edit_files를 만들었고 full check 중 중단되어 모두 `applied=[]`다. 복원한 마지막 승인
+범위 초안은 참고용이며 새 검토·전체 검증이 필수다. 기존 NFS timeout/일부 검사 성공도 전체
+성공이 아니다. 최종 adapter 새 Claude 의미검토·전체 make check·두 umask077/022 권한
+fixture 검증·scoped apply는 실행기, 서버 설치/SSH/서비스·private config 전환·실제 추론·
+실제 repository 첫9단계·신규 서비스 전환·다음 아침 게시·GitHub 전달/CI/머지/정리는 메인 책임이다.
+특정 미검토 초안의 사전 추론 관측도 최종 bytes의 성공이 아니며 근거는 local-models에 둔다.
+검증 사본 이동·재사용은 parent가 NFS 원본 baseline과 같음을 확인한 준비로 성공이나 fallback이 아니다.
+메인 제공 기존 hourly wrapper 활성·2026-10-16 09:00 partial/제안0개 보고1회 전달은 새 프로토콜의
+운영 성공과 구분한다. NFS 기본·명시 daily local storage·37개 scope·예산·승인 게이트를 보존하고
+이 leaf는 스케줄·ledger·확정 보고서·
+게임 cron을 편집하지 않는다. 작업자·검토자는 검사·네트워크·Git·SSH·서비스·재위임·workflow를
+실행하지 않는다. 구현 workflow 비용은 자동 탐색 ledger와 별도다.
+
+이번 coordinator 단일 작업은 승인21개 안에서 AGENTS·이 index·0017·모델/운영·설계/경계
+문서를 갱신한다. [파일별 판단](../improvements.md#이번-프로토콜-수리의-문서-영향)은 시작 시의
+영향과 최종 자체 검토 이유를 기록하며 독립 검토의 승인이 아니다. 매 후속 검토는 실제 경로를
+files에 열거하고 `documentation={status,files,reason}`으로 최종 코드와 문서의 의미적 완전성을
+새로 판단한다. 이전 updated나 확장자 검사는 그 증거가 아니다.
+아래0015/0016 기록은 이전 수리 당시의 이력이며 현재 전달 상태와 구분한다. 특히 과거 GitHub
+자동승인 거부는 보존하며 이번 직접 요청의 검증된 인계와 구분한다.
 
 0016은 메인이 보고한 419자 issue의 표시 한도 거부를 수리하는 데이터 계약 결정이다.
 원본 private 서술은 적당한 hard ceiling 안에서 reviewer·identity·persistence·승인/실행에 유지하고

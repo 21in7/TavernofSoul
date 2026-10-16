@@ -224,16 +224,31 @@ Coding Lite를 자체 범용 HTTP 클라이언트로 호출하거나 일반 API 
 09:00 once 보고다. 기존 cloud roles/provider/model/effort/compaction/auth를 변경하지 않는다.
 Codex는 기존 ChatGPT 로그인, GLM은 Claude Code의 기존 Coding Lite
 `https://api.z.ai/api/anthropic` 연결이다. 새 요금제/계정/유료 balance fallback은 없다.
-별도 [mlx-lm adapter](local-models.md)는 Mac의 preload text model 초안을 담당하며 cloud
+별도 [mlx-vlm adapter](local-models.md)는 Mac의 preload text model 초안을 담당하며 cloud
 역할이나 독립 reviewer로 배정하지 않는다. Linux Python3.8 표준라이브러리 HTTP만 사용한다.
 
 기본 round는 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
 local(django)→django→independent Claude reviewer다. 한 hourly tick에서 모델 최대1회·로컬 포함
 KST 하루24회이며 specialist는 local 초안을 기존 승인 소스로 검증해 정식 후보로 만든다.
 local 실패/빈 초안의 관련 specialist는 미호출로 기록하고 다음 round prompt에 정제 issue와
-specialist/Claude review.reason을 이어받는다. private local_participation은 provider=mlx-lm,
+specialist/Claude review.reason을 이어받는다. private local_participation은 provider=mlx-vlm,
 설정된 실제 model identity/stage=local_explorer/owner_role을 보존하며 기존5역할 참여를 위장하지 않는다.
-API alias default_model은 실제 identity의 증명이 아니므로 메인이 preload를 확인한다.
+설정은 `local-model-config-v2`/`provider=mlx-vlm`, `api_model == model`인 검증된 상대
+repository ID다. 서버에 `default_model` 별칭은 없고 요청에 절대 호스트 모델 경로를 넣지 않는다.
+v1 mlx-lm 설정은 자동 변환·대체하지 않고 `config_invalid`로 보류한다. version/provider/API
+identity가 config digest에 포함되어 이전 loop fingerprint와 서명 승인을 재사용하지 못한다.
+메인이 기존 다운로드 모델을 같은 상대 repository ID 경로로 연결해 로드·확인한다.
+
+mlx-vlm0.7.8은 실제 요청의 `response_format={"type":"json_schema","json_schema":{"name":...,"strict":true,"schema":...}}`를
+llguidance logits processor로 강제하며 `enable_thinking=false`는 top-level이다. schema는 기존
+canonical 후보 전체 필드·타입·필수 항목·additionalProperties=false, 최대2후보, owner 승인
+edit_files enum, candidate/benefit 양쪽 evidence의 실제 단일 window 경로·원문 줄 범위를 담는다.
+전송 전 canonical schema를 재구성하고 준비 입력 결합을 검증해 schema/owner/scope/window/
+thinking 변조를 호출 전에 거절한다. schema 포함 전체 request24576bytes로 whole-line을 선택하며
+고정 overhead 초과는 `context_too_large` no-call이다. uniqueItems는 서버 미지원이므로 넣지 않는다.
+중복·줄 순서·총 문자량·의미와 실제 window의 최종 판단은 기존 client 검증·독립 검토에 남는다.
+서버가 schema를 무시해도 거절하며 보정·합성·재시도·fallback은 없다. assistant의 정확한
+`tool_calls:null`/`tool_call_id:null`만 무동작 metadata로 받으며 non-null과 다른 도구 필드는 거절한다.
 
 Claude 탐색은 KST calendar day 추정 ledger US$1·reviewer1회 cap<=US$0.20이다.
 호출 직전 durable reservation/count를 저장하고 cap=`min(0.20, 잔액, 기존 role cap)`를
@@ -272,9 +287,15 @@ reset 소비는 없다. 공식 FAQ에 따라 Coding Plan 소진 시 balance 자�
 결합한다. source/scope/config 변경은 pool/review/feedback/cursor를 무효화하며 실제 원문이나
 비용/로컬 설정을 기존 web-v1 public shape에 추가하지 않는다.
 
-최신 메인 관측으로 MLX 서비스/터널 설치·재시작과 새 adapter의 합성 소스 실제 추론은
-성공했다(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계와 hourly 예약은
-대기다. 직전 NFS full check1800초 timeout/applied=[]의 부분 결과는 전체 검증 성공이 아니다.
+메인의 기존 서비스/터널 준비와 약19.54초 합성 추론은 이전 adapter 관측이다.
+mlx-vlm0.7.8의 compiler/null metadata·실제입력 prototype·합성 후보 관측은
+[로컬 모델 문서](local-models.md#메인이-제공한-서버-호환-관측과-남은-검증)에 한계를 명시한다.
+특정 미검토 초안의 실제 HTTP 경로 사전 관측도 최종 bytes/전체 검증 성공을 뜻하지 않는다.
+최초 초안은 파싱 뒤 candidate_invalid였고 원문이 없어 당시 필드는 알 수 없다. 재현의 편집 범위·
+evidence 위반은 최초 원인의 확정이 아니다. prompt/order 두 실행은 full check 중단/applied=[]이며
+보존 초안·검증 사본 재사용도 성공이나 fallback이 아니다. 최종 새 검토·전체 검증이 필요하다.
+메인 제공 기존 상태는 hourly wrapper 활성·2026-10-16 09:00 partial/제안0개 한 번 전달이며
+확정 보고는 보존한다. 신규 서비스/private config 전환·최종 추론·실제9단계·다음 아침 게시 확인은 대기다.
 worker는 실모델/네트워크/검사/Git/cron을 실행하지 않았다.
 새 Claude 의미검토/full make check·두 umask 권한 fixture 검증/scoped apply는 실행기, 첫9단계/예약/GitHub 전달/보고
 게시 확인은 메인 책임이다. 매 review는 실제 변경 Markdown과 계약의 의미적 완전성을
