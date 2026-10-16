@@ -22,8 +22,17 @@
 | [0015](0015-approval-gated-improvement-discovery.md) | 사람의 개별 서명 승인·일회성 기존 workflow 실행; daily-only/5회/one-pass 정책은 0017로 대체 | 권한 결정 유지, 스케줄·호출 부분 대체됨 | 2026-10-15 |
 | [0016](0016-bounded-private-improvement-text.md) | 표시 상한 4배의 무축약 private 후보·review(1440/360)와 web-v1 projection 분리, 모델 전용 bounded strict JSON envelope | 제안(proposed), 명시 요청 수리·새 Claude 검토/전체 검증/local 전달 대기·공개 승인 차단 유지 | 2026-10-15 |
 | [0017](0017-budgeted-continuous-improvement.md) | bounded hourly 9단계·불변09:00 보고·동일 digest 복구, mlx-vlm 네이티브 JSON Schema·v2 config와 기존 후보/승인 경계 | 제안(proposed), 승인 방향 기록; 최종 adapter 새 review/full check/apply·실추론/운영 검증 대기 | 2026-10-16 |
+| [0018](0018-storage-check-probe-deduplication.md) | 한 읽기 경계의 mount별 공간 조회 공유·양쪽 floor와 fresh 쓰기 gate 유지·실제 목적지/새 root probe | 제안(proposed), 새 의미 검토·전체 offline 검증·전달 대기 | 2026-10-16 |
 
 ## 상태와 근거의 의미
+
+0018은 0011의 공간 측정과 일상 준비 probe 선택을 정밀화한다. shared mount는 한 읽기 경계에서
+한 번 측정하되 각 spec의 floor를 검사한다. 일상 출력/임시 할당은 새 root와 실제 자식·override를
+독립 probe하고, 명시적 prepare와 probe 진단은 양쪽 application을 모두 검사한다. 호출·mutation·
+cleanup 경계 간 cache/lease는 없으며 0013의 두 readiness와 per-entry proof는 유지한다.
+기존 NFS/private 설정·인증/lock·게시 정책은 바꾸지 않는다. proposed는 최종 새 Claude 검토·full
+offline check와 전달이 대기라는 뜻이며 operation-count 회귀가 실제 NFS 속도나 게이트 통과를
+입증하지 않는다. 기존 ADR 상태와 아래 역사적 기록은 유지한다.
 
 0017은 사용자의 최신 직접 선택에 따라 0015의 자동 탐색 스케줄·하루 호출 정책만 대체한다.
 37개 승인 scope와 기존 역할/auth/storage·개별 승인/claim·GitHub 게이트, 0016의 서술 계약은

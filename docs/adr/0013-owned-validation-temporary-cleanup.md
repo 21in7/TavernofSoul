@@ -5,6 +5,11 @@
 - 기록 성격: 새 정리 경계 결정; 최종 실행 성공 기록이 아님
 - 대체 관계: 없음. [0011](0011-configurable-harness-storage.md)의 저장 prerequisites를 고유 임시 tree 정리의 고수준 작업 경계로 구체화한다. [0010](0010-automatic-post-merge-cleanup.md)의 Git cleanup은 별개다.
 
+2026-10-16 참조: [0018](0018-storage-check-probe-deduplication.md)의 공간 조회 공유는 각 읽기
+경계 안에만 적용한다. 이 ADR의 cleanup 진입/최종 readiness는 독립된 두 fresh 경계로 유지하고,
+경계 간 측정 재사용이나 per-entry attachment·owner·kernel mount proof 생략을 허용하지 않는다.
+0018의 일상 출력/할당 probe 선택은 이 ADR의 정리 대상·destructive 작업 계약을 바꾸지 않는다.
+
 ## 문맥
 
 이전 full workflow는 NFS RPC 대기 중 timeout했으며 old parent `shutil.rmtree`는

@@ -236,6 +236,20 @@ version 1 JSON은 정확히 `version: 1`, `artifacts`, `temporary`를 갖고 두
 보고서 선택은 명시적 `--report-dir` → `HARNESS_REPORT_DIR` → 설정 artifact/category → 기존 로컬
 기본 경로 순서다. 명시적 보고서 override도 설정의 준비 검사를 우회하지 않는다.
 모든 configured mount와 공간 하한을 mkdir·probe·출력 전에 확인하고 쓰기마다 다시 확인한다.
+한 읽기 전용 검사 경계에서만 같은 required mount의 공간 측정을 공유하고, 공유 mount라도
+두 spec의 floor를 각각 적용한다. 경로·mount·기존 private root 검사는 생략하지 않는다.
+측정은 public 호출·mutation·cleanup 경계를 넘지 않으며 readiness/probe 성공 lease나 TTL은 없다.
+기존의 올바른 디렉터리는 mkdir를 반복 시도하지 않고, 새 root와 실제 출력/임시 목적지를
+probe한다. 무관한 기존 application은 mount/floor/소유자/0700을 계속 검사하되 일상 호출에서
+반복 probe하지 않는다. 부모 성공으로 자식 writeability를 추정하지 않으며 configured mount 밖의
+명시적 override도 자신의 private 목적지에서 probe해야 한다. `probe=False`는 probe를 생략한다.
+명시적 `prepare()`는 두 root를 준비하고 모두 새로 probe하며 `status/doctor --probe`는 두 기존
+private root를 모두 검사한다. `status(probe=False)`는 mkdir·chmod·probe 없이 조회하고 실패해도
+측정 가능한 `mount_ready`·`free_bytes`(floor 미달 값 포함)·각 `min_free_bytes` 진단을 유지한다.
+인터페이스/CLI schema와 로컬 기본 동작, 기존 NFS/private 설정 bytes/mode·mount options·floor는
+유지한다. bounded 측정과 probe 선택의 이유·남은 NFS 지연은
+[ADR 0018](adr/0018-storage-check-probe-deduplication.md)에 둔다. 호출 수 감소는 전체 실행의
+속도나 검토·검증·전달 성공을 보장하지 않는다.
 한 호출이 만든 고유 임시 tree의 cleanup은 하나의 고수준 filesystem 작업이다.
 첫 chmod/삭제 전 진입과 최종 root 제거 직전에 모든 configured readiness를 새로 확인한다.
 파일·ancestor 확인마다 무관한 artifact mount의 공간을 조회하거나 다른 cleanup의 성공을

@@ -22,8 +22,9 @@ project_lock_path is ALWAYS PROJECT/logs/harness/workflows/.lock. Journal locks
 remain in find_run(...)/github.lock; callers retain their journal/hash checks.
 
 prepare() checks ALL mounts and floors before ANY mkdir/probe, then creates only
-private application directories and probes them. ensure_directory() does the
-same for descendant outputs/explicit report overrides, including checking for
+missing private application directories and probes both roots. Routine output
+and temporary preparation probes newly created roots and actual destinations,
+without probing unrelated existing roots. ensure_directory() checks for
 nested mounts between each output and its configured required mount. Explicit
 outputs outside either configured mount are caller-selected overrides, still
 subject to all configured readiness checks and private-directory probes. Existing unrelated paths
@@ -179,12 +180,16 @@ class FileSystem:
             for part in path.parts[1:]:
                 created = False
                 try:
-                    os.mkdir(part, 0o700, dir_fd=fd)
-                    created = True
-                except FileExistsError:
-                    pass
-                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                dir_fd=fd)
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fd)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=fd)
+                        created = True
+                    except FileExistsError:
+                        pass
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fd)
                 try:
                     if created:
                         os.fchmod(child, 0o700)
@@ -382,7 +387,8 @@ class Storage:
     def _specs(self):
         return (('artifacts', self.artifacts), ('temporary', self.temporary)) if self.configured else ()
 
-    def _mount_and_space(self, label, spec, *, target=None):
+    def _mount_path(self, label, spec, *, target=None):
+        """Fresh containment/mount proof, independent of free-space measurement."""
         target = spec.path if target is None else target
         if target == spec.required_mount or not _within(target, spec.required_mount):
             raise StorageError(label + ' output must be below its required mount.')
@@ -400,19 +406,46 @@ class Storage:
                 info = _info(self.fs, ancestor)
                 if info is not None and (info.st_dev != mount_info.st_dev or self.fs.mount_ready(ancestor)):
                     raise StorageError(label + ' application path crosses a different mount.')
-            free = self.fs.free_bytes(spec.required_mount)
-            if type(free) is not int or free < spec.min_free_bytes:
-                raise StorageError(label + ' free space is below min_free_bytes; free space or revise the floor.')
-            return free
+            return mount_info
         except OSError:
             raise StorageError(label + ' mount/free-space check failed; check mount access.') from None
 
+    def _space(self, label, spec, measurements, mount_info):
+        """Measurements belong only to the caller's unchanged read-only boundary."""
+        mount = spec.required_mount
+        if mount_info is None:
+            raise StorageError(label + ' required mount is absent; no local fallback is permitted.')
+        identity = (mount_info.st_dev, mount_info.st_ino)
+        if mount not in measurements:
+            try:
+                measurements[mount] = (identity, True, self.fs.free_bytes(mount))
+            except OSError:
+                measurements[mount] = (identity, False, None)
+        previous, measured, free = measurements[mount]
+        if previous != identity:
+            raise StorageError(label + ' required mount changed during storage validation; check mounts.')
+        if not measured:
+            raise StorageError(label + ' mount/free-space check failed; check mount access.') from None
+        return free
+
+    def _floor(self, label, spec, free):
+        if type(free) is not int or free < spec.min_free_bytes:
+            raise StorageError(label + ' free space is below min_free_bytes; free space or revise the floor.')
+
     def check_ready(self):
         """Read-only; all required mounts/floors are checked before any writes."""
+        return self._check_ready()
+
+    def _check_ready(self, *, target=None):
+        """One boundary, including optional fresh output proof before returning."""
+        measurements = {}
         for label, spec in self._specs():
-            self._mount_and_space(label, spec)
+            mount_info = self._mount_path(label, spec)
+            self._floor(label, spec, self._space(label, spec, measurements, mount_info))
             if _info(self.fs, spec.path) is not None:
                 self._private_directory(spec.path)
+        if target is not None:
+            self._output_safe(target, measurements=measurements)
         return self
 
     def _private_directory(self, path):
@@ -424,12 +457,15 @@ class Storage:
 
     def _create(self, path, private):
         _safe_path(self.fs, path)
-        try:
-            self.fs.create_directory(path)
-        except OSError:
-            raise StorageError('Cannot create private storage directory; check access and mount readiness.') from None
+        missing = _info(self.fs, path) is None
+        if missing:
+            try:
+                self.fs.create_directory(path)
+            except OSError:
+                raise StorageError('Cannot create private storage directory; check access and mount readiness.') from None
         if private:
             self._private_directory(path)
+        return missing
 
     def _probe(self, path):
         self._private_directory(path)
@@ -438,19 +474,33 @@ class Storage:
         except OSError:
             raise StorageError('Private storage writeability probe failed; check permissions and available space.') from None
 
-    def prepare(self, *, probe=True):
-        self.check_ready()
+    def _prepare_roots(self, *, probe, target=None):
+        """Setup only; every mutation has a fresh complete readiness boundary.
+
+        Existing roots are checked by each write gate, never used as evidence
+        of writeability. A target root's probe is deferred to its output gate.
+        """
         for _, spec in self._specs():
-            # Recheck before each mutation; no persistent readiness cache.
-            self.check_ready()
+            if _info(self.fs, spec.path) is not None:
+                continue
+            self._check_ready(target=spec.path)
             self._create(spec.path, private=True)
+            if probe and spec.path != target:
+                self._check_ready(target=spec.path)
+                self._probe(spec.path)
+
+    def prepare(self, *, probe=True):
+        self._prepare_roots(probe=False)
         if probe:
             for _, spec in self._specs():
-                self.check_ready()
+                self._check_ready(target=spec.path)
                 self._probe(spec.path)
+        else:
+            self.check_ready()
         return self
 
-    def _output_safe(self, path, *, legacy=False):
+    def _output_safe(self, path, *, legacy=False, measurements=None):
+        """Fresh containment only; callers own the all-spec readiness boundary."""
         _safe_path(self.fs, path)
         # Local historical records retain their own containment contract even
         # if a broadly configured mount (such as /) also contains the project.
@@ -471,17 +521,20 @@ class Storage:
             if application or mounts:
                 label, spec = max(application or mounts,
                                   key=lambda item: len(item[1].required_mount.parts))
-                self._mount_and_space(label, spec, target=path)
+                mount_info = self._mount_path(label, spec, target=path)
+                if measurements is not None:
+                    self._floor(label, spec, self._space(label, spec, measurements, mount_info))
         return path
 
     def ensure_directory(self, path, *, probe=True):
         """Prepare a non-credential output directory, respecting explicit overrides."""
         path = self._output_safe(_absolute(path, 'Output directory'))
-        self.prepare(probe=probe)
-        self.check_ready()
-        self._output_safe(path)
-        self._create(path, private=self.configured)
-        if probe and self.configured and path not in (self.artifact_root, self.temp_root):
+        self._prepare_roots(probe=probe, target=path)
+        self._check_ready(target=path)
+        created = self._create(path, private=self.configured)
+        if probe and self.configured:
+            if created:
+                self._check_ready(target=path)
             self._probe(path)
         return path
 
@@ -489,7 +542,6 @@ class Storage:
         """Selection only; writers must call ensure_directory before output."""
         if category is not None and (not isinstance(category, str) or not _CATEGORY.fullmatch(category)):
             raise StorageError('Invalid report category; use a single lowercase directory name.')
-        self.check_ready()
         if explicit is not None:
             path = _absolute(explicit, 'Explicit report directory')
         elif REPORT_ENV in self.env:
@@ -500,7 +552,8 @@ class Storage:
             path = _absolute(local_default, 'Local report default')
         else:
             path = self.artifact_root / category if category else self.artifact_root
-        return self._output_safe(path)
+        self._check_ready(target=path)
+        return path
 
     def workflow_root(self, *, local_default=None):
         return self.report_dir('workflows', local_default=local_default)
@@ -619,14 +672,15 @@ class Storage:
             raise StorageError('Temporary prefix must be a plain filename prefix.')
         parent = self.context_root if purpose == 'context' else self.temp_root
         if self.configured:
-            self.prepare()
+            self._prepare_roots(probe=True)
         elif parent is not None:
             _safe_path(self.fs, parent)
         try:
             if self.configured:
-                self.check_ready()
+                self._check_ready(target=parent)
                 path = self.fs.create_temporary(parent, prefix)
-                self._output_safe(path)
+                self._check_ready(target=path)
+                self._probe(path)
             else:
                 path = Path(tempfile.mkdtemp(prefix=prefix, dir=str(parent) if parent is not None else None))
             self._private_directory(path)
@@ -776,6 +830,7 @@ class Storage:
                   'credential_temp_root': str(self.credential_temp_root),
                   'directories': {}, 'status': 'ready'}
         # Only known, validated path fields are emitted; config/env contents are not.
+        measurements = {}
         for label, spec in self._specs():
             state = {'path': str(spec.path), 'required_mount': str(spec.required_mount),
                      'min_free_bytes': spec.min_free_bytes, 'mount_ready': False,
@@ -784,8 +839,11 @@ class Storage:
                 _safe_path(self.fs, spec.required_mount)
                 state['mount_ready'] = bool(self.fs.mount_ready(spec.required_mount))
                 if state['mount_ready']:
-                    state['free_bytes'] = self.fs.free_bytes(spec.required_mount)
-                state['free_bytes'] = self._mount_and_space(label, spec)
+                    state['free_bytes'] = self._space(
+                        label, spec, measurements, _info(self.fs, spec.required_mount))
+                mount_info = self._mount_path(label, spec)
+                state['free_bytes'] = self._space(label, spec, measurements, mount_info)
+                self._floor(label, spec, state['free_bytes'])
                 if _info(self.fs, spec.path) is not None:
                     self._private_directory(spec.path)
                     state['private_directory'] = True
@@ -796,14 +854,16 @@ class Storage:
                 state['error'] = 'Mount/free-space inspection failed; check storage access.'
                 result['status'] = 'failed'
             result['directories'][label] = state
+        # No measurement survives into the probe writes below.
+        del measurements
         if probe and self.configured:
-            # Check all mounts/floors/modes before even the first probe write.
+            # Require BOTH roots to exist before the first probe, then check
+            # all mounts/floors/modes freshly at each probe's write boundary.
             try:
-                self.check_ready()
                 for _, spec in self._specs():
                     self._private_directory(spec.path)
                 for label, spec in self._specs():
-                    self.check_ready()
+                    self._check_ready(target=spec.path)
                     self._probe(spec.path)
                     result['directories'][label]['probe'] = 'passed'
             except StorageError as exc:
