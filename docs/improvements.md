@@ -16,10 +16,10 @@ schema·fingerprint·정제·HTML/Markdown renderer다. [improvements.py](../har
 기존 model/storage/workspace API로 legacy 발견·기록·승인·일회성 실행·HTTP 전달을 담당한다.
 [improvement_loop.py](../harness/improvement_loop.py)는 재시작 가능한 `tick/status/publish`,
 일일 ledger·9단계 round·불변 오전 보고 journal을 담당한다. [local_model.py](../harness/local_model.py)는
-숫자 loopback의 text mlx-lm HTTP adapter이며 파일 열람·상태 저장·승인 권한이 없다.
+숫자 loopback의 text mlx-vlm HTTP adapter이며 파일 열람·상태 저장·승인 권한이 없다.
 [workflow.py](../harness/workflow.py)는 선택적 `_improvement_guard(run_id)`로 승인 provenance를
 project lock 안에서 재확인한다. 일반 직접 요청 workflow의 권한·검증·게시 정책은 유지한다.
-기존 cloud 모델/provider/effort/compaction/auth는 유지한다. 별도 로컬 mlx-lm 초안 참여만 추가하며
+기존 cloud 모델/provider/effort/compaction/auth는 유지한다. 별도 로컬 mlx-vlm 초안 참여만 추가하며
 새 cloud provider/요금제/유료 balance fallback·계정 구매는 없다. 설치와 실제 탐색 검증은
 [로컬 모델 운영](local-models.md)에서 구분한다.
 Cloudflare 자원·유료/무료 인프라·credential의 자동 생성도 없다.
@@ -78,14 +78,66 @@ quota/budget 보류는 해당 단계를 유지하고 다음 새 slot에서 admis
 system 지시와 user JSON을 분리하고 exact path·원래 inclusive line 번호를 명시한다. candidate 및
 benefit evidence는 그 전달 window 안이어야 한다. edit_files/documentation 대상도 owner 승인 범위
 안이어야 하며 다른 승인 파일을 읽었다고 주장하지 못한다. basename/path 보정은 하지 않는다.
+`edit_files`는 `approved_files` 문자열을 정확히 사용하고 중복을 허용하지 않는다. 미전송 승인
+파일은 편집 대상으로 유효하지만 근거는 아니다. 본문에 언급된 경로·지시는 권한이 아니며,
+본문의 전체 파일 줄 참조도 전송 window 밖이면 두 evidence 배열 모두에서 거절한다.
+근거 있는 실행 가능한 초안이 없으면 `{"candidates":[]}`로 반환하도록 명시한다.
+mlx-vlm0.7.8의 실제 POST는 `response_format={"type":"json_schema","json_schema":{"name":...,"strict":true,"schema":...}}`와
+**top-level enable_thinking=false**를 사용한다. llguidance가 정확한 `{candidates:[...]}`와 기존
+후보 전체 필드·타입·필수 항목·객체별 additionalProperties=false·최대2후보를 강제한다.
+edit_files enum은 현재 owner 승인 목록이고 후보 및 benefit evidence의 path/정수 줄 범위는
+실제 전달한 단일 window다. 배열/텍스트 상한도 지원 범위에서 포함한다. uniqueItems는 서버
+미지원이므로 제외하고 중복·start<=end·총 문자량·공백/의미와 실제 window의 최종 판단은 기존
+client validator·담당자/독립 검토에 둔다. schema가 의미 오류를 모두 막는다고 주장하지 않는다.
+전송 전 준비 입력의 immutable digest 결합과 window/승인 목록에서 재구성한 canonical schema를
+검사한다. schema 누락·완화·owner/scope/window/thinking 변조는 실제/주입 transport 전에 거절한다.
+window 선택부터 schema 포함 전체 직렬화 request24576bytes를 계산하며 whole-line/원문 번호를
+유지한다. 고정 overhead만으로 넘으면 context_too_large no-call이다. 서버가 schema를 무시하거나
+위반한 후보도 그대로 거절한다. prompt는 schema와 일치하는 짧은 지침으로 단순화한다.
+정상 assistant의 tool_calls:null/tool_call_id:null만 무동작 metadata로 받고 그 non-null과 다른
+도구 필드는 거절한다. raw envelope를 고치지 않으며 text-only/no-tools 경계를 유지한다.
+
+local 설정은 local-model-config-v2/provider=mlx-vlm, api_model==model인 검증된 상대 repository
+ID다. default_model 별칭·절대 호스트 모델 경로를 요청하지 않는다. v1 mlx-lm은 config_invalid로
+보류하고 자동 변환·대체하지 않는다. version/provider/API identity가 config digest와 loop
+fingerprint/서명 승인에 반영돼 옛 승인을 재사용하지 못한다. Linux는 Python3.8 표준라이브러리만
+쓰며 설치·기존 모델의 상대 ID 연결·서비스/private config 전환·실추론은 메인 책임이다.
+검토 제안·검증 계획·문서 영향은 향후 작업이고 예상 효과에 사전 실행·측정을 요구하지
+않는다. 측정 근거 없이 measured나 실행 성공을 주장할 수 없다. user JSON은
+`owner_role,sources,feedback,candidate_limit,approved_files` 순서로 소스·의견 뒤에 전체 승인
+목록을 둔다. 값·원본 줄·scope와 순서 변경 bytes 수는 유지하고 전체 요청 ceiling·구조 검증을
+계속 적용한다. 전역 canonical_json·서명·보고 직렬화는 변경하지 않는다.
 owner별 `{file_index,line}` cursor를 호출 전에 다음 위치로 durable 저장해 큰 파일을 여러 round에
 나누고 HTTP 실패·중단 후에도 같은 window를 자동 replay하지 않는다. 긴 한 줄은 명시
 `line_too_long` skip이며 slice/line 번호 변경이 없다. SSH/home/key/repo 복사·도구·remote_code는 없다.
 
-local 출력은 초안이다. private scan의 bounded `local_participation`에 provider=mlx-lm,
+local 출력은 초안이다. private scan의 bounded `local_participation`에 provider=mlx-vlm,
 설정된 model identity·stage=local_explorer·owner_role·called/status/reason/read_windows/
 skipped_lines를 남긴다. called는 시도이며 서버 수신이나 성공을 증명하지 않는다. 기존 web-v1
 agents에는 실제 기존 5역할만 넣고 로컬을 cloud specialist 성공으로 위장하지 않는다.
+
+`candidate_invalid`는 JSON 파싱 뒤 공유 후보 validator의 **검증 거절**이며 검증에서 제외됐다는
+뜻이 아니다. 편집 목록 실패 지점은 private 고정 코드 `candidate_edit_files_invalid`(형식·개수·
+문자열 합 상한), `candidate_edit_files_duplicate`, `candidate_edit_files_outside_scope`로
+구분한다. 다른 미분류 후보 오류는 `candidate_invalid`다. 공유 후보 검증을 통과한 뒤 실제
+전송 근거 window를 벗어나면 `evidence_outside_window`다. 기존 검증 순서상 먼저 도달한
+실패만 분류하므로 정확한 값이나 모든 오류의 목록을 복원할 수 없다. loop는 allowlist 코드만
+private 기록·의견으로 전달하며 원문 prompt/response·임의 예외문·모델 오류 값은 남기지 않는다.
+실패한 초안의 관련 specialist 미호출과 web-v1 payload는 그대로이며 경로/근거 보정·재시도·
+fallback으로 성공을 만들지 않는다. 자세한 분류와 한계는 [로컬 진단](local-models.md#후보-거절-진단과-한계)을 따른다.
+
+메인 제공 최초 초안은 JSON 파싱 뒤 candidate_invalid였으며 원문이 없어 당시 필드·값을
+단정할 수 없다. 동일 입력 재현의 edit_files 범위 위반과 evidence 줄 범위 위반은 각각의 관측이며
+최초 응답의 확정 원인이 아니다. prompt/order 수리 두 실행은 Claude 검토 뒤 실제 추론에서
+다시 승인 밖 edit_files를 냈고 full check 중 중단/applied=[]다. 보존 초안은 새 검토/전체 검증이
+필요하며 실패한 숫자 파일 ID/window evidence 합성은 구현하지 않는다.
+메인의 native schema compiler/null metadata와 실제입력·합성입력 관측은
+[로컬 문서](local-models.md#메인이-제공한-서버-호환-관측과-남은-검증)에 둔다. 특정 미검토 초안의
+사전 실추론도 최종 bytes/full check/실제 repository9단계 성공이 아니다.
+기존 hourly wrapper 활성·2026-10-16 09:00 partial/제안0개 보고1회 전달은 메인 제공 상태이며
+확정 보고를 재생성하지 않는다. 새 프로토콜의 배포·최종 추론·전체 검증·첫9단계·다음 아침 게시
+성공은 후속 관측 전까지 주장하지 않는다. 새 Claude 검토→전체 make check→scoped apply→
+메인의 기존 Git 역할/GitHub 게시·CI·머지·정리 절차를 유지한다.
 
 specialist가 정제한 candidate의 issue/edit_files와 설명·독립 `review.reason`을 다음 round의
 실제 local prompt에 넣는다. candidate_id/draft_digest는 같은 초안 batch의 의견을 연결한다.
@@ -515,13 +567,12 @@ publish는 오늘 날짜09:00 이후만 다루고 과거 일괄 복구 명령은
 
 ## 운영과 09시 예약
 
-최신 메인 제공 관찰: 기존 cron은 표식 있는 block 하나에서 private daily.sh를 매일09:00
-실행하며 새 자동 의견 교환은 미가동이다. 최신 NFS recovery 후 make doctor는 실제 통과했다.
-Mac의 독립 venv/가중치/loopback launchd 서비스와 Linux loopback SSH tunnel의 설치·재시작을
-메인이 확인했다. 새 local_model adapter를 통한 합성 소스의 실제 추론은 약19.54초에 승인된
-정확한 경로·줄 범위의 후보1개로 성공했다. 실제 repository의 첫9단계 자동 검토·hourly 교체·
-새 아침보고 게시는 아직 검증되지 않았다.
-자세한 MLX 버전/모델 및 로그인 한계는 [local-models](local-models.md)에 둔다.
+메인 제공 기존 상태는 단일 hourly wrapper 활성과2026-10-16 09:00 partial/제안0개 보고1회
+전달이다. 확정 보고를 재생성하지 않는다. 새 mlx-vlm 서비스/private config의 검증 후 전환과
+최종 adapter 실추론·전체 검증·실제9단계·다음 아침 게시 성공은 메인 확인 전까지 주장하지 않는다.
+기존 서비스/터널 준비·이전 약19.54초 합성 추론과 native 서버/미검토 bytes의 사전 관측은
+[local-models](local-models.md)에 근거 수준을 둔다. 이 worker는 private wrapper·cron·settings·
+호스트를 읽거나 수정하지 않는다.
 
 2026-10-15 메인 제공 관찰로 owner-private Site 익명 API403·service-auth page/upload/readback/
 index200과 ignored0600 inbox credential 준비를 확인했다. daily용 명시 local storage는
@@ -529,10 +580,10 @@ index200과 ignored0600 inbox credential 준비를 확인했다. daily용 명시
 `/`, free floor는1GiB로 선택했다. persistent NFS default는 변경하지 않는다. 이 선택은 새 자동
 fallback이 아니다. worker는 private daily.sh·cron·settings·키·호스트를 읽거나 수정하지 않았다.
 
-메인은 실행기의 새 Claude 의미검토·전체 make check·scoped apply 후 아래 절차로 기존 예약을
-교체하고 실제 승인 소스의 작은 window 탐색·첫9단계 운영·아침 게시를 확인한다. adapter 합성
-추론 성공이 이 gate들을 대신하지 않는다. 이 절차는 설치 예제이며 worker의
-실행 결과가 아니다. GitHub 전달은 기존 Git 역할/검증된 요청·baseline/승인 게이트를 별도 통과한다.
+아래는 기존 daily에서 단일 hourly로 이행하는 메인 전용 설치 절차다. 이미 hourly인 경우
+중복 설치하지 않고 기존 wrapper·block을 유지한다. 이번 프로토콜의 서비스/private config 전환은
+새 Claude 검토·전체 make check·scoped apply와 메인의 최종 HTTP 확인 뒤 수행한다. 이전 합성
+추론이나 보존 초안은 이 gate들을 대신하지 않는다. 설치 예제는 worker의 실행 결과가 아니다. GitHub 전달은 기존 Git 역할/검증된 요청·baseline/승인 게이트를 별도 통과한다.
 
 1. 실제 venv/저장소 절대 경로, host Asia/Seoul, storage readiness와 ignored local-model.json/inbox
    0600 설정, 기존 단일 marked block을 메인만 확인한다. 다른 cron과 게임 jobs는 보존한다.
@@ -631,11 +682,12 @@ carry-in/day 보존·publication exactly-once 확정/unknown/동시sender·실�
 source/config 변경·초안 실패·reserve 실패/crash/settlement/overrun·GLM 두 형식/weekly/unknown/
 80%·비밀/public 미노출·approve invariants를 다룬다. 명세 존재는 성공 결과가 아니다.
 
-이 worker는 실모델/네트워크/검사/테스트/Git/cron/workflow/재위임을 실행하지 않았다.
+아래는 종전 기반 구현의 인계 기록이며 이번21개 파일 수리의 범위·운영 상태·검증 결과가 아니다.
+worker는 실모델/네트워크/검사/테스트/Git/cron/workflow/재위임을 실행하지 않았다.
 이전 run1792072384459739669-64629e의900초 timeout/applied=[] 기록은 유지한다. 그 다음
 run1792078026182747557-b4f614은8개 구현 작업과 Claude 검토를 마쳤으나 NFS full check가
 1800초에 timeout되어 failed/applied=[]였다. 원본은 시작 baseline 그대로이고 GitHub 게시·
-운영 활성화는 없었다. 메인이 bytes/mode를 확인해 이번 격리 context에 복원한33개 초안은
+당시 운영 활성화는 없었다. 메인이 bytes/mode를 확인해 당시 격리 context에 복원한33개 초안은
 새 승인이나 전체 검증 성공의 증거가 아니다.
 
 메인 제공 실제 결과는 doctor passed, downloader103/103 passed, parser+harness3502개 중
@@ -644,7 +696,7 @@ run1792078026182747557-b4f614은8개 구현 작업과 Claude 검토를 마쳤으
 loop138개는137 passed/1 failed였고 남은 실패는 Store 준비 예외 전파였다. 별도 합성9단계의
 완료·후보4개·review_complete=true·추정비용0.04 관측도 전체 검사 성공은 아니다.
 
-이번 좁은 수리는 정상 HTTP/Korean 후보·trusted-parent CLI 환경·독립 feedback/context 제한
+당시 좁은 수리는 정상 HTTP/Korean 후보·trusted-parent CLI 환경·독립 feedback/context 제한
 fixture와 Store 준비 실패 처리, zero-idle quota 및 reviewer 대기를 다룬다. 공개 권한 거부
 fixture는 합성 두 디렉터리에 chmod0755를 명시해 umask 의존성을 없애며 production 권한 검사는
 유지한다. 새 full check와 umask077/022의 해당 회귀 검증은 메인/실행기가 담당한다.
@@ -657,6 +709,58 @@ fixture는 합성 두 디렉터리에 chmod0755를 명시해 umask 의존성을 
 보존한다. 이번 직접 요청의 구현·전달은 기존 Git 역할과 검증된 앱 요청을 메인에게 인계한다.
 원격 baseline 불일치나 명시 승인 거부 시 중단하고 worker가 쓰기/공개 요청을 재실행하지 않는다.
 현재 문서 편집·합성 MLX 관측·과거 doctor/check 성공을 이번 최종 검토/검사/게시 성공으로 쓰지 않는다.
+
+이번 native schema 수리는 coordinator 단일 작업으로 승인21개만 다룬다. 세 테스트 파일의
+오프라인 회귀는 실제 window/schema 일치·양쪽 evidence/편집 목록 거절·tampering no-transport·
+전체 bytes/whole-line·schema overhead 초과·서버 무시 응답 거절·유효 후보/empty_draft·단1회·
+v1/v2/provider/digest/loop fingerprint·specialist skip·진단 privacy를 다룬다. 실행하지 않았으며
+전체 make check는 메인 하네스 대상이다. 검증 사본 이동·재사용은 parent가 NFS 원본 baseline과
+같음을 재확인한 준비 절차일 뿐 검증 성공이나 local fallback이 아니다. 운영 상수·37개 scope·
+승인 게이트는 보존하며 스케줄·ledger·확정 보고서·게임 cron·runtime private config는 수정하지 않는다.
+
+전달된 회귀 실패 위치를 이번 승인 소스와 대조해 테스트 입력만 바로잡았다. schema/window
+사례는 `[SOURCE,DOC,OTHER]` 순서에서 한 줄 DOC의2행을 요청했으므로 OTHER의2행으로
+옮기고 DOC의1행 사례도 둔다. 정확한 요청 경계와 schema-only 초과 사례는 feedback 상한1byte가
+빈 `[]`의2bytes를 거절해 본래 예산 검사에 이르지 못하므로2bytes로 바꾼다. 기존 stale cursor와
+feedback 초과 거절·운영 상한은 유지한다. 예외 정보가 unavailable인 항목의 전체 원인을
+확정하지 않으며 새 독립 검토·전체 make check 결과는 대기다. worker는 검사를 실행하지 않았다.
+
+## 이번 프로토콜 수리의 문서 영향
+
+시작 시 10개 문서 모두 요청 계약·검증·책임/배포 설명의 일치 여부를 검토 대상으로 판단했다.
+이번 진단 수리의 최종 자체 판단은 `updated`이며 실제 문서 수정은 local-models/harness/이 문서다.
+다른 문서는 보존 초안이 이미 최종 계약과 일치해 유지했다. 독립 Claude의 승인이나 하네스
+성공 판정은 아니며 각 후속 review는 최종 코드와 문서의 의미를 새로 판단한다.
+이번21개는 coordinator 단일 작업으로 다룬다.
+
+| 승인 문서 | 시작 영향·최종 자체 검토 이유 |
+| --- | --- |
+| AGENTS.md | 유지: 최종 protocol·작업자/메인 책임·관측 한계와 운영 상수가 이미 일치 |
+| docs/adr/0017-budgeted-continuous-improvement.md | 유지: native schema·v2 이행·컴파일 제약·검증 대기를 이미 기록; 이번 입력 수리는 새 결정이 아니며 새 ADR 없음 |
+| docs/adr/README.md | 유지: 결정 목록/상태가 ADR0017의 최종 경계·검증 대기와 일치 |
+| docs/agent-models.md | 유지: mlx-vlm/v2/repository API model·구조화 출력과 기존 cloud 책임이 이미 일치 |
+| docs/architecture.md | 유지: schema/request/source 격리·최종 client 검증·설정 digest·승인 경계에 동작 변경 없음 |
+| docs/harness-design.md | 유지: prepared request 결합·두 transport seam·bytes/window·실패/진단 책임에 변경 없음 |
+| docs/harness.md | 수정: 회귀의 유효 cursor·빈 feedback2bytes와 미실행/전체 make check 인계 명시 |
+| docs/improvements.md | 수정: 입력 수리의 근거·미확정 예외 한계·현재 인계 및 파일별 시작/최종 판단 기록 |
+| docs/local-models.md | 수정: feedback 선행 예산과 회귀 입력 수정 설명; wire/schema/config·null metadata/uniqueItems·메인 관측 한계 보존 |
+| docs/workflow.md | 유지: coordinator1작업·독립 검토/full check/scoped apply/Git 순서와 검증 사본 경계에 변경 없음 |
+
+비문서11개도 같은 시작/최종 영향 판단으로 검토했다.
+
+| 승인 파일 | 변경/유지 이유와 문서 반영 |
+| --- | --- |
+| harness/local_model.py | 유지: native schema/v2/전송 결합·bytes·null 도구 구현은 계약에 일치; stale cursor/feedback 거절을 테스트에 맞춰 완화하지 않음 |
+| harness/local-model-config.json.example | 유지: 이미 v2/mlx-vlm/api_model==model; 명시 이행 계약은 local-models/agent-models에 기록 |
+| harness/improvement_loop.py | 유지: 새 provider 검증/참여·local digest fingerprint·당시 provider를 보존하는 중단 복구가 이미 일치 |
+| harness/improvement_report.py | 유지: 새/과거 local provider의 public cloud 참여 위장 거절·공유 후보 진단/수용 계약이 이미 일치 |
+| harness/improvements.py | 유지: 기존 freshness/서명 승인·cloud 후보 경로가 local config digest를 결합; 기존 승인 경계 보존 |
+| harness/improvement-config.json | 기존 cloud 후보 상한·shared scope·승인 계약 보존; 운영 문서의 상수와 일치해 유지 |
+| harness/improvement-loop-config.json | 하루24회/Claude$1/09:00/한 hourly slot 등 기존 운영 상수 보존으로 유지 |
+| harness/improvement-scope.txt | 기존37개 읽기 승인 유지; 이번21개 개발 scope와 혼동해 늘리지 않음 |
+| harness/test_local_model.py | 수정: 재정렬 목록의 실제 cursor·원문 비교·문서1행 사례, 요청/schema 예산 사례의 빈 feedback2bytes; 기존 schema/변조/privacy/v2 회귀 보존·미실행 |
+| harness/test_improvement_loop.py | 유지: native fixture·specialist skip/진단 privacy·migration fingerprint·복구 provider 회귀가 이미 포함; 실행은 하네스 책임 |
+| harness/test_improvements.py | 유지: public projection의 새/과거 local provider 거절·기존 승인·cloud 후보 진단/수용 회귀가 이미 포함 |
 
 ## 이전 수리의 검토·검증 인계 기록
 

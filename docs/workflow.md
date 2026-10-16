@@ -76,7 +76,30 @@ ownership/shared를 유지한다. local은 정확한 path/원래 line 번호의 
 feedback만 받는다. 실패/빈 초안의 관련 specialist는 미호출한다. 정식 candidate는 기존
 specialist가 만들고 reviewer가 독립 검토한다. 다음 round의 실제 prompt에 정제 issue와
 specialist/Claude reason을 이어받으며 source/config 변경은 pool/feedback/cursor를 무효화한다.
-local 참여는 private mlx-lm/model/stage/owner로 구분하고 web-v1의5역할을 위장하지 않는다.
+local 참여는 private mlx-vlm/model/stage/owner로 구분하고 web-v1의5역할을 위장하지 않는다.
+
+local은 mlx-vlm0.7.8 native response_format.json_schema(strict)와 top-level enable_thinking=false를
+사용한다. schema는 기존 canonical 후보 전체 필드·타입·필수 항목·닫힌 객체·최대2개, owner 승인
+edit_files enum과 양쪽 evidence의 실제 단일 window 경로/원문 정수 범위를 담는다. 전송 전에
+준비 입력 결합 및 재구성 canonical schema를 대조해 누락·완화·owner/scope/window/thinking
+변조를 거절한다. whole-line 선택은 schema 포함 전체 request24576bytes를 계산하며 고정 overhead
+초과는 context_too_large no-call이다. uniqueItems는 서버 미지원이므로 중복 검사는 client에 둔다.
+줄 순서·문자 총량·의미와 실제 window/공유 후보 검증·독립 검토가 최종 권위다. 서버가 schema를
+무시해도 거절하며 보정·합성·retry/fallback은 없다. 정상 assistant의 정확한 tool_calls:null/
+tool_call_id:null만 무동작 metadata이고 non-null·다른 도구 필드는 거절한다.
+local-model-config-v2/provider=mlx-vlm으로 명시 이행하며 api_model==model인 상대 repository ID를
+요청한다. default_model·절대 모델 경로는 쓰지 않고 v1 mlx-lm은 config_invalid로 보류한다.
+config digest 전환으로 기존 loop fingerprint·승인은 무효다. Linux는 Python3.8 표준라이브러리만
+유지한다. 설치·모델 연결·서비스/private config 전환·실추론은 메인 책임이다.
+
+이번 수리는 승인21개를 coordinator task 정확히1개로 완성하며 재위임하지 않는다. 이전
+prompt/order 두 실행은 full check 중단/applied=[]이고 보존 초안은 새 검토/전체 검증이 필요하다.
+검증 사본 재사용은 parent가 NFS 원본 baseline과 같음을 확인한 준비이며 성공이나 fallback이 아니다.
+Jev→필요한 Codex 계획→기존 설정 영역(coordinator)→새 Claude 독립 검토→전체 make check→
+scoped apply→메인의 기존 Git/GitHub 게시·CI·머지·정리를 유지한다. 작업자/검토자는 검사를
+실행하지 않는다. 최초 candidate_invalid의 정확한 필드는 원문 미보존으로 알 수 없으며
+동일 입력의 편집 범위·근거 줄 위반 재현을 최초 원인으로 단정하지 않는다. 메인의 서버 호환
+관측과 최종 bytes/전체 검사/실제9단계·다음 아침 게시 성공을 구분해 [로컬 문서](local-models.md)에 둔다.
 
 Claude 자동 탐색 추정 ledger는 KST 하루US$1·reviewer cap0.20이며 호출 전 durable reservation과
 호출 수를 기록한다. 성공 finite estimate만 정산하고 unknown/실패/중단은 전액 소비한다.
@@ -111,23 +134,18 @@ deliver_report를 호출한다. sender mutex와 sending/attempt_id가 중복 cal
 unknown 전송은 자동 재시도하지 않으며 메인이 같은 digest만 publish --reconcile로 조정한다.
 기존 day를 덮어쓰거나 자동 재전달하지 않고 catchup은 오늘 날짜 하나뿐이다.
 
-실행기의 새 Claude 문서 의미검토/full make check·두 umask077/022 권한 fixture 검증/scoped apply
-후 메인이 실제 repository 첫9단계와 예약을 검증하며 기존 private wrapper·marked block 하나를
-hourly로 교체한다. 게임 jobs·명시
-daily local storage·persistent NFS default는 보존한다. 정확한 CLI/상태/복구는
-[운영](improvements.md), 메인 제공 MLX 서비스/터널 설치·재시작 및 새 adapter 합성 추론 성공
-(약19.54초·정확한 승인 경로/줄 범위·후보1개)과 아직 대기인 첫9단계/예약/아침 게시 검증은
-[local-models](local-models.md)를 따른다. worker는 검사/실모델/Git/cron/재위임하지 않았다.
-이전900초 timeout/applied=[] 이력은 유지한다. 직전 run1792078026182747557-b4f614은8개
-구현 작업·Claude 검토 뒤 NFS full check1800초 timeout으로 failed/applied=[]였고 원본은
-시작 baseline 그대로다. doctor/downloader103개 성공과 parser+harness3439 passed/63 failed/
-skip0은 전체 check 성공이 아니며 Django/pipeline은 확인되지 않았다. 복원 초안은 새 승인·
-검증 증거가 아니다. 이번에만 메인이 agent_timeout_seconds1800/check_timeout_seconds3600/
-max_rounds3을 선택하며 저장소 workflow-config/역할/모델/다른 한도/NFS·temporary 정책은 바꾸지 않는다.
+실행기의 새 Claude 문서 의미검토/full make check·두 umask077/022 fixture 검증/scoped apply와
+메인의 최종 adapter 실추론·신규 서비스/private config 전환·실제9단계·다음 아침 게시 확인은
+별도 후속 작업이다. 단일 hourly cron·게임 jobs·명시 daily local storage·persistent NFS default를
+보존한다. 기존 hourly wrapper 활성·2026-10-16 09:00 partial/제안0개 보고1회 전달은 메인 제공
+상태이며 확정 보고를 재생성하지 않는다. 이전 합성 추론·native 서버/미검토 bytes 사전 관측은
+이번 성공과 구분하고 [local-models](local-models.md)에 한계를 둔다. worker는 검사/실모델/Git/
+cron/재위임하지 않았다. 이전 NFS full check timeout/부분 결과·보존 초안은 새 승인이나 전체
+검증 성공이 아니다. workflow-config/역할/다른 한도/NFS·temporary 정책은 바꾸지 않는다.
 기존 GitHub create_tree의 공개 동의 부족 자동승인 거부 이력은 보존한다. 이번 직접 요청은
 기존 Git 역할·검증된 앱 요청을 메인에 인계하되 baseline 불일치·명시 승인 거부 시 중단한다.
 매 reviewer는 실제 changed Markdown과 의미 완전성을 documentation={status,files,reason}으로
-판단하고 확장자/존재 검사만으로 충족을 주장하지 않는다. 실제 repository 첫9단계/예약/GitHub/보고 게시는 대기다.
+판단하며 확장자/존재 검사만으로 충족을 주장하지 않는다.
 
 ## 실행
 

@@ -86,8 +86,30 @@ local(django)→django→독립 Claude의9단계 중 하나만 진행하며 모�
 local은 owner 승인 파일의 작은 연속 numbered window만 받고 durable cursor로 순환한다.
 긴 한 줄은 slice 없이 skip하며 실패/빈 초안이면 관련 specialist를 미호출한다. 정식 후보는 기존
 specialist가 소스 확인 후 만들고 다음 round의 실제 prompt에 정제 issue와 specialist/Claude
-review.reason을 이어받는다. local 참여는 private에서 mlx-lm/model/stage/owner_role로 구분한다.
+review.reason을 이어받는다. local 참여는 private에서 mlx-vlm/model/stage/owner_role로 구분한다.
 web-v1 agents는 기존5역할만 담고 원문/endpoint/비용을 공개하지 않는다. 기존37개 읽기 scope를 늘리지 않는다.
+
+로컬 프로토콜은 mlx-vlm0.7.8의 native response_format.json_schema(strict)와 top-level
+enable_thinking=false다. 정확한 canonical 후보 전체 계약/최대2개/닫힌 객체와 owner 승인
+edit_files enum·두 evidence의 실제 한 window 경로/원문 integer 범위를 강제한다. 요청 검증은
+준비 입력 결합과 재구성한 canonical schema를 대조해 누락·완화·owner/scope/window/thinking
+변조를 transport 전에 거절한다. schema 포함 request24576bytes로 whole-line을 고르고 고정
+overhead 초과는 context_too_large no-call이다. uniqueItems 미지원으로 중복은 client가 검사한다.
+공유 후보·실제 window 검증/독립 검토는 최종 권위이며 서버의 잘못된 후보도 거절한다.
+assistant의 정확한 tool_calls:null/tool_call_id:null만 무동작 metadata이며 non-null과 다른
+도구 필드는 거절한다. Linux Python3.8 표준라이브러리만 사용한다. 설정은 local-model-config-v2/
+mlx-vlm, api_model==model인 상대 repository ID다. default_model/절대 모델 경로를 요청하지 않고
+v1 mlx-lm을 config_invalid로 보류한다. digest 전환으로 기존 fingerprint·승인을 재사용하지 못한다.
+설치·모델 연결·서비스/private config 전환·실추론은 메인 책임이다. 상세는 [로컬 계약](local-models.md).
+
+세 테스트 파일의 fake transport/clock/runner 회귀는 native schema/window·양쪽 evidence·편집 목록,
+no-schema/tampering no-transport·byte 경계/whole-line/고정 overhead 초과·schema 무시 응답 거절,
+유효 후보/empty_draft·단1회/no retry·v1/v2/provider/digest/fingerprint·skip/privacy를 다룬다.
+worker는 실행하지 않으며 새 Claude 의미검토 뒤 전체 make check는 메인 하네스가 수행한다.
+회귀 입력의 cursor는 전달 목록 순서와 실제 원문 줄 수에 맞춘다. 빈 feedback도 직렬화한 `[]`의
+2bytes가 필요하므로 요청/schema 예산 경계 사례는 feedback 상한2bytes를 허용한다. 전달된
+실패 지점을 검토해 이 입력들을 수정했으며 stale cursor·feedback 초과의 기존 거절은 유지한다.
+이번 수정 후 검사 결과와 전체 make check 성공은 아직 확인하지 않았다.
 
 한 slot claim을 먼저 남기고 모델 전 count/reservation/cursor/inflight를 atomic 저장한다.
 Claude는 KST 하루 추정US$1·reviewer cap min(0.20, 잔액, 기존한도)로 CLI downward override를
@@ -129,21 +151,22 @@ manual discover도 frozen day를 덮어쓰지 못한다. tick/publish targets는
 설정하며 approve/reject/execute와 일반 쓰기 workflow를 거부한다. 일반 READ_ONLY workflow는
 checks를 수행하지만 자동 발견은 소스 수정·검사·Git·workflow·운영 파이프라인을 호출하지 않는다.
 
-최신 메인 관측으로 기존09:00 daily marked block은 유지 중이고 새 hourly 의견 교환은 미가동이다.
-MLX 서비스/터널 설치·재시작과 새 adapter의 합성 소스 실제 추론은 메인 제공 성공 관측이다
-(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계·아침 게시 검증은 대기다.
-메인만 최종review/full check/scoped apply 후 기존 private wrapper를 새 tick으로 바꾸고
-marked block 하나를 hourly로 교체한다. 게임 jobs·명시 daily local storage·persistent NFS default를
-보존한다. private settings/cron/SSH/key는 이 worker가 읽거나 수정하지 않았다.
+메인의 종전 서비스/터널 준비와 약19.54초 합성 추론은 이전 adapter 관측이다. native schema
+서버의 compiler/null metadata·실제입력 prototype·미검토 초안 합성 관측은 [local-models](local-models.md)의
+근거 수준으로 제한한다. 이번 최종 bytes의 실추론·전체 검증·실제 repository9단계 성공은 아니다.
+메인 제공 기존 상태는 hourly wrapper 활성과 2026-10-16 09:00 partial/제안0개 보고1회 전달이며
+확정 보고는 보존한다. 신규 서비스/private config 전환·최종 추론·새 검토/full check/scoped apply·
+첫9단계·다음 아침 게시 확인은 메인/하네스의 후속 작업이다. NFS default·명시 daily local storage·
+단일 hourly cron·예산/quota·승인·GitHub 정책을 유지하고 이 worker는 스케줄/ledger를 수정하지 않는다.
 이 worker는 검사/실모델/네트워크/Git/cron/재위임하지 않았다. 실행기의 새 Claude 문서 의미검토·
 전체 make check·두 umask077/022 권한 fixture 검증·범위 반영, 메인의 첫9단계/운영활성화/
 GitHub 전달/아침 게시 확인은 각각 대기다. 직전 run1792078026182747557-b4f614은8개 구현 작업·
 Claude 검토 뒤 NFS full check1800초 timeout으로 failed/applied=[]였다. doctor/downloader103개
 성공과 parser+harness3439 passed/63 failed/skip0은 전체 check 성공이 아니고 Django/pipeline은
 확인되지 않았다. 원본 baseline·운영·GitHub는 그대로이며 복원 초안도 검증 완료를 뜻하지 않는다.
-정상 local JSON Content-Type·한국어 후보·trusted-parent CLI 환경·독립 feedback/context 제한·
+종전 fixture 수리는 정상 local JSON Content-Type·한국어 후보·trusted-parent CLI 환경·독립 feedback/context 제한·
 umask와 무관한 chmod0755 초기 상태를 fixture에서 바로잡되 production 검증은 유지한다.
-이번에만 메인이 agent_timeout_seconds1800/check_timeout_seconds3600/max_rounds3을 선택하며
+당시 메인이 agent_timeout_seconds1800/check_timeout_seconds3600/max_rounds3을 선택하며
 저장소 workflow-config·다른 한도·NFS/temporary 정책은 유지한다.
 기존 공개 자동승인 거부 이력은 유지하며 이번 직접 요청은 기존 Git 역할/검증된 인계로 메인이
 처리한다. baseline 불일치·명시 승인 거부 시 중단한다.

@@ -69,16 +69,38 @@ cloud specialist는 `workflow.owner()`별 개별 승인 파일과 명시된 공�
 점검은 소스 쓰기·검사·Git·workflow·운영 importAll을 호출하지 않는다. 기록·lock·격리 임시
 context/runtime만 쓰고, 기존 workflow/cleanup과 동일한 고정 project lock으로 중첩을 거부한다.
 
-로컬 mlx-lm은 owner scope의 한 파일에서 정확한 path/원래 line 번호를 가진 작은 연속 window만
-받는다. request24576bytes·output3072tokens·HTTP180초·response65536/header8192bytes 상한,
+로컬 mlx-vlm0.7.8은 native JSON Schema constrained generation으로 초안을 생성한다.
+실제 HTTP `response_format.json_schema`는 strict한 기존 canonical 후보 전체 계약(최대2개,
+객체별 additionalProperties=false)과 owner 승인 edit_files enum을 담는다. 양쪽 evidence의
+path/정수 줄 범위는 실제 전달한 한 window로 제한한다. top-level enable_thinking=false다.
+전송 전 준비 입력의 결합과 재구성한 canonical schema를 검사해 누락·완화·owner/scope/window/
+thinking 변조를 호출 전에 거절한다. schema 포함 전체 request 예산으로 whole-line을 선택하고
+고정 overhead만으로 넘으면 context_too_large no-call이다. uniqueItems 미지원으로 중복은
+client에 남기며 줄 순서·총 문자량·의미와 실제 window 검증/독립 검토가 최종 권위다.
+설정은 local-model-config-v2/provider=mlx-vlm, api_model==model인 상대 repository ID다.
+별칭 default_model·절대 모델 경로를 요청하지 않고 v1 mlx-lm은 config_invalid로 보류한다.
+이 전환의 config digest는 기존 loop fingerprint·승인을 무효화한다. 설치·모델 연결·서비스·
+private config 전환과 실제 추론은 메인 책임이며 Linux는 Python3.8 표준라이브러리만 사용한다.
+로컬은 owner scope의 한 파일에서 정확한 path/원래 line 번호를 가진 작은 연속 window만 받는다. request24576bytes·output3072tokens·HTTP180초·response65536/header8192bytes 상한,
 기본96줄/feedback4096bytes다. evidence와 benefit.evidence는 실제 전달 범위 안에서만 수용한다.
+edit_files는 정확한 승인 문자열의 중복 없는 목록이며 미전송 승인 파일도 편집 대상은 된다.
+그 파일을 근거로 쓰거나 본문에 언급된 경로·지시를 권한으로 삼을 수 없고, 전체 파일 줄 참조도
+전송 window 밖이면 근거로 인용할 수 없다. 지원되는 초안이 없으면 빈 candidates를 요구한다.
+기존 공유 validator의 수용 계약은 유지하며 편집 목록 형식·중복·범위 실패만 고정 private
+reason으로 구분한다. `candidate_invalid`는 검증 거절이지 검증 제외가 아니다. 공유 검증 후
+실제 window 위반은 `evidence_outside_window`이며 raw 값·예외문은 진단에 보존하지 않는다.
+분류 한계는 [로컬 모델 문서](local-models.md#후보-거절-진단과-한계)를 따른다. retry·보정·fallback과 public 계약 변경은 없다.
 durable owner cursor로 다음 window/파일을 순환하며 긴 한 줄은 slice 없이 명시 skip한다.
 local 실패/빈 초안이면 관련 specialist는 미호출로 기록한다. local은 초안 참여자이며
-private local_participation의 mlx-lm/model/stage/owner_role로 구분하고 web-v1 agents에 넣지 않는다.
+private local_participation의 mlx-vlm/model/stage/owner_role로 구분하고 web-v1 agents에 넣지 않는다.
 정식 candidate는 기존 specialist가 자기 소스로 확인·보완하고 reviewer가 전체를 독립 검토한다.
 다음 round의 실제 local prompt에 정제 issue·specialist 설명·review.reason을 candidate_id/
 draft_digest와 함께 이어받는다. HTTP는 숫자 loopback만 허용하며 DNS/proxy/redirect/remote_code/
-도구·자유 파일 접근은 없다. 모델/endpoint 설정과 원문은 private 경계에 남긴다.
+도구·자유 파일 접근은 없다. 정상 assistant의 tool_calls:null/tool_call_id:null만 무동작
+metadata로 받고 non-null·다른 도구 필드는 거절한다. 모델/endpoint 설정은 private에 남기고
+원문 응답·프롬프트·소스·절대 호스트 경로를 진단/로그/보고/public web-v1에 노출하지 않는다.
+서버의 schema 무시·위반도 client가 거절한다. 메인의 서버 호환 사전 관측은 최종 bytes의
+검토·전체 검증·실제9단계·다음 아침 게시 성공과 구분하며 [관측 한계](local-models.md)를 따른다.
 
 호출 전에 improvement/project locks 아래 slot·호출 수·Claude reservation·cursor/inflight를
 durable 기록한다. 실패 slot 자동 재호출/daemon/fallback은 없다. source bytes/mode/존재·scope·
@@ -158,15 +180,19 @@ runner가 성공했으나 416자 review reason의 기존 360자 검증으로 par
 이전 3215 passed는 이번 수리 검증이 아니다. 새 Claude 검토·전체 검증·local apply·
 읽기 전용 실제 재점검·정제 private inbox 전달은 메인/실행기의 후속 작업이다.
 
-2026-10-16 최신 인계는 [운영 문서](improvements.md)·[MLX](local-models.md)를 따른다.
-MLX 서비스/터널 설치·재시작과 새 adapter 합성 소스의 실제 추론은 메인 제공 성공 관측이다
-(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계와 hourly 활성화는
-대기다. 직전 NFS full check1800초 timeout/applied=[]로 원본 baseline은 보존되었으며 부분
-검사 결과를 전체 성공으로 쓰지 않는다. 기존09:00 daily는 유지 중이다. worker는 검사·실모델·네트워크·Git·cron을
-실행하지 않았다. 새 Claude 의미검토/full make check·두 umask 권한 fixture 검증/scoped apply는 실행기, 첫9단계/운영/
-검증된 GitHub 전달/보고 게시 확인은 메인 책임이다. 과거 자동승인 거부는 보존하고 이번 직접
-요청의 기존 Git 역할 인계는 baseline 불일치·명시 거부 시 중단한다. 매 reviewer는 실제 수정
-Markdown을 documentation.files에 넣고 의미 완전성을 평가하며 확장자 검사를 증거로 쓰지 않는다.
+2026-10-16 최종 프로토콜 인계는 [운영 문서](improvements.md)·[로컬 관측](local-models.md)을 따른다.
+최초 초안은 JSON 파싱 뒤 candidate_invalid였고 원문 미보존으로 필드를 알 수 없다. 동일 입력의
+편집 범위·근거 줄 위반 재현을 최초 확정 원인으로 삼지 않는다. prompt/order 두 수리는 Claude
+검토 뒤 full check 중단/applied=[]였고 보존 초안은 새 검토/전체 검증이 필요하다. parent가 NFS
+원본 baseline과 같음을 재확인한 검증 사본 이동·재사용도 성공이나 local fallback이 아니다.
+메인의 종전 합성 추론·native 서버 prototype·특정 미검토 bytes 사전 추론 관측은 이번 최종
+bytes의 성공이 아니다. 새 Claude 의미검토/full make check·두 umask 권한 fixture 검증/scoped
+apply는 하네스, 신규 서비스/private config 전환·최종 추론·실제9단계·다음 아침 게시와 GitHub
+전달은 메인 책임이다. 기존 hourly wrapper 활성·2026-10-16 09:00 partial/제안0개 보고1회 전달은
+메인 제공 상태이며 확정 보고는 보존한다. worker는 검사·실모델·네트워크·Git·cron을 실행하지 않았다.
+과거 자동승인 거부는 보존하고 이번 직접 요청의 기존 Git 역할 인계는 baseline 불일치·명시
+거부 시 중단한다. 매 reviewer는 실제 수정 Markdown을 documentation.files에 넣고 의미적
+완전성을 평가하며 확장자 검사를 증거로 쓰지 않는다.
 
 모델의 적격 판정과 인간의 승인은 다르다. 메인만 구체적인 사용자 지시로 서명된 private 승인을
 발급하고, `execute`가 만료·원본 staleness·정확한 편집 범위·일회성 claim을 검증한 뒤 기존

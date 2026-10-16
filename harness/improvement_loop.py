@@ -634,7 +634,9 @@ def _recover(store, state, config, now):
     slot = state['days'][pending['date']]['slots'][pending['slot']]
     _account_cross_day(state, pending, now)
     if stage == 'local_explorer':
-        local = {'provider': 'mlx-lm', 'model': pending['model'], 'stage': stage,
+        # Recovery describes the journaled attempt, including a pre-v2 call;
+        # it must not relabel that attempt as the newly configured provider.
+        local = {'provider': pending['provider'], 'model': pending['model'], 'stage': stage,
                  'owner_role': role, 'status': 'failed', 'reason': 'interrupted_unknown',
                  'called': True, 'started_at': pending['at'], 'finished_at': now.isoformat(),
                  'read_windows': pending['read_windows'], 'skipped_lines': [],
@@ -743,7 +745,7 @@ def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
     try:
         result = runner(role, own_paths, snapshots, config=local_config, cursor=cursor,
                         feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
-        if (not isinstance(result, dict) or result.get('provider') != 'mlx-lm' or
+        if (not isinstance(result, dict) or result.get('provider') != 'mlx-vlm' or
                 result.get('model') != local_config['model'] or
                 result.get('stage') != 'local_explorer' or result.get('owner_role') != role):
             raise LoopError('local_identity_invalid')
@@ -751,7 +753,7 @@ def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
         windows = [{key: item[key] for key in ('path', 'start_line', 'end_line')}
                    for item in prepared['sources']]
         reason = result.get('reason')
-        if reason not in local_model._REASONS:
+        if not isinstance(reason, str) or reason not in local_model._REASONS:
             reason = 'transport_failed'
         succeeded = result.get('status') == 'succeeded' and result.get('called') is True
         if succeeded:
@@ -766,13 +768,13 @@ def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
                                evidence['end_line'] <= window['end_line'] for window in windows):
                         raise LoopError('evidence_outside_window')
         status = 'succeeded' if candidates else 'failed'
-        return ({'provider': 'mlx-lm', 'model': local_config['model'], 'stage': 'local_explorer',
+        return ({'provider': 'mlx-vlm', 'model': local_config['model'], 'stage': 'local_explorer',
                  'owner_role': role, 'status': status,
                  'reason': 'ok' if candidates else reason, 'called': result.get('called') is True,
                  'read_windows': windows, 'skipped_lines': prepared['skipped_lines'],
                  'started_at': now.isoformat(), 'cost': None, 'cost_status': 'not_metered'}, candidates)
     except (Exception, KeyboardInterrupt):
-        return ({'provider': 'mlx-lm', 'model': local_config['model'], 'stage': 'local_explorer',
+        return ({'provider': 'mlx-vlm', 'model': local_config['model'], 'stage': 'local_explorer',
                  'owner_role': role, 'status': 'failed', 'reason': 'local_response_invalid',
                  'called': True, 'read_windows': [{key: item[key] for key in
                      ('path', 'start_line', 'end_line')} for item in prepared['sources']],
@@ -1213,7 +1215,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
         if prepared['status'] != 'ready':
             state['round']['drafts'][role] = {'candidates': [], 'reason': prepared['reason']}
             report = state['round']['report']
-            report['local_participation'].append({'provider': 'mlx-lm', 'model': local_config['model'],
+            report['local_participation'].append({'provider': 'mlx-vlm', 'model': local_config['model'],
                 'stage': 'local_explorer', 'owner_role': role, 'status': 'skipped', 'called': False,
                 'reason': prepared['reason'], 'read_windows': [], 'skipped_lines': prepared['skipped_lines'],
                 'started_at': now.isoformat(), 'finished_at': now.isoformat(),
@@ -1221,7 +1223,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             previous = state['feedback'].get(role, [])
             _record_feedback(state, role, [_feedback_entry(reason=prepared['reason'])] + previous[:2])
             return _skip_stage(store, state, day, slot, now, config, prepared['reason'])
-        provider, model = 'mlx-lm', local_config['model']
+        provider, model = 'mlx-vlm', local_config['model']
     else:
         spec = agent_models.load_config()['roles'][role]
         provider, model = spec['provider'], spec['model']

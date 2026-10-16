@@ -6,13 +6,10 @@ credential lookup or operating pipeline is permitted. Tests are specifications,
 not evidence of execution or host/model readiness.
 
 Documentation review: these tests preserve the engine API and authority boundary;
-they add no production policy. The engine's new scheduling/accounting/recovery
-contracts require the separately assigned documentation work in AGENTS.md,
-docs/{architecture,harness-design,harness,improvements,workflow,agent-models,
-local-models}.md and docs/adr/{0017-budgeted-continuous-improvement,README}.md.
-In particular, document conservative interrupted reservations, failed sender
-reconciliation, skipped owner slots and the distinction between private local
-drafts and actual public role participation. This file cannot update those docs.
+they add no production policy. docs/local-models.md, docs/improvements.md,
+docs/harness-design.md and docs/architecture.md describe grounding, allowlisted
+private diagnostics, skipped owners and unchanged public participation. ADR 0017
+policy is preserved; historical parent observations are not test execution proof.
 """
 
 import copy
@@ -140,7 +137,7 @@ class Lab:
     def local(self, role, paths, snapshots, **options):
         self.active_owner = role
         self.events.append(('local_explorer', role))
-        self.assert_reserved('mlx-lm')
+        self.assert_reserved('mlx-vlm')
         assert paths == imp.role_scope(role, FILES, self.discovery)
         return local_model.run(role, paths, snapshots, transport=self.local_http, **options)
 
@@ -149,13 +146,19 @@ class Lab:
         assert len(body) <= 24576 and config['limits']['timeout_seconds'] <= 180
         request = json.loads(body)
         assert set(request) == {'model', 'stream', 'max_tokens', 'temperature',
-                                'chat_template_kwargs', 'messages'}
-        assert request['model'] == 'default_model' and request['stream'] is False
+                                'enable_thinking', 'response_format', 'messages'}
+        assert request['model'] == config['model'] and request['stream'] is False
         assert request['max_tokens'] <= 3072
-        assert request['chat_template_kwargs'] == {'enable_thinking': False}
+        assert request['enable_thinking'] is False
         assert [m['role'] for m in request['messages']] == ['system', 'user']
         user = json.loads(request['messages'][1]['content'])
         assert user['owner_role'] == self.active_owner
+        assert request['response_format']['type'] == 'json_schema'
+        schema = request['response_format']['json_schema']
+        assert schema['strict'] is True
+        fields = schema['schema']['properties']['candidates']['items']['properties']
+        assert fields['edit_files']['items']['enum'] == user['approved_files']
+        assert fields['evidence']['items']['properties']['path']['enum'] == [user['sources'][0]['path']]
         self.local_requests.append(copy.deepcopy(user))
         self.wire_requests.append(body)
         source = user['sources'][0]
@@ -164,8 +167,10 @@ class Lab:
         if self.local_transform:
             candidates = self.local_transform(user, candidates)
         content = json.dumps({'candidates': candidates}, ensure_ascii=False)
-        envelope = {'model': 'default_model', 'choices': [
-            {'message': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}]}
+        envelope = {'model': config['model'], 'choices': [
+            {'message': {'role': 'assistant', 'content': content, 'tool_calls': None,
+                         'tool_call_id': None, 'reasoning_content': None, 'reasoning': None,
+                         'name': None}, 'finish_reason': 'stop'}]}
         body = encode(envelope)
         return {'status': 200, 'headers': [('Content-Type', 'application/json'),
                                           ('Content-Length', str(len(body)))], 'body': body}
@@ -299,10 +304,10 @@ def test_nine_stages_real_validation_and_private_local_provenance(lab):
     assert len(report['proposals']) == 4
     assert [a['role'] for a in report['agents']] == list(contract.ROLES)
     assert all(a['status'] == 'succeeded' for a in report['agents'])
-    assert all(a['provider'] != 'mlx-lm' and 'result' not in a for a in report['agents'])
+    assert all(a['provider'] != 'mlx-vlm' and 'result' not in a for a in report['agents'])
     assert len(report['local_participation']) == 4
     for local in report['local_participation']:
-        assert local['provider'] == 'mlx-lm' and local['model'] == lab.local_config['model']
+        assert local['provider'] == 'mlx-vlm' and local['model'] == lab.local_config['model']
         assert local['stage'] == 'local_explorer' and local['called'] is True
         assert local['cost'] is None and local['cost_status'] == 'not_metered'
         assert local['read_windows'] and 'request' not in local and 'response' not in local
@@ -917,7 +922,7 @@ def test_cross_midnight_recovery_charges_both_days_without_double_refund(lab):
 
 def test_interrupted_local_cursor_is_durable_and_paired_owner_is_skipped(lab):
     def crash(*args, **kwargs):
-        lab.assert_reserved('mlx-lm')
+        lab.assert_reserved('mlx-vlm')
         raise PowerLoss()
 
     with pytest.raises(PowerLoss):
@@ -1043,8 +1048,15 @@ def test_long_single_line_is_explicit_skip_without_http_slicing_or_specialist(la
     assert lab.cloud_requests == []
 
 
-@pytest.mark.parametrize('failure', ['empty', 'timeout', 'outside_evidence', 'outside_benefit', 'basename', 'too_many'])
-def test_failed_local_draft_skips_only_paired_owner_and_retains_truthful_participation(lab, failure):
+@pytest.mark.parametrize('failure,reason', [
+    ('empty', 'empty_draft'), ('timeout', 'timeout'),
+    ('outside_evidence', 'evidence_outside_window'), ('outside_benefit', 'evidence_outside_window'),
+    ('basename', 'candidate_invalid'), ('too_many', 'candidate_invalid'),
+    ('edit_invalid', 'candidate_edit_files_invalid'),
+    ('edit_duplicate', 'candidate_edit_files_duplicate'),
+    ('edit_scope', 'candidate_edit_files_outside_scope'),
+])
+def test_failed_local_draft_skips_only_paired_owner_and_retains_truthful_participation(lab, failure, reason):
     def transform(user, cs):
         if user['owner_role'] != 'coordinator':
             return cs
@@ -1058,6 +1070,12 @@ def test_failed_local_draft_skips_only_paired_owner_and_retains_truthful_partici
             cs[0]['evidence'][0]['end_line'] = 3
         elif failure == 'outside_benefit':
             cs[0]['benefit']['evidence'] = [dict(cs[0]['evidence'][0], start_line=3, end_line=3)]
+        elif failure.startswith('edit_'):
+            cs[0]['edit_files'] = {
+                'edit_invalid': ['/private/' + SECRET],
+                'edit_duplicate': [FILES[0], FILES[0]],
+                'edit_scope': ['harness/unapproved.py'],
+            }[failure]
         else:
             cs[0]['evidence'][0]['path'] = 'example.py'
         return cs
@@ -1066,6 +1084,10 @@ def test_failed_local_draft_skips_only_paired_owner_and_retains_truthful_partici
     lab.tick(0)
     failed = lab.state()['round']['report']['local_participation'][0]
     assert failed['status'] == 'failed' and failed['called'] is True
+    assert failed['reason'] == reason
+    assert lab.state()['round']['drafts']['coordinator']['reason'] == reason
+    assert lab.state()['feedback']['coordinator'][0]['specialist_reason'] == reason
+    assert len(lab.local_requests) == 1
     result = lab.tick(1)
     assert result['reason'] == 'local_draft_unavailable'
     owner = lab.state()['round']['report']['agents'][0]
@@ -1075,16 +1097,34 @@ def test_failed_local_draft_skips_only_paired_owner_and_retains_truthful_partici
     assert lab.state()['round']['report']['status'] == 'partial'
     assert all(c['role'] != 'coordinator' for c in lab.cloud_requests)
     lab.tick(9)
+    assert lab.local_requests[-1]['feedback'][0]['specialist_reason'] == reason
     public = lab.store.read('web/2026-10-15.json')
     assert public['agents'][0]['status'] == 'not_called'
     assert public['status'] == 'partial' and public['counts']['candidates'] == 3
-    assert all(a['provider'] != 'mlx-lm' for a in public['agents'])
+    assert all(a['provider'] != 'mlx-vlm' for a in public['agents'])
+    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+    assert 'harness/unapproved.py' not in json.dumps(lab.state())
+    assert 'local_participation' not in public and reason not in json.dumps(public)
+
+
+@pytest.mark.parametrize('reason', [RAW + SECRET, {'raw': SECRET}, 'candidate_edit_files_typo'])
+def test_private_local_reason_propagation_accepts_only_allowlisted_codes(lab, reason):
+    def forged(role, paths, snapshots, **options):
+        return {'provider': 'mlx-vlm', 'model': lab.local_config['model'],
+                'stage': 'local_explorer', 'owner_role': role, 'status': 'failed',
+                'called': True, 'reason': reason, 'candidates': []}
+
+    lab.tick(0, local_runner=forged)
+    failed = lab.state()['round']['report']['local_participation'][0]
+    assert failed['reason'] == 'transport_failed'
+    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
+    assert lab.cloud_requests == [] and lab.ledger()['calls'] == 1
     assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
 
 
 def test_engine_revalidates_evidence_against_prepared_window_even_if_injected_runner_lies(lab):
     def forged(role, paths, snapshots, **options):
-        return {'provider': 'mlx-lm', 'model': lab.local_config['model'],
+        return {'provider': 'mlx-vlm', 'model': lab.local_config['model'],
                 'stage': 'local_explorer', 'owner_role': role, 'status': 'succeeded',
                 'called': True, 'reason': 'ok',
                 'read_windows': [{'path': FILES[0], 'start_line': 1, 'end_line': 6}],
@@ -1644,3 +1684,63 @@ def test_old_signed_approval_cannot_rebind_identical_proposal_after_control_chan
     assert lab.store.path('approvals/' + record['id'] + '.json').read_bytes() == saved_approval
     with pytest.raises(imp.ImprovementError):
         imp._authorization(lab.store, record['id'], lab.clock())
+
+
+def test_v1_runtime_config_pauses_without_conversion_or_model_call(lab):
+    lab.local_config.update(version='local-model-config-v1', provider='mlx-lm', api_model='default_model')
+    lab.save_local()
+    original = lab.local_path.read_bytes()
+    result = lab.tick(0, local_runner=forbidden, runner=forbidden, quota_transport=forbidden)
+    assert result['status'] == 'paused' and result['reason'] == 'config_invalid'
+    assert lab.ledger()['calls'] == 0 and lab.events == []
+    assert lab.local_path.read_bytes() == original
+
+
+def test_v2_migration_invalidates_legacy_loop_fingerprint_and_authorization_context(lab):
+    lab.hours()
+    state = lab.state()
+    old = state['round']['report']
+    legacy = dict(lab.local_config, version='local-model-config-v1', provider='mlx-lm', api_model='default_model')
+    old['loop_dependencies']['local_config_fingerprint'] = contract.digest(legacy)
+    old_context = loop.authorization_context(old)
+    state['dependency_digest'] = contract.digest(old['loop_dependencies'])
+    lab.store.write(loop.STATE_FILE, state)
+    with pytest.raises(loop.LoopError, match='loop_dependencies_changed'):
+        loop.validate_scan_freshness(old, selected=lab.selected)
+    lab.tick(9)
+    current = lab.state()['round']['report']
+    assert current['scan_id'] != old['scan_id']
+    assert loop.authorization_context(current) != old_context
+    assert current['loop_dependencies']['local_config_fingerprint'] == local_model.config_digest(lab.local_config)
+    assert current['proposals'] == [] and current['review_complete'] is False
+    assert lab.local_requests[-1]['sources'][0]['start_line'] == 1
+    assert lab.local_requests[-1]['feedback'] == []
+    assert lab.store.exists('loop/invalidated/' + old['scan_id'] + '.json')
+
+
+def test_interrupted_pre_v2_attempt_keeps_journaled_provider_without_replay(lab):
+    def crash(*args, **kwargs):
+        raise PowerLoss()
+    with pytest.raises(PowerLoss):
+        lab.tick(0, local_runner=crash)
+    state = lab.state()
+    state['inflight']['provider'] = 'mlx-lm'  # synthetic pre-migration crash journal
+    lab.store.write(loop.STATE_FILE, state)
+    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
+    entry = lab.state()['round']['report']['local_participation'][0]
+    assert entry['provider'] == 'mlx-lm' and entry['reason'] == 'interrupted_unknown'
+    assert lab.ledger()['calls'] == 1 and lab.local_requests == [] and lab.cloud_requests == []
+
+
+@pytest.mark.parametrize('provider', ['mlx-lm', 'other-provider'])
+def test_loop_refuses_local_runner_with_non_native_provider(lab, provider):
+    def forged(role, paths, snapshots, **options):
+        return {'provider': provider, 'model': lab.local_config['model'],
+                'stage': 'local_explorer', 'owner_role': role, 'status': 'succeeded',
+                'called': True, 'reason': RAW + SECRET, 'candidates': [draft(FILES[0], 1, 2)]}
+    lab.tick(0, local_runner=forged)
+    entry = lab.state()['round']['report']['local_participation'][0]
+    assert entry['provider'] == 'mlx-vlm' and entry['reason'] == 'local_response_invalid'
+    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
+    assert lab.cloud_requests == []
+    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
