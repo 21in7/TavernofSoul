@@ -42,6 +42,9 @@ and cost retained privately), documentation, optional headline/summary/analogy,
 and optional counts={candidates, additional_candidates}. At most eight candidates
 are accepted; three cards are projected. Agent status is succeeded|failed|
 unavailable|not_called. Never label an attempted/failed role as succeeded.
+An optional private report_window is exactly [previous 09:00, date 09:00) KST;
+generated_at must follow that cutoff and successful agents need actual timestamps
+inside the window. Local participation and historical reviewed_agents stay private.
 
 Public JSON exact top-level fields: version, date, generated_at, status, headline,
 summary, analogy, proposals, agents, counts, documentation, digest. proposals have
@@ -63,7 +66,10 @@ belong to improvements.py. Rendering/evidence line checks prove no semantics.
 
 Makefile CLI contract: discover [--scope-file PATH], daily [--deliver], status
 [--date YYYY-MM-DD], approve --proposal-id ID --instruction-file PATH
-[--local-only], reject --proposal-id ID, execute --proposal-id ID. The daily
+[--local-only], reject --proposal-id ID, execute --proposal-id ID. The runtime
+also accepts tick (existing Sites publisher connected), loop-status, and publish
+[--reconcile] for the hourly engine. Legacy daily cannot admit models after loop
+activation or replace/repost a frozen morning day. The daily
 target sets TAVERN_IMPROVEMENT_UNATTENDED=1: the runtime must reject approval
 and execution under that marker and all orchestration under TAVERN_WORKFLOW_CHILD.
 CLI presence itself cannot establish human identity. Delivery failure belongs
@@ -582,6 +588,24 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
     if not isinstance(report, Mapping) or not required.issubset(report):
         raise ValidationError("missing private report contract fields")
     date, generated_at = _report_time(report["date"], report["generated_at"])
+    window = None
+    if "report_window" in report:
+        # The parent selects a completed pool. This pure boundary verifies the
+        # window's date and actual participation; it never performs selection,
+        # freshness I/O, delivery or any model call. Private local exploration
+        # remains outside web-v1's five cloud role records.
+        bounds = _object(report["report_window"], ("start", "end"))
+        try:
+            start, end = (dt.datetime.fromisoformat(_text(bounds[key], 40).replace("Z", "+00:00"))
+                          for key in ("start", "end"))
+            expected_end = dt.datetime.combine(dt.date.fromisoformat(date), dt.time(9), KST)
+            if (start.utcoffset() is None or end.utcoffset() is None or
+                    end != expected_end or start != expected_end - dt.timedelta(days=1) or
+                    dt.datetime.fromisoformat(generated_at.replace("Z", "+00:00")) < end):
+                raise ValueError()
+        except (TypeError, ValueError, OverflowError):
+            raise ValidationError("morning report needs the previous-to-current 09:00 KST window") from None
+        window = (start, end)
     status = _enum(report["status"], STATUSES)
     records = _list(report["proposals"], MAX_CANDIDATES)
     for record in records:
@@ -596,6 +620,16 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
         seen_roles.add(role)
         state = _enum(item["status"], AGENT_STATUSES)
         provider, model = item.get("provider"), item.get("model")
+        if item.get("stage") == "local_explorer" or provider == "mlx-lm":
+            raise ValidationError("local exploration is private participation, not a cloud role")
+        if window is not None and state == "succeeded":
+            try:
+                stamp = dt.datetime.fromisoformat(_text(
+                    item.get("finished_at", item.get("started_at")), 40).replace("Z", "+00:00"))
+                if stamp.utcoffset() is None or not window[0] <= stamp < window[1]:
+                    raise ValueError()
+            except (TypeError, ValueError, OverflowError):
+                raise ValidationError("successful participation must occur within the report window") from None
         if state in ("succeeded", "failed"):
             provider, model = _text(provider, 80), _text(model, 120)
         else:
@@ -604,10 +638,12 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
         agents.append({"role": role, "provider": safe_text(provider, 80) if provider else None,
                        "model": safe_text(model, 120) if model else None, "status": state})
     if status == "scanned" and (seen_roles != set(ROLES) or
-                                any(x["status"] != "succeeded" for x in agents)):
+                                any(x["status"] != "succeeded" for x in agents) or
+                                report.get("review_complete") is False):
         status = "partial"
     allowed, proposals, seen_ids = set(), [], set()
-    reviewer_succeeded = any(x["role"] == "reviewer" and x["status"] == "succeeded" for x in agents)
+    reviewer_succeeded = (report.get("review_complete") is not False and
+                          any(x["role"] == "reviewer" and x["status"] == "succeeded" for x in agents))
     # A review response is an all-candidate decision. Losing even one verdict
     # must never leave the remaining cards executable through a partial report.
     reviews = {}

@@ -19,10 +19,43 @@
 | [0012](0012-importer-single-run-snapshot.md) | 호출 소유 importer snapshot·consumed-only retention·복사 소비자·fresh direct/prev·SELECT 인덱스와 ORM 의미 보존 | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0013](0013-owned-validation-temporary-cleanup.md) | 고유 임시 tree의 진입/최종 readiness와 매 destructive 작업 attachment·ownership·kernel mount proof | 제안(proposed), 최종 새 실제 검토·전체 검증·전달 대기 | 2026-10-14 |
 | [0014](0014-streaming-pak-extraction.md) | PAK의 bounded read/inflate와 파일별 원자 공개·부분 실패·재시도 경계 | 제안(proposed), 새 검토·전체 검증·전달 대기 | 2026-10-14 |
-| [0015](0015-approval-gated-improvement-discovery.md) | 일일 읽기 전용 발견·독립 검토·private Sites 보고와 사람의 개별 서명 승인·일회성 기존 workflow 실행 | 제안(proposed), 기반 구현 승인됨·최종 검토/전체 검증/전달 대기 | 2026-10-15 |
+| [0015](0015-approval-gated-improvement-discovery.md) | 사람의 개별 서명 승인·일회성 기존 workflow 실행; daily-only/5회/one-pass 정책은 0017로 대체 | 권한 결정 유지, 스케줄·호출 부분 대체됨 | 2026-10-15 |
 | [0016](0016-bounded-private-improvement-text.md) | 표시 상한 4배의 무축약 private 후보·review(1440/360)와 web-v1 projection 분리, 모델 전용 bounded strict JSON envelope | 제안(proposed), 명시 요청 수리·새 Claude 검토/전체 검증/local 전달 대기·공개 승인 차단 유지 | 2026-10-15 |
+| [0017](0017-budgeted-continuous-improvement.md) | bounded hourly 9단계·reviewer 예산 대기, 좁은 zero-idle quota·정제 준비 실패와 불변09:00 보고·동일 digest 복구 | 제안(proposed), adapter 합성 추론 성공 관측; 새 review/full check/apply/운영 첫9단계·예약·전달 대기 | 2026-10-16 |
 
 ## 상태와 근거의 의미
+
+0017은 사용자의 최신 직접 선택에 따라 0015의 자동 탐색 스케줄·하루 호출 정책만 대체한다.
+37개 승인 scope와 기존 역할/auth/storage·개별 승인/claim·GitHub 게이트, 0016의 서술 계약은
+유지한다. hourly tick은 모델 최대1회/하루24회, Claude 추정 US$1·reviewer cap US$0.20,
+GLM model quota>=80% admission 보류, 자정 guard·legacy carry-in·durable slot/reservation을
+사용한다. 이전09:00~현재09:00의 현재 fingerprint 일치 완료 review로 한 번 보고하며
+publication journal의 unknown 전송은 자동 재시도하지 않는다. 상세 계약·대안·한계는 ADR0017에 둔다.
+잔액 검사는 reviewer admission에 적용하며 그 차례 전 역할은 다른 gate 내 진행할 수 있다.
+reviewer 예산 대기는 stage_index를 유지하므로 새 slot도 reviewer를 재판단하고 이후 local/구독
+역할도 대기가 풀릴 때까지 호출하지 않는다. 보고 확정은 독립적이다. TOKENS_LIMIT/CREDIT_LIMIT
+모두 인식된5h의 정확한 finite numeric0%(bool 제외)에만 absent/null reset을 idle로 허용하며
+private null(미상·미활성)을 유지한다. weekly에는 이 예외가 없고 잘못된 reset·실패 envelope·
+model limit 부재를0%로 해석하지 않는다. tick의 설정/Store/readiness 준비 실패는 bounded 정제
+paused로 반환하며 모델·키 조회·보고 확정·publisher·fallback을 하지 않는다. child/discovery 거부는 유지한다.
+
+최신 메인 관측으로 MLX 서비스/터널 설치·재시작과 새 adapter 합성 소스의 실제 추론은 성공했다
+(약19.54초·정확한 승인 경로/줄 범위·후보1개). 실제 repository 첫9단계와 hourly 활성화는 대기다.
+기존09:00 daily 유지 중이다. 직전 run1792078026182747557-b4f614은8개 구현 작업·Claude 검토 후
+NFS full check1800초 timeout으로 failed/applied=[]였다. 원본 baseline·GitHub·운영은 그대로다.
+doctor/downloader103개 성공과 parser+harness3439 passed/63 failed/skip0은 전체 성공이 아니며
+Django/pipeline은 확인되지 않았다. private checkpoint로 복원한33개 초안도 새 검토/승인 증거가 아니다.
+이번에만 메인이 agent_timeout_seconds1800/check_timeout_seconds3600/max_rounds3을 선택하고
+저장소 workflow-config·다른 한도·NFS/temporary 정책은 유지한다. worker는 검사를 실행하지 않았다.
+새 Claude 의미검토/full make check·두 umask077/022 권한 fixture 검증/scoped apply는 실행기, 첫9단계/예약/GitHub 전달/보고
+게시 확인은 메인 책임이다. 구현 workflow 비용은 자동 탐색 ledger와 별도다.
+전체33개 구현 초안의 승인 Markdown 검토 범위12개는 AGENTS, architecture, harness-design,
+harness, workflow, agent-models, improvements, local-models, ADR0015/0016/0017 및 이 index다.
+이번 후속 보정은10개를 정정하고 ADR0015의 승인 결정·대체 범위와 ADR0016의 기존 변경·
+역사적 거부 기록을 보존한다. 두 ADR은 이미 최신 운영 상태를0017/운영 문서로 연결한다. 매 reviewer는
+실제 경로를 files에 열거하고 `documentation={status,files,reason}`으로 구조·경계·복구의 의미적
+완전성을 판단한다. 확장자만으로 완전성을 증명하지 않는다. 아래는 이전 수리 당시 기록이다.
+특히 과거 GitHub 자동승인 거부는 보존하며 이번 직접 요청의 검증된 인계와 구분한다.
 
 0016은 메인이 보고한 419자 issue의 표시 한도 거부를 수리하는 데이터 계약 결정이다.
 원본 private 서술은 적당한 hard ceiling 안에서 reviewer·identity·persistence·승인/실행에 유지하고

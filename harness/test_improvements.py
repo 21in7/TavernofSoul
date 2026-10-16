@@ -1036,6 +1036,348 @@ def test_claimed_failure_remains_consumed_and_cannot_be_replayed(lab, failure):
         imp.execute(pid, now=NOW, selected=lab.selected, executor=forbidden)
 
 
+# Task-6 documentation review: this changes publication recovery and signed
+# authorization dependencies. The separately assigned docs/improvements.md,
+# docs/workflow.md, docs/harness-design.md and ADR0017 must describe these
+# contracts. These offline specifications do not claim checks or activation.
+MORNING = NOW.astimezone(contract.KST).replace(hour=9, minute=0, second=0, microsecond=0)
+
+
+def loop_pool(lab, candidates=None):
+    """A genuine validated legacy fixture converted to private loop provenance.
+
+    Deliberately seed the previous day, so today's morning starts without a
+    daily artifact. Production rounds never materialize a day before 09:00.
+    No private runtime config, host policy, network or real model is used.
+    """
+    from harness import improvement_loop as loop
+    value = imp.discover(runner=ModelRunner(lab, candidates), keys={}, now=NOW - dt.timedelta(hours=5),
+                         selected=lab.selected)
+    dependencies = {key: value[key] for key in
+                    ('scope_fingerprint', 'source_fingerprints', 'config_fingerprint')}
+    dependencies.update(loop_config_fingerprint=contract.digest({'budget': 1}),
+                        local_config_fingerprint=contract.digest({'model': 'synthetic-local'}),
+                        agent_config_fingerprint=contract.digest(lab.models),
+                        workflow_config_fingerprint=contract.digest({'synthetic': True}))
+    value.update(loop_engine=loop.STATE_VERSION, loop_dependencies=dependencies,
+                 review_completed_at=NOW.isoformat(), local_participation=[{
+                     'provider': 'mlx-lm', 'model': 'synthetic-local', 'stage': 'local_explorer',
+                     'owner_role': 'coordinator', 'status': 'succeeded', 'called': True,
+                     'started_at': value['generated_at'], 'finished_at': value['generated_at'],
+                     'read_windows': [{'path': 'harness/example.py', 'start_line': 1, 'end_line': 2}],
+                     'cost': None, 'cost_status': 'not_metered'}])
+    for agent in value['agents']:
+        agent.update(started_at=value['generated_at'], finished_at=NOW.isoformat())
+    lab.store.write('scans/' + value['scan_id'] + '.json', value)
+    loop._save_proposals(lab.store, value)
+    state = {'round': {'report': value}, 'completed': [{
+        'scan_id': value['scan_id'], 'at': NOW.isoformat(),
+        'dependency_digest': contract.digest(dependencies)}]}
+    return loop, value, state, dependencies
+
+
+def freeze_morning(lab, loop, state, dependencies, now=MORNING):
+    with lab.store.lock(), lab.store.lock(project=True):
+        return loop._freeze_morning(lab.store, state, now, lab.config, dependencies)
+
+
+def test_morning_selects_latest_current_review_and_keeps_all_provenance(lab):
+    paths = {'coordinator': 'harness/example.py', 'downloader': 'downloader/example.py',
+             'parser': 'parser_tidy/example.py', 'django': 'TavernofSoul/example.py'}
+    candidates = {r: [candidate(p, '점검 제안 ' + r + str(i)) for i in range(2)]
+                  for r, p in paths.items()}
+    loop, pool, state, deps = loop_pool(lab, candidates)
+    selected = copy.deepcopy(pool)
+    selected['scan_id'] = '223456789-abcdef'
+    selected['review_completed_at'] = (MORNING - dt.timedelta(minutes=30)).isoformat()
+    # A review may finish today after downtime while an owner ran before the
+    # window. It must stay privately provable and publicly incomplete.
+    selected['agents'][0]['finished_at'] = (MORNING - dt.timedelta(days=2)).isoformat()
+    lab.store.write('scans/' + selected['scan_id'] + '.json', selected)
+    state['completed'].append({'scan_id': selected['scan_id'], 'at': selected['review_completed_at'],
+                               'dependency_digest': contract.digest(deps)})
+    for scan_id, at, digest in (
+            ('323456789-abcdef', MORNING - dt.timedelta(minutes=1), contract.digest({'changed': True})),
+            ('423456789-abcdef', MORNING, contract.digest(deps))):
+        excluded = copy.deepcopy(pool)
+        excluded['scan_id'] = scan_id
+        lab.store.write('scans/' + scan_id + '.json', excluded)
+        state['completed'].append({'scan_id': scan_id, 'at': at.isoformat(), 'dependency_digest': digest})
+    assert freeze_morning(lab, loop, state, deps, MORNING - dt.timedelta(seconds=1)) is None
+    journal = freeze_morning(lab, loop, state, deps)
+    private = lab.store.read('days/' + DATE + '.json')
+    public = imp.status(DATE, selected=lab.selected)['report']
+    assert journal['status'] == 'publication_pending'
+    assert private['reviewed_scan_id'] == selected['scan_id']
+    assert private['reviewed_agents'][0]['status'] == 'succeeded'
+    assert public['status'] == 'partial' and public['agents'][0]['status'] == 'not_called'
+    assert public['counts'] == {'candidates': 8, 'reported': 3, 'additional_candidates': 5, 'eligible': 8}
+    assert private['local_participation'][0]['model'] == 'synthetic-local'
+    assert all(a['provider'] != 'mlx-lm' for a in public['agents'])
+    public_text = json.dumps(public)
+    for sensitive in ('local_participation', 'loop_dependencies', 'synthetic-local', 'cost_status'):
+        assert sensitive not in public_text
+    for record in private['proposals']:
+        assert imp._eligible(lab.store, record['id']) == record
+        assert lab.store.exists('scans/' + lab.store.read('proposals/' + record['id'] + '.json')['scan_id'] + '.json')
+    frozen = lab.store.path('days/' + DATE + '.json').read_bytes()
+    state['completed'] = []
+    freeze_morning(lab, loop, state, deps, MORNING + dt.timedelta(hours=5))
+    assert lab.store.path('days/' + DATE + '.json').read_bytes() == frozen
+
+
+@pytest.mark.parametrize('changed', ['dependencies', 'review_incomplete', 'outside_window'])
+def test_morning_without_current_complete_review_has_no_eligible_cards(lab, changed):
+    loop, pool, state, deps = loop_pool(lab)
+    if changed == 'dependencies':
+        deps = dict(deps, local_config_fingerprint=contract.digest({'new': True}))
+    elif changed == 'review_incomplete':
+        pool['review_complete'] = False
+        lab.store.write('scans/' + pool['scan_id'] + '.json', pool)
+    else:
+        state['completed'][0]['at'] = (MORNING - dt.timedelta(days=2)).isoformat()
+    freeze_morning(lab, loop, state, deps)
+    payload = imp.report(DATE, selected=lab.selected)
+    assert payload['status'] in ('partial', 'failed')
+    assert payload['proposals'] == [] and payload['counts']['eligible'] == 0
+
+
+def test_preexisting_daily_is_never_overwritten_or_resent_by_loop(lab):
+    original = scan(lab)
+    day_bytes = lab.store.path('days/' + DATE + '.json').read_bytes()
+    web_bytes = lab.store.path('web/' + DATE + '.json').read_bytes()
+    loop, pool, state, deps = loop_pool(lab)
+    journal = freeze_morning(lab, loop, state, deps)
+    assert journal['status'] == 'legacy_preserved'
+    assert loop.publish(now=MORNING, selected=lab.selected, publisher=forbidden)['status'] == 'legacy_preserved'
+    assert imp.daily(True, runner=forbidden, now=MORNING, selected=lab.selected,
+                     transport=forbidden)['delivery']['status'] == 'loop_managed'
+    assert lab.store.path('days/' + DATE + '.json').read_bytes() == day_bytes
+    assert lab.store.path('web/' + DATE + '.json').read_bytes() == web_bytes
+    assert imp.status(DATE, selected=lab.selected)['scan_id'] == original['scan_id']
+
+
+def test_legacy_manual_scan_cannot_replace_frozen_morning_day(lab):
+    loop, pool, state, deps = loop_pool(lab)
+    freeze_morning(lab, loop, state, deps)
+    before = {name: lab.store.path(name).read_bytes() for name in
+              ('days/' + DATE + '.json', 'web/' + DATE + '.json', 'latest.json')}
+    manual = imp.discover(runner=ModelRunner(lab), keys={}, now=MORNING + dt.timedelta(hours=1),
+                          selected=lab.selected)
+    assert manual['status'] == 'scanned'
+    assert lab.store.exists('scans/' + manual['scan_id'] + '.json')
+    for name, body in before.items():
+        assert lab.store.path(name).read_bytes() == body
+
+
+def test_active_loop_blocks_legacy_daily_model_admission(lab):
+    from harness import improvement_loop as loop
+    with lab.store.lock():
+        lab.store.write(loop.STATE_FILE, loop._new_state())
+    with pytest.raises(imp.ImprovementError, match='use tick'):
+        imp.daily(True, runner=forbidden, now=MORNING, selected=lab.selected, transport=forbidden)
+    assert not lab.store.exists('days/' + DATE + '.json')
+
+
+def test_actual_sites_publisher_is_outside_locks_and_sends_frozen_digest_once(lab):
+    loop, pool, state, deps = loop_pool(lab)
+    freeze_morning(lab, loop, state, deps)
+    transport, config = InboxTransport(lab), inbox(lab)
+    def publisher(date, *, selected):
+        # Both flock handles must have been released before this callback.
+        with lab.store.lock(), lab.store.lock(project=True):
+            assert lab.store.read(loop._publication_name(date))['status'] == 'sending'
+        return imp.deliver_report(date, selected=selected, inbox_config=config, transport=transport)
+    first = loop.publish(now=MORNING, selected=lab.selected, publisher=publisher)
+    assert first['status'] == 'delivered'
+    for hour in (1, 3, 6):
+        assert loop.publish(now=MORNING + dt.timedelta(hours=hour), selected=lab.selected,
+                            publisher=forbidden)['digest'] == first['digest']
+    # Even a direct duplicate transport call is suppressed for loop reports.
+    assert imp.deliver_report(DATE, selected=lab.selected, transport=forbidden)['status'] == 'delivered'
+    assert [item[0] for item in transport.calls] == ['POST', 'GET']
+
+
+def test_second_sender_cannot_reconcile_during_actual_http_delivery(lab):
+    loop, pool, state, deps = loop_pool(lab)
+    freeze_morning(lab, loop, state, deps)
+    class ConcurrentTransport(InboxTransport):
+        def __call__(self, method, *args):
+            if method == 'POST':
+                with pytest.raises(loop.LoopError, match='publication_busy'):
+                    loop.publish(now=MORNING, selected=lab.selected, publisher=forbidden, reconcile=True)
+                with pytest.raises(imp.ImprovementError, match='already running'):
+                    imp.deliver_report(DATE, selected=lab.selected, transport=forbidden)
+            return super().__call__(method, *args)
+    transport, path = ConcurrentTransport(lab), inbox(lab)
+    def publisher(date, *, selected):
+        return imp.deliver_report(date, selected=selected, inbox_config=path, transport=transport)
+    assert loop.publish(now=MORNING, selected=lab.selected, publisher=publisher)['status'] == 'delivered'
+    assert [c[0] for c in transport.calls] == ['POST', 'GET']
+
+
+def test_failed_sites_delivery_stops_automatic_retry_without_exposing_remote_body(lab):
+    loop, pool, state, deps = loop_pool(lab)
+    freeze_morning(lab, loop, state, deps)
+    path, transport = inbox(lab), InboxTransport(lab, 'exception')
+    def publisher(date, *, selected):
+        return imp.deliver_report(date, selected=selected, inbox_config=path, transport=transport)
+    first = loop.publish(now=MORNING, selected=lab.selected, publisher=publisher)
+    assert first['status'] == 'publication_unknown'
+    assert lab.store.read('delivery/' + DATE + '.json')['status'] == 'delivery_failed'
+    assert len(transport.calls) == 1
+    later = loop.publish(now=MORNING + dt.timedelta(hours=1), selected=lab.selected, publisher=forbidden)
+    assert later['status'] == 'publication_unknown' and later['digest'] == first['digest']
+    assert 'fixture-service-token' not in json.dumps(lab.store.read('delivery/' + DATE + '.json'))
+
+
+@pytest.mark.parametrize('after_http', [False, True])
+def test_unknown_send_needs_explicit_same_digest_reconciliation(lab, after_http):
+    loop, pool, state, deps = loop_pool(lab)
+    freeze_morning(lab, loop, state, deps)
+    path, seen = inbox(lab), []
+    class LostProcess(BaseException):
+        pass
+    class AmbiguousTransport(InboxTransport):
+        def __call__(self, method, *args):
+            if (method == 'GET') == after_http:
+                raise LostProcess()
+            return super().__call__(method, *args)
+    failing = AmbiguousTransport(lab)
+    def sender(date, *, selected):
+        return imp.deliver_report(date, selected=selected, inbox_config=path, transport=failing)
+    with pytest.raises(LostProcess):
+        loop.publish(now=MORNING, selected=lab.selected, publisher=sender)
+    delivery = lab.store.read('delivery/' + DATE + '.json')
+    assert delivery['status'] == 'sending'
+    # The same sending attempt cannot be replayed even via the legacy API.
+    assert imp.deliver_report(DATE, selected=lab.selected, transport=forbidden)['status'] == 'delivery_unknown'
+    unknown = loop.publish(now=MORNING, selected=lab.selected, publisher=forbidden)
+    assert unknown['status'] == 'publication_unknown'
+    transport = InboxTransport(lab)
+    def reconcile(date, *, selected):
+        seen.append(date)
+        return imp.deliver_report(date, selected=selected, inbox_config=path, transport=transport)
+    done = loop.publish(now=MORNING, selected=lab.selected, publisher=reconcile, reconcile=True)
+    assert done['status'] == 'delivered' and done['digest'] == unknown['digest']
+    assert seen == [DATE] and [c[0] for c in transport.calls] == ['POST', 'GET']
+    assert lab.store.read('delivery/' + DATE + '.json')['publication_attempt_id'] != delivery['publication_attempt_id']
+
+
+def test_prepared_journal_recovers_after_day_write_without_new_analysis(lab, monkeypatch):
+    loop, pool, state, deps = loop_pool(lab)
+    original_write = imp.Store.write
+    class LostProcess(BaseException):
+        pass
+    def interrupted(store, name, value):
+        original_write(store, name, value)
+        if name == 'days/' + DATE + '.json':
+            raise LostProcess()
+    monkeypatch.setattr(imp.Store, 'write', interrupted)
+    with pytest.raises(LostProcess):
+        freeze_morning(lab, loop, state, deps)
+    journal = lab.store.read(loop._publication_name(DATE))
+    assert journal['status'] == 'prepared'
+    monkeypatch.setattr(imp.Store, 'write', original_write)
+    path, transport = inbox(lab), InboxTransport(lab)
+    def publisher(date, *, selected):
+        return imp.deliver_report(date, selected=selected, inbox_config=path, transport=transport)
+    result = loop.publish(now=MORNING + dt.timedelta(hours=2), selected=lab.selected, publisher=publisher)
+    assert result['status'] == 'delivered' and result['digest'] == journal['digest']
+    assert lab.store.read('days/' + DATE + '.json')['generated_at'] == MORNING.isoformat()
+
+
+def test_signed_loop_approval_cannot_rebind_same_proposal_after_control_change(lab, monkeypatch):
+    loop, pool, state, deps = loop_pool(lab)
+    checked = []
+    def freshness(report, *, selected):
+        assert selected is lab.selected
+        checked.append(report['scan_id'])
+    monkeypatch.setattr(loop, 'validate_scan_freshness', freshness)
+    pid = pool['proposals'][0]['id']
+    instruction = private_json(lab.root.parent / 'instruction.txt', {'unused': 'fixture'})
+    instruction.write_text('제안 ' + pid + ' 승인', encoding='utf-8')
+    imp.approve(pid, instruction, now=MORNING, selected=lab.selected)
+    name = 'approvals/' + pid + '.json'
+    approval_bytes = lab.store.path(name).read_bytes()
+    approval = lab.store.verify(lab.store.read(name))
+    assert approval['discovery_fingerprint'] == loop.authorization_context(pool)
+    assert checked == [pool['scan_id']]
+    # Identical candidate and independent verdict rediscovered with changed
+    # control settings: source ID and review digest stay equal, authority does not.
+    fresh = copy.deepcopy(pool)
+    fresh['scan_id'] = '523456789-abcdef'
+    fresh['loop_dependencies']['loop_config_fingerprint'] = contract.digest({'budget': .9})
+    lab.store.write('scans/' + fresh['scan_id'] + '.json', fresh)
+    loop._save_proposals(lab.store, fresh)
+    with pytest.raises(imp.ImprovementError, match='discovery controls changed'):
+        imp.execute(pid, now=MORNING, selected=lab.selected, executor=forbidden)
+    assert lab.store.path(name).read_bytes() == approval_bytes
+    assert not lab.store.exists('claims/' + pid + '.json')
+
+
+def test_loop_freshness_failure_prevents_human_approval_without_quota_checks(lab, monkeypatch):
+    loop, pool, state, deps = loop_pool(lab)
+    def changed(*args, **kwargs):
+        raise loop.LoopError('loop_dependencies_changed')
+    monkeypatch.setattr(loop, 'validate_scan_freshness', changed)
+    monkeypatch.setattr(loop, 'fetch_glm_quota', forbidden)
+    pid = pool['proposals'][0]['id']
+    with pytest.raises(imp.ImprovementError, match='loop_dependencies_changed'):
+        imp.approve(pid, lab.root / 'never-read.txt', now=MORNING, selected=lab.selected)
+    assert not lab.store.exists('approvals/' + pid + '.json')
+
+
+def test_legacy_approval_signature_contract_has_no_loop_binding(lab):
+    pid, record, instruction = authorize(lab)
+    assert 'discovery_fingerprint' not in lab.store.verify(lab.store.read('approvals/' + pid + '.json'))
+    checked, approval = imp._authorization(lab.store, pid, NOW)
+    assert checked == record
+
+
+def test_improvements_tick_cli_explicitly_connects_sites_publisher(monkeypatch, capsys):
+    from harness import improvement_loop as loop
+    # This models the trusted parent CLI, even inside a leaf validation process.
+    for key in ('TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY',
+                'TAVERN_IMPROVEMENT_UNATTENDED'):
+        monkeypatch.delenv(key, raising=False)
+    calls = []
+    def fake_tick(**options):
+        assert options['deliver'] is True and options['publisher'] is imp.deliver_report
+        calls.append(options)
+        return {'date': DATE, 'status': 'scanned', 'publication': {'status': 'delivered'}}
+    monkeypatch.setattr(loop, 'tick', fake_tick)
+    assert imp.main(['tick']) == 0
+    assert len(calls) == 1 and json.loads(capsys.readouterr().out)['publication']['status'] == 'delivered'
+
+
+@pytest.mark.parametrize('damage', ['before_nine', 'wrong_window', 'old_success', 'missing_time', 'local_agent'])
+def test_morning_projection_rejects_invalid_window_or_fabricated_participation(damage):
+    private = private_report(records_for())
+    private.update(generated_at=MORNING.isoformat(), report_window={
+        'start': (MORNING - dt.timedelta(days=1)).isoformat(), 'end': MORNING.isoformat()})
+    for agent in private['agents']:
+        agent['finished_at'] = NOW.isoformat()
+    if damage == 'before_nine':
+        private['generated_at'] = (MORNING - dt.timedelta(seconds=1)).isoformat()
+    elif damage == 'wrong_window':
+        private['report_window']['start'] = (MORNING - dt.timedelta(hours=1)).isoformat()
+    elif damage == 'old_success':
+        private['agents'][0]['finished_at'] = (MORNING - dt.timedelta(days=2)).isoformat()
+    elif damage == 'missing_time':
+        private['agents'][0].pop('finished_at')
+    else:
+        private['agents'][0]['provider'] = 'mlx-lm'
+    with pytest.raises(contract.ValidationError):
+        contract.build_web_report(private)
+
+
+def test_explicitly_incomplete_review_cannot_project_as_healthy_empty_scan():
+    private = private_report()
+    private['review_complete'] = False
+    assert contract.build_web_report(private)['status'] == 'partial'
+
+
 def test_execute_has_no_task_files_or_publication_override(lab):
     pid, _, _ = authorize(lab)
     for kwargs in ({'task': 'arbitrary'}, {'files': ['downloader/example.py']}, {'no_git': True}):

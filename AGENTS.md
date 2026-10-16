@@ -14,8 +14,9 @@
   [docs/agent-models.md](docs/agent-models.md). 인증 점검은 `make agent-doctor`로 한다.
 - 개발 작업 자동 배정·실행: `harness/workflow.py`, `harness/workflow-config.json`,
   [docs/workflow.md](docs/workflow.md). 실행은 `make agent-workflow`, 진행 확인은 `make agent-workflow-status`.
-- 승인 대기 일일 개선 점검: `harness/improvements.py`, `harness/improvement_report.py`,
-  [docs/improvements.md](docs/improvements.md). 발견·보고와 사람의 승인·실행을 분리한다.
+- 승인 대기 개선 연구·오전 보고: `harness/improvement_loop.py`, `harness/local_model.py`,
+  `harness/improvements.py`, `harness/improvement_report.py`, [docs/improvements.md](docs/improvements.md),
+  [docs/local-models.md](docs/local-models.md). 시간별 연구·09:00 한 번 보고·사람의 승인/실행을 분리한다.
 - GitHub 자동 게시·병합·정리: `harness/git_publish.py`, `harness/git_cleanup.py`, `harness/git-publish-config.json`.
   Git 역할은 PR 설명을 작성하며, 실제 게시와 머지는 메인 Codex의 GitHub 앱 연결을 사용한다.
 - 작업 접수·배정 추천: `harness/triage.py`, `harness/triage-config.json`,
@@ -60,18 +61,47 @@ Jev 판단 → 필요 시 Codex 계획 → 영역 담당 모델 → Claude 검�
 제안 ID별 명시적 지시를 확인하고 private 0600 UTF-8 instruction 파일로 `approve`를 호출한 뒤,
 그 승인에 묶인 정확한 파일·내용만 `execute`로 실행한다. task/files 덮어쓰기나 approve-all은 없다.
 7일 이내 승인도 읽은 소스의 bytes·mode·존재, scope/config, 독립 검토가 바뀌면 사용할 수 없다.
+loop 제안은 loop/local/agent/workflow 설정 digest까지 freshness와 서명 승인에 결합한다.
+같은 후보가 바뀐 설정에서 재발견되어도 이전 승인을 재사용하지 않는다.
 일회성 claim 이후 실패·중단·대기는 재실행 허가가 아니다. 기존 run/journal을 먼저 조정하고,
 필요하면 새 명시적 승인으로 복구한다. 직접 요청한 일반 개발 작업의 기존 권한은 유지한다.
 
 신뢰한 parent만 사람의 지시를 승인으로 기록한다. CLI·환경 변수·보고서는 사람의 신원을 증명하지
 못하며 같은 OS 계정을 장악한 공격자까지 방어하는 경계가 아니다. scheduler는 반드시
-`TAVERN_IMPROVEMENT_UNATTENDED=1`로 `daily`만 호출하며 approve/reject/execute를 호출하지 않는다.
+`TAVERN_IMPROVEMENT_UNATTENDED=1`로 새 `tick`만 호출하며 approve/reject/execute를 호출하지 않는다.
 `TAVERN_WORKFLOW_CHILD` 또는 `TAVERN_IMPROVEMENT_DISCOVERY` 세션은 개선 orchestration을 금지한다.
 owner-private Sites 보고함에는 정제된 `improvement-web-v1`만 전달한다. 승인 지시·키·절대 호스트
 경로·소스·diff·프롬프트·원문 응답·로그는 보내지 않는다. credential은 메인만 관리하며 모델에 제공하지 않는다.
-일일 09:00 Asia/Seoul job은 메인이 검토·검증 후 하나의 표식 있는 읽기 전용 job으로 설치한다.
-기존 job과 게임 cron은 보존한다. 설정된 저장소 readiness 실패 시 자동 fallback하거나 점검을 재시도하지 않는다.
-구체적인 명령·전달 계약·메인 제공 준비 관찰과 아직 대기 중인 검증은 [일일 개선 점검](docs/improvements.md)에 둔다.
+사용자 최신 선택은 [ADR 0017](docs/adr/0017-budgeted-continuous-improvement.md)의 bounded hourly
+tick이다. 기존 daily-only/하루 5회/one-pass 정책을 이 자동 탐색에 한해 대체한다. 각 tick은 모델
+최대 1회, 로컬 포함 KST 하루 최대 24회, Claude 추정 ledger 하루 US$1·reviewer cap US$0.20이다.
+구현 workflow 비용은 별도이며 CLI cap은 실제 청구 강제상한 보장이 아니다. GLM은 기존 Coding Lite
+인증을 유지하고 매 admission 전에 trusted parent가 quota를 조회한다. model limit>=80% 또는
+실패/unknown/malformed이면 GLM을 보류해 명목 20% 개발 여유를 남긴다. 유료 fallback은 없다.
+TOKENS_LIMIT/CREDIT_LIMIT 모두 인식된5h window의 정확한 finite numeric0%(bool 제외)만
+absent/null reset을 idle로 허용하며 private null을 미상·미활성으로 유지한다. weekly에는 이
+예외가 없고 잘못된 reset·실패 envelope·model limit 부재를0%로 해석하지 않는다.
+기본 단계는 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
+local(django)→django→Claude 독립 검토다. local은 작은 연속 line window와 정제 feedback만 받고,
+초안은 기존 specialist 근거 확인 전까지 정식 proposal이 아니다. local 실패/빈 초안의 관련
+specialist는 미호출로 기록한다. 기존 37개 읽기 승인과 ownership/shared는 확대하지 않는다.
+잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
+보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
+대기가 풀릴 때까지 멈춘다. 09:00 보고 확정은 이 대기와 독립적이다.
+보고는 전날09:00~당일09:00의 현재 fingerprint 일치 최신 완료 review 하나를 선택해 당일
+09:00 이후 첫 tick에 불변 확정한다. 기존 day는 보존하고 그날 다시 생성·중복 게시하지 않는다.
+최대8 후보/3카드 web-v1을 유지하고 local 참여·endpoint·비용은 private에만 둔다. 미완료는
+partial/failed로 표시한다. 전송 unknown은 자동 재시도하지 않고 메인이 같은 digest만 조정한다.
+새 adapter의 합성 소스 실제 추론 성공(약19.54초·정확한 승인 경로/줄 범위·후보1개)은 메인 제공
+관측이다. 실제 repository 첫9단계·새 예약·아침 게시 검증은 대기다. 직전 NFS full check의
+1800초 timeout/failed/applied=[]와 복원 초안은 전체 검증 성공이나 원본 반영을 뜻하지 않는다.
+메인은 새 의미 검토·full make check·두 umask077/022 권한 fixture 검증·scoped apply 후 기존 private wrapper와
+단일 marked cron block을 hourly로 교체한다. 다른 jobs·게임 cron·명시 daily local storage 선택·
+persistent NFS default는 보존한다. 현재 기존09:00 daily는 유지 중이며 새 연구 예약은 대기다.
+tick의 설정 로드·Store 생성·저장소 readiness 실패는 bounded 정제 paused로 처리하고 모델·키 조회·
+보고 확정·publisher·fallback을 하지 않는다. child/discovery 거부는 이 처리 바깥에 유지한다.
+설정된 저장소 readiness 실패 시 자동 fallback하거나 점검을 재시도하지 않는다. 정확한 CLI·
+자정/legacy 이행·journal 복구·main 관측/미검증 상태는 [운영 문서](docs/improvements.md)에 둔다.
 
 기본 쓰기 작업은 `git` 역할(Codex `gpt-6.1-sol`, `medium`)까지 실행한다. 보고서가
 `awaiting_github`이면 메인 `/root`는 완료로 보고하거나 다시 허락을 묻지 않고 다음을 이어 실행한다.

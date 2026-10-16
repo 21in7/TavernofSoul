@@ -125,6 +125,136 @@ def test_review_roles_cannot_enable_writes(role):
     assert command[command.index('--max-budget-usd') + 1] == '0.25'
 
 
+@pytest.mark.parametrize('role, default', [('reviewer', 2), ('escalation', 5)])
+@pytest.mark.parametrize('budget', [0.03, 0.20])
+def test_budget_override_changes_only_the_claude_cli_cap(role, default, budget, monkeypatch):
+    config = models.load_config()
+    before = json.dumps(config, sort_keys=True)
+    monkeypatch.setattr(models, 'load_config', lambda: config)
+    ordinary = models.command_for(role)
+    explicit_default = models.command_for(role, max_budget_usd=None)
+    limited = models.command_for(role, max_budget_usd=budget)
+    position = ordinary.index('--max-budget-usd') + 1
+    assert ordinary[position] == str(default)
+    assert explicit_default == ordinary
+    expected = ordinary[:]
+    expected[position] = str(budget)
+    assert limited == expected
+    assert models.command_for(role, max_budget_usd=default) == ordinary
+    assert models.command_for(role) == ordinary
+    assert json.dumps(config, sort_keys=True) == before
+
+
+@pytest.mark.parametrize('budget', [True, False, float('nan'), float('inf'), -float('inf'),
+                                   0, -0.0, -0.01, '0.2', [], {}, 10 ** 1000,
+                                   2.0000000000000004])
+def test_invalid_budget_is_rejected_before_prompt_runtime_or_execution(budget, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail('Invalid override reached prompt, credentials, storage or CLI')
+    monkeypatch.setattr(models, 'task_prompt', forbidden)
+    monkeypatch.setattr(models, 'connection_status', forbidden)
+    monkeypatch.setattr(models, 'child_environment', forbidden)
+    monkeypatch.setattr(models.storage, 'resolve_storage', forbidden)
+    monkeypatch.setattr(models.subprocess, 'run', forbidden)
+    with pytest.raises(ValueError, match='Budget override'):
+        models.command_for('reviewer', max_budget_usd=budget)
+    with pytest.raises(ValueError, match='Budget override'):
+        models.run('reviewer', 'Review', {}, max_budget_usd=budget)
+
+
+@pytest.mark.parametrize('provider', ['codex', 'zai', 'typesafe', 'mlx-lm'])
+def test_budget_override_cannot_be_silently_ignored_by_another_provider(provider, monkeypatch):
+    config = models.load_config()
+    config['roles']['reviewer']['provider'] = provider
+    monkeypatch.setattr(models, 'load_config', lambda: config)
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **kw: pytest.fail('Provider called'))
+    with pytest.raises(ValueError, match='Claude provider'):
+        models.command_for('reviewer', max_budget_usd=0.2)
+    with pytest.raises(ValueError, match='Claude provider'):
+        models.run('reviewer', 'Review', {}, max_budget_usd=0.2)
+
+
+@pytest.mark.parametrize('configured', [None, True, '2', 0, -1, float('nan'), float('inf')])
+def test_override_requires_a_valid_configured_upper_bound(configured, monkeypatch):
+    config = models.load_config()
+    config['roles']['reviewer']['max_budget_usd'] = configured
+    monkeypatch.setattr(models, 'load_config', lambda: config)
+    with pytest.raises(ValueError, match='configured Claude limit'):
+        models.command_for('reviewer', max_budget_usd=0.2)
+
+
+def test_override_preserves_smoke_and_read_only_boundaries(monkeypatch):
+    command = models.command_for('reviewer', smoke=True, max_budget_usd=0.20)
+    assert command[command.index('--max-budget-usd') + 1] == '0.2'
+    assert command[command.index('--tools') + 1] == ''
+    with pytest.raises(ValueError, match='increase'):
+        models.command_for('reviewer', smoke=True, max_budget_usd=0.30)
+    with pytest.raises(ValueError, match='read-only'):
+        models.command_for('reviewer', write=True, max_budget_usd=0.20)
+    config = models.load_config()
+    config['roles']['reviewer']['max_budget_usd'] = 0.10
+    monkeypatch.setattr(models, 'load_config', lambda: config)
+    with pytest.raises(ValueError, match='increase'):
+        models.command_for('reviewer', smoke=True, max_budget_usd=0.20)
+
+
+@pytest.mark.parametrize('budget, expected', [(0.20, '0.2'), (0.03, '0.03'), (None, '2')])
+@pytest.mark.parametrize('outcome', ['success', 'unknown_cost', 'failure', 'timeout'])
+def test_run_passes_budget_to_actual_cli_without_retry_or_cost_fabrication(
+        budget, expected, outcome, local_keys, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(models.shutil, 'which', lambda cli: '/fake/' + cli)
+
+    def fake_cli(command, **kwargs):
+        calls.append(command)
+        assert command.count('--max-budget-usd') == 1
+        assert command[command.index('--max-budget-usd') + 1] == expected
+        assert command[command.index('--model') + 1] == 'claude-sonnet-5-5'
+        assert command[command.index('--effort') + 1] == 'medium'
+        assert '--restricted' in command
+        assert command[command.index('--tools') + 1] == 'Read,Glob,Grep'
+        assert kwargs['cwd'] == str(tmp_path)
+        assert kwargs['timeout'] == 17
+        assert kwargs['env']['ANTHROPIC_API_KEY'] == local_keys['ANTHROPIC_API_KEY']
+        assert kwargs['env']['ANTHROPIC_BASE_URL'] == 'https://api.anthropic.com'
+        assert kwargs['env']['TAVERN_WORKFLOW_CHILD'] == '1'
+        assert 'ANTHROPIC_AUTH_TOKEN' not in kwargs['env']
+        if outcome == 'timeout':
+            raise subprocess.TimeoutExpired(command, 17)
+        if outcome == 'failure':
+            return subprocess.CompletedProcess(command, 1, '', '')
+        body = {'is_error': False, 'result': 'Reviewed'}
+        if outcome == 'success':
+            # The CLI estimate can exceed admission: retain it without clamping.
+            body['total_cost_usd'] = 0.26
+        return subprocess.CompletedProcess(command, 0, json.dumps(body), '')
+
+    monkeypatch.setattr(models.subprocess, 'run', fake_cli)
+    result = models.run('reviewer', 'Review approved files', local_keys, timeout=17,
+                        compaction=False, workspace=tmp_path, scoped=True, max_budget_usd=budget)
+    assert len(calls) == 1
+    assert result['status'] == ('passed' if outcome in ('success', 'unknown_cost') else 'failed')
+    if outcome == 'success':
+        assert result['cli_estimated_cost_usd'] == 0.26
+    else:
+        assert 'cli_estimated_cost_usd' not in result
+    assert all(key not in json.dumps(result) for key in local_keys.values())
+
+
+def test_valid_override_does_not_bypass_storage_readiness(local_keys, tmp_path, monkeypatch):
+    class UnavailableStorage:
+        def check_ready(self):
+            raise storage.StorageError('Storage unavailable.')
+
+    monkeypatch.setattr(models.storage, 'resolve_storage', lambda *a, **kw: UnavailableStorage())
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **kw: pytest.fail('Storage gate bypassed'))
+    result = models.run('reviewer', 'Review', local_keys, compaction=False,
+                        workspace=tmp_path, scoped=True, max_budget_usd=0.20)
+    assert result['status'] == 'failed'
+    assert result['diagnostic'] == {'stage': 'storage', 'category': 'storage_unavailable'}
+    assert 'cli_estimated_cost_usd' not in result
+
+
 def test_git_role_uses_medium_codex_and_cannot_write():
     command = models.command_for('git')
     assert command[command.index('--model') + 1] == 'gpt-6.1-sol'
@@ -1143,12 +1273,14 @@ def test_local_runtime_symlinks_and_public_modes_are_rejected(external_reports, 
     runtime.mkdir(parents=True, mode=0o700)
     unrelated = tmp_path / 'unrelated-state'
     unrelated.mkdir(mode=0o755)
+    unrelated.chmod(0o755)
     (runtime / 'claude').symlink_to(unrelated, target_is_directory=True)
     with pytest.raises(ValueError, match='private local credential runtime'):
         models.child_environment('claude', local_keys)
     assert not list(unrelated.iterdir()) and unrelated.stat().st_mode & 0o777 == 0o755
     (runtime / 'claude').unlink()
     (runtime / 'claude').mkdir(mode=0o755)
+    (runtime / 'claude').chmod(0o755)
     with pytest.raises(ValueError, match='0700'):
         models.child_environment('claude', local_keys)
     assert (runtime / 'claude').stat().st_mode & 0o777 == 0o755
