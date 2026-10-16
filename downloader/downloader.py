@@ -9,7 +9,7 @@ if __package__:
 else:
     import blowfish
     import unpacker_pak
-from shutil import copyfile, rmtree
+from shutil import copy2, copyfile, rmtree
 import subprocess 
 from os.path import join
 import csv
@@ -21,6 +21,50 @@ error_ipf = [] #the somehow error patch
 EXIT_CHANGED = 0
 EXIT_UNCHANGED = 1
 EXIT_FAILED = 2
+
+
+def copy_tree(source, destination):
+    """Copy one entry to its exact destination path, replacing the former
+    external 'cp -r' into an existing output directory.
+
+    A source symlink is recreated as a symlink with the same target text,
+    including dangling ones; it replaces a destination file or symlink but
+    refuses an actual destination directory. A source directory creates or
+    merges the destination directory, retaining unrelated entries, and
+    refuses a destination symlink or non-directory. A source regular file is
+    copied with copy2, where a live destination symlink to a file stays a
+    link and its target file is updated, but a destination directory or
+    dangling destination symlink is refused. The same rules apply at every
+    nested level, so a tree containing nested symlinks can be copied again
+    over its own previous output. Newly created directories receive the
+    source directory's access mode after their contents are populated.
+    """
+    if os.path.islink(source):
+        if os.path.isdir(destination) and not os.path.islink(destination):
+            raise RuntimeError('Cannot copy symlink {} over directory {}'.format(source, destination))
+        if os.path.lexists(destination):
+            os.remove(destination)
+        os.symlink(os.readlink(source), destination)
+        return
+    if os.path.isdir(source):
+        if os.path.islink(destination) or (os.path.lexists(destination) and not os.path.isdir(destination)):
+            raise RuntimeError('Cannot copy directory {} over {}'.format(source, destination))
+        created = not os.path.isdir(destination)
+        if created:
+            os.mkdir(destination)
+        for name in sorted(os.listdir(source)):
+            copy_tree(join(source, name), join(destination, name))
+        if created:
+            os.chmod(destination, stat.S_IMODE(os.stat(source).st_mode))
+        return
+    if os.path.isfile(source):
+        if os.path.isdir(destination):
+            raise RuntimeError('Cannot copy file {} over directory {}'.format(source, destination))
+        if os.path.islink(destination) and not os.path.exists(destination):
+            raise RuntimeError('Cannot copy file {} over dangling symlink {}'.format(source, destination))
+        copy2(source, destination)
+        return
+    raise RuntimeError('Unsupported source entry: {}'.format(source))
 
 
 def copyfiles(output):
@@ -44,7 +88,7 @@ def copyfiles(output):
              'addon.ipf']
     for i in files:
         if os.path.exists (join('extract',i)):
-            subprocess.run(['cp', '-r', join('extract',i), output], check=True)
+            copy_tree(join('extract',i), join(output, i))
             logging.warning("copying to {}".format(join(output,i)))
 
 
@@ -395,7 +439,7 @@ def move_language(region):
         #try:
         #    #shutil.move(input_path, output_path)
         os.makedirs(output_path, exist_ok=True)
-        subprocess.run(['cp', '-r', input_path, output_path], check=True)
+        copy_tree(input_path, join(output_path, os.path.basename(input_path)))
         #except:
         #    pass
 
