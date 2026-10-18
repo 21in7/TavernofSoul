@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 
-from harness import storage
+from harness import agent_telemetry, storage
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'harness' / 'agent-models.json'
@@ -523,6 +523,9 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
         report['warnings'] = []
     report['compaction'] = {'requested': enabled, 'key_registered': bool(keys.get('TYPESAFE_API_KEY')),
                             'status': 'requested' if enabled else 'disabled'}
+    collector = None
+    telemetry_outcome = 'spawn_failed'
+    telemetry_cli = {}
     try:
         storage.resolve_storage(ROOT).check_ready()
         if enabled:
@@ -555,8 +558,54 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                 result = codex_subprocess(command, env, 'execution', input=prompt,
                                           cwd=str(work_root), timeout=timeout)
             else:
-                result = subprocess.run(command, input=prompt, cwd=str(work_root), env=env,
-                                        capture_output=True, text=True, timeout=timeout)
+                if provider == 'zai':
+                    env = agent_telemetry.child_environment(env)
+                    try:
+                        collector = agent_telemetry.Collector(timeout)
+                        collector.start()
+                        env = agent_telemetry.child_environment(env, collector.endpoint)
+                        collector.launch_ns = time.time_ns()
+                        collector.started = time.monotonic()
+                    except Exception:
+                        if collector is not None:
+                            collector.finish('spawn_failed')
+                        collector = None
+                        report['telemetry'] = agent_telemetry.unavailable()
+                try:
+                    result = subprocess.run(command, input=prompt, cwd=str(work_root), env=env,
+                                            capture_output=True, text=True, timeout=timeout)
+                    if collector is not None:
+                        collector.wall_ms = (time.monotonic() - collector.started) * 1000
+                    telemetry_outcome = 'child_failed' if result.returncode else 'success'
+                    if collector is not None and len(result.stdout) <= 2097152:
+                        try:
+                            final = json.loads(result.stdout)
+                            if isinstance(final, dict):
+                                telemetry_cli = {k: final.get(k) for k in
+                                                 ('duration_ms', 'duration_api_ms', 'num_turns')}
+                                usage = final.get('usage')
+                                if isinstance(usage, dict):
+                                    telemetry_cli.update({
+                                        'input_tokens': usage.get('input_tokens'),
+                                        'output_tokens': usage.get('output_tokens'),
+                                        'cache_read_tokens': usage.get('cache_read_input_tokens'),
+                                        'cache_creation_tokens': usage.get('cache_creation_input_tokens'),
+                                    })
+                        except (ValueError, TypeError, RecursionError):
+                            pass
+                except subprocess.TimeoutExpired:
+                    telemetry_outcome = 'timeout'
+                    raise
+                except KeyboardInterrupt:
+                    telemetry_outcome = 'interrupted'
+                    raise
+                finally:
+                    if collector is not None:
+                        if collector.wall_ms is None:
+                            collector.wall_ms = (time.monotonic() - collector.started) * 1000
+                        report['telemetry'] = collector.finish(telemetry_outcome, telemetry_cli)
+                    elif provider == 'zai':
+                        report['telemetry'] = agent_telemetry.unavailable(telemetry_outcome)
             report['exit_code'] = result.returncode
             if provider != 'codex':
                 report['stderr'] = redact(result.stderr, keys)
@@ -598,6 +647,11 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
         report.pop('response', None)
         report['diagnostic'] = exc.diagnostic
         report['error'] = str(exc)
+    except KeyboardInterrupt:
+        if provider != 'zai':
+            raise
+        telemetry_outcome = 'interrupted'
+        report['error'] = 'Model CLI interrupted.'
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         if provider == 'codex':
             report['status'] = 'failed'
@@ -606,6 +660,14 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             report['error'] = CodexFailure.REASONS['cli_failed']
         else:
             report['error'] = redact(str(exc), keys)
+    finally:
+        # Also owns interruption during collector setup or environment assembly,
+        # before the inner subprocess finally has been entered.
+        if collector is not None and 'telemetry' not in report:
+            report['telemetry'] = collector.finish(telemetry_outcome, telemetry_cli)
+    if report.get('telemetry') and report['status'] != 'passed':
+        if report['telemetry']['outcome'] == 'success':
+            report['telemetry']['outcome'] = 'invalid_response'
     return report
 
 

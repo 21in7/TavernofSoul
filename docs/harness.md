@@ -1228,3 +1228,23 @@ worker는 checks·Git·workflow·agent-run·다른 모델·cron·download·impor
 인계와 매 review의 `documentation={status,files,reason}` 요구는
 [workflow](workflow.md#이번-31파일-수리의-검토검증게시-인계), 결정은
 [0012](adr/0012-importer-single-run-snapshot.md)와 [0013](adr/0013-owned-validation-temporary-cleanup.md)에 둔다.
+
+## GLM telemetry 검증 인계
+
+[ADR0019](adr/0019-private-glm-call-telemetry.md)의 offline 명세는
+`harness/test_agent_telemetry.py`, `test_agent_models.py`, `test_improvements.py`,
+`test_improvement_loop.py`에 있다. synthetic OTLP, mocked subprocess, 외부망이 없는 loopback
+fake peer를 사용하며 실모델·global credentials에 의존하지 않는다. chronology/TTFT/content,
+multiple calls/dedup/retry/unknown, out-of-order Read body, 실패/timeout 부분 보존, 무수출·setup/
+spawn 오류, 악성/과대/비밀 포함 입력, exporter/content env 제거, stalled peer와 listener 정리,
+Codex/Claude 제외, 기존 기록 호환 및 web payload/digest byte 동등성을 검토한다.
+
+worker는 이 명세나 checks를 실행하지 않았다. parent는 관련 tests와 필수 전체 `make check`를
+실행하고 skip/xfail을 성공으로 취급하지 않는다. fresh reviewer는 [전체 설계](harness-design.md),
+[모델 contract](agent-models.md#glm-호출의-private-지연-관측),
+[private 기록 경계](improvements.md#private-glm-지연-기록-읽기), ADR0019와 최종 구현을 함께 보고
+매번 documentation={status,files,reason}를 반환한다. 추가 필수 문서가 승인 밖이면 기존 승인
+파일의 finding으로 정확한 경로를 요청하고 changes_requested로 남긴다.
+parent의 후속 합성 live는 구현 호환 검증이며 실제204~500초 연구의 병목 판정과 구분한다.
+다음 normally admitted GLM hourly 관측은 main이 기존 gate/schedule 안에서 읽는다.
+추가 source probe·model call·schedule/state 편집·frozen report 재발행은 이 작업에 포함하지 않는다.

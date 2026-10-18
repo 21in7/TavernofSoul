@@ -331,3 +331,74 @@ scoped workflow의 담당 worker는 테스트를 실행하지 않으며 orchestr
 - [Coding Plan FAQ·balance 자동차감 없음](https://docs.z.ai/devpack/faq)
 - [기존 구독 quota 보존](https://docs.z.ai/devpack/notice/usage-revision)
 - [Claude 모델과 API 가격](https://platform.claude.com/docs/en/about-claude/pricing)
+
+## GLM 호출의 private 지연 관측
+
+`provider=zai` 실행만 [agent_telemetry.py](../harness/agent_telemetry.py)의 Python 3.8
+표준라이브러리 collector를 사용한다. 부모가 호출마다 `127.0.0.1`의 임시 포트와 192bit
+비밀 경로를 만들고 Claude Code built-in OTLP http/json traces만 받는다. 프록시나 inference
+API 우회가 아니며 기존 `subprocess.run` 최종 JSON, 모델·인증 runtime·요청된 compaction은 유지한다.
+Codex/Anthropic Claude에는 이 collector나 새 telemetry 필드가 없다.
+
+자식 한 번에만 `CLAUDE_CODE_ENABLE_TELEMETRY=1`,
+`CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`, `OTEL_TRACES_EXPORTER=otlp`,
+`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json`, random-token loopback
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_TRACES_EXPORT_INTERVAL=1000`을 설정한다.
+`OTEL_LOGS_EXPORTER`와 `OTEL_METRICS_EXPORTER`는 `none`이며 `OTEL_LOG_`의
+USER_PROMPTS/ASSISTANT_RESPONSES/TOOL_DETAILS/TOOL_CONTENT/RAW_API_BODIES/MANAGED_SETTINGS는
+모두 `false`다. 상속 OTEL·beta tracing·propagation·content/destination/raw-log overrides를
+먼저 제거한다. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`을 유지하고 자식 `no_proxy`와
+`NO_PROXY`에 loopback을 추가한다. 기존 모델 HTTP proxy·부모 환경·설정 파일은 바꾸지 않는다.
+bind/setup 실패는 exporter를 모두 끈 채 원래 CLI를 한 번 실행하고 unavailable로 남긴다.
+계측 오류를 이유로 retry/fallback/추가 모델 호출을 하지 않는다.
+
+private `telemetry.version=glm-call-telemetry-v1` 계약은 다음과 같다. 숫자는 finite·비음수이며
+bool을 숫자로 받지 않는다. 시간은 ms, 결측은 `null`이다. 설명 없는 0으로 결측을 채우지 않는다.
+
+| 필드 | 의미 |
+| --- | --- |
+| availability / completeness | completed request 관측 시 observed, 없으면 unavailable; export 누락을 증명할 수 없어 completeness는 항상 partial |
+| outcome | success / child_failed / timeout / interrupted / spawn_failed / invalid_response; 연구 후보 유효성은 별도 participation.status |
+| setup_failed / invalid_input / limited | 고정 boolean 진단; 원문 오류·endpoint·ID·경로는 보존하지 않음 |
+| requests | 시작 시각 순 최대128개 unique completed llm_request; start_offset_ms는 parent launch 기준, duration_ms는 재시도 포함 lifecycle, ttft_ms·first_content_ms는 그 요청의 latency, attempt는 총 transport 시도 수, success와 네 token counter는 결측 허용 |
+| logical_requests_observed | retained completed request 수; 무관측이면 null, 제한 시 전체의 하한 |
+| transport_attempts_known / retries_known | attempt가 알려진 요청만 합산 / 각 attempt-1 합산; 전부 미상이면 null |
+| requests_with_unknown_attempts / unexported_requests_unknown | 보존 요청의 attempt 결측 수 / unfinished·미수출·숨은 CLI/SDK 요청 존재 여부를 알 수 없다는 true |
+| first_request_ttft_ms / first_request_content_ms | 시작이 가장 이른 요청의 값; 나중 요청 값으로 대체하지 않음 |
+| launch_to_first_ttft_ms / launch_to_first_content_ms | 그 첫 요청의 launch-relative start offset + 해당 latency; process 완료 시간이 아님 |
+| request_work | duration/TTFT/content/token별 known_count·total·max; 미관측 total/max는 null |
+| tools / tool_work | 최대128개 tool parent와 memory-only parentSpanId로 연결한 execution; Read/Glob/Grep/other만 보존 |
+| unmatched_execution_spans | parent가 없는 execution 수; 누락/여러 execution의 불확실성을 wall로 메우지 않음 |
+| cli_wall_ms / cli | 부모 subprocess wall / 별도 final JSON duration_ms·duration_api_ms·num_turns·네 token counter; span의 대체값 아님 |
+| parent | 연구 부모의 context_preparation_ms·source_verification_ms; GLM Read 실행과 별개 |
+
+네 token counter는 input_tokens/output_tokens/cache_read_tokens/cache_creation_tokens다.
+`tools[].execution_observed=true`는 execution child가 하나로 연결되었다는 뜻이며 결측/모호함은
+null이다. `tool_work.Read.execution_count_observed`는 이렇게 연결된 실제 body span 수다.
+execution_known_count/execution_total_ms/execution_max_ms는 duration이 알려진 body 관측이며
+execution_unknown_timing_count는 body span은 있으나 duration이 미상인 수다. wall_known_count/wall_total_ms/wall_max_ms는 권한 대기+실행이며
+missing_execution_count는 body 관측이 없는 parent 수다. Glob/Grep은 검색으로 따로 집계한다.
+Read 도구 body도 정확한 물리 disk I/O 시간이 아니다. 병렬 tool/request 합계는 겹칠 수 있어
+wall에서 work 합계를 빼서 정확한 overhead라고 부르지 않는다. num_turns와 tool 수는 API 호출 수가 아니다.
+
+요청 body 256KiB, 전체 입력4MiB(header 포함), 처리 span4096개, memory-only ID map2048개,
+request/tool rows 각각128개, header8KiB, peer 절대 읽기 기한0.5초와 socket timeout0.1초를 둔다.
+collector 수명은 호출 timeout+1초(최대3601초)이며 CLI 종료 경로에서 즉시 닫는다.
+시간 값은 개별3600000ms, token/turn counter는10억, attempt는1..1000까지 받는다.
+따라서 각 telemetry의 JSON 크기도 고정된 row/field 상한으로 제한된다. 초과는 limited 또는
+invalid_input/결측으로 남는다. POST·정확한 비밀 경로·명시 Content-Length·JSON만 받고
+압축/chunked/중복 header·잘못된 envelope는 거부한다. 정상 수신 응답은 `{}`다.
+ID는 join/dedup 뒤 메모리에서만 사라지고 raw payload/events/resource/session/content는 저장하지 않는다.
+성공·실패·spawn 오류·timeout·interrupt 모두 socket/thread를 닫으며 stalled peer도 정리를 붙잡지 못한다.
+
+기본 GLM 실행 report와 [기존 연구 private 기록](improvements.md#private-glm-지연-기록-읽기)에만
+정제된 관측이 남는다. timeout 때 현재 요청은 아직 export되지 않을 수 있고 완료한 이전 요청만
+남는다. 무응답은 unavailable이지 0회 측정이 아니다. 계측은 모델 실패·응답 파싱 실패·후보
+검증 실패를 성공으로 바꾸지 않는다. 새 raw stdout/stderr 보존도 추가하지 않는다.
+
+메인이 제공한 Claude Code2.1.294/Z.ai glm-5.3-flash 합성 Read 관측은 built-in exporter의
+호환 근거다. 이 구현의 검사 성공이나 실제204~500초 연구의 병목 원인을 증명하지 않는다.
+새 offline 검사·full make check와 합성 live 확인은 parent, 이후 정상 admission된 GLM hourly
+관측은 main 책임이다. 이번 worker는 실행하지 않았다. 공식 참조는
+[monitoring usage](https://code.claude.com/docs/en/monitoring-usage)이며 worker는 browse하지 않았다.
+결정은 [ADR0019](adr/0019-private-glm-call-telemetry.md)에 기록한다.

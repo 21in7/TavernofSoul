@@ -1744,3 +1744,52 @@ def test_loop_refuses_local_runner_with_non_native_provider(lab, provider):
     assert lab.tick(1)['reason'] == 'local_draft_unavailable'
     assert lab.cloud_requests == []
     assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+
+
+def test_loop_telemetry_boundary_is_strict_bounded_and_backward_compatible():
+    from harness.test_agent_telemetry import sample
+    prior = {'role': 'downloader', 'provider': 'zai', 'model': 'fixture', 'status': 'failed'}
+    assert 'telemetry' not in loop._safe_participation(prior)
+    injected = sample()
+    injected['secret'] = SECRET
+    injected['requests'][0]['prompt'] = RAW
+    injected['request_work'] = {'raw': SECRET}
+    safe = loop._safe_participation(dict(prior, telemetry=injected))
+    assert safe['telemetry']['logical_requests_observed'] == 1
+    assert SECRET not in json.dumps(safe) and RAW not in json.dumps(safe)
+    assert 'telemetry' not in loop._safe_participation(dict(prior, telemetry={'version': 'unknown'}))
+    assert 'telemetry' not in loop._safe_participation(dict(prior, provider='codex', telemetry=injected))
+    injected['tools'] = [{'category': SECRET}]
+    assert 'telemetry' not in loop._safe_participation(dict(prior, telemetry=injected))
+
+
+@pytest.mark.parametrize('failure', ['none', 'cli', 'contract', 'truncated'])
+def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, failure):
+    from harness.test_agent_telemetry import sample
+
+    def transform(role, result, response, options):
+        if role == 'downloader':
+            result['telemetry'] = sample()
+            result['telemetry']['secret'] = SECRET
+            if failure == 'cli':
+                result['status'] = 'failed'
+                result['telemetry']['outcome'] = 'timeout'
+            elif failure == 'contract':
+                result['response'] = '{"invalid":true}'
+            elif failure == 'truncated':
+                result['response'] = 'x' * 100000
+        return result
+    lab.cloud_transform = transform
+    lab.hours()
+    report = lab.state()['round']['report']
+    agent = next(a for a in report['agents'] if a['role'] == 'downloader')
+    assert agent['status'] == ('succeeded' if failure == 'none' else 'failed')
+    assert agent['telemetry']['logical_requests_observed'] == 1
+    assert SECRET not in json.dumps(agent) and 'result' not in agent
+    saved = lab.store.read('scans/' + report['scan_id'] + '.json')
+    assert saved['agents'][1]['telemetry'] == agent['telemetry']
+    without = copy.deepcopy(report)
+    for item in without['agents']:
+        item.pop('telemetry', None)
+    assert contract.canonical_json(contract.build_web_report(report)) == contract.canonical_json(
+        contract.build_web_report(without))

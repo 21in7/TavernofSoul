@@ -541,6 +541,10 @@ def _safe_participation(participation):
     result = {key: participation[key] for key in (
         'role', 'provider', 'model', 'status', 'started_at', 'finished_at',
         'elapsed_seconds', 'read_files', 'interrupted') if key in participation}
+    if participation.get('provider') == 'zai':
+        telemetry = imp.agent_telemetry.sanitize(participation.get('telemetry'))
+        if telemetry is not None:
+            result['telemetry'] = telemetry
     cost = participation.get('cost')
     known = participation.get('cost_status') == 'cli_estimated_usd' and _number(cost)
     result.update(cost=cost if known else None,

@@ -23,6 +23,7 @@
 | [0016](0016-bounded-private-improvement-text.md) | 표시 상한 4배의 무축약 private 후보·review(1440/360)와 web-v1 projection 분리, 모델 전용 bounded strict JSON envelope | 제안(proposed), 명시 요청 수리·새 Claude 검토/전체 검증/local 전달 대기·공개 승인 차단 유지 | 2026-10-15 |
 | [0017](0017-budgeted-continuous-improvement.md) | bounded hourly 9단계·불변09:00 보고·동일 digest 복구, mlx-vlm 네이티브 JSON Schema·v2 config와 기존 후보/승인 경계 | 제안(proposed), 승인 방향 기록; 최종 adapter 새 review/full check/apply·실추론/운영 검증 대기 | 2026-10-16 |
 | [0018](0018-storage-check-probe-deduplication.md) | 한 읽기 경계의 mount별 공간 조회 공유·양쪽 floor와 fresh 쓰기 gate 유지·실제 목적지/새 root probe | 제안(proposed), 새 의미 검토·전체 offline 검증·전달 대기 | 2026-10-16 |
+| [0019](0019-private-glm-call-telemetry.md) | parent loopback OTLP collector·bounded numeric private GLM latency contract·public web-v1 제외 | 제안(proposed), 새 의미 검토·전체 검사·parent 합성/정상 hourly 관측 대기 | 2026-10-18 |
 
 ## 상태와 근거의 의미
 

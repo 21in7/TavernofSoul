@@ -30,7 +30,7 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 
-from harness import agent_models, improvement_report as contract, storage, workflow, workspace
+from harness import agent_telemetry, agent_models, improvement_report as contract, storage, workflow, workspace
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/improvement-config.json'
@@ -350,6 +350,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                      'read_files': list(paths), 'started_at': _now().isoformat()}
     start = time.monotonic()
     result = None
+    preparation_ms = verification_ms = None
     try:
         with selected.temporary_directory(prefix='tavern-improvement-context-', purpose='context') as context:
             if context == ROOT or ROOT in context.parents or context in ROOT.parents:
@@ -386,6 +387,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                 raise ImprovementError('Model context exceeds its configured bound.')
             # The environment guard also rejects accidental in-process workflow
             # entry from an injected runner. Existing runner sets CHILD on CLIs.
+            preparation_ms = (time.monotonic() - start) * 1000
             previous = os.environ.get('TAVERN_IMPROVEMENT_DISCOVERY')
             os.environ['TAVERN_IMPROVEMENT_DISCOVERY'] = '1'
             try:
@@ -403,7 +405,14 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                 raise ImprovementError('Model returned an invalid result envelope.')
             # Bound retained metadata as well as parsed JSON; oversize raw CLI
             # bodies must not make durable day records impossible to write.
-            retained = workflow.triage.scrub(result, keys)
+            if spec['provider'] == 'zai':
+                telemetry = agent_telemetry.sanitize(result.get('telemetry'))
+                if telemetry is not None:
+                    participation['telemetry'] = telemetry
+                    if telemetry['outcome'] == 'interrupted':
+                        participation['interrupted'] = True
+            retained = workflow.triage.scrub({k: v for k, v in result.items()
+                                             if k != 'telemetry'}, keys)
             if len(contract.canonical_json(retained)) <= config['limits']['max_response_bytes'] + 8192:
                 participation['result'] = retained
             else:
@@ -425,15 +434,19 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                 participation['status'] = 'failed'
                 raise ImprovementError('Model role failed; no consensus inferred.')
             # Verify even an injected runner did not change the read-only copy.
-            for name in paths:
-                target = model_root / name
-                original = snapshots[name]
-                if original['exists']:
-                    data, mode = _read_file(target, config['limits']['max_file_bytes'])
-                    if data != original['content'] or mode != 0o400:
-                        raise ImprovementError('Read-only model context changed.')
-                elif target.exists() or target.is_symlink():
-                    raise ImprovementError('Read-only model created an approved missing file.')
+            verify_start = time.monotonic()
+            try:
+                for name in paths:
+                    target = model_root / name
+                    original = snapshots[name]
+                    if original['exists']:
+                        data, mode = _read_file(target, config['limits']['max_file_bytes'])
+                        if data != original['content'] or mode != 0o400:
+                            raise ImprovementError('Read-only model context changed.')
+                    elif target.exists() or target.is_symlink():
+                        raise ImprovementError('Read-only model created an approved missing file.')
+            finally:
+                verification_ms = (time.monotonic() - verify_start) * 1000
             parsed = _parse_model_response(result.get('response'), config['limits']['max_response_bytes'])
             sources = {p: snapshots[p]['content'].decode('utf-8') if snapshots[p]['exists'] else None
                        for p in paths}
@@ -461,6 +474,11 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             participation['status'] = 'failed'
         return participation, None
     finally:
+        if 'telemetry' in participation:
+            participation['telemetry']['parent'] = {
+                'context_preparation_ms': preparation_ms,
+                'source_verification_ms': verification_ms}
+            participation['telemetry'] = agent_telemetry.sanitize(participation['telemetry'])
         participation['elapsed_seconds'] = round(time.monotonic() - start, 6)
         participation['finished_at'] = _now().isoformat()
 
