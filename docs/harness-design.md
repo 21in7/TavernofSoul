@@ -749,3 +749,27 @@ main의 책임이다. main은 그 전달 이후 실제 호스트 private 설정�
 귀속한다. 메인이 범위를 확인하고 개별 승인을 갖춘 새 실행을 준비한다.
 설정·소스·workflow schema·설계서·ADR 설명을 함께 검토하며 향후 결정 변경은 기존 ADR를
 삭제/재작성하지 않고 superseded 및 대체 링크로 보존한다.
+
+## Private GLM telemetry responsibility
+
+[ADR0019](adr/0019-private-glm-call-telemetry.md)는 built-in Claude Code traces를 한 zai 자식에
+한정된 parent-owned ephemeral `127.0.0.1` collector로 받는 결정을 기록한다.
+`agent_telemetry.py`는 인증된 endpoint·bounded framing/JSON·span dedup/tool join·strict
+private contract·cleanup을 소유한다. `agent_models.py`는 해당 자식에만 exporter를 설정하고
+기존 final JSON·credential isolation·compaction을 유지한다. setup 실패 시 exporters를 끄며
+모델 성공/실패와 계측 가용성을 분리한다. collector 때문에 모델 retry/fallback하지 않는다.
+`improvements._call_role`은 context 준비·기존 source verification 시간을 분리하고 결과 축약·
+CLI/응답 계약 실패에도 partial telemetry를 별도로 보존한다. `improvement_loop._safe_participation`은
+strict bounded schema로 재검사해 임의 runner metadata가 private 계측 계약을 확장하지 못하게 한다.
+기존 private path selection·record ceiling과 old record 호환성을 유지한다.
+
+`improvement_report`는 명시된 기존 web-v1 필드만 투영하며 telemetry가 publisher bytes/digest에
+들어가지 않는다. frozen days를 다시 생성하지 않는다. exported completed request 수·알려진
+attempt/retry와 미수출/inflight의 불확실성을 분리하고 success도 partial로 표시한다. Read body는
+정확한 disk I/O가 아니며 병렬 work를 wall에서 빼서 exact overhead를 만들지 않는다.
+contract 필드·상한은 [모델 문서](agent-models.md#glm-호출의-private-지연-관측), private 위치와
+향후 읽기는 [연구 문서](improvements.md#private-glm-지연-기록-읽기)에 둔다.
+새 의미 review와 relevant/full offline checks·합성 live는 parent, 다음 normally admitted GLM
+관측은 main 책임이다. 매 review는 documentation={status,files,reason}를 새로 판단한다.
+37파일 연구 scope·모델/역할·운영 downloader/game·인증/billing·compaction plugin·quota/budget/
+approval·schedule·storage defaults·fingerprint·확정 아침 보고는 변경하지 않는다.

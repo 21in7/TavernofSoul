@@ -1284,3 +1284,145 @@ def test_local_runtime_symlinks_and_public_modes_are_rejected(external_reports, 
     with pytest.raises(ValueError, match='0700'):
         models.child_environment('claude', local_keys)
     assert (runtime / 'claude').stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.parametrize('failure,outcome', [
+    ('none', 'success'), ('child', 'child_failed'), ('timeout', 'timeout'),
+    ('spawn', 'spawn_failed'), ('interrupt', 'interrupted'), ('json', 'invalid_response')])
+def test_zai_private_spans_survive_every_cli_exit(local_keys, monkeypatch, tmp_path, failure, outcome):
+    from harness import agent_telemetry as t
+    from harness.test_agent_telemetry import batch, span
+    created, calls = [], []
+    real_collector = t.Collector
+
+    def create(timeout):
+        c = real_collector(timeout)
+        # Exercise lifecycle integration without binding any listener in this fixture.
+        c.start = lambda: c
+        c.endpoint = 'http://127.0.0.1:123/private/v1/traces'
+        created.append(c)
+        return c
+
+    monkeypatch.setattr(t, 'Collector', create)
+    monkeypatch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+    monkeypatch.setattr(models, 'child_environment', lambda *a, **kw: {'HTTPS_PROXY': 'model-proxy'})
+
+    def child(command, **options):
+        calls.append(command)
+        assert options['env']['OTEL_TRACES_EXPORTER'] == 'otlp'
+        assert options['env']['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] == '1'
+        assert options['env']['HTTPS_PROXY'] == 'model-proxy'
+        c = created[0]
+        start = c.launch_ns // 1000000 + 1
+        c.ingest(batch(span(1, start=start, ttft_ms=80, first_content_ms=82, attempt=1)))
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(command, 7, output='NO_NEW_RAW_RETENTION')
+        if failure == 'spawn':
+            raise OSError('fixture spawn failure')
+        if failure == 'interrupt':
+            raise KeyboardInterrupt()
+        output = 'malformed' if failure == 'json' else json.dumps({
+            'result': 'ok', 'duration_ms': 123, 'duration_api_ms': 100,
+            'num_turns': 2, 'usage': {
+                'input_tokens': 4, 'output_tokens': True,
+                'cache_read_input_tokens': 12, 'cache_creation_input_tokens': 7}})
+        return subprocess.CompletedProcess(command, 1 if failure == 'child' else 0, output, '')
+
+    monkeypatch.setattr(models.subprocess, 'run', child)
+    report = models.run('downloader', 'fixture', local_keys, compaction=False,
+                        scoped=True, workspace=tmp_path, timeout=7)
+    assert len(calls) == 1 and created[0].stop.is_set()
+    assert report['status'] == ('passed' if failure == 'none' else 'failed')
+    value = report['telemetry']
+    assert value['outcome'] == outcome and value['logical_requests_observed'] == 1
+    assert value['first_request_ttft_ms'] == 80 and value['completeness'] == 'partial'
+    assert 'NO_NEW_RAW_RETENTION' not in json.dumps(report)
+    if failure in ('none', 'child'):
+        assert value['cli']['num_turns'] == 2 and value['cli']['output_tokens'] is None
+        assert value['cli']['input_tokens'] == 4
+        assert value['cli']['cache_read_tokens'] == 12
+        assert value['cli']['cache_creation_tokens'] == 7
+
+
+def test_zai_collector_setup_failure_does_not_fail_successful_model(local_keys, monkeypatch, tmp_path):
+    from harness import agent_telemetry as t
+    monkeypatch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+    monkeypatch.setattr(models, 'child_environment', lambda *a, **kw: {'OTEL_EXPORTER_OTLP_ENDPOINT': 'SECRET'})
+
+    def broken(timeout):
+        raise OSError('SECRET')
+    monkeypatch.setattr(t, 'Collector', broken)
+    calls = []
+
+    def child(command, **options):
+        calls.append(command)
+        assert options['env']['OTEL_TRACES_EXPORTER'] == 'none'
+        assert 'SECRET' not in json.dumps(options['env'])
+        return subprocess.CompletedProcess(command, 0, '{"result":"ok"}', '')
+    monkeypatch.setattr(models.subprocess, 'run', child)
+    report = models.run('downloader', 'fixture', local_keys, compaction=False,
+                        scoped=True, workspace=tmp_path)
+    assert report['status'] == 'passed' and len(calls) == 1
+    assert report['telemetry']['setup_failed']
+    assert report['telemetry']['logical_requests_observed'] is None
+
+
+def test_claude_has_no_new_collector_or_telemetry(local_keys, monkeypatch, tmp_path):
+    from harness import agent_telemetry as t
+    monkeypatch.setattr(t, 'Collector', lambda *a: pytest.fail('Claude enabled GLM collector'))
+    monkeypatch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+    monkeypatch.setattr(models, 'child_environment', lambda *a, **kw: {})
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **kw:
+                        subprocess.CompletedProcess(a, 0, '{"result":"ok"}', ''))
+    report = models.run('reviewer', 'fixture', local_keys, compaction=False,
+                        scoped=True, workspace=tmp_path)
+    assert report['status'] == 'passed' and 'telemetry' not in report
+
+
+def test_codex_never_starts_glm_collector(codex_login, local_keys, monkeypatch):
+    from harness import agent_telemetry as t
+    monkeypatch.setattr(t, 'Collector', lambda *a: pytest.fail('Codex enabled GLM collector'))
+
+    def child(command, **options):
+        output = ('Logged in using ChatGPT' if 'login' in command else
+                  '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n'
+                  '{"type":"turn.completed"}\n')
+        return subprocess.CompletedProcess(command, 0, output, '')
+    monkeypatch.setattr(models.subprocess, 'run', child)
+    report = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert report['status'] == 'passed' and 'telemetry' not in report
+
+
+@pytest.mark.parametrize('failure', ['none', 'timeout', 'spawn'])
+def test_zai_real_listener_is_closed_on_mocked_child_exit(local_keys, monkeypatch, tmp_path, failure):
+    from harness import agent_telemetry as t
+    from harness.test_agent_telemetry import batch, span, request
+    real = t.Collector
+    collectors = []
+
+    def create(timeout):
+        c = real(timeout)
+        collectors.append(c)
+        return c
+    monkeypatch.setattr(t, 'Collector', create)
+    monkeypatch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+    monkeypatch.setattr(models, 'child_environment', lambda *a, **kw: {})
+
+    def child(command, **options):
+        c = collectors[0]
+        if failure != 'spawn':
+            body = batch(span(1, start=c.launch_ns // 1000000 + 1, ttft_ms=10, attempt=1))
+            assert b'200 OK' in request(c, body)
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(command, 7)
+        if failure == 'spawn':
+            raise OSError('fixture spawn failure')
+        return subprocess.CompletedProcess(command, 0, '{"result":"ok"}', '')
+    monkeypatch.setattr(models.subprocess, 'run', child)
+    result = models.run('downloader', 'fixture', local_keys, compaction=False,
+                        workspace=tmp_path, scoped=True, timeout=7)
+    c = collectors[0]
+    assert c.server.fileno() == -1 and not c.thread.is_alive()
+    assert result['status'] == ('passed' if failure == 'none' else 'failed')
+    assert result['telemetry']['logical_requests_observed'] == (None if failure == 'spawn' else 1)

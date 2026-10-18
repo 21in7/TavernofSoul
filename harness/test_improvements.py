@@ -2279,3 +2279,49 @@ def test_handoff_guard_rechecks_expiry_before_any_write_enabled_call(lab):
     result = imp.execute(pid, now=NOW, selected=lab.selected, executor=executor)
     assert result['status'] == 'failed' and writes == []
     assert lab.store.verify(lab.store.read('claims/' + pid + '.json'))['status'] == 'consumed'
+
+
+@pytest.mark.parametrize('failure', ['none', 'cli', 'contract', 'truncated', 'source'])
+def test_private_glm_telemetry_survives_scan_failures_and_public_is_identical(lab, failure):
+    from harness.test_agent_telemetry import sample
+
+    def transform(role, result, response, options):
+        if role == 'downloader':
+            result['telemetry'] = sample()
+            result['telemetry']['secret'] = 'SENSITIVE_DIAGNOSTIC /host/private'
+            if failure == 'cli':
+                result['status'] = 'failed'
+                result['telemetry']['outcome'] = 'timeout'
+            elif failure == 'contract':
+                result['response'] = '{"invalid":true}'
+            elif failure == 'truncated':
+                result['response'] = 'x' * (lab.config['limits']['max_response_bytes'] + 20000)
+            elif failure == 'source':
+                path = options['workspace'] / 'downloader/example.py'
+                path.chmod(0o600)
+                path.write_text('changed\n')
+        return result
+
+    report = scan(lab, ModelRunner(lab, transform=transform))
+    agent = next(a for a in report['agents'] if a['role'] == 'downloader')
+    assert agent['status'] == ('succeeded' if failure == 'none' else 'failed')
+    value = agent['telemetry']
+    assert value['logical_requests_observed'] == 1
+    assert value['parent']['context_preparation_ms'] >= 0
+    assert (value['parent']['source_verification_ms'] is None) == (failure == 'cli')
+    assert 'SENSITIVE_DIAGNOSTIC' not in json.dumps(agent)
+    if failure == 'truncated':
+        assert agent['result_truncated'] is True
+    saved = lab.store.read('scans/' + report['scan_id'] + '.json')
+    assert saved['agents'][1]['telemetry'] == value
+    without = copy.deepcopy(report)
+    for item in without['agents']:
+        item.pop('telemetry', None)
+    baseline = contract.canonical_json(contract.build_web_report(without))
+    injected = copy.deepcopy(report)
+    injected['telemetry'] = {'raw': 'TOP_LEVEL_SECRET'}
+    for item in injected['agents']:
+        item['telemetry'] = {'raw': 'PROMPT_SECRET', 'endpoint': 'https://private'}
+        item['result'] = {'stdout': 'RAW_SECRET'}
+    assert contract.canonical_json(contract.build_web_report(injected)) == baseline
+    assert contract.canonical_json(contract.build_web_report(report)) == baseline

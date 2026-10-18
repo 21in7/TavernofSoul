@@ -816,3 +816,22 @@ checks는 최종 소스의 fresh real review 뒤 오케스트레이터가 실행
   }
 }
 ```
+
+## Scoped GLM telemetry handoff
+
+이번 shared harness 변경은 기존 coordinator 구현 task **한 개**로 준비한다. 기존 역할 설정을
+사용하며 worker가 다른 역할·workflow·검사·Git·네트워크·서비스를 실행하거나 재위임하지 않는다.
+[ADR0019](adr/0019-private-glm-call-telemetry.md)의 local collector/private contract는
+[설계 책임](harness-design.md#private-glm-telemetry-responsibility)과
+[모델 계측 계약](agent-models.md#glm-호출의-private-지연-관측)을 따른다.
+provider=zai의 기존 final JSON subprocess에만 ephemeral trace collector를 붙이고 partial
+measurements를 기존 private research 참여 기록에 보존한다. 공개 web-v1/publisher/digest와
+기존 모델·auth/billing·compaction·37파일 read scope·fingerprint·storage·schedule·quota/budget/
+approval·frozen morning report는 유지한다. 추가 probe나 telemetry retry/fallback은 없다.
+
+parent는 새 의미 검토·관련 offline tests·full make check·별도 합성 live를 수행한다.
+메인은 다음 정상 admission된 GLM hourly private scan을 읽어 실제 지연을 관찰한다.
+호환 fixture·작성된 tests·worker 구현은 이 실행의 검사 통과나 성공한 production 관측을
+대신하지 않는다. 매 review는 documentation={status,files,reason}로 실제 수정된 승인 문서의
+의미적 완전성을 판단한다. 필수 scope가 없으면 승인 파일 finding에 정확한 추가 경로를
+기록하고 changes_requested로 반환하며 repair에서 범위를 자동 확대하지 않는다.

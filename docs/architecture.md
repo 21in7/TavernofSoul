@@ -822,3 +822,18 @@ Vaivora 툴팁 XML 인덱스는 표준 `xml.etree.ElementTree.XMLParser`의 cust
 선택 사유는 현재 지역 데이터셋의 존재 여부를 구분하며 실제 데이터 출처와 revision을 기록한다.
 이 검증은 합성 샘플의 경로 검사다. 전체 지역 게임 데이터·schema 차이·게임 계산식을 대신하지 않는다.
 입력·기대값·검증 단계별 경계는 [regional fixture 안내](../harness/fixtures/regional/README.md)를 참고한다.
+
+## GLM private latency boundary
+
+[ADR0019](adr/0019-private-glm-call-telemetry.md)의 `agent_telemetry`는 게임 데이터 경로와
+분리된 parent 소유의 임시 loopback OTLP collector다. zai CLI에만 적용하며 model API proxy나
+compaction plugin이 아니다. 원문·ID·resource/session/content를 durable 기록으로 내보내지 않고
+정제한 versioned numeric/boolean/fixed-enum만 기존 private research scan/state에 남긴다.
+`agent_models`는 자식 환경·수명·CLI wall, `improvements`는 context 준비/검증과 실패 보존,
+`improvement_loop`는 strict 재검사, 기존 `improvement_report`는 공개 allowlist projection을
+각각 소유한다. web-v1·publisher/digest에는 계측이 없다. 기존 storage 선택·scope37파일·
+fingerprint·quota/budget/approval·schedule·frozen morning report는 유지한다.
+무수출은 unavailable, export 관측도 partial이며 request/tool work 합계를 wall과 혼동하지 않는다.
+전체 필드와 향후 실제 기록 읽기는 [모델 연결](agent-models.md#glm-호출의-private-지연-관측)과
+[개선 연구](improvements.md#private-glm-지연-기록-읽기)에 둔다. parent 검증·live·정상 hourly
+관측은 대기 중이며 worker가 수행하거나 성공을 주장하지 않는다.

@@ -831,3 +831,55 @@ claim 경쟁/replay, 정확한 handoff, awaiting_github, private 격리, rendere
 HTTPS 전달·retry를 대상으로 한다. 명세 존재는 실행 결과가 아니다. 이번 문서 worker는
 검사·테스트·실모델·Git·workflow·cron·배포를 실행하지 않았다. 오케스트레이터가 최종 소스의
 의미 검토·전체 checks를 수행하고 메인이 실제 게시/CI/merge/cleanup·첫 scan·스케줄 활성화를 확인한다.
+
+## Private GLM 지연 기록 읽기
+
+[ADR0019](adr/0019-private-glm-call-telemetry.md)의 `glm-call-telemetry-v1`은
+GLM 역할의 `agents[].telemetry`에만 추가되는 선택적 private 계약이다. 전체 필드·상한·해석은
+[모델 연결](agent-models.md#glm-호출의-private-지연-관측)을 따른다. 오래된 기록에 필드가 없어도
+유효하며 과거 기록이나 frozen morning report를 계측 때문에 다시 만들지 않는다.
+
+저장 위치는 기존 Store의 선택된 improvement report root다. 설정/명시 report 경로의 기존
+우선순위를 그대로 사용한다. local 기본은 `logs/harness/improvements/`이며 기존 설정이 외부
+artifact root나 별도 보고 위치를 선택했다면 그 선택을 따른다. 새 저장 default/fallback이나
+별도 raw trace 파일은 없다. `scans/<scan_id>.json`의 agents와 진행 중 `loop/state.json`의
+`round.report.agents`에 정제된 계측이 남는다. 기존 private directory0700/file0600 및
+record1MiB 상한을 유지한다. 기존 morning 선택이 담은 private participation은 그때의 기록을
+따르되 공개 `improvement-web-v1`, publisher 본문·digest에는 새 계측을 넣지 않는다.
+
+`_call_role`은 context 복사·prompt 준비를 monotonic `context_preparation_ms`로,
+기존 호출 뒤 읽기 전용 사본 검증을 `source_verification_ms`로 분리한다. 후자를 수행하지 못하면
+null이며 GLM Read 시간이 아니다. 전체 elapsed_seconds에는 context 정리 등 다른 부모 작업도
+있다. runner의 정제 telemetry는 결과 축약·CLI 실패·timeout·응답 계약 거절 전에 별도로 보존한다.
+loop의 `_safe_participation`은 version·collection bounds·numeric/fixed enum만 다시 검사하고
+집계를 재계산하며 임의 runner diagnostics를 받아들이지 않는다. 잘못된 계약은 제거한다.
+
+아래는 **향후 실제로 정상 admission된 GLM 연구가 끝난 뒤** 메인이 해당 private scan을
+선택해 읽을 수 있는 예다. 지금 관측이나 성공을 주장하는 출력 예시는 아니다. 경로는 이미
+선택된 private report root와 실제 scan_id를 사용해야 하며 새 extra source probe를 실행하지 않는다.
+
+```python
+# 메인이 이미 선택한 private 기록 한 개를 읽는 예시; worker 실행 명령이 아님.
+record = json.loads(private_scan_path.read_text(encoding='utf-8'))
+glm = next(a for a in record['agents'] if a.get('provider') == 'zai')
+telemetry = glm.get('telemetry')
+if telemetry is None:
+    print('기존 기록 또는 계측 계약 미제공')
+else:
+    print(telemetry['availability'], telemetry['outcome'], telemetry['completeness'])
+    print(telemetry['first_request_ttft_ms'], telemetry['launch_to_first_content_ms'])
+    print(telemetry['logical_requests_observed'], telemetry['transport_attempts_known'])
+    print(telemetry['tool_work']['Read'], telemetry['parent'])
+```
+
+requests를 시간순으로 보고 첫 요청의 TTFT/content, 요청 수·알려진 재시도·각 lifecycle,
+Read body의 count/total/max, context 준비/검증 및 CLI wall을 함께 비교한다. token·turn과
+물리 HTTP 요청 수는 다르다. 서로 겹칠 수 있는 work 합계에서 정확한 overhead를 역산하지 않는다.
+누락 attempt/content는 null, 무수출은 unavailable, timeout은 이미 수출된 부분만 partial이다.
+CLI final JSON duration/API time/turn은 보조값이며 미수출 요청을 메우지 않는다. 이 계측만으로
+provider 대기·네트워크·SDK 내부 작업을 모두 분해하거나 정확한 disk I/O를 증명할 수 없다.
+
+현재 worker는 실연구·합성 live·검사를 실행하지 않았다. 부모가 offline/full make check와
+별도 합성 검증을 수행한 다음 기존 schedule·quota80%·budget·approval·37파일 scope·fingerprint·
+storage·compaction을 유지한 다음 normally admitted GLM 단계에서 관찰한다. 이를 위해 추가
+호출·schedule/state 수정·과거 아침 보고 재발행·거절된 repository-source probe를 만들지 않는다.
