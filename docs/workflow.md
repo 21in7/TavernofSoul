@@ -1,5 +1,43 @@
 # 개발 작업 자동 배정과 실행
 
+## 현재 저장·검증·복구 순서
+
+[ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2에서 workspace/checks/logs/backup/
+Git journal은 local active artifacts, 비인증 임시는 local temporary다. archive는 terminal 결과만
+받고 파싱/status/find_run/progress에는 접근하지 않는다. v1/no-config와 옛 NFS journal은 보존하며
+원래 v1 설정으로 조회·재개한다. private 기본 설정 활성화는 검토·검증 후 main 책임이다.
+
+최종 report save와 project lock 해제 후 archive하며 Git request/accept/resume/cleanup은
+최종 save → 두 lock 해제 → 기존 completion hook → archive 순서다. awaiting_github/awaiting_ci/
+cleanup_pending은 완료 archive 대상이 아니다. GIT=0·실패/중단과 standalone checks도 지원하며
+검증 자식의 파생 v1 설정은 nested archive를 하지 않는다. archive pending은 기존 outcome·merge/
+cleanup 증거를 보존하고 별도 nonzero다.
+
+원격은 local freeze와 달리 directory rename을 사용하지 않는다. exclusive private 결과
+디렉터리의 attachment를 로컬 archive-transfer.json에 고정하고 bounded payload·inventory를
+검증한 뒤 마지막 commit.json을 no-replace 파일 link로 게시한다. 최종 0600/nlink=1 readback
+전에는 완료가 아니다. 정확한 frozen prefix만 이어 쓰고, 알려진 임시/최종 두 alias의 동일 inode/
+nlink=2 전이만 복구한다. 알 수 없는 충돌·변조·교체는 삭제하거나 덮어쓰지 않는다. mkdir 뒤
+receipt 전 중단은 자동 복구하지 않는다. trusted parent가 최종 archive.py의 실제 NFS 저장·
+readback/hash·동일 결과 멱등 재개 성공을 보고했다. 일반 pipeline 전체 성공을 뜻하지 않는다.
+
+main은 같은 config의 `make archive-run RUN_ID=... KIND=workflows`로 모델/검사/Git 없이 보관만
+재개한다. frozen payload와 현재 terminal allowlist가 다르면 pending이며 과거 payload를 새
+성공으로 쓰지 않는다. local workspace/backup과 복구 증거는 자동 삭제하지 않고 floor를 유지한다.
+
+[ADR0022](adr/0022-documentation-only-validation.md)에 따라 새 review 뒤 실제 최종 diff를 분류하고
+repair마다 다시 판단한다. 일반 README/docs prose만 docs-only이며 정책·코드·mode/type·불명은 full이다.
+로컬 manifest는 POSIX permission 정수를 보존하여 0664/0640/0600 등 기존 비실행 regular 문서의
+동일 권한 수정과 정상 추가/삭제를 허용한다. 실제 권한 변경(0600→0644 포함)·실행/special bit·
+불명 mode는 full이며 CI raw Git mode 문자열은 기존 100644 기준을 유지한다.
+check-docs는 stdlib 링크/fragment/삭제·rename 영향을 검사하고 positive selected/passed·zero skip
+결과를 validation_selection/delivery_validation digest로 적용·게시까지 결합한다. CI의 세 required
+gate는 docs 증거 또는 기존 heavy 검사의 실제 성공을 요구한다. 새 브랜치 push의 zero-before는 full
+fallback이다. 여러 줄 inline code는 같은 길이의 backtick run과 code 안팎의 escape 규칙으로 마스킹하고
+원문 줄 번호·heading 텍스트 기여·code 뒤 실제 링크 검사를 유지한다. paragraph·heading·fence 경계와
+미지원 multiline link/HTML의 fail-closed 정책은 유지한다. 이번 harness/CI 수정은 shortcut 대상이 아니며 main이 새 Claude 의미 검토·전체
+make check·실제 문서 검사·GitHub 전달/CI를 수행한다. worker는 이 실행을 대신하지 않는다.
+
 `harness/workflow.py`는 작업 접수부터 검토·검증·파일 반영과 GitHub 게시 준비까지 연결한다.
 메인 Codex `/root`는 파일 범위를 조사하고 요청을 전달하며, 앱 게시·머지 후 브랜치 정리와
 최종 결과 보고를 맡는 조정 역할이다.

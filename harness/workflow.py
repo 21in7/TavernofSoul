@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from harness import agent_models, failure_feedback, git_publish, storage, triage, workspace
+from harness import agent_models, archive, docs_check, failure_feedback, git_publish, storage, triage, workspace
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/workflow-config.json'
@@ -21,7 +21,7 @@ _DEFAULT_REPORTS = REPORTS
 PHASES = {'prepare': '준비', 'triage': 'Jev 판단', 'plan': '작업 배정',
           'implement': '담당 에이전트 실행', 'review': 'Claude 검토',
           'validate': '하네스 검증', 'apply': '결과 반영', 'github': 'GitHub 게시·병합·정리'}
-CHECKS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pipeline')
+CHECKS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pipeline', 'check-docs')
 DOCUMENTATION_GUIDANCE = (
     'Assess documentation impact at task start and in every review. Changes to structure, '
     'responsibilities, data contracts, isolation, validation, failure recovery or GitHub publication '
@@ -202,6 +202,13 @@ def run_check(candidate, command, report_dir, keys, policy):
         raise ValueError('Check command is not allowlisted.')
     selected = storage_policy()
     selected.ensure_directory(report_dir)
+    if command == 'check-docs':
+        data = docs_check.check(candidate, policy.get('_docs_changes'))
+        path = report_dir / 'check-docs.json'
+        agent_models.private_json(path, data, policy=selected)
+        return {'command': command, 'status': data['status'],
+                'exit_code': 0 if data['status'] == 'passed' else 1,
+                'report': str(path), 'checks': data['checks']}
     env = check_environment(keys)
     if selected.configured:
         # The original artifact root contains the validation source snapshot.
@@ -449,11 +456,17 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
         report['model_context_manifest'] = str(directory / 'model-context.json')
         agent_models.private_json(directory / 'model-context.json',
                                   {'approved_files': scope, 'copied_files': model_baseline}, policy=selected)
-        selected.ensure_directory(directory / 'prepare')
-        result = checker(candidate, 'doctor', directory / 'prepare', keys, policy)
-        report['environment'] = result
-        if result['status'] != 'passed':
-            raise ValueError('Harness environment is not ready.')
+        # Actual docs-only edits can have code in their read scope. Defer the
+        # dependency doctor until final changes are known whenever prose is in
+        # scope; the ordinary full runner still owns its doctor gate.
+        environment_checked = False
+        if not any(docs_check.prose(name) for name in scope):
+            selected.ensure_directory(directory / 'prepare')
+            result = checker(candidate, 'doctor', directory / 'prepare', keys, policy)
+            report['environment'] = result
+            if result['status'] != 'passed':
+                raise ValueError('Harness environment is not ready.')
+            environment_checked = True
         workspace.enforce_scope(baseline, workspace.manifest(candidate, policy), [], read_only=True)
         progress.event('prepare', 'passed')
         progress.event('triage', 'running', api_requested=not rules_only and not simulated)
@@ -599,17 +612,31 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                                           previous, keys, read_only, policy)
                 continue
             progress.event('review', 'approved', 'reviewer', round=round_number)
+            selection = docs_check.classify(docs_check.manifest_changes(baseline, candidate_manifest))
+            selection['digest'] = docs_check.change_digest(baseline, candidate_manifest)
+            report['validation_selection'] = selection
+            round_checks = ['check-docs'] if selection['mode'] == 'docs' else checks
+            report['required_checks'] = round_checks
+            round_policy = {**policy, '_docs_changes': selection['changes']}
+            if selection['mode'] != 'docs' and not environment_checked:
+                selected.ensure_directory(directory / 'prepare')
+                result = checker(candidate, 'doctor', directory / 'prepare', keys, policy)
+                report['environment'] = result
+                if result['status'] != 'passed':
+                    raise ValueError('Harness environment is not ready.')
+                environment_checked = True
             failures, round_validation = [], []
-            for command in checks:
+            for command in round_checks:
                 progress.event('validate', 'running', detail=command, round=round_number)
                 selected.check_ready()
                 check_dir = selected.ensure_directory(directory / ('checks-' + str(round_number)) / command)
                 result = checker(candidate, command, check_dir,
-                                 keys, policy)
+                                 keys, round_policy)
+                result['validation_digest'] = selection['digest']
                 # A successful CLI/fixture status cannot override structured
                 # failures, skipped coverage, or a nonzero process exit.
                 if result.get('status') != 'passed' or result.get('exit_code', 0) != 0 or \
-                        (not (simulated and result.get('checks') == {}) and
+                        (not (simulated and command != 'check-docs' and result.get('checks') == {}) and
                          not failure_feedback.check_groups_passed(result.get('checks'))):
                     result = {**result, 'status': 'failed'}
                 report['validation'].append(result)
@@ -679,6 +706,11 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                 progress.save()
         finally:
             lock.close()
+    if selected.version == 2 and report['status'] in archive.TERMINAL:
+        try:
+            report['archive'] = archive.archive_run(selected, directory)
+        except (Exception, KeyboardInterrupt) as exc:
+            report['archive'] = {'status': 'pending', 'error_type': type(exc).__name__}
     return triage.scrub(report, keys)
 
 
@@ -743,6 +775,11 @@ def main(argv=None):
                          else selected.latest_run(local_default=local_reports()))
             record = selected.record_path(directory, 'report.json', local_default=local_reports())
             report = status_object(selected.fs.read_bytes(record))
+            state = directory / 'archive-state.json'
+            if selected.version == 2 and storage._info(selected.fs, state) is not None:
+                report['archive'] = status_object(selected.fs.read_bytes(state))
+            elif selected.version == 2 and report.get('status') in archive.TERMINAL:
+                report['archive'] = {'status': 'pending', 'reason': 'archive_not_recorded'}
             if not isinstance(report, dict) or report.get('run_id') != directory.name or \
                     not isinstance(report.get('status'), str) or \
                     not isinstance(report.get('github', {}), dict) or \
@@ -785,10 +822,10 @@ def main(argv=None):
                                  read_only=args.read_only, rules_only=args.rules_only, no_git=args.no_git)
         # Agent responses and check output stay in the private report, not the terminal.
         summary = {name: report[name] for name in ('run_id', 'pid', 'status', 'current', 'required_checks',
-                   'changed_files', 'applied', 'report', 'error', 'simulated', 'github') if name in report}
+                   'changed_files', 'applied', 'report', 'error', 'simulated', 'github', 'archive') if name in report}
         print(json.dumps(summary if args.command != 'plan' else report, ensure_ascii=False, indent=2))
         # Exit 0 hands control to the parent; awaiting_github still means incomplete.
-        return 0 if report.get('status', 'passed') in ('passed', 'running', 'demonstrated', 'awaiting_github') else 1
+        return 0 if report.get('status', 'passed') in ('passed', 'running', 'demonstrated', 'awaiting_github') and report.get('archive', {}).get('status') != 'pending' else 1
     except storage.StorageError as exc:
         print('Workflow failed: StorageError: {}'.format(exc), file=sys.stderr)
         return 1

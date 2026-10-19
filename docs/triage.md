@@ -93,7 +93,13 @@ confidence는 답의 분포에서 계산한 지표이며 정답률이 아니다.
 
 다운로더·파서·Django 경로는 각각 `make check-downloader`, `make check-parser`, `make check-django`를 요구한다.
 여러 영역, 공통 계약, importer, 파서 `DB.py`/`main.py`, 하네스, cron 경로는 `make check`를 요구한다.
-Jev가 단순 작업으로 판단해도 경로 규칙을 낮출 수 없다. coordinator 추천은 `make check`를 요구한다.
+Jev가 단순 작업으로 판단해도 경로 규칙을 낮출 수 없다. coordinator 추천의 초기 최소값은
+`make check`다. 다만 [ADR0022](adr/0022-documentation-only-validation.md)에 따라 workflow가
+새 review 뒤 **실제 최종 baseline→candidate diff**를 증명한 일반 prose 변경만 `check-docs`로
+선택할 수 있다. 읽기 scope·Jev 응답은 docs-only 근거가 아니며 이 shadow 보고서는 검사 실행을
+주장하지 않는다. 코드/정책/설정·mode/type·혼합/불명 변경은 기존 full 경로이고 repair마다 다시
+판단한다. 문서 삭제/rename의 역참조와 fragment도 검사하며 선택 digest를 적용·게시까지 결합한다.
+CI의 세 required gate 정책과 새 브랜치 push zero-before의 full fallback은 유지한다.
 모델·migration·계산 관련 핵심 파일과 계약 영향은 `review_required`에 표시한다.
 보고서는 검증 실행 여부를 주장하지 않으며 실제 변경 후 해당 검증을 실행해야 한다.
 

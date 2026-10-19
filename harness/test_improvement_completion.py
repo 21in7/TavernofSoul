@@ -613,3 +613,33 @@ def test_strict_wire_rejects_malformed_fields(completed, fault):
         payload['digest'] = contract.digest({k: v for k, v in payload.items() if k != 'digest'})
     with pytest.raises(ValueError):
         completion.validate_payload(payload)
+
+
+def test_terminal_archive_preserves_completion_hook_and_runs_after_both_locks(completed, monkeypatch, capsys):
+    from harness import archive
+    lab = completed
+    lab.selected.version = 2
+    monkeypatch.setattr(lab.selected.fs, 'local_filesystem', lambda path: True)
+    order = []
+    def completed_hook(run_id, *, selected):
+        order.append('completion')
+        return {'status': 'not_applicable', 'completions': []}
+    def after_locks(selected, directory, kind='workflows'):
+        assert order == ['completion']
+        assert selected is lab.selected and directory == lab.directory
+        for path in (selected.project_lock_path, directory / 'github.lock'):
+            with github.open_lock(selected, path) as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        saved = imp._json_file(directory / 'report.json')
+        assert saved['status'] == 'passed' and saved['github']['merge_sha'] == lab.ledger['merge_sha']
+        order.append('archive')
+        return {'status': 'pending', 'run_id': RUN}
+    monkeypatch.setattr(completion, 'complete_run', completed_hook)
+    monkeypatch.setattr(archive, 'archive_run', after_locks)
+    assert github.main(['request', '--run-id', RUN]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert order == ['completion', 'archive']
+    assert output['github']['merge_status'] == 'merged'
+    assert output['github']['cleanup']['status'] == 'complete'
+    assert output['archive']['status'] == 'pending'
+    assert imp._json_file(lab.directory / 'report.json')['status'] == 'passed'

@@ -1,13 +1,18 @@
 {
-  "version": 1,
+  "version": 2,
   "artifacts": {
-    "path": "/mnt/example-fast/tavern/harness-artifacts",
-    "required_mount": "/mnt/example-fast",
+    "path": "/var/tmp/tavern/harness-artifacts",
+    "required_mount": "/",
     "min_free_bytes": 10737418240
   },
   "temporary": {
-    "path": "/mnt/example-fast/tavern/harness-temporary",
-    "required_mount": "/mnt/example-fast",
+    "path": "/var/tmp/tavern/harness-temporary",
+    "required_mount": "/",
+    "min_free_bytes": 10737418240
+  },
+  "archive": {
+    "path": "/mnt/example-archive/tavern/results",
+    "required_mount": "/mnt/example-archive",
     "min_free_bytes": 10737418240
   }
 }

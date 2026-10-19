@@ -1,5 +1,44 @@
 # 전체 하네스 설계
 
+## 로컬 실행·결과 보관과 실제 변경 검증
+
+[ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2는 local active artifacts/temporary와
+별도 archive spec을 구분한다. archive parsing은 lexical/type/overlap만 확인하고 local hot path에는
+archive 조회를 추가하지 않는다. v2는 remote work root/active/report를 거부한다. v1/no-config·
+명시 기존 설정은 유지하고 역사적 NFS journal은 원래 v1 config로 조회·재개한다. 과거 NFS 유지
+지시는 개발 active 선택에 한해 새 사용자 요청으로 대체되며 daily/hourly·게임 cron·approval은 유지한다.
+
+archive.py는 terminal allowlist만 bounded tar/inventory/manifest로 로컬 freeze한다. Git은 최종
+save·project/GitHub lock 해제·기존 completion hook 뒤 archive한다. standalone check 결과도
+보관하고 workflow의 파생 v1 검증 설정은 nested archive를 금지한다. pending은 outcome·merge SHA·
+cleanup proof를 보존하고 별도 nonzero를 반환한다. workspace/credential/raw 응답은 포함하지 않는다.
+
+로컬 freeze만 directory no-replace rename을 사용한다. NFS의 directory rename EINVAL 때문에
+원격은 exclusive private 디렉터리와 no-replace 파일 link 프로토콜을 사용한다. 로컬 receipt는
+frozen manifest와 목적지의 device/inode/mount·임시 token을 고정한다. 전송 중 fresh readiness와
+attachment를 검증하고, 부분 임시 파일은 원본 prefix와 같을 때만 append한다. 파일별 fsync/link/
+unlink와 전체 inventory/hash 검증 후 마지막 commit.json을 게시한다. 완료 readback은 정확한
+네 파일·marker·0600/nlink=1을 요구한다. 알려진 두 alias의 동일 inode/nlink=2 전이만 정리하며
+알 수 없는 hardlink·충돌·교체·변조는 보존한다. receipt 전 mkdir 중단은 자동 복구할 수 없다.
+archive-only 재개는 모델/검사/Git 없이 frozen/current 결과를 다시 대조하며 active journal을
+대체하지 않는다. 부피 큰 workspace/backup은 자동 정리하지 않고 local floor를 유지한다.
+
+[ADR0022](adr/0022-documentation-only-validation.md)의 docs-only 선택은 scope/모델 주장 대신
+최종 baseline→candidate bytes/mode/type diff를 사용한다. 정책/코드/설정/불명은 full이며 repair마다
+재판단한다. validation_selection·검사 digest·delivery_validation을 반영·게시까지 결합한다.
+로컬 mode 기록은 POSIX 정수를 유지해 동일 0664/0640/0600 등 일반 비실행 권한을 허용하고
+실제 권한 변경·실행/special bit·invalid mode는 full로 보낸다. 추가/삭제는 존재하는 쪽을 검사하며
+CI raw Git mode 문자열은 기존 100644 기준을 유지한다.
+check-docs는 Python 3.8 stdlib로 링크/Unicode heading·fragment·삭제/rename 역참조를 검사하고
+외부 HTTP·예제 실행은 없다. unsupported Markdown은 오류며 의미적 완전성은 Claude가 판단한다.
+inline code는 같은 block의 줄바꿈·정확한 backtick run·code 안팎의 escape를 구별해 마스킹하며
+원문 줄 번호·heading 텍스트·뒤의 실제 링크 검사와 fence 경계를 보존한다.
+CI complete event diff와 세 required final gate는 positive selected/passed·zero skip의 docs 증거
+또는 기존 heavy 실행 성공을 요구한다. zero-before 새 브랜치 push 등 불명 근거는 full이다.
+trusted parent의 최종 archive.py 실제 NFS 저장/readback/hash·동일 결과 멱등 재개 성공 관측은
+일반 pipeline 전체 성공이 아니다. 이번 수정은 새 실제 Claude 검토·full make check·실제 문서 검사·
+GitHub/CI 검증이 필요하다.
+
 기록일: 2026-10-11. Codex 경고·성공 판정과 머지 후 정리 정책 갱신: 2026-10-12.
 설정 가능한 저장 경계 갱신: 2026-10-13.
 승인 대기 일일 개선 발견 경계 추가: 2026-10-15.

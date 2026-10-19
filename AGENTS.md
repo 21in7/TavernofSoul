@@ -4,6 +4,16 @@
 전체 흐름과 책임 경계는 [docs/architecture.md](docs/architecture.md),
 검증 범위와 환경 준비는 [docs/harness.md](docs/harness.md)를 먼저 확인한다.
 
+2026-10-19 저장·검증 정책: 사용자 직접 요청에 따라 명시 v2는 개발 작업·검증을 로컬 active
+artifacts/temporary에서 수행하고 remote archive에는 terminal 결과 allowlist 묶음만 보관한다.
+[ADR0021](docs/adr/0021-local-work-and-result-archives.md),
+[ADR0022](docs/adr/0022-documentation-only-validation.md)이 아래 역사적 NFS 유지 지시를
+**개발 작업 저장 선택에 한해서** 대체한다. v1/no-config·기존 explicit 설정은 호환 유지하며
+옛 NFS 기록·absolute journal은 보존한다. 원래 v1 config를 명시 선택해 옛 run을 조회·재개한다.
+archive를 status/find_run/progress 검색 root나 active journal 대체물로 사용하지 않는다.
+daily/hourly·게임 cron·approval 기록과 모델/역할/인증 설정은 바꾸지 않는다. 실제 private 기본값
+전환은 코드 검토·검증 후 parent가 담당하며 worker에게 private 설정·credential을 제공하지 않는다.
+
 ## 영역별 진입점
 
 - 다운로더·압축 해제·번역 준비: `downloader/`와 [downloader/AGENTS.md](downloader/AGENTS.md).
@@ -218,12 +228,42 @@ Sites API/UI 구현·배포와 credential 관리는 메인 책임이며 저장�
 메인 `/root`가 담당한다. 설명·진단 질문에는 유료 구현 흐름을 자동 실행하지 않는다.
 
 1. 변경 전 작업 트리 상태를 확인하고 기존 사용자 변경을 보존한다.
-2. `make doctor`로 하네스 환경을 확인한다. 필요하면 `PYTHON=/path/to/python`을 지정한다.
+2. 최종 baseline→candidate 변경으로 검증을 선택한다. full 경로에서는 `make doctor`로 환경을
+   확인하고 필요하면 `PYTHON=/path/to/python`을 지정한다. docs-only에는 game dependency doctor를 요구하지 않는다.
 3. 다운로더 변경은 `make check-downloader`, 파서 변경은 `make check-parser`,
    Django·importer 변경은 `make check-django`를 실행한다.
-4. 데이터 계약·연결부·하네스 변경은 `make check`를 실행한다.
-5. 결과는 `logs/harness/`에서 확인한다. 선택된 테스트의 skip/xfail은 완료로 처리하지 않는다.
+4. 데이터 계약·연결부·하네스·CI·정책 변경은 기존 필수 검증을 유지한다. 실제 변경이 허용 prose
+   (`README.md`, `docs/**/*.md`)뿐이면 `check-docs`를 선택할 수 있다. `AGENTS.md`,
+   `docs/workflow.md`, `docs/harness-design.md`, 코드/설정/CI/Makefile, mode/type/symlink 변화,
+   불명/빈 증거·비문서 rename은 full이다. 읽기 scope나 모델 주장은 선택 근거가 아니다.
+   repair마다 다시 판단하며 삭제·rename의 양쪽 경로와 남은 역참조를 검사한다.
+5. 결과는 선택된 active artifact root에서 확인한다(설정 없으면 `logs/harness/`). 선택된 검사는
+   positive selected/passed와 zero skip/failure/error를 요구하며 빈/옛 보고서는 완료로 처리하지 않는다.
 6. 기본 검증에서 제외한 실데이터 테스트와 추가 검증의 수행 여부를 구분해 보고한다.
+
+v2는 remote work root·active/report 경로를 거부하고 local floor·no-follow·기존 lock을 유지한다.
+archive spec은 파싱 시 lexical/type/overlap만 검사하며 실제 mount/floor/private 검사는 ARCHIVE
+시점에 한다. Git 최종 save와 project/GitHub lock 해제 및 기존 completion hook 뒤 terminal 결과를
+보관한다. 중간 awaiting_github/awaiting_ci/cleanup_pending은 완료 archive 대상이 아니다.
+실패·중단/GIT=0의 지원 terminal 결과도 보관하되 성공으로 바꾸지 않는다. archive 장애는 기존
+passed/merge SHA/cleanup proof와 별도로 pending·nonzero이며 로컬 원본을 보존한다.
+parent의 `make archive-run RUN_ID=... KIND=workflows`는 같은 run의 보관만 재개한다.
+frozen payload와 현재 terminal 결과가 다르면 옛 결과를 새 성공처럼 표시하지 않고 거부한다.
+workspace·`.git`·모델 context·credential·lock·private config·승인 지시는 archive에서 제외한다.
+검증 workspace/backup/journal 자동 삭제는 하지 않으며 owned 임시 context cleanup만 유지한다.
+
+docs checker는 Python 3.8 표준라이브러리로 링크·heading/fragment·역참조 등을 오프라인 검증한다.
+복잡한 Markdown의 지원 한계와 최종 내용의 의미적 완전성은 Claude 검토 책임으로 남긴다.
+공개 Git 관리 소스 [.github/workflows/harness.yml](.github/workflows/harness.yml) 참조는 credential
+접근이 아니며 CI 파일 수정 자체는 full이다. CI complete PR diff는 docs-only일 수 있지만 새
+브랜치 push의 zero before SHA, shallow/invalid/unknown/workflow_dispatch는 full fallback이다.
+세 required check는 docs 증거 또는 해당 full 실행 성공을 확인하는 실제 gate로 계속 실행한다.
+skipped/neutral을 success로 취급하거나 branch protection·권한·lock·CI를 우회하지 않는다.
+
+이번 저장/검증 구현은 harness·CI 변경이므로 docs-only 대상이 아니다. 이전 run
+`1792414748889186714-9305b2`의 900초 coordinator timeout과 `applied=[]`, 복원 초안·미실행
+테스트는 성공 근거가 아니다. parent가 새 실제 Codex 작업·Claude 의미 검토·전체 `make check`·
+CI·GitHub 전달 증거를 확보한다. 작업자·검토자는 실행하거나 통과했다고 주장하지 않는다.
 
 ## 데이터와 실행 경계
 
@@ -234,3 +274,14 @@ Sites API/UI 구현·배포와 credential 관리는 메인 책임이며 저장�
   소스 수정의 부수 작업으로 초기화하거나 덮어쓰지 않는다.
 - `*_unpack/`과 `IPFUnpacker/`에는 별도 Git 소유권이 있다. 작업 범위를 확인한다.
 - 데이터 형식·단위·ID 처리 규칙을 바꾸면 경계 문서와 관련 검증을 함께 갱신한다.
+
+### 원격 archive 완료 계약 (2026-10-19)
+
+로컬 freeze의 directory no-replace rename과 원격 게시를 구분한다. NFS archive는 exclusive
+private 결과 디렉터리·로컬 transfer receipt·bounded 파일 준비/검증과 no-replace 파일 link를
+사용한다. 마지막 commit.json과 정확한 inventory/hash·최종 0600/nlink=1 readback 전에는 완료가
+아니다. receipt에 고정된 임시/최종 이름의 동일 inode/nlink=2 전이만 정리하며 알 수 없는
+hardlink·충돌·조작을 덮어쓰거나 삭제하지 않는다. prefix가 정확한 부분 파일만 append한다.
+mkdir 뒤 receipt 전 중단은 pending으로 남겨 main이 판단한다. 일반 rename fallback은 금지한다.
+main의 directory rename EINVAL/파일 link probe는 최종 어댑터 통과가 아니다. 이번 구현은 새
+Claude 의미 검토·full make check·실제 NFS 검증·GitHub/CI가 필요하며 workers는 실행하지 않는다.

@@ -25,8 +25,25 @@
 | [0018](0018-storage-check-probe-deduplication.md) | 한 읽기 경계의 mount별 공간 조회 공유·양쪽 floor와 fresh 쓰기 gate 유지·실제 목적지/새 root probe | 제안(proposed), 새 의미 검토·전체 offline 검증·전달 대기 | 2026-10-16 |
 | [0019](0019-private-glm-call-telemetry.md) | parent loopback OTLP collector·bounded numeric private GLM latency contract·public web-v1 제외 | 제안(proposed), 새 의미 검토·전체 검사·parent 합성/정상 hourly 관측 대기 | 2026-10-18 |
 | [0020](0020-automatic-proposal-completion.md) | signed run 완료 증거·별도 completion-v1 private outbox·동일 digest GET 복구와 명시 재전송 | 사용자 요청 계약 승인, 최종 의미 검토/full check/Git 전달·메인의 Sites 구현·배포/HTTP 관측 대기 | 2026-10-19 |
+| [0021](0021-local-work-and-result-archives.md) | 명시 v2 local 작업·검증과 allowlist terminal archive, frozen/current 일치·NFS 파일 link/최종 commit·보관만 재개 | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
+| [0022](0022-documentation-only-validation.md) | 최종 실제 diff·digest에 결합한 prose 검증과 세 required CI의 실제 gate | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
 
 ## 상태와 근거의 의미
+
+0021/0022가 현재 개발 저장·검증 선택이다. 사용자 직접 요청으로 아래 날짜별 'NFS 유지' 지시는
+개발 작업의 active 저장 선택에 한해 대체한다. v1/no-config·명시 기존 설정과 옛 NFS 기록/
+absolute journal·daily/hourly/게임 cron·approval 기록·모델/auth/lock은 보존한다. private 기본값
+활성화는 코드 검토·검증 후 parent가 한다. archive는 status/find_run 검색 root나 active journal
+대체가 아니며 ARCHIVE에서만 실제 접근한다. frozen 결과와 현재 terminal 결과 불일치는 거부한다.
+문서 전용은 actual final diff가 허용 prose일 때만 가능하며 정책·CI·mode/type·불명 증거는 full이다.
+complete PR docs-only와 새 브랜치 push zero-before full fallback은 구분한다. 세 required check는
+실제 docs 증거/full 실행 gate를 계속 제공한다. 이번 harness/CI 변경 자체는 full `make check` 필수다.
+
+이전 run `1792414748889186714-9305b2`는 coordinator CLI 900초 timeout, `applied=[]`다.
+parent의 baseline 동일성/checkpoint hash 확인과 승인 파일 초안 준비는 복구 준비이며 검증 성공이
+아니다. 새 실제 Codex 작업·Claude 의미 검토·전체 check·CI·GitHub 전달 증거를 parent가 확보한다.
+이 문서 작업자는 검사하지 않았다. proposed는 이 남은 검증 상태를 표시하며 사용자 요청을
+부정하지 않는다. 매 review의 documentation은 최종 코드와 문서의 의미적 완전성을 새로 판단한다.
 
 0020은 web-v1만 전송한다는 경계를 사용자 승인된 web-v1과 별도 completion-v1 두 계약으로
 정밀화한다. 불변 오전 보고/digest/publication과 37개 discovery scope·역할/model/auth·scheduler·
@@ -281,3 +298,8 @@ Python3.8 raw `compressobj`의 compress+compressor flush는 작은 fixture 완�
 ## 관련 코드·검증·문서
 실제 경로 링크. 검사 명세·미실행·실제 결과를 구분.
 ```
+
+0021의 원격 완료 계약은 exclusive private 디렉터리와 로컬 transfer receipt, bounded 파일
+검증, no-replace hardlink의 마지막 commit.json이다. directory no-replace rename은 로컬
+freeze에만 요구한다. 알려진 두 alias 전이만 복구하며 최종 0600/nlink=1을 확인한다. NFS
+primitive probe와 보존 초안은 최종 어댑터·새 Claude 검토·full make check·GitHub/CI 성공이 아니다.

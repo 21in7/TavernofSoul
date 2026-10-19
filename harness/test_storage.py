@@ -1917,3 +1917,90 @@ def test_existing_report_override_is_not_chmodded(configured, tmp_path):
         policy.ensure_directory(reports)
     assert stat.S_IMODE(reports.stat().st_mode) == 0o755
     assert sentinel.read_text() == 'preserved'
+
+
+def v2_document(local, remote):
+    return {**config_document(local), 'version': 2,
+            'archive': {'path': str(remote / 'results'), 'required_mount': str(remote),
+                        'min_free_bytes': 1000}}
+
+
+def test_v2_local_operations_never_inspect_archive(project, tmp_path):
+    local, remote = tmp_path / 'local', tmp_path / 'remote-offline'
+    local.mkdir()
+    class LocalOnly(FakeFS):
+        def lstat(self, path):
+            assert not storage._within(path, remote), 'local operation touched archive metadata'
+            return super().lstat(path)
+        def local_filesystem(self, path):
+            assert not storage._within(path, remote)
+            return True
+        def mount_ready(self, path):
+            assert not storage._within(path, remote)
+            return super().mount_ready(path)
+    fs = LocalOnly([local])
+    save_config(project, v2_document(local, remote))
+    policy = storage.resolve_storage(project, env={}, fs=fs)
+    policy.prepare()
+    policy.check_ready()
+    assert policy.status()['version'] == 2
+    directory = make_run(policy.workflow_root())
+    assert policy.find_run(directory.name) == directory
+    assert policy.latest_run() == directory
+    assert policy.report_dir('agents') == policy.artifact_root / 'agents'
+    assert remote not in fs.mount_queries and remote not in fs.space_queries
+
+
+@pytest.mark.parametrize('field', ['artifacts', 'temporary', 'project', 'report'])
+def test_v2_rejects_remote_active_root_project_and_report(project, tmp_path, field):
+    local = tmp_path / 'local'
+    local.mkdir()
+    remote = tmp_path / 'remote'
+    remote.mkdir()
+    fs = FakeFS([local, remote])
+    denied = {'artifacts': local / 'private/artifacts', 'temporary': local / 'private/temporary',
+              'project': project, 'report': tmp_path / 'remote-report'}[field]
+    fs.local_filesystem = lambda path: not storage._within(path, denied)
+    save_config(project, v2_document(local, remote))
+    if field == 'report':
+        policy = storage.resolve_storage(project, env={}, fs=fs)
+        with pytest.raises(storage.StorageError, match='local filesystem'):
+            policy.report_dir(explicit=denied)
+        assert not denied.exists()
+    else:
+        with pytest.raises(storage.StorageError, match='local filesystem'):
+            storage.resolve_storage(project, env={}, fs=fs)
+
+
+@pytest.mark.parametrize('fault', ['missing_archive', 'extra', 'bool_floor', 'relative', 'overlap', 'mount_overlap'])
+def test_v2_archive_lexical_errors_do_not_touch_archive(project, tmp_path, fault):
+    local, remote = tmp_path / 'local', tmp_path / 'unavailable'
+    local.mkdir()
+    document = v2_document(local, remote)
+    if fault == 'missing_archive':
+        document.pop('archive')
+    elif fault == 'extra':
+        document['archive']['unknown'] = True
+    elif fault == 'bool_floor':
+        document['archive']['min_free_bytes'] = True
+    elif fault == 'relative':
+        document['archive']['path'] = 'relative'
+    elif fault == 'overlap':
+        document['archive'].update(path=document['artifacts']['path'], required_mount=str(local))
+    else:
+        document['archive'].update(path=str(local / 'private/artifacts/archive'),
+                                   required_mount=str(local / 'private/artifacts'))
+    fs = FakeFS([local])
+    fs.local_filesystem = lambda path: True
+    save_config(project, document)
+    with pytest.raises(storage.StorageError):
+        storage.resolve_storage(project, env={}, fs=fs)
+    assert remote not in fs.mount_queries + fs.space_queries
+
+
+def test_explicit_v1_still_allows_historical_remote_active_storage(configured):
+    policy, fs, document = configured
+    fs.local_filesystem = lambda path: pytest.fail('v1 unexpectedly enforced v2 local policy')
+    policy.prepare()
+    assert policy.version == 1 and policy.archive is None
+    assert policy.check_ready() is policy

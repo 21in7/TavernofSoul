@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 
 import pytest
@@ -72,6 +73,7 @@ def project(tmp_path, monkeypatch):
 
 def successful_check(candidate, command, report_dir, keys, policy):
     return {'command': command, 'status': 'passed', 'source': 'fixture',
+            'exit_code': 0,
             'checks': {'fixture': {'status': 'passed', 'selected': 1, 'passed': 1, 'skipped': []}}}
 
 
@@ -965,7 +967,7 @@ def test_invalid_documentation_fails_before_checks_apply_or_git(project, monkeyp
     report = run_fixture(['parser_tidy/example.py', 'docs/design.md'], runner=invalid,
                          checker=capture_check)
     assert report['status'] == 'failed' and report['round'] == 1
-    assert checks == ['doctor'] and report['validation'] == [] and report['applied'] == []
+    assert checks == [] and report['validation'] == [] and report['applied'] == []
     assert not any(role == 'git' for role, _, _ in calls)
     assert not (Path(report['report']).parent / 'github.json').exists()
     assert doc.read_text() == 'existing design\n'
@@ -1622,3 +1624,106 @@ def test_workflow_and_cleanup_lock_is_shared_with_improvement_discovery(
         with pytest.raises(ValueError, match='Another workflow'):
             workflow.execute('Explicit request during analysis.', ['parser_tidy/example.py'],
                              keys={}, runner=forbidden, checker=forbidden)
+
+
+@pytest.fixture(params=[0o002, 0o022, 0o077])
+def docs_creation_umask(request):
+    previous = os.umask(request.param)
+    try:
+        yield request.param
+    finally:
+        os.umask(previous)
+
+
+def test_actual_docs_only_with_code_read_scope_skips_dependency_doctor(project, docs_creation_umask):
+    name = 'docs/guide.md'
+    (project / 'docs').mkdir()
+    (project / name).write_text('# Before\n')
+    expected_mode = 0o666 & ~docs_creation_umask
+    assert stat.S_IMODE((project / name).stat().st_mode) == expected_mode
+    judgment = {'status': 'updated', 'files': [name], 'reason': 'Only the prose explanation changes.'}
+    normal = runner_for([], documentation=judgment)
+    commands = []
+    def edit_docs(role, task, keys, **options):
+        code = options['workspace'] / 'parser_tidy/example.py'
+        before = code.read_bytes()
+        result = normal(role, task, keys, **options)
+        code.write_bytes(before)
+        return result
+    def check(candidate, command, report_dir, keys, policy):
+        commands.append(command)
+        assert command == 'check-docs'
+        return workflow.run_check(candidate, command, report_dir, keys, policy)
+    report = run_fixture([name, 'parser_tidy/example.py'], runner=edit_docs, checker=check)
+    assert report['status'] == 'passed', report.get('error')
+    assert commands == ['check-docs'] and report['required_checks'] == commands
+    assert report['changed_files'] == [name]
+    assert report['validation_selection']['changes'][0]['old_mode'] == expected_mode
+    assert report['validation_selection']['changes'][0]['new_mode'] == expected_mode
+    assert stat.S_IMODE((project / name).stat().st_mode) == expected_mode
+    assert report['delivery_validation'][0]['validation_digest'] == report['validation_selection']['digest']
+    assert report['delivery_validation'][0]['checks']['docs']['selected'] > 0
+    assert 'environment' not in report
+
+
+def test_repair_reclassifies_actual_changes_and_keeps_fresh_final_evidence(project, docs_creation_umask):
+    name = 'docs/guide.md'
+    (project / 'docs').mkdir()
+    (project / name).write_text('# Before\n')
+    expected_mode = 0o666 & ~docs_creation_umask
+    assert stat.S_IMODE((project / name).stat().st_mode) == expected_mode
+    judgment = {'status': 'updated', 'files': [name], 'reason': 'Prose updated alongside the repair.'}
+    normal = runner_for([], documentation=judgment)
+    rounds = []
+    def edit(role, task, keys, **options):
+        code = options['workspace'] / 'parser_tidy/example.py'
+        previous = code.read_bytes()
+        value = normal(role, task, keys, **options)
+        if options['write'] and role == 'parser' and len(rounds) == 0:
+            code.write_bytes(previous)
+        return value
+    def check(candidate, command, report_dir, keys, policy):
+        rounds.append(command)
+        value = successful_check(candidate, command, report_dir, keys, policy)
+        if command == 'check-docs':
+            value.update(status='failed', exit_code=1, checks={'docs': {
+                'status': 'failed', 'selected': 1, 'passed': 0, 'skipped': [],
+                'errors': [{'exception_type': 'ValueError'}]}})
+        return value
+    report = run_fixture([name, 'parser_tidy/example.py'], runner=edit, checker=check)
+    # Unknown context conservatively repairs both tasks. The second actual diff
+    # includes code, so its new review is followed by the original full gate.
+    assert report['status'] == 'passed', report.get('error')
+    assert rounds == ['check-docs', 'doctor', 'check']
+    assert report['repairs'][0]['target_files'] == [name, 'parser_tidy/example.py']
+    assert report['required_checks'] == ['check']
+    assert [row['command'] for row in report['delivery_validation']] == ['check']
+    assert report['validation_selection']['mode'] == 'full'
+    assert [row['command'] for row in report['validation']] == ['check-docs', 'check']
+    first, final = report['validation']
+    assert first['validation_digest'] != report['validation_selection']['digest']
+    assert final['validation_digest'] == report['validation_selection']['digest']
+    assert report['delivery_validation'] == [final]
+    assert stat.S_IMODE((project / name).stat().st_mode) == expected_mode
+
+
+def test_terminal_archive_runs_after_project_lock_release_and_keeps_passed(project, configured_storage, monkeypatch):
+    import fcntl
+    from harness import archive
+    selected = configured_storage
+    selected.version = 2
+    selected.fs.local_filesystem = lambda path: True
+    observed = []
+    def archive_after_unlock(policy, directory, kind='workflows'):
+        with selected.project_lock_path.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        saved = json.loads((directory / 'report.json').read_text())
+        assert saved['status'] == 'passed'
+        assert saved['model_context_cleanup']['status'] == 'passed'
+        observed.append(saved)
+        return {'status': 'pending', 'run_id': directory.name}
+    monkeypatch.setattr(archive, 'archive_run', archive_after_unlock)
+    report = run_fixture(runner=runner_for([]))
+    assert len(observed) == 1
+    assert report['status'] == 'passed' and report['archive']['status'] == 'pending'
+    assert report['applied'] == ['parser_tidy/example.py']

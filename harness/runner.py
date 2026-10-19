@@ -8,7 +8,8 @@ from pathlib import Path
 import subprocess
 import stat
 import sys
-from harness.fixture_inputs import required_fixture_files
+import secrets
+import time
 from harness.storage import StorageError, resolve_storage
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +58,7 @@ def write_report(path, report, *, storage=None):
 
 
 def doctor():
+    from harness.fixture_inputs import required_fixture_files
     checks = []
     for name in DEPENDENCIES:
         try:
@@ -263,14 +265,17 @@ def child_check(kind, group, path):
     return report
 
 
-def main():
+def _main(state):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=('doctor', 'check', 'check-downloader', 'check-parser',
                                            'check-django', 'check-pipeline', 'doctor-mysql',
-                                           'check-mysql', 'doctor-browser', 'check-browser', 'check-site', 'check-live', '_pytest', '_django'))
+                                           'check-mysql', 'doctor-browser', 'check-browser', 'check-site', 'check-live', 'check-docs', '_pytest', '_django'))
     parser.add_argument('group', nargs='?', choices=('downloader', 'parser', 'django', 'pipeline',
                                                     'mysql', 'mysql-doctor', 'browser', 'live'))
     parser.add_argument('--report-dir', type=Path)
+    parser.add_argument('--base')
+    parser.add_argument('--head')
+    parser.add_argument('--changes-file', type=Path)
     args = parser.parse_args()
     try:
         storage = resolve_storage(ROOT)
@@ -278,9 +283,32 @@ def main():
             explicit=args.report_dir.absolute() if args.report_dir is not None else None,
             local_default=ROOT / 'logs' / 'harness')
         storage.ensure_directory(report_dir)
+        if storage.version == 2 and args.command.startswith('check') and not os.environ.get('TAVERN_WORKFLOW_CHILD'):
+            # A distinct active run prevents stale logs from another invocation
+            # entering a standalone result archive. Overrides remain local-only.
+            run_id = str(time.time_ns()) + '-' + secrets.token_hex(3)
+            active_run = storage.ensure_directory(storage.artifact_root / 'checks' / run_id)
+            if args.report_dir is None and 'HARNESS_REPORT_DIR' not in os.environ:
+                report_dir = active_run
+            else:
+                report_dir = storage.ensure_directory(report_dir / run_id)
+            state.update(storage=storage, directory=active_run, reports=report_dir, command=args.command,
+                         run_id=run_id)
     except StorageError as exc:
         print('Harness storage: {}'.format(exc), file=sys.stderr)
         return 1
+    if args.command == 'check-docs':
+        from harness import docs_check
+        try:
+            changes = (json.loads(args.changes_file.read_text(encoding='utf-8'))['changes']
+                       if args.changes_file else docs_check.git_changes(ROOT, args.base, args.head))
+            report = docs_check.check(ROOT, changes)
+        except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
+            report = {'status': 'failed', 'checks': {'docs': {
+                'status': 'failed', 'selected': 0, 'passed': 0, 'skipped': [],
+                'failures': [], 'errors': [{'exception_type': 'ValueError', 'reason': 'Missing complete change evidence.'}]}}}
+        write_report(report_dir / 'check-docs.json', report, storage=storage)
+        return 0 if report['status'] == 'passed' else 1
     if args.command in ('_pytest', '_django'):
         if args.group is None:
             parser.error('Internal checks require a group')
@@ -357,3 +385,45 @@ def main():
                 result['database']['version'], result['database']['test_database']))
     print('Reports: {}'.format(report_dir))
     return 0 if ok else 1
+
+
+def main():
+    state = {}
+    interrupted = False
+    try:
+        code = _main(state)
+    except KeyboardInterrupt:
+        if not state:
+            raise
+        interrupted, code = True, 130
+    except Exception as exc:
+        # Preserve runner exceptions; archive a failed result when a run exists.
+        if not state:
+            raise
+        print('Runner failed: ' + type(exc).__name__, file=sys.stderr)
+        state['error_type'] = type(exc).__name__
+        code = 1
+    if state:
+        from harness import archive
+        policy, directory = state['storage'], state['directory']
+        try:
+            path = state['reports'] / (state['command'] + '.json')
+            result = json.loads(archive.read_file(policy, path)) if path.exists() else {}
+            if state['reports'] != directory:
+                # Only this invocation's fresh private output directory is copied.
+                for source in state['reports'].iterdir():
+                    if source.stem in archive.RESULT_STEMS and source.suffix in ('.json', '.log'):
+                        archive.write_file(policy, directory / source.name, archive.read_file(policy, source))
+            report = {**result, 'run_id': state['run_id'], 'command': state['command'],
+                      'status': 'interrupted' if interrupted else 'passed' if code == 0 else 'failed',
+                      'exit_code': code}
+            if 'error_type' in state:
+                report['error_type'] = state['error_type']
+            write_report(directory / 'report.json', report, storage=policy)
+            archived = archive.archive_run(policy, directory, 'checks')
+        except (Exception, KeyboardInterrupt) as exc:
+            archived = {'status': 'pending', 'error_type': type(exc).__name__}
+        print(json.dumps({'run_id': state['run_id'], 'archive': archived}))
+        if archived['status'] != 'archived':
+            code = code or 1
+    return code

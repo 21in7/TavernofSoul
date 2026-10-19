@@ -1,5 +1,31 @@
 # 프로젝트 지도와 데이터 경계
 
+## 개발 작업 저장과 검증 선택
+
+[ADR0021](adr/0021-local-work-and-result-archives.md)은 명시 v2의 작업·검증·journal을 local
+artifacts/temporary에 두고 remote archive를 terminal 결과 보관에만 사용한다. v1/no-config와
+기존 NFS 기록은 보존하며 원래 v1 config로 조회·재개한다. archive는 파싱·status·find_run·
+progress의 검색/준비 대상이 아니며 mount/floor/private 검사는 ARCHIVE에서만 수행한다.
+Git 완료 경로의 최종 save·두 lock 해제·기존 completion hook 뒤 보관하며, 보관 pending은
+passed/merge/cleanup 증거를 바꾸지 않고 별도 nonzero다.
+
+로컬 freeze는 no-replace directory rename, 원격 완료는 private 결과 디렉터리와 no-replace
+파일 link를 사용한다. 로컬 receipt가 디렉터리 attachment와 frozen manifest·임시 이름을 고정한다.
+bounded 전송·inventory/hash 검증 후 마지막 commit.json이 게시되고 모든 최종 파일의 0600/nlink=1을
+readback해야 완료다. 알려진 동일 inode의 임시/최종 nlink=2 전이만 복구하며 충돌·변조·미확인
+대상은 보존한다. 원격 directory rename EINVAL과 파일 link 성공 관측은 main의 primitive 근거다.
+후속 trusted parent 보고는 최종 archive.py의 실제 NFS 저장/readback/hash·동일 결과 멱등 재개
+성공까지이며 일반 pipeline 전체 성공을 뜻하지 않는다. workspace/credential·raw 모델 응답은 제외한다.
+
+[ADR0022](adr/0022-documentation-only-validation.md)는 실제 최종 baseline→candidate diff에
+문서 검증과 적용·게시를 결합한다. 불명/정책/코드/mode/type 변경은 full이며 repair마다 다시
+분류한다. Python 3.8 stdlib checker가 링크·fragment·삭제/rename 역참조를 검사하고 Claude가
+의미를 검토한다. CI의 세 required gate는 docs 결과 또는 기존 heavy 실행의 실제 성공을 요구한다.
+로컬 POSIX mode 정수는 정규화하지 않아 동일 비실행 권한(0664/0640/0600 등)을 허용하고 실제
+권한 변경을 거부한다. CI raw Git mode는 기존 100644 기준이다. 여러 줄 inline code는 정확한
+backtick run·escape와 block/fence 경계를 구별하며 원문 줄 번호·heading 텍스트·실제 링크 검사를 유지한다.
+새 브랜치 push의 zero-before는 full fallback이다. 이번 harness/CI 변경도 full make check 대상이다.
+
 하네스 전체의 목표·책임·격리·검토·게시 설계는 [전체 설계서](harness-design.md),
 주요 선택과 변경 이력은 [ADR 목록](adr/README.md)에 기록한다.
 

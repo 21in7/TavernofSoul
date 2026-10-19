@@ -5,6 +5,14 @@
 - 기록 성격: 저장 검사·probe 선택의 새 결정; 성능이나 실행 성공 기록이 아님
 - 대체 관계: [0011](0011-configurable-harness-storage.md)의 공간 조회와 준비 시 probe 선택만 구체화한다. 설정·격리·fallback 금지와 [0013](0013-owned-validation-temporary-cleanup.md)의 cleanup 범위는 유지한다.
 
+2026-10-19 보충: [0021](0021-local-work-and-result-archives.md)은 개발 작업의 NFS active 유지
+선택에 한해 명시 v2 local active + remote terminal archive로 대체한다. 이 ADR의 읽기 경계별
+공간 측정·각 floor·fresh probe·owned-tree proof는 active에 유지하고 archive는 그 readiness
+집합에 추가하지 않는다. archive의 실제 검사는 ARCHIVE에서만 수행한다. v1/역사 기록과 아래
+당시 NFS 선택은 보존한다. 새 설정 활성화는 검토·검증 후 parent 책임이며 daily/hourly·게임
+cron·approval·모델/인증 정책은 변경하지 않는다. 불변 payload·pending/재개와 결과 보관 한계는
+0021, 실제 최종 diff의 docs-only 선택과 required CI gates는 [0022](0022-documentation-only-validation.md)에 둔다.
+
 ## 문맥
 
 두 application이 같은 required mount를 써도 각각 공간을 조회하고, status의 진단 조회 뒤

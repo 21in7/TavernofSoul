@@ -136,9 +136,23 @@ def prepare(root, directory, report, baseline, validated, changes, policy, detai
     selected.validate_run_directory(directory, local_default=(
         local_reports() if Path(root) == ROOT else Path(root) / 'logs/harness/workflows'))
     final_checks = report.get('delivery_validation', report.get('validation'))
+    from harness import failure_feedback
     if report.get('review', {}).get('verdict') != 'approved' or not final_checks or \
-            any(item.get('status') != 'passed' for item in final_checks):
+            not isinstance(final_checks, list) or any(
+                not isinstance(item, dict) or item.get('status') != 'passed' or
+                type(item.get('exit_code')) is not int or item['exit_code'] != 0 or
+                not failure_feedback.check_groups_passed(item.get('checks')) for item in final_checks):
         raise ValueError('Approved review and successful local checks are required.')
+    if report.get('validation_selection', {}).get('mode') == 'docs' or any(item.get('command') == 'check-docs' for item in final_checks):
+        from harness import docs_check, failure_feedback
+        identity = docs_check.change_digest(baseline, validated)
+        if (docs_check.classify(docs_check.manifest_changes(baseline, validated))['mode'] != 'docs' or
+                report.get('validation_selection', {}).get('digest') != identity or len(final_checks) != 1 or
+                final_checks[0].get('command') != 'check-docs' or
+                final_checks[0].get('validation_digest') != identity or
+                type(final_checks[0].get('exit_code')) is not int or final_checks[0]['exit_code'] != 0 or
+                not failure_feedback.check_groups_passed(final_checks[0].get('checks'))):
+            raise ValueError('Documentation evidence differs from the final candidate.')
     workspace.enforce_scope(baseline, validated, report['scope'])
     candidate = Path(report['workspace'])
     if report['workspace'] != str(directory / 'workspace'):
@@ -856,10 +870,20 @@ def main(argv=None):
                 completion = improvement_completion.complete_run(ledger['run_id'], selected=selected)
             except (Exception, KeyboardInterrupt):
                 completion = {'status': 'blocked', 'reason': 'completion_unavailable', 'completions': []}
+        archived = None
+        # Final save and BOTH lock releases precede archive I/O. Completion keeps
+        # its existing responsibility and cannot have Git success undone by NFS.
+        if selected.version == 2 and ledger['status'] in ('merged', 'failed'):
+            from harness import archive
+            try:
+                archived = archive.archive_run(selected, directory)
+            except (Exception, KeyboardInterrupt) as exc:
+                archived = {'status': 'pending', 'error_type': type(exc).__name__}
         print(json.dumps({'run_id': ledger['run_id'], 'github': summary(ledger), 'request': job,
                           'poll_after_seconds': 10 if ledger['status'] == 'waiting_for_ci' else 0,
+                          **({'archive': archived} if archived is not None else {}),
                           **({'completion': completion} if completion is not None else {})}, ensure_ascii=False))
-        return 1 if ledger['status'] in ('failed', 'needs_reconciliation', 'cleanup_pending') else 0
+        return 1 if ledger['status'] in ('failed', 'needs_reconciliation', 'cleanup_pending') or (archived or {}).get('status') == 'pending' else 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__,
                           **({'error': str(exc)} if isinstance(exc, storage.StorageError) else {})}))

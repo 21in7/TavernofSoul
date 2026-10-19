@@ -68,7 +68,10 @@ def prepared(tmp_path, monkeypatch):
     workspace.publish(root, candidate, baseline, validated, changes, scope, directory / 'backup', policy)
     report = {'run_id': directory.name, 'scope': scope, 'workspace': str(candidate),
               'read_only': False, 'simulated': False, 'changed_files': changes,
-              'review': {'verdict': 'approved'}, 'validation': [{'status': 'passed'}]}
+              'review': {'verdict': 'approved'}, 'validation': [{
+                  'command': 'check', 'status': 'passed', 'exit_code': 0,
+                  'checks': {'offline': {'status': 'passed', 'selected': 1, 'passed': 1,
+                                         'skipped': [], 'errors': [], 'failures': []}}}]}
     agent_models.private_json(directory / 'report.json', report)
     delivery.prepare(root, directory, report, baseline, validated, changes, policy, DETAILS)
     ledger = json.loads((directory / 'github.json').read_text())
@@ -385,6 +388,27 @@ def test_review_and_validation_are_required_before_publication(prepared):
                          item['changes'], item['policy'], DETAILS)
     report.update(review={'verdict': 'approved'}, validation=[{'status': 'failed'}])
     with pytest.raises(ValueError, match='Approved review'):
+        delivery.prepare(item['root'], item['directory'], report, item['baseline'], item['validated'],
+                         item['changes'], item['policy'], DETAILS)
+
+
+@pytest.mark.parametrize('kind', ['empty', 'skipped', 'zero_selected', 'missing_passed', 'nonzero_exit'])
+def test_publication_rejects_status_only_or_incomplete_local_coverage(prepared, kind):
+    item = prepared
+    report = copy.deepcopy(item['report'])
+    check = report['validation'][0]
+    group = check['checks']['offline']
+    if kind == 'empty':
+        check['checks'] = {}
+    elif kind == 'skipped':
+        group['skipped'] = ['required case']
+    elif kind == 'zero_selected':
+        group.update(selected=0, passed=0)
+    elif kind == 'missing_passed':
+        group.pop('passed')
+    else:
+        check['exit_code'] = 1
+    with pytest.raises(ValueError, match='successful local checks'):
         delivery.prepare(item['root'], item['directory'], report, item['baseline'], item['validated'],
                          item['changes'], item['policy'], DETAILS)
 
