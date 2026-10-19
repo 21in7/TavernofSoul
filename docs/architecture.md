@@ -52,7 +52,7 @@ Ubuntu 20.04 ARM 호스트에서는 엔진만 지원 Ubuntu 컨테이너로 실�
 | 개선 발견·승인 | 개별 승인 소스의 읽기 전용 역할 점검, 독립 검토, private 승인/claim 및 기존 workflow 연결 | `harness/improvements.py` |
 | 시간별 개선 연구 | durable slot/예산·9단계 local/owner 검토·오전 보고 journal과 상태 | `harness/improvement_loop.py`, `harness/improvement-loop-config.json` |
 | 로컬 초안 전송 | 승인 snapshot의 작은 연속 line window·정제 feedback만 loopback text HTTP로 전송 | `harness/local_model.py` |
-| 개선 보고·전달 | 순수 JSON/HTML/Markdown 계약과 정제된 보고서만 private Sites로 HTTP 전달 | `harness/improvement_report.py`, `harness/improvements.py` |
+| 개선 보고·전달 | 불변 web-v1 오전 보고와 별도 completion-v1 완료 증거만 private Sites로 HTTP 전달 | `harness/improvement_report.py`, `harness/improvements.py`, `harness/improvement_completion.py` |
 
 ### 자율 개선의 별도 권한 경계
 
@@ -138,7 +138,8 @@ tick의 loop 설정·Store 생성·저장소 readiness 실패는 bounded 정제 
 private 원본에는 모든 읽기 의존성의 SHA256·크기·POSIX mode·존재와 scope/config fingerprint,
 실제 모델 참여·실패를 보존한다. 한국어 한 장 요약과 `improvement-web-v1`은 별도 정제 projection이다.
 원문·소스·승인 지시·인증은 웹 경계를 넘지 않는다. Sites 인증·UI·배포는 메인 책임이고 host는
-HTTPS POST와 날짜/digest GET 확인만 수행한다. 정상 제안 없음과 실패/미완료를 구분한다.
+HTTPS POST와 날짜/digest GET 확인을 수행한다. 완료 전달은 아래 별도 계약을 쓴다.
+정상 제안 없음과 실패/미완료를 구분한다.
 
 [ADR 0016](adr/0016-bounded-private-improvement-text.md)은 후보 서술의 PRIVATE 수용과
 PUBLIC 표시를 분리한다. title/analogy/issue/evidence summary/benefit text/risk/validation 단계/
@@ -153,7 +154,33 @@ private hard 1440자를 안내받으며 문서 reason 최소 12자·정확한 co
 문서 상태/files 일치·eligible의 필요 문서 edit_files 포함 조건은 엄격히 유지한다.
 웹 projection에서만 정제·공백 합치기·상한 내 `…` 생략을 적용한다. `improvement-web-v1`의
 allowlist·기존 public maxima·digest는 그대로며 public validator는 정상 digest가 있어도 과대
-서술을 거부한다. 현재 private Sites의 API/auth/배포 변경은 필요하지 않다.
+서술을 거부한다. 이 web-v1 표시 변경 자체는 Sites API/auth/배포 변경을 요구하지 않는다.
+별도 완료 API의 구현·배포 책임은 ADR0020을 따른다.
+
+### 승인 제안 완료 전달 경계
+
+[ADR0020](adr/0020-automatic-proposal-completion.md)의 `improvement_completion.py`는
+parent의 완료 검증과 private outbox만 담당한다. 기존 GitHub final save와 project/GitHub lock
+해제 뒤 자동 호출되며 Store lock을 역순으로 획득하지 않는다. 선택된 workflow root 안의
+private run/report/journal/publication snapshot을 검증하고 legacy local root로 fallback하지 않는다.
+각 signed claim이 정확한 run과 proposal digest/authorization_id를 묶는지, signed approval과
+approved decision·독립 검토·허용 scope·실제 적용/review/final validation이 맞는지 대조한다.
+`passed`·github-v1 identity/config·정확한 PR URL·merged SHA·done·원래 CI 3종 success·
+head/merge SHA가 일치하는 verified cleanup proof와 cleanup complete가 모두 필요하다.
+실행 전 freshness와 claim 당시 승인 유효기간은 구분하며, 완료 시 현재 source/만료로 재승인하지 않는다.
+
+웹 경계는 기존 `improvement-web-v1`과 사용자 승인된 `improvement-completion-v1` 두 계약이다.
+완료에는 proposal ID/status/PR/merge SHA/최초 고정 UTC 시각/canonical digest만 보낸다.
+승인 지시·원문·키·절대경로·source/diff/prompt/log는 제외한다. 같은 inbox 인증·TLS/no-redirect
+transport를 사용하고 16384 bytes·기존 private timeout 이하로 제한한다. outbox는 0600 canonical
+payload와 journal을 HTTP 전에 fsync하고 POST 전 sending을 저장한다. 정확한 GET readback만
+delivered로 인정한다. unknown/sending은 자동 GET만, 명시 reconcile은 GET absent 후 동일 digest
+POST만 허용하며 conflict는 보존한다. 보고 본문·digest·publication journal과 workflow passed/
+merge/cleanup은 전달 실패로 바뀌지 않는다. scheduler/37개 discovery scope/개별 승인·claim/
+CI·merge·cleanup 게이트는 유지한다. Sites 소스/API/UI 구현·배포는 메인 책임이다.
+
+### 기존 private 서술과 공개 projection 검증
+
 review reason·후보별 documentation reason·전체 documentation reason도 public validator에서
 명시적 360자 상한을 사용하며 재계산 digest가 있는 361자를 거부한다. private validator의
 1440자 수용을 public에 적용하지 않는다. 합성 회귀는 416자 review의 5회 호출 완료·무승인

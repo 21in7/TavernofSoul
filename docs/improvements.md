@@ -19,6 +19,8 @@ schema·fingerprint·정제·HTML/Markdown renderer다. [improvements.py](../har
 숫자 loopback의 text mlx-vlm HTTP adapter이며 파일 열람·상태 저장·승인 권한이 없다.
 [workflow.py](../harness/workflow.py)는 선택적 `_improvement_guard(run_id)`로 승인 provenance를
 project lock 안에서 재확인한다. 일반 직접 요청 workflow의 권한·검증·게시 정책은 유지한다.
+[improvement_completion.py](../harness/improvement_completion.py)는 parent의 run 완료 증거 검증과
+별도 completion-v1 outbox/전달·복구만 담당한다. Sites 소스/API/UI 구현·배포는 메인 책임이다.
 기존 cloud 모델/provider/effort/compaction/auth는 유지한다. 별도 로컬 mlx-vlm 초안 참여만 추가하며
 새 cloud provider/요금제/유료 balance fallback·계정 구매는 없다. 설치와 실제 탐색 검증은
 [로컬 모델 운영](local-models.md)에서 구분한다.
@@ -393,6 +395,7 @@ status/approve에서 판정할 수 있으며 아직 없는 승인/decision/실�
 | `agent-improve-approve PROPOSAL_ID=ID INSTRUCTION_FILE=PATH [LOCAL_ONLY=1]` | `approve --proposal-id ID --instruction-file PATH [--local-only]` |
 | `agent-improve-reject PROPOSAL_ID=ID` | `reject --proposal-id ID` |
 | `agent-improve-execute PROPOSAL_ID=ID` | `execute --proposal-id ID` |
+| `agent-improve-completion RUN_ID=ID [RECONCILE=1]` | 별도 `python -m harness.improvement_completion --run-id ID [--reconcile]`; 같은 run의 완료 전달만 |
 
 `harness.improvements tick/loop-status/publish [--reconcile]`도 동일 엔진에 연결된다.
 raw engine API tick의 deliver 기본값은 False이므로 embedded parent는 deliver=True 또는
@@ -461,6 +464,105 @@ workflow에 넘기기 전 중단되어 claim의 run_id가 null이면 실제 미�
 archive한다. reconcile은 기존 실행을 반복하거나 승인 없이 갱신하지 않는다. source가 바뀌면
 먼저 새 점검/제안이 필요하다. 서명 기록을 수작업 편집하거나 claim을 지워 replay하지 않는다.
 
+## 승인 제안 자동 완료 전달
+
+사용자의 별도 명시 허가에 따라 private Sites에는 기존 불변 `improvement-web-v1` 오전 보고와
+별도 `improvement-completion-v1` 완료 레코드 두 계약만 전달한다. 보고서 원문과 digest,
+publication journal은 완료 표시 때문에 수정하지 않는다. browser는 proposal_id로 별도 완료
+목록을 결합해 ‘작업 완료’와 PR 링크를 표시한다. Sites 소스/API/UI 구현·배포와 credential
+관리는 메인 책임이다. 이 저장소는 offline contract를 제공하며 실제 endpoint 배포/HTTP 성공을
+주장하지 않는다. 기존 모델/역할/auth/스케줄/37개 discovery scope/개별 승인·일회성 claim/
+원격 CI3+merge+cleanup 게이트는 유지한다. 일반 bundle 승인 API도 추가하지 않는다.
+
+`git_publish.main`의 request/accept/resume/cleanup은 마지막 durable save 후 project/GitHub
+lock을 모두 닫고 lazy import로 `complete_run`을 호출한다. Store lock 역순 deadlock을 피한다.
+완료 전달 실패는 JSON의 별도 `completion={status,completions,...}`로 표시하며 workflow의
+passed·merge SHA·cleanup 성공 및 Git CLI 성공 반환을 덮어쓰지 않는다.
+
+완료 검증에는 다음 증거가 모두 필요하다.
+
+- 현재 선택된 workflow root의 owned 0700 run directory, no-follow private 0600 report/journal/
+  publication records. 다른 local/legacy root로 fallback하지 않는다. 기존 `validate_journal`로
+  github-v1 run/branch/origin/config와 승인된 before/after snapshot·내용 hash/mode를 대조한다.
+- report.run_id 정확 일치·status=passed, read_only/simulated/no_git=false·github_enabled=true,
+  정확한 저장소/양의 PR 번호/PR URL, merge_status=merged·유효한 40lowerhex merge/head SHA,
+  step=done 및 cleanup_complete. 원래 CI 3종 모두 success, cleanup_proof.verified=true와
+  head_sha/merge_sha 일치 및 proof의 같은 CI 3종 success도 필요하다.
+- 해당 run_id에 정확히 연결된 각 private signed claim과 signed approval을 Store.verify로
+  검증한다. proposal ID/digest·review digest·source fingerprint·authorization_id·claim_id,
+  claim의 running/consumed 상태와 approved decision·허용 edit scope를 대조한다. persisted
+  discovery review와 실제 구현 review/documentation, applied/changed scope, 원래 required_checks의
+  final validation 및 structured coverage 성공을 확인한다. 단일 claim은 실제 task digest도 일치해야
+  한다. 같은 run의 복수 claim은 각각 검증하고 scope의 합을 대조하여 명시된 일회 bundle과
+  호환한다. title/fuzzy alias나 run_id 문자열만으로 승인을 추정하지 않는다.
+
+`_authorization`/`_fresh`를 완료 단계에서 재호출하지 않는다. 실행 전에 수행한 freshness와
+완료 증거는 별개다. claim 당시 issued_at≤claim.at<expires_at 및 최대 7일 구간을 확인하되
+작업 후 source 변경이나 현재 승인 만료 때문에 승인/실행을 다시 소비하지 않는다.
+연결 claim 없는 일반 run은 키/credential/HTTP 없는 no-op이다. child/discovery/unattended,
+READ_ONLY=1·GIT=0, read_only/simulated/no_git·local-only 승인에는 전송하지 않는다.
+
+### completion-v1 wire와 Sites 서버 계약
+
+POST `/api/completions`에는 아래 **정확히 7개 key**의 JSON 한 건만 보낸다.
+GET `/api/completions/{proposal_id}`는 wrapper 없이 같은 exact payload를 반환하며 absent는 404다.
+browser는 cursor paginated GET `/api/completions` (후속 cursor query)을 사용한다. 목록 응답의
+page/cursor UI 연결은 메인이 구현하며 개별 payload를 변경하지 않는다.
+
+| key | 값 |
+| --- | --- |
+| version | `improvement-completion-v1` |
+| proposal_id | `IMP-` + 16lowerhex |
+| status | `completed` |
+| pr_url | `https://github.com/21in7/TavernofSoul/pull/` + 양의 십진 정수 |
+| merge_sha | 40lowerhex |
+| completed_at | timezone-aware UTC ISO8601 문자열; 최초 outbox 생성 시 고정 |
+| digest | 위 6개 필드 전체의 canonical sorted compact JSON SHA256 (digest 제외) |
+
+canonical은 기존 `ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False` UTF-8이다.
+완료 payload/HTTP response는 각각 최대 16384 bytes, 요청 timeout은 기존 private
+delivery_timeout_seconds 이하(절대 30초 이하)다. 같은 private inbox `{origin,token}`과
+`OAI-Sites-Authorization: Bearer <token>`을 사용하며 기존 system TLS/no-redirect
+`http_transport`를 재사용한다. 메인 parent만 credential을 다룬다. 원문·사용자 지시·키·절대경로·
+source/diff/prompt/log를 payload·stdout·오류 원문으로 보내지 않는다. stdout에는 고정 상태/reason과
+정제 proposal ID/digest/PR만 추가한다.
+
+서버는 proposal ID별 immutable **atomic create-if-absent**를 구현한다. 동일 digest는 멱등
+200, 다른 digest는 409이며 기존 완료를 overwrite하지 않는다. POST 성공만으로 host의 delivered가
+되지 않는다. GET의 strict schema·재계산 digest·전체 payload가 frozen 값과 정확히 일치해야 한다.
+
+### durable outbox와 동일 run 복구
+
+선택된 improvements root의 `completions/<run_id>/<proposal_id>.json`은 한 atomic checkpoint에
+canonical payload/digest와 연결 run/authorization/claim ID, journal `state/reason`을 담는다.
+Store의 owned private directory/0600 replace·file fsync·directory fsync를 사용한다. 최초
+completed_at을 고정한 ready record를 HTTP 전에 저장하고 sending도 POST 전에 먼저 저장한다.
+payload와 journal의 생성 간격을 없애며 승인/claim·오전 보고/publication은 쓰지 않는다.
+
+| 기존 state | 일반 재호출 | 명시 RECONCILE=1 |
+| --- | --- | --- |
+| ready | 최초 POST → GET readback | GET 확인, absent일 때만 같은 payload POST → GET |
+| sending/unknown | GET만; 정확 일치 delivered, absent는 unknown 유지 | GET 확인, absent일 때만 같은 digest POST → GET |
+| conflict | HTTP/overwrite/retry 없음 | 동일하게 차단; 메인이 실제 서버 충돌 조사 |
+| delivered | HTTP 없음 | HTTP 없음 |
+
+timeout/중단/HTTP 실패/invalid readback은 unknown과 고정 정제 reason으로 남긴다.
+다른 유효 digest/payload readback 또는 POST409는 conflict다. 프로세스가 POST 직후 죽어도
+durable sending으로 남아 자동 POST를 막는다. partial progress의 다른 claim들은 각자 같은
+frozen payload로 재개한다. readback/retry로 completed_at/digest를 재생성하지 않는다.
+
+메인은 원래 run과 **동일한 storage 환경**으로 `make agent-improve-completion RUN_ID=...`를
+사용한다. unknown의 실제 상태를 조사한 뒤 `RECONCILE=1`을 지정할 수 있다. 이 CLI는 새
+모델/승인/execute/commit/PR/merge 없이 그 run의 완료 전달만 처리하며 cron/tick에 연결하지 않는다.
+완료 증거/storage가 유효하지 않으면 blocked, 전달 미확정은 pending, 전부 확인되면 delivered,
+연결 claim 없으면 not_applicable, 실행 모드 금지는 disabled다. 새 승인이 필요한 기존 실행
+복구와 outbox의 같은 digest 전달 복구를 혼동하지 않는다.
+
+오프라인 회귀는 `harness/test_improvement_completion.py`에 두며 기존 full make check의
+`harness/test_*.py` 수집을 따른다. worker는 검사·network·Git·서비스·재위임을 실행하지 않는다.
+실행기가 새 의미 검토·기존 GitHub 회귀·full make check를 수행한다. 실제 Sites 배포/HTTP 관측은
+메인의 별도 작업이다.
+
 ## improvement-web-v1 계약
 
 host는 private 보고가 존재한 뒤 명시 projection만 만든다. HTML/Markdown은 같은 payload를
@@ -515,7 +617,8 @@ credential·승인 지시·절대 local 경로·외부 URL·raw 응답·prompt·
 이 축약은 표시 projection에만 적용되며 원본 proposal 내용을 덮어쓰지 않는다. public validator는
 정제/축약 전 PUBLIC 상한을 엄격히 검사하므로 올바르게 재계산한 digest가 있어도 oversized card를
 거부한다. `improvement-web-v1`의 버전·allowlist shape·public maxima·canonical digest는 유지하며
-현재 private Sites에 새 배포/API/auth 변경을 요구하지 않는다. HTML/Markdown은 같은 제한된
+이 web-v1 표시 변경 자체는 private Sites에 새 배포/API/auth 변경을 요구하지 않는다.
+별도 completion-v1 API는 아래 계약대로 메인이 구현·배포한다. HTML/Markdown은 같은 제한된
 payload를 검증한 뒤 기존 최대 3카드 한 장 요약을 만든다.
 정제는 민감한 임의 데이터를 공유할 허가가 아니며 소스 범위부터 private 내용을 제외해야 한다.
 
