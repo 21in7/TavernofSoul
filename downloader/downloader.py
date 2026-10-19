@@ -245,7 +245,7 @@ def revision_decrypt(revision):
     if size_encrypted < 0 or size_encrypted % 8 or 8 + size_encrypted > len(revision):
         raise ValueError('Invalid encrypted revision length')
 
-    revision = [ord(chr(c)) for c in revision]               # Convert to binary
+    revision = list(revision)                           # Convert to binary
     blowfish.Decipher(revision, 8, size_encrypted)      # Decrypt with blowfish
     revision = [chr(c) for c in revision]            # Convert back to unicode characters
 
@@ -436,12 +436,8 @@ def move_language(region):
     output_path = os.path.join('..', 'Translation')
     input_path  = input_path[region]
     if os.path.exists(input_path):
-        #try:
-        #    #shutil.move(input_path, output_path)
         os.makedirs(output_path, exist_ok=True)
         copy_tree(input_path, join(output_path, os.path.basename(input_path)))
-        #except:
-        #    pass
 
 
 
