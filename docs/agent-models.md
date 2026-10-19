@@ -9,6 +9,8 @@
 Claude Code 기반 역할은 [Jev 대화 기록 압축](compaction.md)을 기본 적용한다.
 기존 TypeSafe 키를 재사용하며 `COMPACTION=0`으로 해당 실행에서 끌 수 있다.
 
+다음 표는 일반 개발 workflow의 역할·모델과 관련 검증을 정리한다.
+
 | 역할 | 실행 도구 / 인증 | 모델 | 관련 검증 |
 | --- | --- | --- | --- |
 | coordinator | Codex / ChatGPT Pro 로그인 | gpt-6.1-sol, high | make check |
@@ -18,6 +20,17 @@ Claude Code 기반 역할은 [Jev 대화 기록 압축](compaction.md)을 기본
 | git | Codex / ChatGPT Pro 로그인 | gpt-6.1-sol, medium | 검증 결과로 커밋·PR 설명 작성; 게시·CI·머지는 메인 앱 연결 |
 | reviewer | Claude Code / Anthropic API 키 | claude-sonnet-5-5, medium | make check |
 | escalation | Claude Code / Anthropic API 키 | claude-opus-5-5, high | make check |
+
+자동 개선 연구에는 다음 로컬 초안 역할이 별도로 참여한다.
+
+| 역할 | 실행 환경 | 모델 ID (문서·설정 예제 기준) |
+| --- | --- | --- |
+| local_explorer | Mac mini / mlx-vlm 0.7.8 | mlx-community/Qwen3.5-9B-4bit |
+
+모델 ID는 예제 기준이며 실제 private 설정이나 현재 실행 상태를 확인한 정보가 아니다.
+로컬은 승인된 작은 소스 구간의 개선 초안을 만들고, 기존 담당 모델의 검토·정식 후보화와
+Claude 독립 검토로 이어진다. 일반 구현 역할을 대체하거나 실행을 승인하지 않는다.
+상세는 [로컬 모델 문서](local-models.md)와 [자동 개선 연구의 모델·비용 계약](#자동-개선-연구의-모델비용-계약)을 참고한다.
 
 ## 인증 등록
 
