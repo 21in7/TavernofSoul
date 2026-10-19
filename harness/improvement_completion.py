@@ -200,8 +200,13 @@ def _evidence(store, run_id, claims):
         # run associations support an explicitly authorized bundle, without
         # inventing a combined task format or granting bundle approval authority.
         if len(claims) == 1:
-            task_digest = hashlib.sha256(imp._task(record, approval).encode('utf-8')).hexdigest()
-            if report.get('task_sha256') != claim['task_digest'] or task_digest != claim['task_digest']:
+            task = imp._task(record, approval)
+            task_digest = hashlib.sha256(task.encode('utf-8')).hexdigest()
+            # Claims hash raw UTF-8; workflow reports use the JSON digest contract.
+            # Never load provider keys to reproduce workflow redaction: if it
+            # changed this task, the report comparison must fail closed.
+            if (task_digest != claim['task_digest'] or
+                    workflow.triage.digest(task) != report.get('task_sha256')):
                 raise ValueError('Workflow task differs from the claimed task.')
         authorized.update(allowed)
     if set(scope) != authorized or set(changed) - authorized:

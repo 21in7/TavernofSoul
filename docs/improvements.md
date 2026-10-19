@@ -492,9 +492,25 @@ passed·merge SHA·cleanup 성공 및 Git CLI 성공 반환을 덮어쓰지 않�
   검증한다. proposal ID/digest·review digest·source fingerprint·authorization_id·claim_id,
   claim의 running/consumed 상태와 approved decision·허용 edit scope를 대조한다. persisted
   discovery review와 실제 구현 review/documentation, applied/changed scope, 원래 required_checks의
-  final validation 및 structured coverage 성공을 확인한다. 단일 claim은 실제 task digest도 일치해야
-  한다. 같은 run의 복수 claim은 각각 검증하고 scope의 합을 대조하여 명시된 일회 bundle과
+  final validation 및 structured coverage 성공을 확인한다. 단일 claim은 아래 두 task digest를
+  각각 검증한다. 같은 run의 복수 claim은 각각 검증하고 scope의 합을 대조하여 명시된 일회 bundle과
   호환한다. title/fuzzy alias나 run_id 문자열만으로 승인을 추정하지 않는다.
+
+단일 claim에서는 persisted proposal과 signed approval로 `_task(record, approval)`를 한 번
+재구성한다. `claim.task_digest`는 `improvements.execute`가 workflow에 넘기기 전에 계산한
+**raw task UTF-8 bytes의 SHA256**이며, 재구성한 task를 같은 방식으로 검증한다.
+`report.task_sha256`는 `workflow.execute`가 provider key redaction 후 계산한 **task 문자열의
+JSON digest**다. 공개 사용점 `workflow.triage.digest(task)`로 별도 재계산해 report와 대조한다.
+두 표현은 서로 다르므로 claim과 report의 digest를 직접 같다고 비교하거나 임의 digest
+fallback으로 받아들이지 않는다. 이는 ADR0020의 기존 증거 결합을 바로잡는 구현 수리이며
+완료 API wire 계약이나 서명·승인 기록은 바꾸지 않는다.
+
+완료 증거 확인은 provider key나 inbox credential을 로딩하지 않는다. Store 서명용
+`authority.key` 검증은 기존대로 유지하고 inbox credential은 필요한 HTTP 전달 단계에서만
+읽는다. 이미 delivered인 기록의 재확인에는 inbox credential도 읽지 않는다.
+workflow의 key redaction이 원래 task를 변경했다면 credential 없이 재구성한 task와
+report의 digest가 달라져 **fail-closed로 blocked**가 된다. 원문이나 키를 추가로 읽어
+redaction을 재현하거나 비교를 생략하거나 승인 기록을 재작성하여 이 한계를 우회하지 않는다.
 
 `_authorization`/`_fresh`를 완료 단계에서 재호출하지 않는다. 실행 전에 수행한 freshness와
 완료 증거는 별개다. claim 당시 issued_at≤claim.at<expires_at 및 최대 7일 구간을 확인하되

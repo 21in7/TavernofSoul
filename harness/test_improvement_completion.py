@@ -78,7 +78,10 @@ def completed(tmp_path, monkeypatch):
                 'issued_at': (NOW - dt.timedelta(days=20)).isoformat(),
                 'expires_at': (NOW - dt.timedelta(days=13)).isoformat(),
                 'authorization_id': 'a' * 48, 'consumption': 'unconsumed'}
-    task_digest = hashlib.sha256(imp._task(proposal, approval).encode('utf-8')).hexdigest()
+    task = imp._task(proposal, approval)
+    task_digest = hashlib.sha256(task.encode('utf-8')).hexdigest()
+    report_task_digest = workflow.triage.digest(task)
+    assert report_task_digest != task_digest
     claim = {'version': 'improvement-claim-v1', 'proposal_id': pid, 'proposal_digest': proposal['digest'],
              'authorization_id': approval['authorization_id'], 'task_digest': task_digest,
              'status': 'consumed', 'at': approval['issued_at'], 'run_id': RUN,
@@ -112,7 +115,7 @@ def completed(tmp_path, monkeypatch):
                                'merge_sha': ledger['merge_sha'], 'checks': ledger['checks']}
     report = {'run_id': RUN, 'status': 'passed', 'read_only': False, 'simulated': False,
               'no_git': False, 'github_enabled': True, 'scope': [path], 'changed_files': [path],
-              'applied': [path], 'workspace': str(directory / 'workspace'), 'task_sha256': task_digest,
+              'applied': [path], 'workspace': str(directory / 'workspace'), 'task_sha256': report_task_digest,
               'review': {'verdict': 'approved', 'summary': 'Reviewed.', 'findings': [], 'documentation': DOC},
               'required_checks': ['check'], 'delivery_validation': [
                   {'command': 'check', 'status': 'passed', 'exit_code': 0, 'checks': GROUPS}]}
@@ -194,8 +197,23 @@ class Sites:
         return 200, contract.canonical_json(value)
 
 
+def test_task_digest_contracts_without_coverage_stub():
+    proposal = contract.proposal_record(candidate(), contract.fingerprint_sources({
+        'harness/example.py': {'exists': True, 'mode': 0o644, 'content': b'before\n'}}))
+    proposal['review'] = {'verdict': 'eligible', 'reason': 'Synthetic review.', 'documentation': DOC}
+    task = imp._task(proposal, {'allowed_edit_files': ['harness/example.py'],
+                              'instruction': 'Synthetic instruction with "quotes".\n두 번째 줄.'})
+    raw_digest = hashlib.sha256(task.encode('utf-8')).hexdigest()
+    # Use the real workflow public use point, without mocking either digest.
+    assert workflow.triage.digest(task) != raw_digest
+
+
 def test_exact_wire_private_durable_frozen_and_idempotent(completed, monkeypatch):
     lab = completed
+    task = imp._task(lab.proposal, lab.approval)
+    assert lab.claim['task_digest'] == hashlib.sha256(task.encode('utf-8')).hexdigest()
+    assert lab.report['task_sha256'] == workflow.triage.digest(task)
+    assert lab.report['task_sha256'] != lab.claim['task_digest']
     frozen = {name: lab.store.path(name).read_bytes() for name in (
         'days/2026-10-19.json', 'web/2026-10-19.json', 'publication/2026-10-19.json',
         'claims/' + lab.pid + '.json', 'approvals/' + lab.pid + '.json')}
@@ -223,6 +241,7 @@ def test_exact_wire_private_durable_frozen_and_idempotent(completed, monkeypatch
     assert original_report == (lab.directory / 'report.json').read_bytes()
     assert all(lab.store.path(name).read_bytes() == content for name, content in frozen.items())
     # The source is deliberately different and the approval expired 13 days ago.
+    assert dt.datetime.fromisoformat(lab.claim['at']) < dt.datetime.fromisoformat(lab.approval['expires_at']) < NOW
     assert lab.proposal['source_fingerprints'] != contract.fingerprint_sources({
         'harness/example.py': {'exists': True, 'mode': 0o644, 'content': b'after\n'}})
 
@@ -260,13 +279,14 @@ def test_running_signed_claim_can_recover_after_parent_interrupt(completed):
 
 
 @pytest.mark.parametrize('fault', ['signature', 'approval_signature', 'wrong_proposal', 'authorization',
-    'rejected', 'claimed', 'task', 'local_only', 'scope', 'review', 'validation', 'skipped_local',
+    'rejected', 'claimed', 'report_task_digest', 'report_raw_task_digest', 'raw_claim_digest',
+    'local_only', 'scope', 'review', 'validation', 'skipped_local',
     'missing_ci', 'skipped_ci', 'merge_only', 'cleanup', 'proof', 'head', 'merge', 'url', 'report_run',
     'read_only', 'simulated', 'no_git', 'not_applied', 'source_snapshot', 'claim_interval', 'proof_ci',
     'missing_required', 'exit_code', 'boolean_exit', 'proposal_digest', 'review_digest'])
 def test_incomplete_or_unbound_evidence_never_posts(completed, monkeypatch, fault):
     lab = completed
-    if fault in ('signature', 'wrong_proposal', 'authorization', 'claimed', 'claim_interval'):
+    if fault in ('signature', 'wrong_proposal', 'authorization', 'claimed', 'claim_interval', 'raw_claim_digest'):
         claim = dict(lab.claim)
         if fault == 'wrong_proposal':
             claim['proposal_id'] = 'IMP-' + '0' * 16
@@ -276,6 +296,8 @@ def test_incomplete_or_unbound_evidence_never_posts(completed, monkeypatch, faul
             claim['status'] = 'claimed'
         elif fault == 'claim_interval':
             claim['at'] = NOW.isoformat()
+        elif fault == 'raw_claim_digest':
+            claim['task_digest'] = '0' * 64
         raw = lab.store.sign(claim)
         if fault == 'signature':
             raw['run_id'] = OTHER_RUN
@@ -323,8 +345,10 @@ def test_incomplete_or_unbound_evidence_never_posts(completed, monkeypatch, faul
         lab.report['applied'] = []
     elif fault == 'source_snapshot':
         (lab.directory / 'workspace/harness/example.py').write_text('tampered\n')
-    elif fault == 'task':
-        lab.report['task_sha256'] = '0' * 64
+    elif fault == 'report_task_digest':
+        lab.report['task_sha256'] = workflow.triage.digest(imp._task(lab.proposal, lab.approval) + '\nWrong task.')
+    elif fault == 'report_raw_task_digest':
+        lab.report['task_sha256'] = lab.claim['task_digest']
     elif fault == 'proof_ci':
         lab.ledger['cleanup_proof']['checks'] = {}
     elif fault == 'missing_required':
@@ -342,6 +366,23 @@ def test_incomplete_or_unbound_evidence_never_posts(completed, monkeypatch, faul
         lab.store.write('approvals/' + lab.pid + '.json', lab.store.sign(approval))
     rewrite_run(lab)
     monkeypatch.setattr(imp, '_inbox_config', forbidden)
+    assert run(lab)['status'] == 'blocked'
+    assert not lab.store.path('completions').exists()
+
+
+def test_workflow_key_redacted_task_fails_closed_without_credentials(completed, monkeypatch):
+    lab = completed
+    approval = dict(lab.approval, instruction='Synthetic redaction marker: fixture-provider-key')
+    task = imp._task(lab.proposal, approval)
+    claim = dict(lab.claim, task_digest=hashlib.sha256(task.encode('utf-8')).hexdigest())
+    lab.store.write('approvals/' + lab.pid + '.json', lab.store.sign(approval))
+    lab.store.write('claims/' + lab.pid + '.json', lab.store.sign(claim))
+    redacted = agent_models.redact(task, {'SYNTHETIC_KEY': 'fixture-provider-key'})
+    assert redacted != task
+    lab.report['task_sha256'] = workflow.triage.digest(redacted)
+    rewrite_run(lab)
+    monkeypatch.setattr(imp, '_inbox_config', forbidden)
+    # load_keys is forbidden by the fixture, including during evidence checks.
     assert run(lab)['status'] == 'blocked'
     assert not lab.store.path('completions').exists()
 
@@ -466,6 +507,8 @@ def test_multiple_signed_claims_each_verified(completed, tamper_second):
 @pytest.mark.parametrize('command', ['request', 'accept', 'resume', 'cleanup'])
 def test_automatic_hook_after_final_save_and_both_locks_released(completed, monkeypatch, capsys, command):
     lab = completed
+    assert lab.report['task_sha256'] == workflow.triage.digest(imp._task(lab.proposal, lab.approval))
+    assert lab.report['task_sha256'] != lab.claim['task_digest']
     sites = Sites(lab)
     real = completion.complete_run
     def after_locks(run_id, *, selected):
