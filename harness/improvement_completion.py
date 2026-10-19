@@ -150,6 +150,22 @@ def _evidence(store, run_id, claims):
                 item['exit_code'] != 0 or
                 not workflow.failure_feedback.check_groups_passed(item.get('checks')) for item in checks)):
         raise ValueError('Actual final validation evidence is incomplete.')
+    if 'check-docs' in required:
+        from harness import docs_check
+        baseline = imp._json_file(store.policy.record_path(directory, 'baseline.json',
+                                                          local_default=github.local_reports()))
+        candidate = dict(baseline)
+        for name, entry in publication['files'].items():
+            if entry['after'] is None:
+                candidate.pop(name, None)
+            else:
+                candidate[name] = entry['after']
+        selection = docs_check.classify(docs_check.manifest_changes(baseline, candidate))
+        identity = docs_check.change_digest(baseline, candidate)
+        if (required != ['check-docs'] or selection['mode'] != 'docs' or
+                report.get('validation_selection') != {**selection, 'digest': identity} or
+                checks[0].get('validation_digest') != identity):
+            raise ValueError('Documentation validation differs from the published candidate.')
     authorized = set()
     for claim in claims:
         pid = imp._proposal_id(claim['proposal_id'])

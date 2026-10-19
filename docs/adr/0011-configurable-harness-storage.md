@@ -22,6 +22,15 @@ application을 모두 검사한다. 각 쓰기와 다음 호출에는 fresh read
 없다. `status(probe=False)`의 무변경 조회와 실패 시 mount/측정 공간/floor 진단, 설정·격리·
 fallback 금지와 0013 cleanup 경계는 유지한다. 아래 원래 결정과 비용 기록은 역사로 보존한다.
 
+2026-10-19 보충: [0021](0021-local-work-and-result-archives.md)이 개발 작업의 NFS active 유지
+선택을 명시 v2 local artifacts/temporary + remote terminal archive로 대체한다. 아래 v1/no-config
+계약과 과거 관측은 보존하며 자동 변환하지 않는다. 옛 NFS 기록·absolute journal은 원래 v1
+config를 명시 선택해 조회·재개하고 이동/재작성/삭제하지 않는다. v2 archive는 파싱 때 접근하지
+않고 ARCHIVE 시점에만 mount/floor/private를 검사하며 active 검색/복구 근거에 추가하지 않는다.
+private 기본값 전환은 새 검토·검증 뒤 parent 책임이다. daily/hourly/게임 cron·approval 기록·
+인증/lock 경계는 유지한다. 아래 날짜별 '최신 NFS 유지' 서술은 당시 선택의 역사 기록이다.
+[0022](0022-documentation-only-validation.md)는 최종 실제 diff의 prose 검증 선택만 정밀화한다.
+
 ## 문맥
 
 사용자는 하네스 작업물이 로컬 디스크를 채워 당일 운영 cron이 중단된 문제를 보고했다.

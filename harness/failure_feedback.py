@@ -11,7 +11,7 @@ import re
 
 from harness import workspace
 
-COMMANDS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pipeline')
+COMMANDS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pipeline', 'check-docs')
 EXCEPTIONS = ('AssertionError', 'TypeError', 'ValueError', 'KeyError', 'IndexError',
               'AttributeError', 'RuntimeError', 'ImportError', 'ModuleNotFoundError',
               'SyntaxError', 'NameError', 'ZeroDivisionError', 'OSError', 'TimeoutError')

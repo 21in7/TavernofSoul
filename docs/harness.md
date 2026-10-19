@@ -3,6 +3,12 @@
 [전체 하네스 설계](harness-design.md)와 [ADR 목록](adr/README.md)은 목표·책임·격리·검토·게시의
 설계 기준을 설명한다. 이 문서는 환경 준비와 상세 명령을 다룬다.
 
+2026-10-19 현재 정책은 [ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2 local
+작업/검증 + remote terminal archive와 [ADR0022](adr/0022-documentation-only-validation.md)의
+실제 최종 diff 기반 문서 검증이다. 아래 과거 실행별 NFS 유지 서술은 당시 기록이며 개발 작업의
+active 저장 선택만 이번 사용자 요청으로 대체한다. daily/hourly·게임 cron·approval 기록과 기존
+모델/역할/인증 설정은 유지한다. 실제 private 기본값 활성화는 코드 검토·검증 후 parent 책임이다.
+
 AI 역할별 모델 연결과 API 키 등록은 [에이전트 모델 연결](agent-models.md)을 참고한다.
 개발 요청의 배정·구현·검토·검증·반영은 [자동 작업 실행](workflow.md)의 `make agent-workflow`로 연결한다.
 `make agent-workflow-status`는 현재 단계와 실제 담당 역할·모델을 표시한다.
@@ -33,8 +39,9 @@ make check-site-container
 
 `make check`는 기본 오프라인 검증을 실행하고, 어느 하나라도 실패하면 0이 아닌 종료 코드를 반환한다.
 MySQL과 Chromium은 각각 `make check-mysql-container`, `make check-browser-container`로 별도 실행한다.
-CI workflow에는 오프라인(고정 실데이터 샘플 포함)·MySQL·브라우저 작업이 있다. 브랜치 보호에서 세 작업을 required check로
-지정하는 것은 저장소 관리자 설정이며 이 파일만으로 설정되지 않는다.
+CI workflow에는 오프라인(고정 실데이터 샘플 포함)·MySQL·브라우저 실행과 세 required final gate가
+있다. prose-only complete diff는 docs 검증 증거로 gate를 실행하고 나머지는 기존 heavy 실행을
+요구한다. 브랜치 보호 설정은 저장소 관리자 책임이며 이 파일만으로 설정되지 않는다.
 각 검증은 새 프로세스에서 실행한다. 기존 데이터 다운로드·운영 적재·지역별 cron은 실행하지 않는다.
 
 기존 공개 JSON의 계약 불일치는 `harness.release_repair`로 별도 새 디렉터리에서 조사·보정한다.
@@ -290,8 +297,9 @@ Make 없이 실행하려면 동일 인터프리터로 `python -m harness check`�
 
 `harness/storage.py`는 workflow·GitHub journal/cleanup·모델 보고서·triage·compaction·runner·
 MySQL/Chromium wrapper가 사용하는 하나의 저장 정책이다. 설정 없는 checkout은 기존 로컬 동작을
-유지한다. [전체 설계](harness-design.md#공유-저장-정책과-실패-경계)와
-[ADR 0011](adr/0011-configurable-harness-storage.md)은 격리·잠금·복구 경계를 설명한다.
+유지한다. [전체 설계](harness-design.md#공유-저장-정책과-실패-경계),
+[ADR 0011](adr/0011-configurable-harness-storage.md)과
+[ADR0021](adr/0021-local-work-and-result-archives.md)은 격리·잠금·복구 경계를 설명한다.
 
 설정 파일은 다음 순서로 **하나만** 선택하며 필드를 병합하지 않는다.
 
@@ -306,7 +314,28 @@ MySQL/Chromium wrapper가 사용하는 하나의 저장 정책이다. 설정 없
 활성화되지 않는다. 실제 설정은 Git 제외·보호된 logs 아래에 private 파일로 두고 모델 승인 소스에
 넣지 않는다. 환경 override로 선택한 private 설정도 모델 입력으로 배정하지 않는다.
 
-version 1의 완전한 JSON 예제는 다음과 같다. 경로는 실제 호스트에 맞춰 변경해야 한다.
+현재 tracked 예제는 명시 v2다. 다음 경로는 호스트 설정이 아닌 설명용이며 archive는 별도 mount다.
+
+```json
+{
+  "version": 2,
+  "artifacts": {"path": "/var/tmp/tavern/harness-artifacts", "required_mount": "/", "min_free_bytes": 10737418240},
+  "temporary": {"path": "/var/tmp/tavern/harness-temporary", "required_mount": "/", "min_free_bytes": 10737418240},
+  "archive": {"path": "/mnt/example-archive/tavern/results", "required_mount": "/mnt/example-archive", "min_free_bytes": 10737418240}
+}
+```
+
+v2는 정확히 위 네 최상위 필드를 요구한다. artifacts/temporary와 프로젝트 work root는 실제
+지원 로컬 filesystem이어야 한다. Linux fstatfs 양성 allowlist이며 NFS/CIFS·미지원/미상은
+거부한다. v2 보고서 override도 로컬이고 artifacts의 하위여야 한다. active root의 lexical·
+symlink·mount/floor/private/no-follow 정책을 유지한다. archive spec은 **파싱 시 lexical/type/
+overlap만** 검사하며 NFS stat를 하지 않는다. archive의 실제 filesystem·mount·공간·소유자·
+private·symlink 검사는 ARCHIVE에서만 수행한다. 미마운트 archive는 로컬 작업/승인/검증을 막지
+않고 terminal 보관을 pending/non-success로 남긴다. 이하 일반 readiness/prepare/probe의 두
+configured root는 artifacts와 temporary만 뜻하며 archive는 포함하지 않는다.
+
+호환 유지하는 version 1의 완전한 JSON 예제는 다음과 같다. 자동 변환하지 않으며 옛 NFS 실행을
+조회·재개할 때 원래 v1 설정을 명시 선택한다. 경로는 실제 호스트에 맞춰 변경해야 한다.
 
 ```json
 {
@@ -355,8 +384,9 @@ HARNESS_REPORT_DIR=/absolute/private/reports make check-browser-container
 ```
 
 다음은 검토·full checks·GitHub 전달 **이후 main이 수행할 설정 절차**다. scoped worker가 실행하는
-명령이 아니다. 기존 설정을 보존하도록 예제를 복사하고, 두 application 경로·실제 mount·공간 하한을
-편집한 뒤 준비한다. `python`은 Make의 `PYTHON`과 같은 하네스 인터프리터를 사용한다.
+명령이 아니다. 기존 v1 설정을 별도 보존하고 새 v2 private 파일에 active 두 경로와 archive spec의
+설명용 값을 편집한다. 기존 파일을 덮어쓰지 않는다. `python`은 Make의 `PYTHON`과 같은 하네스
+인터프리터를 사용한다. 아래 명령은 active 준비만 확인하며 archive readiness 증거가 아니다.
 
 ```bash
 mkdir -p logs/harness
@@ -427,14 +457,14 @@ runner의 비인증 검증 자식은 configured 임시 경로의 `HARNESS_WORK_D
 새 위치 활성화는 과거 실행을 이전하지 않는다. status/latest 및 Git request/accept/resume/cleanup은
 현재 root와 기존 로컬 workflows를 함께 조회하고 duplicate run ID·symlink·탈출 경로를 거부한다.
 과거 absolute workspace·승인 journal·snapshot은 재작성하지 않는다. 상세 lookup·재개·수동 복구
-경계는 [workflow](workflow.md#저장-위치와-기존-실행-조회)를 따른다. 자동 migration·archive·
-역사적 산출물 삭제나 cron 등록은 없다. 임시 context manager는 자신이 만든 고유 작업만 정리한다.
-main이 제공한 호스트의 NFS 경로는 소스 기본값이 아니다. 이번 실행은 최신 사용자 선택대로
-기존 configured NFS 설정·mount·floor를 유지한다. activation 변경이나 local storage override를
-제안하지 않으며 private 설정을 읽지 않았다. 이 문서는 mount 확인·검토·검증·GitHub 전달
-완료를 주장하지 않는다.
-이 최적화는 private 설정 bytes/mode, mount options·required mounts·floors, 모델/provider와
-GitHub 정책을 바꾸지 않는다. 결정·대안·probe 선택의 안전 근거는
+경계는 [workflow](workflow.md#저장-위치와-기존-실행-조회)를 따른다. v2의 새 terminal 결과 보관과
+과거 기록 이관은 다르다. 자동 migration·역사적 산출물 삭제나 cron 등록은 없다. 옛 NFS run은
+원래 v1 config를 `HARNESS_STORAGE_CONFIG`로 명시 선택하며 absolute journal을 재작성하지 않는다.
+archive는 active journal의 대체/재개 근거나 status/find_run/progress 검색 대상이 아니다.
+임시 context manager는 자신이 만든 고유 작업만 정리한다. private host 설정을 모델에게
+제공하지 않으며 이 문서는 mount 확인·검토·검증·GitHub 전달 완료를 주장하지 않는다.
+v2 활성화는 새 검토·검증 후 parent가 담당한다. mount options·floor·모델/provider와 GitHub
+권한/lock을 약화하지 않는다. 기존 v1과 active probe 선택의 안전 근거는
 [ADR 0018](adr/0018-storage-check-probe-deduplication.md)에 둔다. `test_storage.py`는 공유/별도
 mount와 cold/warm 호출 수 및 장애 경계를 합성 FakeFS로 명세한다. 호출 수 감소는 실제 NFS
 지연이나 전체 실행 시간의 보장이 아니며 fresh review/full offline 검증을 대신하지 않는다.
@@ -472,6 +502,129 @@ mount/bind mount·statx 실패 회귀를 보존한다. synthetic env/root는 hos
 `status=updated`는 실제 변경된 승인 Markdown 목록과 저장·격리·복구 설명의 의미적 판단으로
 뒷받침한다. 파일 확장자 확인만으로 완전성을 증명하지 않는다. tests/full `make check`는
 orchestrator, connector 게시·필수 CI 확인·merge·정확한 cleanup은 main이 담당한다.
+
+### Terminal 결과 보관과 보관만 재개
+
+workflow의 `workspace/`, checks·logs·backup·Git journal은 local active artifacts 아래에서
+생성·실행된다. archive는 명시 allowlist의 결과만 읽어 로컬 `archive-payload/`에
+`bundle.tar.gz`, `inventory.json`, `manifest.json`을 만든다. 별도 `archive-frozen.json`이 첫
+manifest를 고정하며 `archive-state.json`은 가변 보관 상태다. state와 archive 자체 digest는
+payload에서 제외해 순환/반복 재포장을 피한다. 입력 owner/regular/no-hardlink/0600·bytes/mode/hash와
+안전 경로를 검사하며 개별 64 MiB·총 256 MiB 초과는 실패다.
+
+allowlist는 정제 report/review·changes.diff·허용 Git/cleanup 증거·검증 JSON/log다.
+workflow prepare 결과는 `prepare/doctor.json`, `prepare/doctor.log`처럼 바로 아래 파일이고,
+검증 라운드는 `checks-1/check/check.json`처럼 명령 디렉터리 아래다(`checks-1`~`checks-3`).
+private 파생 `storage-validation.json`은 제외한다. workspace·`.git`·backup·model context/manifest·
+credential runtime·lock·private config·approval instruction·raw agent 응답은 포함하지 않는다.
+raw 모델 응답의 기존 private 경계를 유지하며 외부 공개 전송을 추가하지 않는다.
+
+archive 목적지는 `archive.path/<workflows|checks>/<run_id>/`이다. private0700 디렉터리를
+exclusive mkdir로 확보하고 로컬 `archive-transfer.json`에 frozen manifest·목적지·디렉터리/mount
+identity·임시 이름 token을 고정한다. 로컬 receipt가 파일별 게시와 committed도 기록하므로
+이미 게시한 파일 삭제는 재생성하지 않고, committed 뒤에는 읽기 검증만 한다. receipt 없는
+기존 목적지는 같은 bytes나 빈 디렉터리라도
+채택하지 않는다. mkdir 뒤 receipt 저장 전 중단은 자동 복구할 수 없으므로 pending 증거를 보존한다.
+
+세 파일은 알려진 `.transfer-<token>-<filename>`에 최대 1 MiB block으로 전송하고 fresh
+mount/floor·ownership/no-follow·attachment를 재확인한다. 부분 파일은 frozen 원본과 prefix가
+정확히 일치할 때만 append하며 변조·충돌은 덮어쓰지 않는다. fsync한 각 임시 파일을 no-replace
+`os.link`로 최종 이름에 게시하고 임시 alias만 제거한다. 정확한 두 이름이 같은 inode·같은
+frozen bytes·nlink=2일 때만 중단 전이를 복구한다. 제3 alias와 알 수 없는 entry는 거부한다.
+
+payload readback·inventory/SHA256 검증 후 **마지막 `commit.json`**을 같은 방식으로 게시한다.
+완료 판정은 `verify_archive`의 네 파일·marker exact bytes·0600/nlink=1 검증이다. marker 전이나
+두 링크 전이 중에는 완료가 아니다. marker 후 readback/state 실패도 pending이며 명시 재개는
+동일 결과를 검증한다. 로컬 freeze만 directory no-replace rename을 사용하고 원격은 사용하지 않는다.
+NFS4 directory rename EINVAL과 파일 link 성공은 프로토콜 선택 근거다. 후속 trusted parent 보고는
+최종 archive.py의 실제 NFS 저장/readback/hash·동일 결과 멱등 재개 성공까지이며 일반 pipeline 전체
+성공을 뜻하지 않는다. 일반 rename fallback·알 수 없는 대상 삭제는 없다. 자세한 복구 계약은
+[ADR0021](adr/0021-local-work-and-result-archives.md#불변-payload와-원자-공개)에 둔다.
+
+지원 terminal은 passed/failed/interrupted/demonstrated다. Git이 awaiting_github/awaiting_ci/
+cleanup_pending 등 중간 상태이면 완료 archive를 거부한다. workflow는 최종 저장·project lock
+해제 뒤, Git 경로는 최종 save·project/GitHub 두 lock 해제와 기존 completion hook 뒤 보관한다.
+GIT=0·실패/중단도 결과가 있으면 보관하지만 성공으로 바꾸지 않는다. standalone runner의 v2
+`check*`는 매번 `artifacts/checks/<run_id>`의 새 결과만 보관한다. workflow 검증 자식의 파생
+v1 설정과 child marker는 nested archive를 방지한다. terminal report 생성 전 실패는 보관을
+보장할 수 없다. parent가 사용하는 재개 명령은 다음과 같다.
+
+```bash
+make archive-run RUN_ID=기존_run_id KIND=workflows
+make archive-run RUN_ID=기존_standalone_run_id KIND=checks
+# 같은 인터프리터·같은 선택 storage에서 동등한 CLI
+python -m harness.archive --run-id 기존_run_id --kind workflows
+```
+
+이 재개는 모델·검사·Git 없이 같은 run의 archive만 시도한다. frozen payload와 현재 terminal
+allowlist inventory를 전송 전/후 대조한다. failed→passed나 review/Git 증거/diff/log 변화면 옛
+결과를 새 성공처럼 표시하지 않고 pending으로 거부한다. 원격 공개본도 덮어쓰지 않는다.
+parent가 원인을 조정할 때까지 로컬 증거를 보존하며 payload/state를 지워 강제 재포장하지 않는다.
+archived만 archive CLI 0이고 나머지는 nonzero다. workflow/검증의 기존 성공·merge SHA·cleanup
+proof는 보존하고 archive pending을 별도 노출한다. 보관 성공도 failed/interrupted outcome을
+성공으로 바꾸지 않는다. status는 로컬 state만 읽으며 NFS archive를 검색하지 않는다.
+
+validation workspace/backup/journal은 자동 정리하지 않는다. 정확한 run 소유권과 복구 증거를
+보존할 근거가 부족하면 남긴다. 기존 owned 임시 context cleanup만 적용하며 floor로 로컬 고갈을
+숨기지 않는다. archive 장애 시 local 원본과 partial을 보존하므로 공간은 계속 필요하다.
+
+## 문서 전용 검증 선택과 지원 범위
+
+workflow는 최종 baseline→candidate의 실제 bytes/POSIX mode/존재 변경을 새 review 뒤 분류한다.
+일반 `README.md`, `docs/**/*.md`의 비실행 regular prose만 가능하고 `AGENTS.md` 이름과
+`docs/workflow.md`, `docs/harness-design.md`는 정책으로 제외한다. 코드/설정/CI/Makefile·혼합·
+mode/type/symlink·불명/빈/모호한 증거·비문서 rename은 full이다. 읽기 scope에 참조 코드가 있어도
+실제 수정이 prose뿐이면 docs-only일 수 있다. repair마다 재판단하며 read_only/nochange의 반영·
+게시 금지는 유지한다. 빈 변경은 docs-only가 아니다. 삭제/rename은 양쪽 경로와 남은 역참조를 검사한다.
+로컬 변경 기록은 실제 POSIX permission 정수를 보존한다. 기존 0664/0640/0600 등 비실행·special bit
+없는 regular 문서는 수정 전후 권한이 같으면 허용하며, 추가/삭제는 존재하는 쪽의 권한을 확인한다.
+umask 002/022/077의 일반 문서 생성도 허용한다. 0600→0644를 포함한 실제 권한 변경과 잘못된 mode는
+full이다. CI raw Git mode 문자열은 기존 100644 기준이며 로컬 권한을 Git mode로 정규화하지 않는다.
+
+parent는 complete commit 범위 또는 신뢰한 최종 selection JSON을 제공한다. Git 범위 방식은
+40자리 유효 SHA·non-shallow history·HEAD=head·깨끗한 tracked/untracked 증거를 요구한다.
+
+```bash
+make check-docs BASE=실제_40자리_base_SHA HEAD=실제_40자리_head_SHA
+make check-docs CHANGES_FILE=/absolute/private/complete-selection.json
+python -m harness.docs_check --base 실제_base_SHA --head 실제_head_SHA --report docs-result.json
+```
+
+Python 3.8 표준라이브러리 checker만 필요하며 docs 경로에는 game doctor·Node·MySQL·브라우저/full
+suite를 요구하지 않는다. UTF-8/NUL/merge-conflict, 상대 파일/이미지와 inline/reference link,
+ATX/Setext heading·한국어/중복 slug·URL encoding·fragment를 검사한다. inline code는 링크 검사에서
+제외하고 heading 텍스트에는 반영한다. 같은 inline block에서 줄을 넘는 code도 정확히 같은 길이의
+backtick run으로 닫고, code 밖의 escape와 code 안의 literal backslash를 구별한다. paragraph·heading·
+fence 경계를 넘겨 마스킹하지 않으며 원문 줄 번호와 code 뒤의 실제 링크 검사를 유지한다.
+fence/indented code 예제는 실행하지 않으며 외부 HTTP도 없다.
+변경된 현재 문서는 전체 검사, 남은 README/AGENTS/docs는 변경·삭제/rename 대상의 역참조와 anchor
+영향만 검사한다. 무관한 과거 링크 오류를 전가하지 않으며 잠재 영향이 모호하면 오류다.
+symlink/hardlink·탈출/절대 경로·private/generated/hidden 경계는 거부한다. 공개 tracked
+[.github/workflows/harness.yml](../.github/workflows/harness.yml) 링크는 명시 허용 예외로 credential
+경계와 다르며 그 파일의 수정은 full이다.
+
+완전한 CommonMark/HTML/MDX 엔진은 아니다. multiline label/destination·HTML link/image/comment·
+custom anchor 등 모호한 문법은 unsupported 오류로 두며 skip/성공으로 바꾸지 않는다. 문서당
+4 MiB 상한이며 fragment는 Markdown heading 대상으로 제한한다. Claude가 의미적 완전성을 검토한다.
+`validation_selection`의 실제 변경과 digest, 각 결과 `validation_digest`, 마지막 성공 라운드의
+`delivery_validation`을 최종 반영·게시까지 결합한다. 각 checks group은 positive selected와
+passed==selected, zero skip/failure/error가 필수다. 빈·누락·과거 결과나 CLI 0만으로 통과하지 않는다.
+실패는 정제 feedback으로 해당 task에 귀속하고 새 review/최종 diff 선택을 반복한다.
+
+CI는 event JSON을 shell code에 직접 보간하지 않고 complete PR base→head 또는 push before→after
+raw diff의 rename/deletion/mode로 같은 판정을 한다. **새 브랜치 push의 zero before SHA는 full**이며
+complete PR prose-only 경로와 구분한다. shallow/invalid/unavailable SHA·불명 event·dirty/mismatched
+checkout·workflow_dispatch도 full이다. 세 required 이름 Offline harness (SQLite), MySQL harness,
+Chromium browser harness는 실제 final gate다. docs이면 selection/docs artifact의 일치와 구조화
+성공을 확인하고 full이면 해당 기존 실행 성공을 요구한다. docs 실패·증거 누락은 세 gate 실패,
+full 실행 실패/미실행은 대응 gate 실패다. skipped/neutral로 success를 대체하거나 임의 CI 생략·
+branch protection/권한/lock 우회는 하지 않는다.
+
+이번 harness/CI 구현은 docs-only 대상이 아니며 새 전체 `make check`가 필수다. 이전 run
+`1792414748889186714-9305b2`는 coordinator CLI 900초 timeout, applied=[]였고 초안/테스트 정의는
+성공 근거가 아니다. parent가 새 실제 Codex 작업·Claude 의미 검토·full check·CI·새 Git 전달 증거를
+확보한다. 이 문서 작업자는 검사하지 않았으며 매 review의 documentation.updated에는 실제 변경
+Markdown만 포함한다. 문서 완전성은 최종 코드와 원래 요청에 대한 독립 의미 검토로 남는다.
 
 ## 신규 서버의 로컬 운영 파일
 
@@ -1264,3 +1417,10 @@ worker는 이 명세나 checks를 실행하지 않았다. parent는 관련 tests
 parent의 후속 합성 live는 구현 호환 검증이며 실제204~500초 연구의 병목 판정과 구분한다.
 다음 normally admitted GLM hourly 관측은 main이 기존 gate/schedule 안에서 읽는다.
 추가 source probe·model call·schedule/state 편집·frozen report 재발행은 이 작업에 포함하지 않는다.
+
+2026-10-19 복구 인계: run `1792416450941994605-2e6132`는 코드 담당 호출 passed 뒤 문서 호출 중
+main이 실제 NFS 결함을 발견해 중단했고 applied=[]였다. 보존 초안과 파일 link probe는 최종 검증
+증거가 아니다. 후속 run `1792417309675138078-0875f6`도 실제 docs-only 결함으로 full check 중단·
+applied=[]였다. 실제 NFS 최종 어댑터의 보관/readback/hash·멱등 재개는 parent의 별도 성공 관측이다.
+이 수정의 검사는 worker가 실행하지 않았으며 main의 새 Claude 의미 검토·전체 make check·실제 문서
+검사·GitHub/필수 CI가 남는다. 이전 의미 검토를 최종 수정 승인 근거로 재사용하지 않는다.

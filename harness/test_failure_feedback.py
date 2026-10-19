@@ -176,3 +176,30 @@ def test_source_excerpt_is_bounded(contexts):
 def test_status_and_exit_zero_cannot_override_required_failure_categories(category):
     assert not feedback.check_groups_passed({'fixture': {'status': 'passed', 'selected': 1,
                                                        'passed': 1, category: [{}]}})
+
+
+def test_documentation_failure_routes_only_verified_approved_prose(tmp_path):
+    candidate, model = tmp_path / 'candidate', tmp_path / 'model'
+    name = 'docs/guide.md'
+    for root in (candidate, model):
+        (root / 'docs').mkdir(parents=True)
+        (root / name).write_text('# Guide\n[broken](missing.md)\n')
+    results = [{'command': 'check-docs', 'checks': {'docs': {'status': 'failed',
+                'selected': 1, 'passed': 0, 'skipped': [],
+                'failures': [{'file': name, 'line': 2, 'exception_type': 'ValueError',
+                              'reason': 'DO NOT FORWARD RAW DIAGNOSTICS'}]}}}]
+    diagnostics = feedback.diagnostics(results, candidate, model, [name], POLICY)
+    assert diagnostics[0]['command'] == 'check-docs' and diagnostics[0]['file'] == name
+    assert 'DO NOT FORWARD' not in json.dumps(diagnostics)
+    tasks = [{'files': [name]}, {'files': ['harness/runner.py']}]
+    assert set(feedback.route(tasks, diagnostics)) == {0}
+
+
+@pytest.mark.parametrize('group', [
+    {'status': 'passed', 'selected': 0, 'passed': 0, 'skipped': []},
+    {'status': 'passed', 'selected': 1, 'passed': 1, 'skipped': ['a']},
+    {'status': 'passed', 'selected': True, 'passed': True, 'skipped': []},
+    {'status': 'passed', 'selected': 2, 'passed': 1, 'skipped': []},
+])
+def test_docs_evidence_cannot_turn_empty_or_skipped_coverage_green(group):
+    assert not feedback.check_groups_passed({'docs': group})

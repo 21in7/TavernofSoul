@@ -117,6 +117,35 @@ class FileSystem:
     def lstat(self, path):
         return path.lstat()
 
+    def local_filesystem(self, path):
+        """Positive Linux filesystem allowlist, using the kernel, never mount files.
+
+        Unknown and userspace/network filesystems fail closed. Probe the closest
+        existing ancestor without following links; readiness repeats this proof.
+        """
+        while True:
+            try:
+                fd = self.open_directory(path)
+                break
+            except FileNotFoundError:
+                if path == path.parent:
+                    return False
+                path = path.parent
+        try:
+            buffer = ctypes.create_string_buffer(512)
+            call = ctypes.CDLL(None).fstatfs
+            call.argtypes = (ctypes.c_int, ctypes.c_void_p)
+            call.restype = ctypes.c_int
+            if call(fd, buffer) != 0:
+                return False
+            magic = ctypes.c_long.from_buffer(buffer).value & 0xffffffff
+            return magic in {0xef53, 0x58465342, 0x9123683e, 0x01021994,
+                             0x794c7630, 0x2fc12fc1, 0xf2f52010}
+        except (AttributeError, OSError):
+            return False
+        finally:
+            os.close(fd)
+
     def mount_ready(self, path):
         return os.path.ismount(path)
 
@@ -354,6 +383,12 @@ class Storage:
     config_path: Path = None
     env: dict = field(default_factory=dict, repr=False)
     fs: FileSystem = field(default_factory=FileSystem, repr=False)
+    version: int = 1
+    archive: DirectorySpec = None
+
+    def require_local(self, path):
+        if self.version == 2 and not self.fs.local_filesystem(path):
+            raise StorageError('Version 2 work and report paths require a supported local filesystem.')
 
     @property
     def configured(self):
@@ -439,7 +474,9 @@ class Storage:
     def _check_ready(self, *, target=None):
         """One boundary, including optional fresh output proof before returning."""
         measurements = {}
+        self.require_local(self.root)
         for label, spec in self._specs():
+            self.require_local(spec.path)
             mount_info = self._mount_path(label, spec)
             self._floor(label, spec, self._space(label, spec, measurements, mount_info))
             if _info(self.fs, spec.path) is not None:
@@ -501,6 +538,7 @@ class Storage:
 
     def _output_safe(self, path, *, legacy=False, measurements=None):
         """Fresh containment only; callers own the all-spec readiness boundary."""
+        self.require_local(path)
         _safe_path(self.fs, path)
         # Local historical records retain their own containment contract even
         # if a broadly configured mount (such as /) also contains the project.
@@ -552,6 +590,9 @@ class Storage:
             path = _absolute(local_default, 'Local report default')
         else:
             path = self.artifact_root / category if category else self.artifact_root
+        self.require_local(path)
+        if self.version == 2 and not _within(path, self.artifact_root):
+            raise StorageError('Version 2 reports must remain below active artifacts.')
         self._check_ready(target=path)
         return path
 
@@ -821,7 +862,7 @@ class Storage:
 
     def status(self, *, probe=False):
         """Read-only unless probing existing application directories is requested."""
-        result = {'version': 1, 'mode': 'configured' if self.configured else 'local',
+        result = {'version': self.version, 'mode': 'configured' if self.configured else 'local',
                   'artifact_root': str(self.artifact_root),
                   'temp_root': str(self.temp_root) if self.temp_root else None,
                   'context_root': str(self.context_root),
@@ -836,6 +877,8 @@ class Storage:
                      'min_free_bytes': spec.min_free_bytes, 'mount_ready': False,
                      'free_bytes': None, 'private_directory': False, 'probe': 'not_requested'}
             try:
+                self.require_local(self.root)
+                self.require_local(spec.path)
                 _safe_path(self.fs, spec.required_mount)
                 state['mount_ready'] = bool(self.fs.mount_ready(spec.required_mount))
                 if state['mount_ready']:
@@ -888,11 +931,14 @@ def resolve_storage(project_root=None, *, env=None, fs=None):
             raise StorageError('Explicit HARNESS_STORAGE_CONFIG is missing; supply an existing config file.')
         return Storage(root=root, env=environment, fs=fs)
     data = _json(fs, config_path, 'Storage config')
-    if not isinstance(data, dict) or set(data) != {'version', 'artifacts', 'temporary'} or \
-            type(data['version']) is not int or data['version'] != 1:
-        raise StorageError('Storage config must have exactly version=1, artifacts and temporary fields.')
+    if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] not in (1, 2):
+        raise StorageError('Storage config requires version 1 or 2.')
+    version = data['version']
+    labels = ('artifacts', 'temporary', 'archive') if version == 2 else ('artifacts', 'temporary')
+    if set(data) != {'version', *labels}:
+        raise StorageError('Storage config fields must match its explicit version.')
     specs = {}
-    for label in ('artifacts', 'temporary'):
+    for label in labels:
         value = data[label]
         if not isinstance(value, dict) or set(value) != {'path', 'required_mount', 'min_free_bytes'}:
             raise StorageError(label + ' must have exactly path, required_mount and min_free_bytes.')
@@ -901,20 +947,29 @@ def resolve_storage(project_root=None, *, env=None, fs=None):
         floor = value['min_free_bytes']
         if type(floor) is not int or floor < 0:
             raise StorageError(label + '.min_free_bytes must be a nonnegative integer byte count.')
-        _safe_path(fs, path)
-        _safe_path(fs, mount)
+        # Archive parsing is lexical only: an unavailable NFS server must never
+        # block local work, progress, lookup or approval.
+        if label != 'archive':
+            _safe_path(fs, path)
+            _safe_path(fs, mount)
         if path == mount or not _within(path, mount):
             raise StorageError(label + '.path must be a strict descendant of its required_mount.')
         if _overlap(path, root):
             raise StorageError(label + '.path must be outside repository ancestry.')
         specs[label] = DirectorySpec(path, mount, floor)
-    if _overlap(specs['artifacts'].path, specs['temporary'].path):
-        raise StorageError('Artifact and temporary application roots must be distinct and disjoint.')
+    for index, label in enumerate(labels):
+        if any(_overlap(specs[label].path, specs[other].path) for other in labels[index + 1:]):
+            raise StorageError('Storage application roots must be distinct and disjoint.')
     for spec in specs.values():
         for other in specs.values():
             if _within(other.required_mount, spec.path):
                 raise StorageError('Application roots must not contain required mounts.')
-    return Storage(root, specs['artifacts'], specs['temporary'], config_path, environment, fs)
+    selected = Storage(root, specs['artifacts'], specs['temporary'], config_path, environment, fs,
+                       version=version, archive=specs.get('archive'))
+    if version == 2:
+        for path in (root, specs['artifacts'].path, specs['temporary'].path):
+            selected.require_local(path)
+    return selected
 
 
 def main(argv=None):
