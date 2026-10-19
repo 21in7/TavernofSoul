@@ -11,6 +11,7 @@ PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(i
 .PHONY: storage-status storage-doctor
 .PHONY: agent-improve agent-improve-daily agent-improve-status agent-improve-approve agent-improve-reject agent-improve-execute
 .PHONY: agent-improve-tick agent-improve-loop-status agent-improve-publish
+.PHONY: agent-improve-completion
 
 # Quote each improvement argument as one literal shell word. Never evaluate it
 # as shell code; the Python CLI validates IDs, paths and trusted-parent authority.
@@ -64,6 +65,7 @@ help:
 	@echo "agent-improve-approve Trusted parent only: PROPOSAL_ID=... INSTRUCTION_FILE=... [LOCAL_ONLY=1]"
 	@echo "agent-improve-reject Trusted parent only: PROPOSAL_ID=..."
 	@echo "agent-improve-execute Consume one exact approval: PROPOSAL_ID=..."
+	@echo "agent-improve-completion Resume only completion delivery: RUN_ID=... [RECONCILE=1]"
 	@echo "Override the interpreter with: make check PYTHON=/path/to/python"
 
 prepare-ipf-unpacker:
@@ -169,3 +171,6 @@ agent-improve-reject:
 
 agent-improve-execute:
 	$(PYTHON) -m harness.improvements execute --proposal-id $(call improve_quote,$(PROPOSAL_ID))
+
+agent-improve-completion:
+	$(PYTHON) -m harness.improvement_completion --run-id $(call improve_quote,$(RUN_ID)) $(if $(filter 1,$(RECONCILE)),--reconcile)

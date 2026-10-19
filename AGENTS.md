@@ -72,7 +72,8 @@ loop 제안은 loop/local/agent/workflow 설정 digest까지 freshness와 서명
 못하며 같은 OS 계정을 장악한 공격자까지 방어하는 경계가 아니다. scheduler는 반드시
 `TAVERN_IMPROVEMENT_UNATTENDED=1`로 새 `tick`만 호출하며 approve/reject/execute를 호출하지 않는다.
 `TAVERN_WORKFLOW_CHILD` 또는 `TAVERN_IMPROVEMENT_DISCOVERY` 세션은 개선 orchestration을 금지한다.
-owner-private Sites 보고함에는 정제된 `improvement-web-v1`만 전달한다. 승인 지시·키·절대 호스트
+owner-private Sites 보고함에는 두 정제 계약만 전달한다. 불변 오전 보고는 `improvement-web-v1`,
+사용자가 별도로 전송을 허용한 승인 제안 완료는 `improvement-completion-v1`이다. 승인 지시·키·절대 호스트
 경로·소스·diff·프롬프트·원문 응답·로그는 보내지 않는다. credential은 메인만 관리하며 모델에 제공하지 않는다.
 사용자 최신 선택은 [ADR 0017](docs/adr/0017-budgeted-continuous-improvement.md)의 bounded hourly
 tick이다. 기존 daily-only/하루 5회/one-pass 정책을 이 자동 탐색에 한해 대체한다. 각 tick은 모델
@@ -196,6 +197,20 @@ merge/base tree의 blob/Git executable mode를 대조한 뒤 private durable sna
 잡아 apply와 cleanup을 직렬화하지만 외부 편집 경쟁까지 사라지지는 않는다. 복구 실패 시 승인 snapshot과
 머지 기록을 보존하고 현재 파일이 승인 after/baseline과 같은 경우에만 재개한다.
 상세 상태·복구 절차는 [workflow](docs/workflow.md#머지-후-브랜치-정리)에 둔다. private 원문은 공개하지 않는다.
+
+[ADR0020](docs/adr/0020-automatic-proposal-completion.md)에 따라 `git_publish`의
+request/accept/resume/cleanup은 최종 save와 project/GitHub lock 해제 후에만 lazy import로
+`improvement_completion.complete_run`을 호출한다. signed claim의 정확한 run 연결·signed approval·
+제안/독립 검토·실제 구현 review/validation·편집 범위·CI 3종·merged SHA·verified cleanup proof와
+cleanup complete를 검증한 뒤 private durable outbox를 전달한다. 완료 시점에는 실행 전의 freshness/
+만료 검사를 다시 적용하거나 승인을 소비하지 않는다. 여러 signed claim도 각각 검증하며 일반 bundle
+승인 권한을 추가하지 않는다. claim 없는 일반 작업은 키/credential/HTTP 없는 no-op이다.
+child/discovery/unattended·read_only/simulated/GIT=0/local-only에는 전송하지 않는다.
+POST만으로 delivered가 되지 않으며 동일 frozen payload/digest의 GET readback이 필요하다.
+unknown/sending 자동 재호출은 GET만 수행한다. `make agent-improve-completion RUN_ID=... RECONCILE=1`은
+GET absent 확인 뒤에만 같은 digest POST를 허용하고 conflict는 보존한다. 전달 실패는 별도 completion
+결과이며 passed/merge/cleanup을 바꾸지 않는다. 새 모델·승인·execute·Git·cron/tick 연결은 없다.
+Sites API/UI 구현·배포와 credential 관리는 메인 책임이며 저장소의 offline 명세는 실제 배포 성공이 아니다.
 
 `TAVERN_WORKFLOW_CHILD=1`인 작업자·검토 세션은 자동 실행기를 호출하지 않는다.
 작업자는 배정받은 파일만 다루고 다른 에이전트를 재실행하거나 재위임하지 않는다.

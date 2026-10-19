@@ -62,6 +62,32 @@ improvement execute의 `awaiting_github` 반환/CLI exit0는 완료가 아니다
 Git 역할·앱 게시·CI 3개 success·SHA 고정 squash merge·cleanup complete까지 확인한다.
 지연·실패를 숨기거나 execute를 반복하지 않는다. improvement execution 기록은 인계 당시 상태이며
 이후 GitHub 완료의 기준은 기존 workflow/journal의 실제 상태다.
+
+### 승인 제안 완료를 웹 보고에 전달
+
+[ADR0020](adr/0020-automatic-proposal-completion.md)에 따라 GitHub request/accept/resume/cleanup의
+마지막 save 후 project/GitHub lock을 모두 해제하고 `improvement_completion`을 lazy import한다.
+같은 run의 각 signed claim/approval·proposal digest/authorization·approved decision·독립 검토와
+실제 구현 review/validation·허용 scope·applied 변경을 대조한 뒤 전달한다. 선택된 private run
+경계를 지키며 local fallback하지 않는다. report.run_id/passed, github-v1 identity/config/정확한 PR URL,
+merged SHA/done, CI 3종 success, head/merge SHA가 일치하는 verified cleanup proof/CI와
+cleanup_complete가 필수다. 완료 시 `_authorization`/`_fresh`를 재호출하지 않고 현재 소스·만료로
+승인이나 실행을 재소비하지 않는다. 여러 signed run claim은 각각 검증하며 일반 bundle 권한은 없다.
+claim 없는 일반 작업은 키/credential/HTTP 없는 no-op이다. child/discovery/unattended·
+read_only/simulated/GIT=0/local-only에는 전송하지 않는다.
+
+별도 `completion` 결과가 pending/blocked여도 passed/merge SHA/cleanup은 유지한다.
+기존 불변 오전 `improvement-web-v1`과 사용자 승인된 `improvement-completion-v1`은 별도 계약이다.
+private 0600 canonical payload+digest/journal을 HTTP 전에 durable 저장하고 POST 전 sending을 남긴다.
+정확한 GET schema/digest/payload readback만 delivered다. sending/unknown 자동 재호출은 GET만 하며
+absent는 unknown이다. 메인은 같은 storage 환경에서 `make agent-improve-completion RUN_ID=...`를
+사용하고, GET absent 확인 뒤 동일 frozen digest만 다시 보낼 때 `RECONCILE=1`을 명시한다.
+conflict는 overwrite/retry하지 않고 delivered는 HTTP 없이 종료한다. completed_at은 최초 생성 시
+고정하며 오전 보고/digest/publication journal은 변경하지 않는다. 새 모델·승인·execute·Git·cron/tick은 없다.
+정확한 7개 wire key·16384 bytes·기존 inbox/TLS/timeout·immutable 서버 및 browser cursor API는
+[운영 계약](improvements.md#승인-제안-자동-완료-전달)을 따른다. Sites 소스/API/UI 구현·배포는
+메인 책임이며 이 저장소의 offline 명세를 실제 HTTP 성공으로 보고하지 않는다.
+
 unattended는 approve/reject/execute를, child/discovery 세션은 개선 orchestration을 거부한다.
 scheduler는 bounded hourly 연구·09:00 once 보고만 수행하며 제안의 GitHub 게시에는 승인과
 메인 앱 세션이 필요하다. tick은 decisions/approvals/claims/workflow/Git을 생성하지 않는다.

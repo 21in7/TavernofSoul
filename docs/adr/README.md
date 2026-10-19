@@ -24,8 +24,16 @@
 | [0017](0017-budgeted-continuous-improvement.md) | bounded hourly 9단계·불변09:00 보고·동일 digest 복구, mlx-vlm 네이티브 JSON Schema·v2 config와 기존 후보/승인 경계 | 제안(proposed), 승인 방향 기록; 최종 adapter 새 review/full check/apply·실추론/운영 검증 대기 | 2026-10-16 |
 | [0018](0018-storage-check-probe-deduplication.md) | 한 읽기 경계의 mount별 공간 조회 공유·양쪽 floor와 fresh 쓰기 gate 유지·실제 목적지/새 root probe | 제안(proposed), 새 의미 검토·전체 offline 검증·전달 대기 | 2026-10-16 |
 | [0019](0019-private-glm-call-telemetry.md) | parent loopback OTLP collector·bounded numeric private GLM latency contract·public web-v1 제외 | 제안(proposed), 새 의미 검토·전체 검사·parent 합성/정상 hourly 관측 대기 | 2026-10-18 |
+| [0020](0020-automatic-proposal-completion.md) | signed run 완료 증거·별도 completion-v1 private outbox·동일 digest GET 복구와 명시 재전송 | 사용자 요청 계약 승인, 최종 의미 검토/full check/Git 전달·메인의 Sites 구현·배포/HTTP 관측 대기 | 2026-10-19 |
 
 ## 상태와 근거의 의미
+
+0020은 web-v1만 전송한다는 경계를 사용자 승인된 web-v1과 별도 completion-v1 두 계약으로
+정밀화한다. 불변 오전 보고/digest/publication과 37개 discovery scope·역할/model/auth·scheduler·
+개별 승인/일회성 claim·CI3/merge/cleanup 게이트는 유지한다. 완료는 signed claim/approval과
+실제 run 증거로 검증하고 최종 save/lock 해제 후 parent만 전달한다. outbox의 sending/unknown은
+자동 GET만 하며 명시 reconcile에서 GET absent 후 동일 frozen digest POST만 허용한다.
+Sites 소스/API/UI·배포는 메인 책임이며 offline 명세는 실제 배포/HTTP 성공의 증거가 아니다.
 
 0018은 0011의 공간 측정과 일상 준비 probe 선택을 정밀화한다. shared mount는 한 읽기 경계에서
 한 번 측정하되 각 spec의 floor를 검사한다. 일상 출력/임시 할당은 새 root와 실제 자식·override를

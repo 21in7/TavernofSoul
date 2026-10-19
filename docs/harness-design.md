@@ -11,6 +11,35 @@ bounded hourly 연구·MLX 작은 window·불변09:00 보고 분리: 2026-10-16,
 주요 결정과 대체 이력은 [ADR](adr/README.md)에서 관리한다.
 이 문서의 검증 설명은 소스에 정의된 경로와 게이트이며 특정 실행의 성공 기록이 아니다.
 
+## 승인 제안 완료 전달
+
+[ADR0020](adr/0020-automatic-proposal-completion.md)의 별도 전달 경계다.
+`git_publish.main`의 request/accept/resume/cleanup이 마지막 save를 마치고 project/GitHub
+lock을 모두 닫은 후 lazy import로 같은 run의 completion을 호출한다. Store → project를 쓰는
+기존 execute와의 역순 lock 획득을 피하며 project lock 재획득·새 모델·승인·execute·GitHub
+mutation·cron/tick 연결은 없다.
+
+완료 검증은 현재 선택된 root의 private run과 github-v1 journal/publication snapshot에 한정한다.
+`validate_journal`을 재사용하고 정확한 report.run_id/passed, PR 저장소·번호·URL, merged 40hex
+SHA/done, 원래 CI 3종 success와 일치하는 head/merge SHA의 verified cleanup proof/CI 및
+cleanup_complete를 요구한다. 각 claim과 approval을 Store.verify로 검증하고 proposal digest/ID,
+authorization_id, approved decision, 독립 review 및 실제 구현 review·final validation·허용 scope와
+적용 파일을 대조한다. signed run association이 없는 일반 작업은 키/credential/HTTP 없이 종료한다.
+여러 signed claim은 각각 검증하며 일반 bundle 승인은 추가하지 않는다. 실행 전 freshness를
+완료 시 재실행하지 않으며 claim 당시 유효기간만 확인한다. child/discovery/unattended,
+read_only/simulated/GIT=0/local-only는 전달할 수 없다.
+
+선택된 improvements root의 `completions/<run_id>/<proposal_id>.json` 한 원자 checkpoint에
+최초 고정 completed_at과 canonical payload/digest, private 연결 ID 및 journal 상태를 함께
+0600으로 저장·fsync한다. POST 전 sending도 먼저 저장한다. 16384 byte 한도의 exact
+completion-v1 POST 뒤 strict schema/digest/payload GET 일치만 delivered다. sending/unknown의
+자동 재호출은 GET만 하고 absent는 unknown을 유지한다. 명시 reconcile만 GET absent 뒤 같은
+digest POST를 허용한다. conflict는 overwrite/retry하지 않고 delivered는 HTTP를 반복하지 않는다.
+불명확한 응답·중단은 정제 journal 상태로 남고 passed/merge/cleanup이나 frozen morning report와
+publication journal을 변경하지 않는다. 같은 private inbox와 기존 TLS/no-redirect transport를
+재사용한다. wire/API·browser overlay·서버 immutable create-if-absent는 [운영 계약](improvements.md#승인-제안-자동-완료-전달)에 둔다.
+Sites API/UI·인증 관리·배포는 메인이 맡으며 offline fixture는 실제 배포나 HTTP 성공 증거가 아니다.
+
 ## 목표와 비목표
 
 목표는 운영 상태를 건드리지 않고 작은 재현 가능한 입력으로 실제 로직과 경계를 검증하고,
@@ -38,6 +67,7 @@ Opus escalation·다른 유료 공급자 전환도 제공하지 않는다. 기�
 | 실패 피드백 | 로컬 실패 위치를 승인 소스에 귀속하고 안전한 제한 진단만 재수정에 전달 | [failure_feedback.py](../harness/failure_feedback.py) |
 | GitHub 게시·정리 | 모델 설명과 별개로 journal·정책·SHA·앱 응답·CI·merge 및 cleanup 완료 검사 | [git_publish.py](../harness/git_publish.py), [git_cleanup.py](../harness/git_cleanup.py), [git-publish-config.json](../harness/git-publish-config.json) |
 | 개선 연구/보고 | durable hourly slot·Claude ledger·quota admission·9단계 round·오전 journal; 승인 상태 생성 금지 | [improvement_loop.py](../harness/improvement_loop.py), [improvements](improvements.md) |
+| 승인 제안 완료 | signed approval/claim과 run 완료 증거 검증·private outbox·동일 digest 전달/복구; 실행 권한 없음 | [improvement_completion.py](../harness/improvement_completion.py), [ADR0020](adr/0020-automatic-proposal-completion.md) |
 | 로컬 탐색 | 승인 owner source의 연속 numbered window·정제 feedback만 text MLX HTTP로 전달 | [local_model.py](../harness/local_model.py), [local-models](local-models.md) |
 | CI | 오프라인·MySQL·Chromium을 각 작업에서 실행하고 산출물 보관 | [harness.yml](../.github/workflows/harness.yml) |
 
@@ -410,7 +440,8 @@ JSON 문자열 backtick은 데이터로 보존한다. specialist/reviewer prompt
 검사하여 정상 digest가 있는 과대 입력도 거부한다. 세 reviewer reason 위치에 public 모드를
 명시하여 361자를 거부하며 top-level documentation도 빠뜨리지 않는다. private 입력을 먼저
 자르거나 eligibility를 합성하지 않는다. HTML/Markdown은 제한된 payload를 검증하고
-escape하여 기존 최대 3카드 한 장 요약을 만든다. Sites/API/auth 변경이나 추가 모델 호출은 없다.
+escape하여 기존 최대 3카드 한 장 요약을 만든다. 이 표시 변경 자체에는 Sites/API/auth 변경이나
+추가 모델 호출이 없다. 별도 completion-v1 API는 ADR0020에 따라 메인이 구현·배포한다.
 합성 오프라인 회귀는 419자/279자 두 후보 보존·전체 reviewer 입력·private 재검증/명시 승인
 handoff·모든 서술 상한의 정확/초과·suffix identity·정상 digest의 과대 public 거부를 대상으로 한다.
 추가 합성 명세는 bare/fenced 후보·review·proposal identity/digest, fenced 419자 전체 review와

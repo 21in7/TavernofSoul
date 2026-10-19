@@ -53,6 +53,22 @@ PYTHONPATH=TavernofSoul:parser_tidy TavernofSoul/itos/3.8/bin/python -m harness.
 
 ## 승인 대기 시간별 연구와 오전 보고
 
+승인된 제안이 GitHub CI 3종·merge·cleanup을 모두 마치면 parent의 기존
+request/accept/resume/cleanup CLI가 lock 해제 후 같은 run의 완료 전달을 자동 호출한다.
+일반 run에 signed claim이 없으면 credential/HTTP 없는 no-op이다. 전달 상태는 CLI의 별도
+`completion` 결과이며 실패해도 workflow passed·merge SHA·cleanup 성공은 유지한다.
+`make agent-improve-completion RUN_ID=...`은 그 run의 전달만 다시 확인한다.
+unknown/sending은 GET만 하며, `RECONCILE=1`은 GET absent 확인 뒤 동일 frozen digest POST를
+허용한다. conflict는 재시도하지 않고 delivered는 HTTP를 반복하지 않는다. 모델·승인·execute·
+commit/PR/merge·cron/tick을 시작하지 않는다. 기존과 동일한 storage 환경을 명시해야 하며
+선택된 root에 run이 없으면 local fallback 없이 차단한다. child/discovery/unattended,
+read_only/simulated/GIT=0/local-only에서는 보내지 않는다.
+정확한 completion-v1 계약·private outbox·실패 복구는 [운영 문서](improvements.md#승인-제안-자동-완료-전달),
+결정은 [ADR0020](adr/0020-automatic-proposal-completion.md)을 따른다.
+`harness/test_improvement_completion.py`는 기존 `harness/test_*.py` 수집으로 full `make check`에
+포함된다. 실행기는 기존 GitHub 회귀와 함께 검증한다. 이 구현 작업에서 worker는 검사나 실제
+HTTP를 실행하지 않았으며 Sites API/UI 구현·배포는 메인이 별도로 담당한다.
+
 계약·정확한 scheduler 교체·실패 복구는 [improvements](improvements.md), 로컬 준비와
 서비스 운영은 [local-models](local-models.md)를 따른다. [ADR0015](adr/0015-approval-gated-improvement-discovery.md)의
 개별 승인/claim 권한은 유지하고 [ADR0017](adr/0017-budgeted-continuous-improvement.md)이

@@ -842,8 +842,23 @@ def main(argv=None):
             execute_cleanup(directory, ledger)
         job = request(ledger)
         save(directory, ledger)
+        # Completion takes the improvement Store lock. Release both GitHub and
+        # project locks AFTER the final durable save, avoiding execute's opposite
+        # Store -> project lock ordering. Completion can never undo Git success.
+        lock.close()
+        lock = None
+        project_lock.close()
+        project_lock = None
+        completion = None
+        if ledger['step'] == 'done' and cleanup_complete(ledger):
+            try:
+                from harness import improvement_completion
+                completion = improvement_completion.complete_run(ledger['run_id'], selected=selected)
+            except (Exception, KeyboardInterrupt):
+                completion = {'status': 'blocked', 'reason': 'completion_unavailable', 'completions': []}
         print(json.dumps({'run_id': ledger['run_id'], 'github': summary(ledger), 'request': job,
-                          'poll_after_seconds': 10 if ledger['status'] == 'waiting_for_ci' else 0}, ensure_ascii=False))
+                          'poll_after_seconds': 10 if ledger['status'] == 'waiting_for_ci' else 0,
+                          **({'completion': completion} if completion is not None else {})}, ensure_ascii=False))
         return 1 if ledger['status'] in ('failed', 'needs_reconciliation', 'cleanup_pending') else 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__,
