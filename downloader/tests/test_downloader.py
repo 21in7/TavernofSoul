@@ -324,6 +324,20 @@ def test_version_publication_preserves_existing_read_permissions(workspace):
     assert client.read_version(str(path)) == {'itos': '1', 'ktos': '99'}
 
 
+def test_version_csv_write_and_read_are_utf8_regardless_of_host_locale(tmp_path):
+    # Real revision.csv/release.csv values are ASCII region names and numeric
+    # revisions; the non-ASCII value here is a locale-independence probe, not
+    # an expanded data contract. The exact published bytes pin explicit UTF-8
+    # for both directions: a host-locale codec (for example a legacy
+    # single-byte encoding) would fail this round-trip instead.
+    data = {'itos': '2', 'ktos': '99', 'jtos': '일본판'}
+    path = tmp_path / 'revision.csv'
+    client.print_version(str(path), data)
+    expected = 'itos,2\r\nktos,99\r\njtos,일본판\r\n'
+    assert path.read_bytes() == expected.encode('utf-8')
+    assert client.read_version(str(path)) == data
+
+
 def test_corrupt_pak_preserves_language_and_redownloads(workspace, server):
     language = workspace / 'itos_patch/languageData/English/items.tsv'
     language.parent.mkdir(parents=True)

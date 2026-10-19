@@ -362,7 +362,7 @@ def print_version(filename, data):
     descriptor, temporary = tempfile.mkstemp(prefix='.download-version-',
                                            dir=os.path.dirname(os.path.abspath(filename)))
     try:
-        with os.fdopen(descriptor, 'w', newline='') as f:
+        with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as f:
             csv.writer(f).writerows(out)
             f.flush()
             os.fsync(f.fileno())
@@ -375,7 +375,7 @@ def print_version(filename, data):
 
 def read_version(filename):
     rev = {}
-    with open(filename, 'r') as f:
+    with open(filename, 'r', encoding='utf-8') as f:
         w = csv.reader(f)
         for lines in w:
             if len(lines)<2:
