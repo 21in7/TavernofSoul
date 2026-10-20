@@ -1,8 +1,6 @@
-"""Offline approval/discovery boundaries with fixtures and an exact default-scope read.
+"""Offline approval/discovery fixtures; default-scope reads need a full copy.
 
-The default-scope regression reads exact project sources in the executor's full
-local verification copy. Other added source inputs, authority and HTTP are
-synthetic. Size contracts are documented in docs/improvements.md and ADRs 0015/0016.
+Other source inputs, authority and HTTP are synthetic.
 """
 import copy
 import datetime as dt
@@ -13,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -2325,3 +2324,184 @@ def test_private_glm_telemetry_survives_scan_failures_and_public_is_identical(la
         item['result'] = {'stdout': 'RAW_SECRET'}
     assert contract.canonical_json(contract.build_web_report(injected)) == baseline
     assert contract.canonical_json(contract.build_web_report(report)) == baseline
+
+
+def call_diagnostic_role(lab, runner, role='coordinator'):
+    """Exercise the real boundary with approved synthetic source snapshots."""
+    paths = imp.role_scope(role, FILES, lab.config)
+    snapshots = imp.snapshot_sources(paths, lab.config['limits'], lab.selected)
+    return imp._call_role(role, paths, snapshots, lab.config, [], {}, runner, lab.selected)
+
+
+@pytest.mark.parametrize('failure,reason', [
+    ('malformed', 'role_json_invalid'),
+    ('edit_type', 'candidate_edit_files_invalid'),
+    ('edit_item_type', 'candidate_edit_files_invalid'),
+    ('edit_duplicate', 'candidate_edit_files_duplicate'),
+    ('edit_scope', 'candidate_edit_files_outside_scope'),
+    ('candidate', 'candidate_invalid'),
+    ('review', 'review_invalid'),
+    ('envelope', 'role_result_invalid'),
+    ('identity_role', 'role_identity_mismatch'),
+    ('identity_provider', 'role_identity_mismatch'),
+    ('identity_model', 'role_identity_mismatch'),
+    ('execution_status', 'role_execution_failed'),
+    ('execution_exception', 'role_execution_failed'),
+    ('context_content', 'role_context_changed'),
+    ('context_mode', 'role_context_changed'),
+])
+def test_role_failure_comes_from_actual_boundary_not_result_diagnostics(lab, failure, reason):
+    marker = 'SYNTHETIC_UNTRUSTED_FAILURE /private/provider-path'
+    observed = []
+
+    def corrupt(role, result, response, options):
+        observed.append(options['workspace'])
+        # Even a known code in remote metadata cannot override the failed step.
+        result.update(reason='candidate_edit_files_duplicate', stage=marker,
+                      field=marker, error_type=marker,
+                      diagnostics={'reason': 'role_interrupted', 'raw': marker})
+        if failure == 'malformed':
+            result['response'] = '{broken ' + marker
+        elif failure.startswith('edit_'):
+            response['candidates'][0]['edit_files'] = {
+                'edit_type': 'harness/example.py', 'edit_item_type': [True],
+                'edit_duplicate': ['harness/example.py'] * 2,
+                'edit_scope': ['harness/not-approved.py'],
+            }[failure]
+            result['response'] = json.dumps(response)
+        elif failure == 'candidate':
+            response['candidates'][0]['priority'] = marker
+            result['response'] = json.dumps(response)
+        elif failure == 'review':
+            result['response'] = '{"reviews":[],"documentation":{}}'
+        elif failure == 'envelope':
+            return [marker]
+        elif failure.startswith('identity_'):
+            result[failure.split('_', 1)[1]] = 'unexpected-fixture-identity'
+        elif failure == 'execution_status':
+            result['status'] = marker
+        elif failure == 'execution_exception':
+            # Exception class names, as well as messages, can carry free text.
+            raise type(marker, (RuntimeError,), {})(marker)
+        elif failure.startswith('context_'):
+            target = options['workspace'] / 'harness/example.py'
+            target.chmod(0o600)
+            if failure == 'context_content':
+                target.write_text(marker)
+                target.chmod(0o400)
+        return result
+
+    runner = ModelRunner(lab, transform=corrupt)
+    agent, parsed = call_diagnostic_role(lab, runner, 'reviewer' if failure == 'review' else 'coordinator')
+    assert parsed is None and agent['status'] != 'succeeded'
+    assert agent['reason'] == reason
+    assert agent['error_type'] == ('Exception' if failure == 'execution_exception' else
+                                   'ValidationError' if failure in (
+                                       'malformed', 'edit_type', 'edit_item_type',
+                                       'edit_duplicate', 'edit_scope', 'candidate', 'review') else
+                                   'ImprovementError')
+    # Legacy result retention is separate; new diagnostics contain fixed codes only.
+    assert marker not in json.dumps({k: agent[k] for k in ('reason', 'error_type')})
+    assert len(runner.calls) == 1 and all(not path.exists() for path in observed)
+    assert 'TAVERN_IMPROVEMENT_DISCOVERY' not in os.environ
+    assert (lab.root / 'harness/example.py').read_text().startswith('fixture first line')
+    if failure == 'execution_status':
+        assert agent['cost'] == .0123 and agent['cost_status'] == 'cli_estimated_usd'
+
+
+class DiagnosticString(str):
+    """A provider-controlled str subclass has no fixed-code authority."""
+
+
+@pytest.mark.parametrize('reason,expected', [
+    ('candidate_edit_files_invalid', 'candidate_edit_files_invalid'),
+    ('candidate_edit_files_duplicate', 'candidate_edit_files_duplicate'),
+    ('candidate_edit_files_outside_scope', 'candidate_edit_files_outside_scope'),
+    ('review_invalid', 'candidate_invalid'),
+    ('role_json_invalid', 'candidate_invalid'),
+    ('candidate_edit_files_typo', 'candidate_invalid'),
+    ('SECRET /private/exception-reason', 'candidate_invalid'),
+    ('x' * 65537, 'candidate_invalid'),
+    (DiagnosticString('candidate_edit_files_duplicate'), 'candidate_invalid'),
+    (None, 'candidate_invalid'), (True, 'candidate_invalid'),
+    (1, 'candidate_invalid'), ([], 'candidate_invalid'),
+    ({'reason': 'candidate_edit_files_duplicate'}, 'candidate_invalid'),
+], ids=['invalid_edits', 'duplicate_edits', 'outside_edits', 'review_code', 'json_code',
+        'unknown_code', 'secret', 'oversized', 'str_subclass', 'null', 'bool', 'integer',
+        'list', 'mapping'])
+def test_candidate_exception_metadata_is_revalidated_at_call_boundary(lab, monkeypatch, reason, expected):
+    error = contract.ValidationError('SECRET /private/validation-message')
+    # Bypass constructor sanitization to test the adapter's own trust boundary.
+    error.reason = reason
+    error.stage = 'role_json_invalid'
+    error.field = 'SECRET /private/field'
+
+    def reject(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(contract, 'validate_candidates', reject)
+    agent, parsed = call_diagnostic_role(lab, ModelRunner(lab))
+    assert parsed is None and agent['status'] == 'failed'
+    assert agent['reason'] == expected and agent['error_type'] == 'ValidationError'
+    assert not any(key in agent for key in ('stage', 'field', 'diagnostic', 'line', 'column'))
+
+
+@pytest.mark.parametrize('kind', ['ordinary', 'subclass'])
+def test_only_shared_validation_error_can_supply_edit_failure_code(lab, monkeypatch, kind):
+    error_class = RuntimeError if kind == 'ordinary' else type('DerivedValidation', (contract.ValidationError,), {})
+    error = error_class('SECRET /private/error')
+    error.reason = 'candidate_edit_files_duplicate'
+
+    def reject(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(contract, 'validate_candidates', reject)
+    agent, parsed = call_diagnostic_role(lab, ModelRunner(lab))
+    assert parsed is None and agent['reason'] == 'candidate_invalid'
+    assert agent['error_type'] == 'Exception'
+
+
+@pytest.mark.parametrize('failure', ['preparation', 'cleanup', 'interrupt', 'success'])
+def test_diagnostic_boundary_preserves_preparation_cleanup_interrupt_and_success(lab, monkeypatch, failure):
+    runner = ModelRunner(lab)
+    contexts = []
+    previous_guard = 'synthetic-previous-discovery-guard'
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', previous_guard)
+    actual_directory = lab.selected.temporary_directory
+
+    @contextmanager
+    def failing_cleanup(*args, **kwargs):
+        with actual_directory(*args, **kwargs) as context:
+            contexts.append(context)
+            yield context
+        raise RuntimeError('SECRET /private/cleanup')
+
+    if failure == 'preparation':
+        def unavailable():
+            raise RuntimeError('SECRET /private/config')
+        monkeypatch.setattr(agent_models, 'load_config', unavailable)
+    elif failure == 'cleanup':
+        monkeypatch.setattr(type(lab.selected), 'temporary_directory',
+                            lambda self, *args, **kwargs: failing_cleanup(*args, **kwargs))
+    elif failure == 'interrupt':
+        def interrupt(role, result, response, options):
+            raise KeyboardInterrupt('SECRET /private/interrupt')
+        runner.transform = interrupt
+
+    agent, parsed = call_diagnostic_role(lab, runner)
+    assert os.environ['TAVERN_IMPROVEMENT_DISCOVERY'] == previous_guard
+    assert all(not entry['workspace'].exists() for entry in runner.calls)
+    assert all(not context.exists() for context in contexts)
+    assert len(runner.calls) == (0 if failure == 'preparation' else 1)
+    if failure == 'success':
+        assert agent['status'] == 'succeeded' and parsed == [candidate()]
+        assert 'reason' not in agent and 'error_type' not in agent
+        assert agent['cost'] == .0123 and agent['cost_status'] == 'cli_estimated_usd'
+    else:
+        assert parsed is None
+        assert agent['reason'] == {'preparation': 'role_preparation_failed',
+                                   'cleanup': 'role_context_cleanup_failed',
+                                   'interrupt': 'role_interrupted'}[failure]
+        assert agent['error_type'] == ('KeyboardInterrupt' if failure == 'interrupt' else 'Exception')
+        assert agent.get('interrupted', False) is (failure == 'interrupt')
+        assert 'SECRET' not in json.dumps({k: agent[k] for k in ('reason', 'error_type')})

@@ -41,6 +41,50 @@ PUBLICATION = 'commit/pr/three-required-ci/squash-merge/cleanup'
 NO_DOCUMENT_EDITS = {'status': 'not_required', 'files': [],
                      'reason': '읽기 전용 분석 보고만 작성하며 소스와 설계 문서를 수정하지 않았습니다.'}
 MAX_PRIVATE_BYTES = 1048576
+# Private failure classifications only. The hourly engine must revalidate these
+# before retaining participation or forwarding next-round feedback. Neither
+# runner metadata nor exception text supplies a code or a stage.
+_CANDIDATE_FAILURE_REASONS = frozenset((
+    'candidate_edit_files_invalid', 'candidate_edit_files_duplicate',
+    'candidate_edit_files_outside_scope',
+))
+ROLE_FAILURE_REASONS = frozenset((
+    'role_preparation_failed', 'role_execution_failed', 'role_result_invalid',
+    'role_identity_mismatch', 'role_context_changed', 'role_json_invalid',
+    'candidate_invalid', 'review_invalid', 'role_context_cleanup_failed',
+    'role_interrupted', 'role_failed',
+)) | _CANDIDATE_FAILURE_REASONS
+
+
+def sanitize_role_failure(reason):
+    """Bound legacy/untrusted private reasons; never infer a missing cause."""
+    if type(reason) is str and len(reason) <= 64 and reason in ROLE_FAILURE_REASONS:
+        return reason
+    return 'role_failed'
+
+
+def _candidate_failure_reason(exc):
+    # Only the shared validator's three exact metadata codes have authority.
+    # Other exception types, str subclasses and oversized strings fall back.
+    reason = exc.reason if type(exc) is contract.ValidationError else None
+    if (type(reason) is str and len(reason) <= 64 and
+            reason in _CANDIDATE_FAILURE_REASONS):
+        return reason
+    return 'candidate_invalid'
+
+
+def _role_error_type(exc):
+    # Preserve the legacy private field without trusting an arbitrary exception
+    # class name (which can itself contain provider text or secrets).
+    return {
+        ImprovementError: 'ImprovementError', contract.ValidationError: 'ValidationError',
+        KeyboardInterrupt: 'KeyboardInterrupt', TimeoutError: 'TimeoutError',
+        FileNotFoundError: 'FileNotFoundError', PermissionError: 'PermissionError',
+        OSError: 'OSError', ValueError: 'ValueError', TypeError: 'TypeError',
+        KeyError: 'KeyError', UnicodeError: 'UnicodeError',
+        UnicodeDecodeError: 'UnicodeDecodeError', UnicodeEncodeError: 'UnicodeEncodeError',
+        RecursionError: 'RecursionError',
+    }.get(type(exc), 'Exception')
 
 
 class ImprovementError(ValueError):
@@ -344,14 +388,16 @@ def _parse_model_response(value, max_bytes):
 
 
 def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
-    spec = agent_models.load_config()['roles'][role]
-    participation = {'role': role, 'provider': spec['provider'], 'model': spec['model'],
+    participation = {'role': role, 'provider': None, 'model': None,
                      'status': 'unavailable', 'cost': None, 'cost_status': 'unknown',
                      'read_files': list(paths), 'started_at': _now().isoformat()}
     start = time.monotonic()
     result = None
     preparation_ms = verification_ms = None
+    failure_reason = 'role_preparation_failed'
     try:
+        spec = agent_models.load_config()['roles'][role]
+        participation.update(provider=spec['provider'], model=spec['model'])
         with selected.temporary_directory(prefix='tavern-improvement-context-', purpose='context') as context:
             if context == ROOT or ROOT in context.parents or context in ROOT.parents:
                 raise ImprovementError('Model contexts must be outside repository ancestry.')
@@ -385,20 +431,24 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             source_bytes = sum(len(snapshots[p]['content'] or b'') for p in paths)
             if source_bytes + len(prompt.encode('utf-8')) > config['limits']['max_context_bytes']:
                 raise ImprovementError('Model context exceeds its configured bound.')
+            safe_prompt = agent_models.redact(prompt, keys)
+            timeout = config['limits']['call_timeout_seconds']
             # The environment guard also rejects accidental in-process workflow
             # entry from an injected runner. Existing runner sets CHILD on CLIs.
             preparation_ms = (time.monotonic() - start) * 1000
             previous = os.environ.get('TAVERN_IMPROVEMENT_DISCOVERY')
             os.environ['TAVERN_IMPROVEMENT_DISCOVERY'] = '1'
+            failure_reason = 'role_execution_failed'
             try:
-                result = runner(role, agent_models.redact(prompt, keys), keys, write=False,
-                                timeout=config['limits']['call_timeout_seconds'],
+                result = runner(role, safe_prompt, keys, write=False,
+                                timeout=timeout,
                                 workspace=model_root, scoped=True)
             finally:
                 if previous is None:
                     os.environ.pop('TAVERN_IMPROVEMENT_DISCOVERY', None)
                 else:
                     os.environ['TAVERN_IMPROVEMENT_DISCOVERY'] = previous
+            failure_reason = 'role_result_invalid'
             # Preserve the genuine redacted result privately, including provider,
             # model, result status, optional cost and diagnostics; never publish it.
             if not isinstance(result, dict):
@@ -420,6 +470,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     ('role', 'provider', 'model', 'status', 'exit_code', 'cli_estimated_cost_usd')
                     if k in retained}
                 participation['result_truncated'] = True
+            failure_reason = 'role_identity_mismatch'
             identity_matches = all(result.get(field) == participation[field]
                                    for field in ('role', 'provider', 'model'))
             for field, maximum in (('provider', 80), ('model', 120)):
@@ -427,13 +478,16 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     participation[field] = result[field]
             if not identity_matches:
                 raise ImprovementError('Model result identity differs from configured role.')
+            failure_reason = 'role_result_invalid'
             if 'cli_estimated_cost_usd' in result:
                 participation['cost'] = result['cli_estimated_cost_usd']
                 participation['cost_status'] = 'cli_estimated_usd'
             if result.get('status') != 'passed':
+                failure_reason = 'role_execution_failed'
                 participation['status'] = 'failed'
                 raise ImprovementError('Model role failed; no consensus inferred.')
             # Verify even an injected runner did not change the read-only copy.
+            failure_reason = 'role_context_changed'
             verify_start = time.monotonic()
             try:
                 for name in paths:
@@ -447,14 +501,22 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                         raise ImprovementError('Read-only model created an approved missing file.')
             finally:
                 verification_ms = (time.monotonic() - verify_start) * 1000
+            failure_reason = 'role_json_invalid'
             parsed = _parse_model_response(result.get('response'), config['limits']['max_response_bytes'])
+            failure_reason = 'role_preparation_failed'
             sources = {p: snapshots[p]['content'].decode('utf-8') if snapshots[p]['exists'] else None
                        for p in paths}
             if role == 'reviewer':
+                failure_reason = 'review_invalid'
                 parsed = contract.validate_review(parsed, records, paths, private=True)
             else:
-                parsed = contract.validate_candidates(parsed, sources, paths,
-                    config['limits']['max_candidates_per_specialist'])
+                failure_reason = 'candidate_invalid'
+                try:
+                    parsed = contract.validate_candidates(parsed, sources, paths,
+                        config['limits']['max_candidates_per_specialist'])
+                except Exception as exc:
+                    failure_reason = _candidate_failure_reason(exc)
+                    raise
                 for c in parsed:
                     if (len(c['evidence']) > config['limits']['max_evidence'] or
                             len(c['benefit']['evidence']) > config['limits']['max_evidence'] or
@@ -465,11 +527,14 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             if 'cli_estimated_cost_usd' in result:
                 participation['cost'] = result['cli_estimated_cost_usd']
                 participation['cost_status'] = 'cli_estimated_usd'
+            failure_reason = 'role_context_cleanup_failed'
             return participation, parsed
     except (Exception, KeyboardInterrupt) as exc:
-        participation['error_type'] = type(exc).__name__
+        participation['error_type'] = _role_error_type(exc)
         if isinstance(exc, KeyboardInterrupt):
             participation['interrupted'] = True
+            failure_reason = 'role_interrupted'
+        participation['reason'] = sanitize_role_failure(failure_reason)
         if result is not None:
             participation['status'] = 'failed'
         return participation, None

@@ -115,6 +115,24 @@ whole-line window를 선택하며 스키마만으로 넘으면 `context_too_larg
 편집 목록의 고정 진단 `candidate_edit_files_invalid`, `candidate_edit_files_duplicate`,
 `candidate_edit_files_outside_scope`를 유지한다. 노출은 allowlist 코드만 허용하고 원문·프롬프트·소스·절대 호스트 경로를
 로그·보고서·public web-v1에 넣지 않는다. 상세 요청·배포 계약은 [로컬 모델 문서](docs/local-models.md)를 따른다.
+hourly 실패 진단 수리는 기존 private 정제 계약의 정밀화다. 호출 준비·실행, 결과 envelope·identity,
+read-only context 확인, JSON 파싱, 후보·독립 검토 검증의 실제 실패 위치에서 신뢰한 고정
+allowlist 코드만 만들고 bounded private 참여와 기존 다음-round local feedback까지 보존한다.
+API/CLI·telemetry 성공은 후보·검토 검증 성공을 뜻하지 않는다. 외부 reason·단계·필드·타입이나
+예외 클래스 이름을 동적 진단 코드로 신뢰하지 않는다. `ValidationError.reason`은 위 편집 목록
+고정 코드 3개만 검증된 allowlist로 유지하며 그 밖의 값·잘못된 타입·과대 입력은 고정 fallback으로
+정제한다. 구문 위치를 남기면 bool을 제외한 엄격한 정수 타입과 고정 상·하한을 요구한다.
+신규 진단에는 exception.str·원문 응답·프롬프트·credential·절대 경로·provider 자유 문자열을
+전달하지 않는다. 신규 진단은 private에만 두고 공개 web-v1 필드·payload·digest 계약은 유지한다.
+KeyboardInterrupt·telemetry·cost/budget·identity 검증·scoped read-only·context cleanup과 기존
+성공 판정을 보존한다. legacy 참여에 진단이 없으면 원인을 추정하지 않고 고정 fallback을 쓴다.
+회귀는 API/CLI 성공 뒤 malformed JSON, 승인 밖·중복·잘못된 타입 edit_files, 독립 검토 invalid,
+context mutation, identity mismatch·실행 실패, 비밀 포함 예외·결과 정제, 허위 진단·과대 입력·bool,
+legacy 참여를 다룬다. 기존 Lab의 실제 engine tick 경로로 다음-round local feedback 전달과
+공개 payload의 진단·비밀 배제를 확인하도록 검사를 작성하며 작업자·검토자는 실행하지 않는다.
+설계·운영 문서는 최종 코드와 함께 갱신한다. 기존 JSON fence 호환 수리를 다시 변경하거나
+과거 원문 없는 실패 필드·값을 추정하지 않는다. retry/fallback·스케줄·호출·예산·승인·GitHub 정책은
+유지한다. 정규 hourly 실모델·실제9단계·2026-10-21 09:00 보고는 메인 관측 전까지 pending이다.
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
 대기가 풀릴 때까지 멈춘다. 09:00 보고 확정은 이 대기와 독립적이다.

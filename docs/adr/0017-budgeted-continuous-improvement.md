@@ -129,6 +129,19 @@ web-v1 agents에는 기존 coordinator/downloader/parser/django/reviewer 5역할
 모든 오류나 정확한 값을 복원하지 않는다. 사용자 노출은 코드 allowlist만 허용하며 원문 응답·
 프롬프트·소스·절대 호스트 경로를 로그·보고서·public web-v1에 넣지 않는다.
 
+hourly 역할 실패도 기존 private 정제 계약 안에서 보존한다. `_call_role`이 실제 호출 준비/실행,
+결과 envelope/identity, read-only 사본 확인, JSON, 후보/독립 검토와 context 종료 경계에서
+고정 reason을 만들고 loop가 allowlist로 재검증해 private 참여와 다음-round local feedback으로
+전달한다. API/CLI·telemetry 성공은 응답 검증 성공이 아니다. 편집 목록 reason은 정확한 공유
+ValidationError의 고정3개 코드만 검증해 유지하며 외부 진단·예외문·자유 클래스명을 신뢰하지 않는다.
+legacy/unknown reason은 role_failed, 미허용 error_type은 Exception이고 구문 위치는 보존하지 않는다.
+신규 진단은 private에만 두며 web-v1 필드·payload·digest는 유지한다. 상세 고정 목록·상한·
+fallback은 [운영 계약](../improvements.md#hourly-private-실패-진단과-인계)에 둔다.
+이는 기존 실패 정제의 정밀화이며 이 ADR의 대체 범위·retry/fallback·스케줄·예산·승인·게시
+결정은 바꾸지 않는다. 이번 회귀는 작성 후 미실행이며 full make check·수리 검증·PR·CI·머지는
+메인과 실행기에게 인계한다. 실제9단계·정규 hourly 실모델·2026-10-21 09:00 KST 보고는
+메인 관측 전까지 pending이다.
+
 ### 비용·quota·자정·legacy 이행
 
 Claude cap은 `min(0.20 USD, 당일 잔액, 기존 reviewer 호출 한도)`이며 호출 전에 durable

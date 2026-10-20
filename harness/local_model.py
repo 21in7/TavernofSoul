@@ -776,8 +776,11 @@ def validate_response(response, *, config, snapshots, approved_files, windows, c
         try:
             candidates = contract.validate_candidates(parsed, sources, paths, candidate_limit)
         except ValueError as exc:
-            reason = getattr(exc, 'reason', None)
-            if not isinstance(reason, str) or reason not in _CANDIDATE_REASONS:
+            # Only exact shared-validator metadata classifies this boundary;
+            # arbitrary exception attributes/types are not diagnostic authority.
+            reason = exc.reason if type(exc) is contract.ValidationError else None
+            if (type(reason) is not str or len(reason) > 64 or
+                    reason not in _CANDIDATE_REASONS):
                 reason = 'candidate_invalid'
             raise LocalModelError(reason) from None
         for candidate in candidates:
