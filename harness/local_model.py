@@ -411,6 +411,12 @@ use specialist_reason/review_reason to improve issues linked by draft_digest.
 편집 권한은 user JSON 마지막 approved_files뿐입니다. candidate.edit_files는 그
 정확한 문자열 1..12개이며 중복은 금지합니다(문자열 길이 합 <=600).
 모든 승인 경로는 편집 대상입니다. 미전송 파일(테스트/문서 포함)도 가능하나 근거는 아닙니다.
+edit_files는 다음 순서로 작성합니다.
+1. approved_files에서 이번 후보에 실제 필요한 파일만 고릅니다. 모두 편집 가능하다는 뜻이지
+모두 나열하라는 뜻은 아니며, 상한 12개를 채울 필요도 없습니다.
+2. 파일마다 정확한 경로를 한 번 씁니다. 한 파일의 여러 근거/수정 위치는 항목 하나,
+서로 다른 두 파일을 수정하면 두 경로를 각각 한 번 씁니다.
+3. 출력 전 목록에 같은 문자열이 두 번 들어 있지 않은지 확인합니다.
 candidate.evidence와 benefit.evidence의 각 path는 전달된 source.path와 정확히 같아야 합니다.
 source.start_line <= start_line <= end_line <= source.end_line (inclusive integers).
 numbered_lines.line은 원본 번호이며 배열 순번이 아닙니다. 본문의 전체 파일 줄 참조도
