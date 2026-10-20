@@ -138,8 +138,8 @@ class ValidationError(ValueError):
 
     def __init__(self, message, *, reason=None):
         # Optional private metadata, never model values or exception text. The
-        # local adapter still allowlists this independently before persisting it.
-        self.reason = reason if reason in (
+        # adapters still allowlist this independently before persisting it.
+        self.reason = reason if type(reason) is str and len(reason) <= 64 and reason in (
             'candidate_edit_files_invalid', 'candidate_edit_files_duplicate',
             'candidate_edit_files_outside_scope') else None
         super().__init__(message)
@@ -598,8 +598,9 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
     """Sanitized immutable public payload. Call only after private report exists.
 
     Ignores unrelated private keys by design; never serialize the input wholesale.
-    Optional actual agent timing/cost stays private because web-v1 exposes only
-    identity/status. Failed or absent participation forces incomplete status.
+    Optional actual agent timing/cost and failure reason/error_type stay private
+    because web-v1 exposes only identity/status. Failed or absent participation
+    forces incomplete status; private diagnostics never affect the digest.
     """
     _integer(max_proposals, 1, MAX_PROPOSALS)
     required = {"date", "generated_at", "status", "proposals", "agents", "documentation"}

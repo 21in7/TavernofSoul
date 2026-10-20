@@ -98,6 +98,14 @@ _INTEGER_BOUNDS = {
     'quota_timeout_seconds': (1, 20), 'quota_max_response_bytes': (1024, 65536),
     'quota_pause_percentage': (1, 80), 'max_completed_rounds': (4, 32),
 }
+# Compatibility metadata from _call_role, never arbitrary exception class names
+# or provider-supplied diagnostic fields. Failure location is carried by reason.
+_ROLE_ERROR_TYPES = frozenset((
+    'ImprovementError', 'ValidationError', 'KeyboardInterrupt', 'TimeoutError',
+    'FileNotFoundError', 'PermissionError', 'OSError', 'ValueError', 'TypeError',
+    'KeyError', 'UnicodeError', 'UnicodeDecodeError', 'UnicodeEncodeError',
+    'RecursionError', 'Exception',
+))
 
 
 class LoopError(imp.ImprovementError):
@@ -536,11 +544,14 @@ def _record_feedback(state, role, entries):
 
 
 def _safe_participation(participation):
-    # Retain bounded real participation, never raw CLI response or diagnostics.
+    # Retain bounded real participation and revalidated fixed private failures;
+    # never copy raw CLI responses, diagnostic objects or syntax positions.
     # The existing helper validates identity, evidence and read-only contexts.
     result = {key: participation[key] for key in (
         'role', 'provider', 'model', 'status', 'started_at', 'finished_at',
-        'elapsed_seconds', 'read_files', 'interrupted') if key in participation}
+        'elapsed_seconds', 'read_files') if key in participation}
+    if type(participation.get('interrupted')) is bool:
+        result['interrupted'] = participation['interrupted']
     if participation.get('provider') == 'zai':
         telemetry = imp.agent_telemetry.sanitize(participation.get('telemetry'))
         if telemetry is not None:
@@ -550,7 +561,13 @@ def _safe_participation(participation):
     result.update(cost=cost if known else None,
                   cost_status='cli_estimated_usd' if known else 'unknown')
     if result.get('status') != 'succeeded':
-        result['reason'] = 'role_interrupted' if result.get('interrupted') else 'role_failed'
+        result['reason'] = ('role_interrupted' if result.get('interrupted') is True else
+                            imp.sanitize_role_failure(participation.get('reason')))
+        if 'error_type' in participation:
+            error_type = participation['error_type']
+            result['error_type'] = (error_type if type(error_type) is str and
+                                    len(error_type) <= 32 and error_type in _ROLE_ERROR_TYPES
+                                    else 'Exception')
     return result
 
 
@@ -1306,7 +1323,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             entries = [_feedback_entry(r['candidate'], reason=contract.redact_text(r['candidate']['issue']),
                 candidate_id=r['id'], draft_digest=contract.digest(drafts)) for r in refined]
             if not entries:
-                reason = 'specialist_empty_candidates' if parsed is not None else 'specialist_failed'
+                reason = ('specialist_empty_candidates' if parsed is not None else
+                          imp.sanitize_role_failure(participation.get('reason')))
                 entries = [_feedback_entry(candidate, reason=reason, draft_digest=contract.digest(drafts))
                            for candidate in drafts][:2]
             _record_feedback(state, role, entries)
@@ -1339,7 +1357,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             # crash here leaves a pending review, but cannot lose its known
             # cost or refund it on recovery.
             _write_state(store, state)
-            _review_feedback(state, None if parsed is not None else 'independent_review_failed')
+            _review_feedback(state, None if parsed is not None else
+                             imp.sanitize_role_failure(participation.get('reason')))
     finished = _clock(finish_clock())
     if finished < now:
         # Keep the original day's reservation and stop; clock rollback must

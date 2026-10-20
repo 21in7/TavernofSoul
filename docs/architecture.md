@@ -171,6 +171,16 @@ private 원본에는 모든 읽기 의존성의 SHA256·크기·POSIX mode·존�
 HTTPS POST와 날짜/digest GET 확인을 수행한다. 완료 전달은 아래 별도 계약을 쓴다.
 정상 제안 없음과 실패/미완료를 구분한다.
 
+hourly 실패 원인은 `improvements._call_role`이 호출 준비/실행·결과 envelope/identity·read-only
+context 검증·JSON·후보/독립 검토·context 종료의 실제 경계에서 고정 코드로 만든다.
+`improvement_loop._safe_participation`은 reason/error_type을 고정 allowlist로 재검증해
+private 참여에 보존하고 reason을 기존 다음-round local feedback으로 잇는다. 외부 reason/단계/필드/타입·예외문은
+진단의 권위가 아니며 legacy/unknown은 `role_failed`로 남긴다. 구문 위치는 보존하지 않는다.
+API/CLI·telemetry 성공과 후보/검토 검증 성공은 별개다. 신규 진단은 private에만 남고
+web-v1 필드·payload·digest에는 들어가지 않는다. 정확한 코드·타입/길이 상한·fallback·미실행
+인계는 [운영 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다. 이는 기존 private
+실패 정제의 정밀화이며 승인·예산·스케줄·저장·게시 경계의 새 결정은 아니다.
+
 [ADR 0016](adr/0016-bounded-private-improvement-text.md)은 후보 서술의 PRIVATE 수용과
 PUBLIC 표시를 분리한다. title/analogy/issue/evidence summary/benefit text/risk/validation 단계/
 documentation impact의 private 상한은 기존 표시 상한의 4배다(예: issue 1600자 / 웹 400자).

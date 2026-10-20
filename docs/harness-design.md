@@ -392,6 +392,24 @@ cursor는 owner별 file_index/line을 durable 순환하며 긴 single line은 sl
 specialist 설명·review.reason을 candidate_id/draft_digest로 묶어 실제 다음 local prompt에 넣는다.
 feedback은 bytes/redaction으로 제한하며 담을 수 없으면 보류한다. private 원문을 자르지 않는다.
 
+hourly private 실패 진단의 생성 책임은 `improvements._call_role`에 있다. 호출 준비/실행,
+결과 envelope/identity, read-only 사본 검증, JSON 파싱, 후보/독립 검토 검증과 정상 결과 뒤
+context cleanup 경계에서 고정 reason을 선택한다. runner metadata·예외문·임의 클래스명에서
+진단을 만들지 않는다. 편집 목록 reason은 정확한 공유 ValidationError 타입과 내장 str/64자
+상한/고정 코드3개를 모두 검증해 유지하고 나머지 후보 오류는 candidate_invalid로 남긴다.
+
+`improvement_loop._safe_participation`은 실패 reason을 내장 str/64자 고정 allowlist로 재검증해
+legacy/unknown/잘못된 타입·과대 입력을 role_failed로 만든다. 선택적 error_type은 내장
+str/32자 고정 목록만 유지하고 그 밖은 Exception이며, 누락 필드를 추정하지 않는다.
+정확한 bool interrupted=true는 role_interrupted로 보존하고 성공 참여의 허위 진단은 버린다.
+stage/field/type·중첩 진단·구문 위치·raw result는 hourly 참여로 복사하지 않는다.
+고정 reason만 기존 specialist_reason/review_reason을 통해 다음-round local feedback으로 잇고,
+exception.str·응답·prompt·credential·절대 경로·provider 자유 문자열을 신규 진단에 넣지 않는다.
+코드 목록과 회귀/인계는 [운영 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다.
+기존 telemetry·cost/budget·identity·scoped read-only·cleanup과 성공 판정을 유지하며
+API/CLI/telemetry 성공이 응답 검증 성공을 대신하지 않는다. web-v1은 기존 필드만 투영하므로
+진단은 공개 payload/digest에 포함되지 않는다. 기존 ADR0017의 private 정제 계약을 정밀화한다.
+
 local은 provider=mlx-vlm/model identity/stage=local_explorer/owner_role과 read_windows/실패를
 bounded private 참여로 남기며 기존 web-v1의5역할 성공으로 위장하지 않는다. 숫자 loopback의
 고정 HTTP path만 허용하며 DNS localhost/외부host/0.0.0.0/userinfo/query/fragment/redirect/proxy와

@@ -1180,7 +1180,7 @@ def test_same_rejected_draft_error_is_sent_back_in_next_cycle(lab):
     lab.tick(9)
     feedback = lab.local_requests[-1]['feedback'][0]
     assert feedback['draft_digest'] == digest
-    assert feedback['specialist_reason'] == 'specialist_failed'
+    assert feedback['specialist_reason'] == 'role_json_invalid'
     assert feedback['title'] == '로컬 coordinator 점검 후보'
     assert 'candidate_id' not in feedback
     assert RAW not in json.dumps(feedback) and SECRET not in json.dumps(feedback)
@@ -1763,7 +1763,7 @@ def test_loop_telemetry_boundary_is_strict_bounded_and_backward_compatible():
     assert 'telemetry' not in loop._safe_participation(dict(prior, telemetry=injected))
 
 
-@pytest.mark.parametrize('failure', ['none', 'cli', 'contract', 'truncated'])
+@pytest.mark.parametrize('failure', ['none', 'cli', 'contract', 'malformed', 'truncated'])
 def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, failure):
     from harness.test_agent_telemetry import sample
 
@@ -1771,11 +1771,14 @@ def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, fa
         if role == 'downloader':
             result['telemetry'] = sample()
             result['telemetry']['secret'] = SECRET
+            result['telemetry']['outcome'] = 'success'
             if failure == 'cli':
                 result['status'] = 'failed'
                 result['telemetry']['outcome'] = 'timeout'
             elif failure == 'contract':
                 result['response'] = '{"invalid":true}'
+            elif failure == 'malformed':
+                result['response'] = '{broken ' + RAW + SECRET
             elif failure == 'truncated':
                 result['response'] = 'x' * 100000
         return result
@@ -1785,6 +1788,14 @@ def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, fa
     agent = next(a for a in report['agents'] if a['role'] == 'downloader')
     assert agent['status'] == ('succeeded' if failure == 'none' else 'failed')
     assert agent['telemetry']['logical_requests_observed'] == 1
+    if failure == 'none':
+        assert 'reason' not in agent and 'error_type' not in agent
+    else:
+        assert agent['reason'] == {'cli': 'role_execution_failed',
+                                   'contract': 'candidate_invalid',
+                                   'malformed': 'role_json_invalid',
+                                   'truncated': 'role_json_invalid'}[failure]
+        assert agent['telemetry']['outcome'] == ('timeout' if failure == 'cli' else 'success')
     assert SECRET not in json.dumps(agent) and 'result' not in agent
     saved = lab.store.read('scans/' + report['scan_id'] + '.json')
     assert saved['agents'][1]['telemetry'] == agent['telemetry']
@@ -1793,3 +1804,241 @@ def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, fa
         item.pop('telemetry', None)
     assert contract.canonical_json(contract.build_web_report(report)) == contract.canonical_json(
         contract.build_web_report(without))
+
+
+@pytest.mark.parametrize('role,failure,reason', [
+    ('coordinator', 'malformed', 'role_json_invalid'),
+    ('downloader', 'malformed', 'role_json_invalid'),
+    ('coordinator', 'edit_type', 'candidate_edit_files_invalid'),
+    ('coordinator', 'edit_duplicate', 'candidate_edit_files_duplicate'),
+    ('coordinator', 'edit_scope', 'candidate_edit_files_outside_scope'),
+    ('coordinator', 'candidate', 'candidate_invalid'),
+    ('coordinator', 'context_content', 'role_context_changed'),
+    ('coordinator', 'context_mode', 'role_context_changed'),
+    ('coordinator', 'identity', 'role_identity_mismatch'),
+    ('coordinator', 'envelope', 'role_result_invalid'),
+    ('coordinator', 'execution_status', 'role_execution_failed'),
+    ('coordinator', 'execution_exception', 'role_execution_failed'),
+    ('coordinator', 'interrupt', 'role_interrupted'),
+    ('reviewer', 'review', 'review_invalid'),
+    ('reviewer', 'malformed', 'role_json_invalid'),
+    ('reviewer', 'identity', 'role_identity_mismatch'),
+    ('reviewer', 'context_content', 'role_context_changed'),
+    ('reviewer', 'execution_status', 'role_execution_failed'),
+    ('reviewer', 'execution_exception', 'role_execution_failed'),
+    ('reviewer', 'interrupt', 'role_interrupted'),
+])
+def test_actual_ticks_keep_private_failure_through_next_round_without_public_digest_change(
+        lab, role, failure, reason):
+    original = (lab.root / FILES[0]).read_bytes()
+    private_path = '/private/synthetic-provider-response'
+
+    def corrupt(actual_role, result, response, options):
+        if actual_role != role:
+            return result
+        result.update(reason='candidate_edit_files_duplicate', stage=RAW + SECRET,
+                      field=private_path, error_type=RAW + SECRET,
+                      diagnostics={'reason': 'role_interrupted', 'raw': RAW + SECRET})
+        if failure == 'malformed':
+            result['response'] = '{broken ' + RAW + SECRET + private_path
+        elif failure.startswith('edit_'):
+            response['candidates'][0]['edit_files'] = {
+                'edit_type': True,
+                'edit_duplicate': [FILES[0], FILES[0]],
+                'edit_scope': ['harness/unapproved.py'],
+            }[failure]
+            result['response'] = json.dumps(response)
+        elif failure == 'candidate':
+            response['candidates'][0]['evidence'][0]['start_line'] = True
+            result['response'] = json.dumps(response)
+        elif failure == 'review':
+            response['reviews'] = []
+            result['response'] = json.dumps(response)
+        elif failure.startswith('context_'):
+            target = options['workspace'] / FILES[0]
+            target.chmod(0o600)
+            if failure == 'context_content':
+                target.write_text(RAW + SECRET)
+                target.chmod(0o400)
+        elif failure == 'identity':
+            result['model'] = 'unexpected-synthetic-model'
+        elif failure == 'envelope':
+            return [RAW + SECRET]
+        elif failure == 'execution_status':
+            result['status'] = RAW + SECRET
+        elif failure == 'execution_exception':
+            error = type(RAW + SECRET, (RuntimeError,), {})(private_path + SECRET)
+            error.reason = 'candidate_edit_files_duplicate'
+            raise error
+        elif failure == 'interrupt':
+            raise KeyboardInterrupt(RAW + SECRET + private_path)
+        return result
+
+    lab.cloud_transform = corrupt
+    lab.hours()
+    state = lab.state()
+    report = state['round']['report']
+    agent = next(item for item in report['agents'] if item['role'] == role)
+    assert agent['status'] != 'succeeded' and agent['reason'] == reason
+    assert 'error_type' in agent and 'result' not in agent
+    if failure == 'execution_exception':
+        assert agent['error_type'] == 'Exception'
+    if failure == 'interrupt':
+        assert agent['interrupted'] is True and agent['error_type'] == 'KeyboardInterrupt'
+    saved = lab.store.read('scans/' + report['scan_id'] + '.json')
+    assert next(item for item in saved['agents'] if item['role'] == role) == agent
+    assert report['review_complete'] is (role != 'reviewer')
+    if role == 'reviewer':
+        assert all('review' not in record for record in report['proposals'])
+    else:
+        assert all(record['candidate']['edit_files'] != [FILES[contract.SPECIALIST_ROLES.index(role)]]
+                   for record in report['proposals'])
+    assert state['stage_index'] == 9 and state['inflight'] is None
+    assert lab.ledger()['calls'] == 9 and len(lab.events) == 9
+    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2 if role == 'reviewer' else .04)
+    if role == 'reviewer':
+        assert lab.ledger()['slots']['2026-10-15T08']['cost_status'] in (
+            'reservation_consumed_failed', 'reservation_consumed_unknown')
+    assert all(not entry['options']['workspace'].exists() for entry in lab.cloud_requests)
+    assert 'TAVERN_IMPROVEMENT_DISCOVERY' not in os.environ
+    assert (lab.root / FILES[0]).read_bytes() == original
+    for sensitive in (SECRET, RAW, private_path, 'harness/unapproved.py'):
+        assert sensitive not in json.dumps(state)
+
+    # Reopen storage, then enter the next round through the real engine and HTTP seam.
+    lab.store = imp.Store(lab.selected)
+    next_hour = 11 if role == 'downloader' else 9
+    lab.hours(start=9, count=next_hour - 8)
+    owner = 'coordinator' if role == 'reviewer' else role
+    request = next(item for item in reversed(lab.local_requests) if item['owner_role'] == owner)
+    key = 'review_reason' if role == 'reviewer' else 'specialist_reason'
+    assert request['feedback'][0][key] == reason
+    assert 'draft_digest' in request['feedback'][0]
+    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2 if role == 'reviewer' else .04)
+    public = lab.store.read('web/2026-10-15.json')
+    contract.validate_web_report(public)
+    assert all(set(item) == {'role', 'provider', 'model', 'status'} for item in public['agents'])
+    assert public['counts']['eligible'] == (0 if role == 'reviewer' else 3)
+    day = lab.store.read('days/2026-10-15.json')
+    stripped = copy.deepcopy(day)
+    for collection in ('agents', 'reviewed_agents'):
+        for item in stripped.get(collection, []):
+            for field in ('reason', 'error_type', 'interrupted', 'telemetry'):
+                item.pop(field, None)
+    # This compares the complete payload, including the preexisting canonical digest.
+    assert contract.canonical_json(public) == contract.canonical_json(contract.build_web_report(stripped))
+    for sensitive in (reason, SECRET, RAW, private_path, 'local_participation', 'error_type'):
+        assert sensitive not in json.dumps(public)
+    frozen = lab.store.path('web/2026-10-15.json').read_bytes()
+    lab.tick(next_hour, 1, runner=forbidden, local_runner=forbidden)
+    assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
+
+
+def test_false_remote_failure_diagnostics_do_not_change_success_or_cost_settlement(lab):
+    def forge(role, result, response, options):
+        result.update(reason='role_interrupted', error_type=RAW + SECRET,
+                      stage='role_json_invalid', field=RAW + SECRET, interrupted=True,
+                      diagnostic={'reason': 'candidate_edit_files_duplicate', 'raw': SECRET})
+        return result
+
+    lab.cloud_transform = forge
+    lab.hours()
+    report = lab.state()['round']['report']
+    assert report['status'] == 'scanned' and report['review_complete'] is True
+    assert len(report['proposals']) == 4
+    assert all(agent['status'] == 'succeeded' and 'reason' not in agent and
+               'error_type' not in agent and not agent.get('interrupted') for agent in report['agents'])
+    assert lab.ledger()['calls'] == 9 and lab.ledger()['claude_spent_usd'] == pytest.approx(.04)
+    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+    assert all(not entry['options']['workspace'].exists() for entry in lab.cloud_requests)
+
+
+@pytest.mark.parametrize('diagnostic', ['missing', 'forged'])
+def test_legacy_cloud_participation_uses_fallback_in_actual_next_round_feedback(lab, monkeypatch, diagnostic):
+    actual_call = imp._call_role
+
+    def legacy_call(role, *args, **kwargs):
+        participation, parsed = actual_call(role, *args, **kwargs)
+        if role == 'coordinator':
+            participation['status'] = 'failed'
+            participation.pop('reason', None)
+            participation.pop('error_type', None)
+            if diagnostic == 'forged':
+                participation.update(reason={'raw': RAW + SECRET}, error_type=RAW + SECRET,
+                                     diagnostic={'reason': 'role_json_invalid', 'line': True})
+            return participation, None
+        return participation, parsed
+
+    monkeypatch.setattr(imp, '_call_role', legacy_call)
+    lab.hours()
+    report = lab.state()['round']['report']
+    agent = report['agents'][0]
+    assert agent['reason'] == 'role_failed'
+    if diagnostic == 'missing':
+        assert 'error_type' not in agent
+    else:
+        assert agent['error_type'] == 'Exception'
+    saved = lab.store.read('scans/' + report['scan_id'] + '.json')
+    assert saved['agents'][0] == agent
+    lab.tick(9)
+    assert lab.local_requests[-1]['feedback'][0]['specialist_reason'] == 'role_failed'
+    public = lab.store.read('web/2026-10-15.json')
+    contract.validate_web_report(public)
+    assert 'role_failed' not in json.dumps(public)
+    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+
+
+class UntrustedDiagnosticString(str):
+    pass
+
+
+@pytest.mark.parametrize('value', [
+    None, True, False, 0, 1, -1, 1.5, [], {}, ['role_json_invalid'],
+    'unknown', 'candidate_edit_files_typo', RAW + SECRET,
+    'role_json_invalid' + 'x' * 65536,
+    UntrustedDiagnosticString('role_json_invalid'),
+    UntrustedDiagnosticString('ValidationError'),
+], ids=['null', 'true', 'false', 'zero', 'one', 'negative', 'float', 'list', 'mapping',
+        'nested', 'unknown', 'typo', 'secret', 'oversized', 'reason_subclass', 'type_subclass'])
+def test_private_participation_unknown_reason_and_exception_type_have_fixed_fallback(value):
+    participation = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic',
+                     'status': 'failed', 'reason': value, 'error_type': value}
+    original = copy.deepcopy(participation)
+    safe = loop._safe_participation(participation)
+    assert safe['reason'] == 'role_failed' and safe['error_type'] == 'Exception'
+    assert set(safe) == {'role', 'provider', 'model', 'status', 'reason', 'error_type',
+                         'cost', 'cost_status'}
+    assert participation == original
+
+
+@pytest.mark.parametrize('reason', [None, 'role_json_invalid'])
+@pytest.mark.parametrize('position', [
+    True, False, -1, 0, 1, 65536, 65537, 2 ** 256, 1.5, '1',
+    None, [], {'raw': SECRET}, RAW + SECRET, 'x' * 65537,
+], ids=['true', 'false', 'negative', 'zero', 'one', 'response_bound', 'above_bound',
+        'huge_integer', 'float', 'string', 'null', 'list', 'mapping', 'secret', 'oversized'])
+def test_untrusted_diagnostic_stage_field_type_and_syntax_positions_are_not_retained(position, reason):
+    legacy = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic',
+              'status': 'failed', 'reason': reason}
+    diagnostic = {'reason': 'role_json_invalid', 'stage': RAW + SECRET,
+                  'field': RAW + SECRET, 'type': RAW + SECRET,
+                  'line': position, 'column': position, 'offset': position}
+    forged = dict(legacy, diagnostic=diagnostic, diagnostics=diagnostic,
+                  stage=RAW + SECRET, field=RAW + SECRET, type=RAW + SECRET,
+                  line=position, column=position, offset=position, lineno=position,
+                  colno=position, pos=position, json_position=position,
+                  response=RAW + SECRET, prompt=RAW + SECRET,
+                  result={'reason': 'role_json_invalid', 'raw': SECRET})
+    assert loop._safe_participation(forged) == loop._safe_participation(legacy)
+    assert loop._safe_participation(forged)['reason'] == (reason or 'role_failed')
+
+
+@pytest.mark.parametrize('status', ['failed', 'unavailable', 'not_called', 'succeeded'])
+def test_legacy_participation_without_diagnostics_remains_compatible(status):
+    legacy = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic', 'status': status}
+    safe = loop._safe_participation(legacy)
+    assert safe == dict(legacy, cost=None, cost_status='unknown',
+                        **({} if status == 'succeeded' else {'reason': 'role_failed'}))
+    assert 'error_type' not in safe
+    assert 'reason' not in loop._safe_participation(dict(legacy, status='succeeded',
+                                                       reason='role_json_invalid', error_type=RAW + SECRET))

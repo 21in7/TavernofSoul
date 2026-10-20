@@ -198,6 +198,91 @@ private 참여 기록은 실제 configured/returned role/provider/model과 실�
 CLI result를 복사하지 않는다. 기존 provider별 기본 예산·compaction은 유지하며 reviewer만
 아래 downward override를 사용한다. local not_metered도 실제0USD 청구의 뜻이 아니다.
 
+## Hourly private 실패 진단과 인계
+
+이번 수리는 `_call_role`이 아는 실패 원인이 hourly `_safe_participation`에서 일괄
+`role_failed`로 사라지던 결함만 다룬다. API/CLI 또는 telemetry의 `outcome=success`는
+JSON·후보·독립 검토 검증 성공을 뜻하지 않는다. 보관 downloader 기록의 정확한 실패 필드·값은
+원문이 없어 추정하지 않는다. 기존 bare JSON/단일 json fence 호환 parser는 그대로 유지한다.
+
+`improvements._call_role`이 실제 실행 중 도달한 경계에서 다음 고정 reason을 만든다.
+runner 결과의 reason/stage/field/type/diagnostic이나 예외문에서 코드를 추출하지 않는다.
+
+| private reason | 발생 경계 |
+| --- | --- |
+| `role_preparation_failed` | 역할 설정·읽기 전용 사본·prompt 등 호출/검증 입력 준비 |
+| `role_execution_failed` | runner 실행 예외 또는 결과 status가 passed가 아님 |
+| `role_result_invalid` | 결과 envelope 또는 보존할 결과 metadata 처리 |
+| `role_identity_mismatch` | configured role/provider/model과 반환 identity 불일치 |
+| `role_context_changed` | 호출 뒤 승인 사본의 bytes·0400 mode·존재 검증 실패 |
+| `role_json_invalid` | 응답 타입·bytes 상한·UTF-8·JSON/fence 계약 파싱 실패 |
+| `candidate_invalid` | 공유 후보 검증 또는 기존 후보 한도 위반의 기본 분류 |
+| `candidate_edit_files_invalid` | 공유 validator가 분류한 편집 목록 형식·개수·문자열 합 위반 |
+| `candidate_edit_files_duplicate` | 공유 validator가 분류한 편집 목록 중복 |
+| `candidate_edit_files_outside_scope` | 공유 validator가 분류한 승인 밖 편집 경로 |
+| `review_invalid` | 독립 검토 계약 검증 실패 |
+| `role_context_cleanup_failed` | 정상 결과 검증 뒤 임시 context 종료 실패 |
+| `role_interrupted` | KeyboardInterrupt; 기존 interrupted 처리 유지 |
+| `role_failed` | 원인 없는 legacy 참여 또는 허용되지 않은 진단의 fallback |
+
+편집 목록 세분화는 정확한 공유 `ValidationError` 타입의 reason에서 위 편집 목록 코드 3개만
+받는다. 정확한 내장 str 타입·최대64자·allowlist 일치를 다시 요구하며 다른 예외/하위 클래스,
+unknown·과대 값·bool·객체는 `candidate_invalid`다. 다른 실패 경계에서는 이 메타데이터를
+사용하지 않는다. 여러 오류가 있으면 기존 검증 순서에서 도달한 경계의 분류이며 모든 오류나
+실패 값을 복원하는 계약은 아니다.
+
+hourly `_safe_participation`은 실패 참여의 reason을 같은 내장 str/64자 allowlist로 재검증하고
+누락·잘못된 타입·unknown·과대 값은 `role_failed`로 남긴다. 정확한 bool `interrupted=true`는
+`role_interrupted`로 보존한다. 기존 선택적 `error_type`은 내장 str/최대32자의 고정 목록
+`ImprovementError`, `ValidationError`, `KeyboardInterrupt`, `TimeoutError`, `FileNotFoundError`,
+`PermissionError`, `OSError`, `ValueError`, `TypeError`, `KeyError`, `UnicodeError`,
+`UnicodeDecodeError`, `UnicodeEncodeError`, `RecursionError`, `Exception`만 유지한다.
+임의 예외 클래스명은 `Exception`이며 legacy에 필드가 없으면 새로 추정하지 않는다.
+성공 참여에는 reason/error_type을 붙이지 않으며 runner의 허위 진단으로 성공 판정을 바꾸지 않는다.
+
+stage/field/type·중첩 diagnostic·구문 line/column/offset은 보존하지 않는다. 따라서 구문 위치의
+정수 필드를 새로 만들지 않는다. 신규 진단에는 exception.str·원문 응답·prompt·credential·
+절대 경로·provider 자유 문자열을 전달하지 않는다. 기존 `_call_role`의 정제된 private result
+보존과 별개로 hourly 참여에는 result 자체를 복사하지 않는다. telemetry는 기존 계약으로 별도
+정제하며 cost/budget·identity·scoped read-only·context cleanup·성공 판정은 유지한다.
+
+정제 reason은 기존 private `loop/state.json`의 `round.report.agents`와 `scans/<scan_id>.json`에
+남는다. specialist 실패는 기존 초안의 `specialist_reason`, reviewer 실패는 기존 feedback의
+`review_reason`으로 이어져 다음 round의 실제 local 요청에 전달된다. candidate_id/draft_digest·
+feedback bytes/redaction·freshness 무효화 규칙은 그대로다. 공개 web-v1 agents는 기존
+role/provider/model/status만 투영하므로 진단을 추가하거나 제거해도 공개 payload/digest는 같다.
+기존 불변 오전 보고를 다시 만들지 않는다.
+
+승인된 `test_improvements.py`와 `test_improvement_loop.py`의 회귀는 malformed JSON,
+편집 목록 타입/중복/범위·독립 검토 invalid·context mutation·identity/실행 실패·준비/cleanup·
+KeyboardInterrupt·비밀 포함 예외/결과·허위/과대/bool 진단·legacy 호환을 다룬다.
+Lab의 실제 engine tick→저장소 재개→다음-round local feedback과 공개 payload/digest 비교도
+작성되어 있다. 이는 소스 검토이며 **검사는 미실행**이다. full make check·수리 검증·새 독립
+검토·PR·CI·머지는 메인과 실행기의 후속 작업이다. 실제 자동 연구9단계·정규 hourly 실모델·
+**2026-10-21 09:00 KST 보고 관측은 메인 확인 전까지 pending**이다.
+
+시작 시 private 데이터 계약·실패 전달·공개 격리 설명에 문서 영향이 있다고 판단했다.
+최종 자체 리뷰는 다음과 같다.
+
+```json
+{"documentation": {
+  "status": "updated",
+  "files": [
+    "docs/adr/0017-budgeted-continuous-improvement.md",
+    "docs/architecture.md",
+    "docs/harness-design.md",
+    "docs/improvements.md",
+    "docs/local-models.md"
+  ],
+  "reason": "기존 private 실패 정제 계약의 발생 경계·고정 allowlist/fallback·feedback 전달·공개 격리와 미실행 인계를 최종 코드에 맞춰 정밀화했다. 기존 ADR 결정 범위를 유지하며 새 결정은 없다."
+}}
+```
+
+후속 fresh review도 최종 코드와 문서의 의미를 새로 판단한다. 아래 과거 수리의 문서 평가와
+검증 기록은 이번 실패 진단 수리의 결과가 아니다. 모델/역할/인증·37개 discovery scope·
+시간당1회/하루24회·Claude $1/day 및 $0.20/review·GLM80% gate·불변 오전 보고·서명 승인·
+Git/CI·local/NFS 정책과 retry/fallback은 변경하지 않는다.
+
 ## Claude 추정 ledger·GLM 구독 quota
 
 Claude 자동 탐색은 UTC+9 자정 기준 하루 US$1 추정 ledger를 쓴다. improvement/project lock 아래

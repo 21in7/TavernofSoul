@@ -127,6 +127,19 @@ called는 시도이며 서버 수신·읽기·성공의 증거가 아니다. 로
 원문 response·prompt·source·오류 값·임의 예외·절대 호스트 경로·endpoint·비밀을 넣지 않는다.
 public web-v1에 로컬 설정·진단·원문을 추가하지 않는다. 한 후보가 잘못되면 batch를 거절한다.
 
+후속 cloud specialist/독립 reviewer의 hourly 실패도 다음 round의 local feedback에 전달한다.
+`_call_role`이 호출 준비/실행·envelope/identity·read-only context·JSON·후보/검토·cleanup의
+실제 경계에서 고정 reason을 만들고 loop가 내장 str/64자 allowlist로 다시 검사한다.
+공유 ValidationError의 편집 목록 reason은 정확한 타입과 위3개 코드만 유지한다.
+legacy/unknown/잘못된 타입·과대 진단은 role_failed이며 원인을 추정하지 않는다.
+선택적 error_type도 내장 str/32자 고정 목록만 받고 그 밖은 Exception이다.
+stage/field/type·구문 위치·임의 진단 객체는 버리며 API/CLI·telemetry 성공을 후보 성공으로
+해석하지 않는다. 정제 reason은 기존 specialist_reason/review_reason과 draft_digest 연결을
+사용하고 feedback은 계속 비신뢰 의견이다. 진단·비밀은 web-v1 payload/digest에 추가하지 않는다.
+세부 목록과 기존 result 보존의 구분은 [hourly private 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다.
+이번 회귀는 미실행이며 full make check·수리 검증·PR·CI·머지는 메인/실행기의 후속 작업이다.
+실제 자동 연구9단계·정규 hourly 실모델·2026-10-21 09:00 KST 보고는 메인 확인 전까지 pending이다.
+
 2026-10-16 메인 제공 관측에서 최초 초안은 AGENTS.md 원본1–82줄 입력으로 JSON 파싱 뒤
 `candidate_invalid`였다. 원문이 없어 당시 필드·값은 확정할 수 없다. 동일 입력 재현에서는
 edit_files 범위 위반과 evidence 줄 범위 위반을 각각 관측했으며 최초 응답의 확정 원인은 아니다.
