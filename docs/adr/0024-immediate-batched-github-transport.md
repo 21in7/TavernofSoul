@@ -1,6 +1,6 @@
 # 0024. Trusted-parent 단일 전송과 workflow 즉시 GitHub handoff
 
-- 상태: 제안(proposed) — 사용자 요청 방향 기록, 최종 검토·full 검사·실제 PR 관측 대기
+- 상태: 채택(accepted) — 2026-10-20 구현·검증·전달 관측 완료, 문서 전용 PR 성능 관측 대기
 - 기록일: 2026-10-20
 - 기록 성격: 새 결정
 - 대체 관계: 없음. [0005](0005-github-connector-delivery.md)의 게시·앱·CI 경계를 유지한다.
@@ -90,10 +90,27 @@ Python3.8 표준라이브러리·기존 Node만 쓰며 package/dependency/servic
 same-OS-account 침해까지 막는 권한 서비스는 아니다. 원문·복구 증거는 자동 삭제하지 않는다.
 PR 생성 전 NFS archive를 추가하지 않고 native의 최종 save·두 lock 해제·completion·archive를 유지한다.
 
-두 신규 테스트는 작성 대상이며 실행·성공 증거가 아니다. 이번 harness 변경은 기존 publisher 회귀와
-full `make check`가 필수다. parent가 새 의미 검토·실제 bridge 사용·구현 PR 및 별도 문서 PR의
-required CI·merge·cleanup/archive를 관측하고 PR54와 동일 구간의 실측 차이를 확인한다.
-synthetic 순서 테스트·부분 probe로 실제 PR 개선율을 쓰거나 최종 PR/검사/성능 성공을 선기록하지 않는다.
+이번 harness 변경의 기존 publisher 회귀와 full `make check` 요구에 대한 구현 PR 관측은 아래에 기록한다.
+별도 문서 PR의 검사·required CI·merge·cleanup/archive와 성능은 아직 미관측이다.
+synthetic 순서 테스트·부분 probe로 실제 PR 개선율을 쓰거나 미관측 PR/검사/성능 성공을 선기록하지 않는다.
+
+메인은 [구현 PR55](https://github.com/21in7/TavernofSoul/pull/55)의 실제 Codex 구현,
+새로운 Claude 의미 검토와 `documentation.updated`, 로컬 전체 `make check` 4786개
+(`selected=passed`, skip/failure/error 각 0), 새 전송 계층 집중 검사 60개 통과를 직접 확인했다.
+구현 PR의 push/PR 전체 CI와 세 필수 gate success, GitHub `merged=true`와 merge SHA
+`7d4e6d443dec56db2df8e4017655eaea09e0a948`, 정확한 작업 브랜치의 `cleanup complete`와
+terminal archive `archived`도 메인이 확인했다.
+
+구현 PR에서 큰 stdin 입력은 부모 도구의 자동 승인 검토 한계로 거절됐다. 메인은 native 진입 전
+중단된 입력 수신기와 원응답·원요청 ID를 확인해 복구했으며 GitHub 쓰기를 재전송하지 않았다.
+이 부모 도구 환경의 `tools.write_stdin` 어댑터는 동일 base64 frame을 4096문자 이하로 분할해
+전달한다. 원응답 bytes·request ID·native 저장/검증·receipt·필수 게이트는 동일하며,
+입력 조각별 도구 호출 시간도 실제 성능에 포함된다.
+
+PR55에는 이 복구 대기가 있어 PR54와 성능을 직접 비교하지 않는다. 메인은 이 문서 후속 실행을
+시작하기 전에 승인된 bridge와 부모 도구 어댑터를 로드하고 workflow 종료를 같은 async handoff로
+이어 새 문서 PR의 구간별 소요 시간을 측정할 예정이다. 새 실제 측정은 아직 미관측이며,
+위 PR54 기준 105.047초와 구간별 수치는 그대로 유지한다.
 
 ## 관련 코드·검증·문서
 
