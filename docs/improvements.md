@@ -88,6 +88,11 @@ benefit evidence는 그 전달 window 안이어야 한다. edit_files/documentat
 수정 위치는 항목 하나이며 서로 다른 두 파일은 각 경로를 한 번씩 쓴다. 모든 승인 경로가 편집
 가능하다는 것은 모두 나열하라는 뜻이 아니고 상한12개를 채울 필요도 없다. 정당한 다중 파일
 편집은 계속 허용한다. 이는 생성 안내이며 중복 방지 보장이나 자동 dedup은 아니다.
+순서 설명에 더해 현재 owner의 실제 approved_files 경로만 쓴 짧고 유효한 JSON 필드 예시를
+생성한다. 같은 파일의 여러 근거/수정 위치는 edit_files 한 항목, 서로 다른 두 파일은 두 항목인
+예시를 구분한다. 승인 파일이 하나면 단일 파일 예시만 제공한다. 예시는 형식 설명이지 실제
+후보나 필수 편집 목록이 아니며 실제 후보는 필요한 파일만 선택한다. 생성과 canonical system
+검증 모두 준비된 동일 승인 목록을 사용하고 예시 bytes도 전체 요청 예산에 포함한다.
 근거 있는 실행 가능한 초안이 없으면 `{"candidates":[]}`로 반환하도록 명시한다.
 mlx-vlm0.7.8의 실제 POST는 `response_format={"type":"json_schema","json_schema":{"name":...,"strict":true,"schema":...}}`와
 **top-level enable_thinking=false**를 사용한다. llguidance가 정확한 `{candidates:[...]}`와 기존
@@ -217,30 +222,45 @@ local(downloader)·GLM은 실제 성공했고 GLM 후보2개가 있으나 정규
 기존 세 문장을 보존하고 필요한 경로를 한 번 쓰라는 설명을 추가한 뒤에도 실제 중복은 지속됐다.
 두 실패의 원문은 저장하지 않아 반복 경로·개수·정확한 후보 값은 알 수 없으며 추측하지 않는다.
 
-이번 coordinator 수리는 실제 생성 지침에 파일 선택·파일별 한 항목·출력 전 반복 확인이라는
-짧은 순서를 추가한다. 중복 방지나 실제 추론 성공을 보장하지 않는다. native schema/owner enum,
+이후 순서 지침을 반영한 PR59(`65c19f53cfaa461cd994cf61d435a32ae9b609a9`)는 오프라인
+4895개를 통과했고, 2026-10-20 22:37 KST parser/AGENTS.md1..96 개발 HTTP1회에서 유효
+초안2개(각각 edit_files1개)가 확인됐다. 이는 한 owner의 단일 성공이며 전체 역할의 해소가 아니다.
+같은 mlx-vlm/Qwen3.5-9B-4bit 서버의 2026-10-20 23:00 정규 run
+`1792504802000339115-d6a0c0`에서 local(coordinator)는 AGENTS.md1..96으로 실제 호출됐고
+`called=true`, `reason=candidate_edit_files_duplicate`로 다시 거절됐다. parent 관측 시각은
+시작23:00:01.927730·종료23:01:16.865115 KST다. 원문 미보존으로 이번 반복 경로·개수도
+알 수 없으며 추측하지 않는다. 과거 테스트 문구 누락과 구분되는 실제 생성 중복의 재발이다.
+
+이번 coordinator 수리는 순서 지침에 현재 owner의 실제 승인 경로로 만든 단일·두 파일 JSON
+필드 예시를 추가한다. 승인 파일 하나에는 단일 예시만 제공하며 예시는 형식 설명이고 실제
+후보는 필요한 편집 파일만 선택한다. 생성과 정확한 canonical system 검증을 같은 승인 목록에
+맞춘다. 중복 방지나 실제 추론 성공을 보장하지 않는다. native schema/owner enum,
 원문 window, enable_thinking=false, 배열1..12·문자열 합600, client 최종 검증과 고정 duplicate
 진단, request24576bytes 내 whole-line 선택·canonical binding·출력·timeout은 유지한다.
 uniqueItems·decoder/validator 완화·자동 dedup·경로/줄/후보 보정·원문/출력 재작성·재시도·
 fallback은 추가하지 않는다. 모델·인증·예산·시간당1회/일24회·원래37개 source scope·
 보고·승인·Git·스토리지 정책도 유지한다.
 
-현재 변경의 회귀 결과와 실제 live 검증 결과는 각각 pending이다. 정규9단계 및
+현재 변경의 최종 full/live 및 PR/CI/머지는 parent 관측 전까지 pending이다. 실제 정규9단계 및
 2026-10-21 09:00 KST 오전 보고 성공 역시 별도로 pending이다. 작업자는 검사·모델 호출·
 네트워크·SSH·서비스·Git·workflow·재위임을 실행하지 않으며 새 mirror/프롬프트 문자열 검사를
-추가하지 않는다. parent가 기존 회귀로 full `make check`를 수행하고 과거 실패본 대비 최종 코드와
-실제 요청이 달라졌음을 확인한 뒤에만 같은 실제 로컬 서버에 동일 parser/AGENTS.md1..96/config로
+추가하지 않는다. 합성 snapshot·주입 transport로 owner 승인 범위·단일/다중 목록·실제 중복
+거절·요청 변조 no-call·전체 byte 예산·whole-line 경계를 검증하는 동작 회귀를 작성하되 실행하지
+않는다. parent가 full `make check`를 통과하고 과거 실패본 대비 실제 코드와 정확한 HTTP
+요청이 달라졌음을 확인한 뒤에만 같은 실제 로컬 서버에 동일 coordinator/AGENTS.md1..96/config로
 개발 검증 HTTP를 단1회 수행한다. 문서만 바뀐 같은 실패 요청을 재호출하지 않는다.
-이 검증은 정규21시 slot replay가 아니며 전체9단계 성공을 대체하지 않는다.
+운영 state와 정규23시 slot을 재실행·변경하지 않으며 이 개발 검증은 전체9단계 성공을 대체하지 않는다.
 
-parent는 raw/prompt/source를 저장하거나 운영 state를 수정하지 않고 코드 SHA/window/고정
-결과/정확한 읽기 범위만 기록한다. client 검증을 통과한 빈 초안은 정상 빈 결과로 구분하며
-후보를 강제하지 않는다. 새 live 실패는 원인을 추측하지 않고 정제된 사실로 같은 coordinator
+parent는 raw/prompt/source를 저장하지 않고 고정 결과 코드·owner/window·해시와 필요한 경우
+숫자형 중복 개수만 기록한다. client 검증을 통과한 빈 초안은 정상 빈 결과로 구분하며
+후보를 강제하지 않는다. 새 live 실패는 실제 fixed reason과 owner/window를 같은 coordinator
 담당자에게 돌려준다. 실제 검증·GitHub·CI·머지·정리는 parent가 담당한다.
 
 문서 영향 판단: 기존 계약의 생성 안내를 명확히 하므로 두 운영 문서에 지침·관측·검증 대기를
 기록한다. 구조·책임·데이터 계약·격리·검증·실패 복구·GitHub 게시 정책은 바뀌지 않아
-`docs/harness-design.md` 수정이나 새 ADR은 필요하지 않다. 매 fresh reviewer는 최종 코드와
+`docs/harness-design.md` 수정이나 새 ADR은 필요하지 않다. 예시는 기존 owner 승인 경로만
+설명하고 native schema·immutable binding·client 최종 검증·실패 시 무보정 단1회 호출을
+유지하며 새로운 역할·저장 필드·승인·공개 경로를 만들지 않기 때문이다. 매 fresh reviewer는 최종 코드와
 문서의 의미를 새로 평가해 `documentation={status,files,reason}`을 반환하며 앞선 문서 판단이나
 회귀 통과를 재사용하지 않는다. 추가 문서가 실제 필요하면 승인 밖 파일을 읽거나 만들지 않고
 정확한 경로와 기존 승인 파일에 귀속한 finding을 보고한다.

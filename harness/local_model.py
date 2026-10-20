@@ -394,13 +394,21 @@ def _encode_request(config, user):
                'temperature': config['temperature'], 'enable_thinking': False,
                'response_format': _response_format(
                    user['approved_files'], user['sources'][0], user['candidate_limit']),
-               'messages': [{'role': 'system', 'content': _system_prompt()},
+               'messages': [{'role': 'system', 'content': _system_prompt(user['approved_files'])},
                             {'role': 'user', 'content': content}]}
     return contract.canonical_json(request)
 
 
-def _system_prompt():
+def _system_prompt(approved_files):
     # Local field guide only; shared validators remain the acceptance authority.
+    paths = contract.validate_scope_paths(approved_files)
+    examples = ('다음 JSON은 edit_files 필드만 보여 주는 형식 예시이며 실제 후보가 아닙니다.\n'
+                '실제 후보에서는 이번 수정에 필요한 승인 파일만 고릅니다.\n'
+                '한 파일의 여러 근거/수정 위치는 edit_files 한 항목:\n' +
+                contract.canonical_json({'edit_files': paths[:1]}).decode('utf-8') + '\n')
+    if len(paths) > 1:
+        examples += ('서로 다른 두 파일을 수정할 때는 각 경로를 한 번씩 두 항목:\n' +
+                     contract.canonical_json({'edit_files': paths[:2]}).decode('utf-8') + '\n')
     return '''LOCAL improvement drafts for owner_role; not specialist review or approval.
 No tools, function calls, file/network access, commands, edits, checks, Git,
 pipelines, schedulers or workflows. Never claim execution or full-file review.
@@ -417,7 +425,7 @@ edit_files는 다음 순서로 작성합니다.
 2. 파일마다 정확한 경로를 한 번 씁니다. 한 파일의 여러 근거/수정 위치는 항목 하나,
 서로 다른 두 파일을 수정하면 두 경로를 각각 한 번 씁니다.
 3. 출력 전 목록에 같은 문자열이 두 번 들어 있지 않은지 확인합니다.
-candidate.evidence와 benefit.evidence의 각 path는 전달된 source.path와 정확히 같아야 합니다.
+''' + examples + '''candidate.evidence와 benefit.evidence의 각 path는 전달된 source.path와 정확히 같아야 합니다.
 source.start_line <= start_line <= end_line <= source.end_line (inclusive integers).
 numbered_lines.line은 원본 번호이며 배열 순번이 아닙니다. 본문의 전체 파일 줄 참조도
 전송 범위 밖이면 인용할 수 없습니다. 경로 추측/보정, 근거 조작, 범위 확대는 금지합니다.
@@ -587,7 +595,7 @@ def _validate_request(config, request_bytes):
         if any(not isinstance(message, dict) or set(message) != {'role', 'content'}
                for message in messages):
             raise LocalModelError('input_invalid')
-        if (messages[0] != {'role': 'system', 'content': _system_prompt()} or
+        if (messages[0]['role'] != 'system' or
                 messages[1]['role'] != 'user' or not isinstance(messages[1]['content'], str)):
             raise LocalModelError('input_invalid')
         user = contract.parse_json(messages[1]['content'], limits['max_context_bytes'])
@@ -598,6 +606,8 @@ def _validate_request(config, request_bytes):
             raise LocalModelError('input_invalid')
         _integer(user['candidate_limit'], 1, 2)
         paths = contract.validate_scope_paths(user['approved_files'])
+        if messages[0]['content'] != _system_prompt(paths):
+            raise LocalModelError('input_invalid')
         clean = sanitize_feedback(user['feedback'], paths, max_bytes=limits['max_feedback_bytes'])
         if clean != user['feedback']:
             raise LocalModelError('feedback_invalid')
