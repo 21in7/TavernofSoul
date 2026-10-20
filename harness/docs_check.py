@@ -145,6 +145,42 @@ def git_changes(root, base, head):
     return raw_changes(git(root, ['diff', '--raw', '-z', '--no-abbrev', '--find-renames', base, head, '--']))
 
 
+def new_branch_base(root, event, head):
+    """Pin the fetched default tip, then require one complete branch ancestor.
+
+    A created ref has no previous tip. GitHub's boolean forced flag (when
+    supplied) is not an old-tip comparison and does not establish this range.
+    """
+    if (event['before'] != '0' * 40 or event.get('created') is not True or
+            event.get('deleted') is not False or
+            ('forced' in event and type(event['forced']) is not bool)):
+        raise DocsError('Not a trustworthy branch-created push.')
+    ref = event.get('ref')
+    default = event['repository']['default_branch']
+    if (not isinstance(ref, str) or not ref.startswith('refs/heads/') or
+            not isinstance(default, str) or not default or
+            ref == 'refs/heads/' + default or
+            not isinstance(head, str) or not SHA.fullmatch(head) or head == '0' * 40):
+        raise DocsError('Invalid new branch metadata.')
+    default_ref = 'refs/remotes/origin/' + default
+    # Full ref names cannot become options or revision expressions. No shell,
+    # DWIM ref resolution, fetch, HEAD^ or event.commits inference is used.
+    for name in (ref, 'refs/heads/' + default, default_ref):
+        git(root, ['check-ref-format', name])
+    if git(root, ['rev-parse', '--is-shallow-repository']).strip() != b'false':
+        raise DocsError('Shallow Git history; full validation required.')
+    tip = git(root, ['show-ref', '--verify', '--hash', default_ref]).decode().strip()
+    if not SHA.fullmatch(tip) or tip == '0' * 40:
+        raise DocsError('Unavailable exact default branch tip.')
+    for sha in (tip, head):
+        if git(root, ['rev-parse', '--verify', sha + '^{commit}']).decode().strip() != sha:
+            raise DocsError('Invalid new branch commit evidence.')
+    bases = git(root, ['merge-base', '--all', tip, head]).decode().splitlines()
+    if len(bases) != 1 or not SHA.fullmatch(bases[0]) or bases[0] == '0' * 40:
+        raise DocsError('No unique complete branch ancestor.')
+    return bases[0]
+
+
 def ci_selection(root, event_name, event):
     try:
         if event_name == 'pull_request':
@@ -156,6 +192,8 @@ def ci_selection(root, event_name, event):
         # The checkout must be the candidate, never an unrelated merge/revision.
         if git(root, ['rev-parse', 'HEAD']).decode().strip() != head:
             raise DocsError('Checkout differs from event head.')
+        if event_name == 'push' and base == '0' * 40:
+            base = new_branch_base(root, event, head)
         return classify(git_changes(root, base, head))
     except (KeyError, TypeError, ValueError, IndexError, UnicodeError, subprocess.SubprocessError, OSError):
         return {'mode': 'full', 'reason': 'unavailable_complete_git_evidence', 'changes': []}

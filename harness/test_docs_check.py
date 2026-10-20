@@ -413,6 +413,15 @@ def test_ci_keeps_three_required_names_and_propagates_evidence_failure():
     assert "SELECTION_RESULT: ${{ needs.selection.result }}" in text
     assert "EXECUTION_RESULT: ${{ needs[matrix.execution].result }}" in text
     assert 'report.get(\'selection\') == selection' in text
+    assert 'uses: actions/checkout@v6' in text
+    assert 'fetch-depth: 0' in text
+    assert 'persist-credentials: false' in text
+    assert 'contents: read' in text
+    assert 'ref: ${{ github.event.pull_request.head.sha || github.sha }}' in text
+    assert '--changes-file validation-selection.json --report docs-result.json' in text
+    assert "if: always()\n    needs: [selection, offline, mysql, browser]" in text
+    assert "if os.environ['SELECTION_RESULT'] != 'success':" in text
+    assert "elif selection.get('mode') != 'full' or os.environ['EXECUTION_RESULT'] != 'success':" in text
 
 
 def test_public_ci_source_link_is_distinct_from_hidden_credentials(tmp_path):
@@ -444,7 +453,7 @@ def test_affected_reverse_references_cannot_disappear_in_unsupported_or_escaped_
     assert docs.check(tmp_path, [change(status='D')])['status'] == 'failed'
 
 
-def test_new_branch_push_zero_before_requires_full_without_diff_execution(tmp_path, monkeypatch):
+def test_new_branch_push_without_metadata_requires_full_without_diff_execution(tmp_path, monkeypatch):
     head = 'b' * 40
     calls = []
     def current_head(root, args):
@@ -454,6 +463,289 @@ def test_new_branch_push_zero_before_requires_full_without_diff_execution(tmp_pa
     monkeypatch.setattr(docs, 'git', current_head)
     assert docs.ci_selection(tmp_path, 'push', {'before': '0' * 40, 'after': head})['mode'] == 'full'
     assert calls == [['rev-parse', 'HEAD']]
+
+
+class BranchRepository:
+    """Small local Git history; no remote, network or third-party Git library."""
+
+    def __init__(self, root, default='main'):
+        self.root, self.default = root, default
+        root.mkdir()
+        self.run('init', '-q')
+        self.run('symbolic-ref', 'HEAD', 'refs/heads/' + default)
+        put(root, 'README.md', '# Repository\n')
+        put(root, 'docs/guide.md', '# Guide\n')
+        put(root, 'docs/old.md', '# Old\n')
+        put(root, 'docs/deleted.md', '# Deleted\n')
+        put(root, 'source.py', 'value = 1\n')
+        self.base = self.commit('base')
+        self.remote = 'refs/remotes/origin/' + default
+        self.run('update-ref', self.remote, self.base)
+        self.run('checkout', '-qb', 'docs/new')
+
+    def run(self, *args, **kwargs):
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_AUTHOR_NAME='Fixture', GIT_AUTHOR_EMAIL='fixture@example.invalid',
+                   GIT_COMMITTER_NAME='Fixture', GIT_COMMITTER_EMAIL='fixture@example.invalid',
+                   GIT_TERMINAL_PROMPT='0')
+        return subprocess.run(
+            ['git', '-c', 'core.hooksPath=' + os.devnull, '-c', 'commit.gpgSign=false',
+             '-c', 'core.autocrlf=false', '-c', 'core.filemode=true', *args],
+            cwd=str(self.root), env=env, check=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, **kwargs).stdout.decode().strip()
+
+    def commit(self, message):
+        self.run('add', '-A')
+        self.run('commit', '--allow-empty', '-qm', message)
+        return self.run('rev-parse', 'HEAD')
+
+    def event(self):
+        return {'before': '0' * 40, 'after': self.run('rev-parse', 'HEAD'),
+                'created': True, 'deleted': False, 'forced': False,
+                'ref': 'refs/heads/docs/new', 'repository': {'default_branch': self.default}}
+
+
+@pytest.fixture
+def branch_repo(tmp_path):
+    repo = BranchRepository(tmp_path / 'repo')
+    put(repo.root, 'docs/guide.md', '# Updated guide\n')
+    repo.commit('docs')
+    return repo
+
+
+@pytest.mark.parametrize('commits,default,advance', [
+    (1, 'main', False), (3, 'main', False), (2, 'release/stable', True)])
+def test_new_branch_complete_docs_range_and_report_survives_default_advance(
+        tmp_path, monkeypatch, capsys, commits, default, advance):
+    repo = BranchRepository(tmp_path / 'repo', default)
+    for index in range(commits):
+        put(repo.root, 'docs/part-{}.md'.format(index), '# Part {}\n'.format(index))
+        repo.commit('docs {}'.format(index))
+    event = repo.event()
+    if advance:
+        repo.run('checkout', '-q', default)
+        put(repo.root, 'source.py', 'value = 2\n')
+        tip = repo.commit('default code after divergence')
+        repo.run('update-ref', repo.remote, tip)
+        repo.run('checkout', '-q', 'docs/new')
+    selection = docs.ci_selection(repo.root, 'push', event)
+    assert selection == docs.classify(docs.git_changes(repo.root, repo.base, event['after']))
+    assert selection['mode'] == 'docs'
+    assert len(selection['changes']) == commits
+    # Persist the established complete range, then move the default again. The
+    # validation consumer must use the selection rows, never resolve it anew.
+    selection_file, report_file = tmp_path / 'selection.json', tmp_path / 'report.json'
+    selection_file.write_text(json.dumps(selection), encoding='utf-8')
+    repo.run('update-ref', repo.remote, event['after'])
+    monkeypatch.setattr(docs, '__file__', str(repo.root / 'harness/docs_check.py'))
+    assert docs.main(['--changes-file', str(selection_file), '--report', str(report_file)]) == 0
+    report = json.loads(report_file.read_text(encoding='utf-8'))
+    assert report['selection'] == selection
+    assert failure_feedback.check_groups_passed(report['checks'])
+    capsys.readouterr()
+
+
+def test_new_branch_includes_earlier_code_even_when_latest_commit_is_docs(branch_repo):
+    repo = branch_repo
+    put(repo.root, 'source.py', 'value = 2\n')
+    repo.commit('feature code')
+    put(repo.root, 'docs/guide.md', '# Latest docs\n')
+    repo.commit('latest docs')
+    selection = docs.ci_selection(repo.root, 'push', repo.event())
+    assert selection['mode'] == 'full'
+    assert 'source.py' in {row['new_path'] for row in selection['changes']}
+
+
+def test_new_branch_pins_exact_default_sha_before_resolving_ancestry(branch_repo, monkeypatch):
+    repo = branch_repo
+    event, calls = repo.event(), []
+    real_git = docs.git
+    def advance_after_read(root, args):
+        calls.append(args)
+        result = real_git(root, args)
+        if args == ['show-ref', '--verify', '--hash', repo.remote]:
+            repo.run('update-ref', repo.remote, event['after'])
+        return result
+    monkeypatch.setattr(docs, 'git', advance_after_read)
+    selection = docs.ci_selection(repo.root, 'push', event)
+    assert selection['mode'] == 'docs'
+    assert calls.count(['show-ref', '--verify', '--hash', repo.remote]) == 1
+    assert ['merge-base', '--all', repo.base, event['after']] in calls
+    assert ['diff', '--raw', '-z', '--no-abbrev', '--find-renames', repo.base, event['after'], '--'] in calls
+
+
+@pytest.mark.parametrize('kind', ['policy', 'ci', 'permission', 'type', 'non_doc_rename'])
+def test_new_branch_uses_existing_conservative_classifier(branch_repo, kind):
+    repo = branch_repo
+    if kind == 'policy':
+        put(repo.root, 'docs/workflow.md', '# Policy\n')
+    elif kind == 'ci':
+        put(repo.root, '.github/workflows/harness.yml', 'name: CI\n')
+    elif kind == 'permission':
+        (repo.root / 'docs/guide.md').chmod(0o755)
+    elif kind == 'type':
+        (repo.root / 'docs/guide.md').unlink()
+        (repo.root / 'docs/guide.md').symlink_to('old.md')
+    else:
+        repo.run('mv', 'source.py', 'docs/source.md')
+    repo.commit(kind)
+    selection = docs.ci_selection(repo.root, 'push', repo.event())
+    assert selection['mode'] == 'full'
+    assert selection['changes']  # complete evidence reached the classifier
+    if kind == 'non_doc_rename':
+        assert change(status='R', old='source.py', new='docs/source.md') in selection['changes']
+
+
+def test_new_branch_raw_rename_deletion_and_surviving_reverse_references(branch_repo):
+    repo = branch_repo
+    repo.run('mv', 'docs/old.md', 'docs/new.md')
+    (repo.root / 'docs/deleted.md').unlink()
+    repo.commit('rename and delete')
+    selection = docs.ci_selection(repo.root, 'push', repo.event())
+    assert selection['mode'] == 'docs'
+    assert change(status='R', old='docs/old.md', new='docs/new.md') in selection['changes']
+    assert change('docs/deleted.md', status='D') in selection['changes']
+    report = docs.check(repo.root, selection['changes'])
+    assert report['selection'] == selection
+    assert failure_feedback.check_groups_passed(report['checks'])
+    # A surviving reference predates the branch, so it is not itself a changed
+    # document in the complete raw diff. It must still fail validation.
+    repo.run('checkout', '-q', repo.default)
+    put(repo.root, 'README.md', '[old](docs/old.md) [deleted](docs/deleted.md)\n')
+    repo.base = repo.commit('existing references')
+    repo.run('update-ref', repo.remote, repo.base)
+    repo.run('checkout', '-q', 'docs/new')
+    repo.run('merge', '--no-edit', repo.default)
+    selection = docs.ci_selection(repo.root, 'push', repo.event())
+    assert selection['mode'] == 'docs'
+    assert all(row['new_path'] != 'README.md' for row in selection['changes'])
+    report = docs.check(repo.root, selection['changes'])
+    assert report['selection'] == selection
+    assert report['status'] == 'failed'
+    assert len(report['checks']['docs']['failures']) == 2
+
+
+@pytest.mark.parametrize('field,value', [
+    ('created', None), ('created', 1), ('created', False),
+    ('deleted', None), ('deleted', 0), ('deleted', True),
+    ('forced', 'false'), ('forced', 0), ('forced', None),
+    ('ref', None), ('ref', 1), ('ref', 'refs/tags/v1'), ('ref', 'refs/heads/main'),
+    ('ref', 'refs/heads/'), ('ref', 'refs/heads/a..b'), ('ref', 'refs/heads/a\nname'),
+    ('ref', '--help'), ('ref', 'refs/heads/$(touch injected)'),
+    ('after', '0' * 40), ('after', 'a' * 39), ('after', None), ('after', 1),
+    ('before', '0' * 39), ('before', None), ('before', 0),
+    ('repository', None), ('repository', {}), ('repository', {'default_branch': 1}),
+    ('repository', {'default_branch': ''}), ('repository', {'default_branch': '../main'}),
+    ('repository', {'default_branch': 'main^{commit}'}),
+])
+def test_new_branch_rejects_untrustworthy_event_metadata(branch_repo, field, value):
+    event = branch_repo.event()
+    event[field] = value
+    assert docs.ci_selection(branch_repo.root, 'push', event)['mode'] == 'full'
+    assert not (branch_repo.root / 'injected').exists()
+
+
+@pytest.mark.parametrize('field', ['created', 'deleted', 'ref', 'repository', 'after', 'before'])
+def test_new_branch_missing_required_metadata_is_full(branch_repo, field):
+    event = branch_repo.event()
+    del event[field]
+    assert docs.ci_selection(branch_repo.root, 'push', event)['mode'] == 'full'
+
+
+@pytest.mark.parametrize('forced', [None, False, True])
+def test_new_branch_optional_boolean_forced_is_not_a_previous_tip(branch_repo, forced):
+    event = branch_repo.event()
+    if forced is None:
+        del event['forced']
+    else:
+        event['forced'] = forced
+    assert docs.ci_selection(branch_repo.root, 'push', event)['mode'] == 'docs'
+
+
+def test_new_branch_valid_shell_metacharacters_remain_literal_git_refs(tmp_path):
+    # These are legal ref characters, so rejection alone is not the boundary.
+    # Any shell interpolation would attempt to create the marker file.
+    repo = BranchRepository(tmp_path / 'repo', 'release/$(touch${IFS}injected)')
+    put(repo.root, 'docs/guide.md', '# Literal refs\n')
+    repo.commit('docs')
+    event = repo.event()
+    event['ref'] = 'refs/heads/$(touch${IFS}injected)'
+    assert docs.ci_selection(repo.root, 'push', event)['mode'] == 'docs'
+    assert not (repo.root / 'injected').exists()
+
+
+@pytest.mark.parametrize('problem', ['missing_default', 'noncommit_default', 'unrelated',
+                                    'shallow', 'dirty', 'staged', 'untracked',
+                                    'head_mismatch', 'empty', 'missing_tree'])
+def test_new_branch_incomplete_repository_evidence_is_full(branch_repo, problem):
+    repo = branch_repo
+    event = repo.event()
+    if problem == 'missing_default':
+        repo.run('update-ref', '-d', repo.remote)
+    elif problem == 'noncommit_default':
+        blob = repo.run('hash-object', '-w', '--stdin', input=b'not a commit\n')
+        repo.run('update-ref', repo.remote, blob)
+    elif problem == 'unrelated':
+        tree = repo.run('rev-parse', repo.base + '^{tree}')
+        unrelated = repo.run('commit-tree', tree, '-m', 'unrelated root')
+        repo.run('update-ref', repo.remote, unrelated)
+    elif problem == 'shallow':
+        (repo.root / '.git/shallow').write_text(repo.base + '\n', encoding='ascii')
+    elif problem in ('dirty', 'staged'):
+        put(repo.root, 'docs/guide.md', '# Uncommitted\n')
+        if problem == 'staged':
+            repo.run('add', 'docs/guide.md')
+    elif problem == 'untracked':
+        put(repo.root, 'docs/untracked.md', '# Untracked\n')
+    elif problem == 'head_mismatch':
+        event['after'] = repo.base
+    elif problem == 'empty':
+        repo.run('checkout', '-q', repo.base)
+        repo.commit('empty branch commit')
+        event = repo.event()
+    else:
+        tree = repo.run('rev-parse', 'HEAD^{tree}')
+        (repo.root / '.git/objects' / tree[:2] / tree[2:]).unlink()
+    assert docs.ci_selection(repo.root, 'push', event)['mode'] == 'full'
+
+
+def test_new_branch_rejects_multiple_real_best_common_ancestors(branch_repo):
+    repo = branch_repo
+    tree = repo.run('rev-parse', repo.base + '^{tree}')
+    left = repo.run('commit-tree', tree, '-p', repo.base, '-m', 'left')
+    right = repo.run('commit-tree', tree, '-p', repo.base, '-m', 'right')
+    default_tip = repo.run('commit-tree', tree, '-p', left, '-p', right, '-m', 'merge one')
+    head_tree = repo.run('rev-parse', 'HEAD^{tree}')
+    head = repo.run('commit-tree', head_tree, '-p', right, '-p', left, '-m', 'merge two')
+    repo.run('update-ref', repo.remote, default_tip)
+    repo.run('reset', '--hard', head)
+    assert set(repo.run('merge-base', '--all', default_tip, head).splitlines()) == {left, right}
+    assert docs.ci_selection(repo.root, 'push', repo.event())['mode'] == 'full'
+
+
+@pytest.mark.parametrize('bad_output', [b'', b'not-a-sha\n', b'0' * 40 + b'\n',
+                                        b'a' * 40 + b'\n' + b'b' * 40 + b'\n'])
+@pytest.mark.parametrize('command', ['show-ref', 'merge-base'])
+def test_new_branch_rejects_invalid_or_ambiguous_resolution(branch_repo, monkeypatch, command, bad_output):
+    real_git = docs.git
+    def damaged_evidence(root, args):
+        return bad_output if args[0] == command else real_git(root, args)
+    monkeypatch.setattr(docs, 'git', damaged_evidence)
+    assert docs.ci_selection(branch_repo.root, 'push', branch_repo.event())['mode'] == 'full'
+
+
+@pytest.mark.parametrize('event_name', ['push', 'pull_request'])
+def test_existing_event_ranges_remain_exact_with_real_history(branch_repo, event_name):
+    repo = branch_repo
+    put(repo.root, 'source.py', 'value = 2\n')
+    previous = repo.commit('earlier code')
+    put(repo.root, 'docs/guide.md', '# Last commit docs\n')
+    head = repo.commit('docs only at tip')
+    event = {'before': previous, 'after': head,
+             'pull_request': {'base': {'sha': previous}, 'head': {'sha': head}}}
+    selection = docs.ci_selection(repo.root, event_name, event)
+    assert selection == docs.classify(docs.git_changes(repo.root, previous, head))
+    assert selection['mode'] == 'docs'
 
 
 def test_deleted_document_cannot_leave_a_broken_policy_reference(tmp_path):

@@ -32,8 +32,12 @@ repair마다 다시 판단한다. 일반 README/docs prose만 docs-only이며 �
 불명 mode는 full이며 CI raw Git mode 문자열은 기존 100644 기준을 유지한다.
 check-docs는 stdlib 링크/fragment/삭제·rename 영향을 검사하고 positive selected/passed·zero skip
 결과를 validation_selection/delivery_validation digest로 적용·게시까지 결합한다. CI의 세 required
-gate는 docs 증거 또는 기존 heavy 검사의 실제 성공을 요구한다. 새 브랜치 push의 zero-before는 full
-fallback이다. 여러 줄 inline code는 같은 길이의 backtick run과 code 안팎의 escape 규칙으로 마스킹하고
+gate는 docs 증거 또는 기존 heavy 검사의 실제 성공을 요구한다.
+[ADR0023](adr/0023-new-branch-documentation-validation.md)에 따라 정확한 zero-before와
+created=true/deleted=false인 유효한 비기본 branch 최초 push는 fetched default commit을 고정하고
+유일 merge base→event head 전체 diff로 판정한다. 불명 metadata/ref/history·공통 조상 없음/복수·
+dirty/untracked/head 불일치·빈 diff는 full이며 최초 push 자체를 skip하지 않는다. 선택된 changes는
+docs 검증과 report/selection equality까지 유지한다. 여러 줄 inline code는 같은 길이의 backtick run과 code 안팎의 escape 규칙으로 마스킹하고
 원문 줄 번호·heading 텍스트 기여·code 뒤 실제 링크 검사를 유지한다. paragraph·heading·fence 경계와
 미지원 multiline link/HTML의 fail-closed 정책은 유지한다. 이번 harness/CI 수정은 shortcut 대상이 아니며 main이 새 Claude 의미 검토·전체
 make check·실제 문서 검사·GitHub 전달/CI를 수행한다. worker는 이 실행을 대신하지 않는다.

@@ -27,16 +27,18 @@
 | [0020](0020-automatic-proposal-completion.md) | signed run 완료 증거·별도 completion-v1 private outbox·동일 digest GET 복구와 명시 재전송 | 사용자 요청 계약 승인, 최종 의미 검토/full check/Git 전달·메인의 Sites 구현·배포/HTTP 관측 대기 | 2026-10-19 |
 | [0021](0021-local-work-and-result-archives.md) | 명시 v2 local 작업·검증과 allowlist terminal archive, frozen/current 일치·NFS 파일 link/최종 commit·보관만 재개 | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
 | [0022](0022-documentation-only-validation.md) | 최종 실제 diff·digest에 결합한 prose 검증과 세 required CI의 실제 gate | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
+| [0023](0023-new-branch-documentation-validation.md) | 최초 비기본 branch push의 fetched default와 유일 merge base에 근거한 전체 diff 선택; 0022의 zero-before 결정만 대체 | 제안(proposed), 새 Claude 의미 검토/full check/CI/Git 전달 대기 | 2026-10-20 |
 
 ## 상태와 근거의 의미
 
-0021/0022가 현재 개발 저장·검증 선택이다. 사용자 직접 요청으로 아래 날짜별 'NFS 유지' 지시는
+0021/0022와 최초 push 선택을 정밀화한 0023이 현재 개발 저장·검증 선택이다. 사용자 직접 요청으로 아래 날짜별 'NFS 유지' 지시는
 개발 작업의 active 저장 선택에 한해 대체한다. v1/no-config·명시 기존 설정과 옛 NFS 기록/
 absolute journal·daily/hourly/게임 cron·approval 기록·모델/auth/lock은 보존한다. private 기본값
 활성화는 코드 검토·검증 후 parent가 한다. archive는 status/find_run 검색 root나 active journal
 대체가 아니며 ARCHIVE에서만 실제 접근한다. frozen 결과와 현재 terminal 결과 불일치는 거부한다.
 문서 전용은 actual final diff가 허용 prose일 때만 가능하며 정책·CI·mode/type·불명 증거는 full이다.
-complete PR docs-only와 새 브랜치 push zero-before full fallback은 구분한다. 세 required check는
+일반 push/PR의 전체 범위와 0023의 신뢰 가능한 최초 branch push 전체 범위에 같은 classifier를 적용한다.
+최초 push의 불명 metadata/ref/history·공통 조상 없음/복수·dirty/untracked/head 불일치·빈 diff는 full이다. 세 required check는
 실제 docs 증거/full 실행 gate를 계속 제공한다. 이번 harness/CI 변경 자체는 full `make check` 필수다.
 
 이전 run `1792414748889186714-9305b2`는 coordinator CLI 900초 timeout, `applied=[]`다.
