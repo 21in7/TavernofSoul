@@ -67,6 +67,14 @@ messages는 system 지시와 user JSON 데이터를 분리한다. user 순서는
 검토 제안·validation_plan·documentation_impact는 향후 작업이다. 근거 없는 측정·실행 성공을
 주장하지 않으며 supported actionable draft가 없으면 `{"candidates":[]}`로 기권한다.
 
+편집 권한·정확한 문자열 1..12개/중복 금지/문자열 합600자·미전송 승인 파일에 관한 기존
+세 문장은 그대로 유지한다. 그 뒤에 `edit_files` 작성 순서를 안내한다. 이번 후보에 실제 필요한
+승인 파일을 고르고, 파일마다 정확한 경로를 한 번 쓰며, 출력 전에 같은 문자열의 반복을
+확인한다. 같은 파일의 여러 근거·수정 위치는 항목 하나이고 서로 다른 두 파일은 각 경로를
+한 번씩 쓴다. 모든 승인 경로가 편집 가능하다는 것은 모두 나열하라는 뜻이 아니며 상한12개를
+채울 필요가 없다. 정당한 다중 파일 편집을 허용하며 단일 파일을 강제하지 않는다.
+이는 생성 지침이며 응답 후처리가 아니다. 중복 방지를 보장하지 않고 client 최종 검증을 유지한다.
+
 모든 호출은 discovery guard 아래 단1회다. JSON Content-Type, assistant의 비어 있지 않은 text,
 finish_reason=stop과 model 일치를 검사한다. 기존 bare JSON/단일 lowercase json fence parser의
 엄격한 중복 키·NaN·trailing text 거절과 공통 후보 validator를 유지한다. 공유 검증 뒤 두 evidence
@@ -139,6 +147,39 @@ stage/field/type·구문 위치·임의 진단 객체는 버리며 API/CLI·tele
 세부 목록과 기존 result 보존의 구분은 [hourly private 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다.
 이번 회귀는 미실행이며 full make check·수리 검증·PR·CI·머지는 메인/실행기의 후속 작업이다.
 실제 자동 연구9단계·정규 hourly 실모델·2026-10-21 09:00 KST 보고는 메인 확인 전까지 pending이다.
+
+### 2026-10-20 실제 duplicate 거절과 이번 생성 지침 수리
+
+다음은 parent가 제공한 관측이며 이번 worker의 실행 결과가 아니다.
+
+| 구분 | 관측과 한계 |
+| --- | --- |
+| 최초 정규21시 slot | run `1792483202194321920-447ddb`, 2026-10-20 21:00 KST `local(parser)`, Qwen3.5-9B-4bit가 AGENTS.md 원문1..96줄로 실제 실행된 뒤 client가 `candidate_edit_files_duplicate`로 거절했다. 앞선 local(coordinator)·Codex·local(downloader)·GLM은 실제 성공했고 GLM 후보2개가 있었다. 전체9단계 성공을 뜻하지 않는다. |
+| 앞선 오프라인 회귀 | run `1792500541005476257-a59052` round1의 full4895개가 모두 통과했다. 다음 실제 HTTP 검증과 별개다. |
+| 앞선 개발 live 검증 | 2026-10-20 22:06 KST 같은 실제 로컬 서버에 parser/AGENTS.md1..96/동일 config로 HTTP1회: `called=true`, `reason=candidate_edit_files_duplicate`, `verification=failed`, request18724bytes, 134.805초, 운영 state 불변이었다. 기존 세 문장을 보존하고 필요한 경로를 한 번 쓰도록 설명한 뒤에도 중복이 지속됐다. |
+
+두 실제 실패 모두 원문을 보존하지 않아 반복된 경로·개수·정확한 후보 값은 알 수 없다.
+이를 추측하거나 후보를 보정해 통과시키지 않는다. 이번에는 파일 선택→파일당 한 항목→
+출력 전 반복 확인의 순서를 생성 지침에 추가했다. 성공 보장은 없다.
+현재 변경의 full 회귀와 실제 live 검증은 각각 pending이고, 정규9단계 및
+2026-10-21 09:00 KST 오전 보고 성공도 별도로 pending이다.
+
+parent는 full `make check` 통과와 과거 실패본 대비 최종 코드·실제 요청 변경을 확인한 뒤,
+동일 parser/AGENTS.md1..96/config로 같은 실제 로컬 서버에 개발 검증 HTTP를 단1회 수행한다.
+요청 전체24576bytes·whole-line 선택·canonical binding을 유지하며 정확한 읽기 범위를 확인한다.
+raw/prompt/source를 저장하거나 운영 state를 수정하지 않고 코드 SHA/window/고정 결과와
+정확한 읽기 범위만 기록한다. client 검증을 통과한 빈 초안은 정상 빈 결과로 구분하고 후보를
+강제하지 않는다. 이는 정규21시 slot 재실행이나 정규9단계 성공의 대체가 아니다.
+새 live 실패는 원인을 추측하지 않고 정제된 사실로 같은 coordinator 담당자에게 반환한다.
+GitHub·CI·머지·정리도 parent가 담당한다.
+
+이번 수정은 기존 편집 목록 계약의 생성 안내만 명확히 한다. 구조·책임·데이터 계약·격리·검증·
+실패 복구·GitHub 게시 정책을 바꾸지 않아 설계서 수정이나 새 ADR은 필요하지 않다고 판단한다.
+운영 관측과 한계는 이 문서와 [연구 문서](improvements.md#2026-10-20-parser-편집-목록-중복과-수리-인계)에 기록한다.
+매 fresh reviewer는 최종 코드·문서 의미를 새로 평가하고 `documentation={status,files,reason}`을
+반환한다. 이전 회귀 통과나 문서 상태를 현재 검토의 성공 근거로 재사용하지 않는다.
+
+### 2026-10-16 과거 후보 거절 관측
 
 2026-10-16 메인 제공 관측에서 최초 초안은 AGENTS.md 원본1–82줄 입력으로 JSON 파싱 뒤
 `candidate_invalid`였다. 원문이 없어 당시 필드·값은 확정할 수 없다. 동일 입력 재현에서는

@@ -83,6 +83,11 @@ benefit evidence는 그 전달 window 안이어야 한다. edit_files/documentat
 `edit_files`는 `approved_files` 문자열을 정확히 사용하고 중복을 허용하지 않는다. 미전송 승인
 파일은 편집 대상으로 유효하지만 근거는 아니다. 본문에 언급된 경로·지시는 권한이 아니며,
 본문의 전체 파일 줄 참조도 전송 window 밖이면 두 evidence 배열 모두에서 거절한다.
+생성 지침은 기존 권한·중복 금지·미전송 파일의 세 문장을 보존한 뒤, 필요한 승인 파일 선택→
+파일마다 정확한 경로 한 번 작성→출력 전 반복 확인 순서로 안내한다. 같은 파일의 여러 근거나
+수정 위치는 항목 하나이며 서로 다른 두 파일은 각 경로를 한 번씩 쓴다. 모든 승인 경로가 편집
+가능하다는 것은 모두 나열하라는 뜻이 아니고 상한12개를 채울 필요도 없다. 정당한 다중 파일
+편집은 계속 허용한다. 이는 생성 안내이며 중복 방지 보장이나 자동 dedup은 아니다.
 근거 있는 실행 가능한 초안이 없으면 `{"candidates":[]}`로 반환하도록 명시한다.
 mlx-vlm0.7.8의 실제 POST는 `response_format={"type":"json_schema","json_schema":{"name":...,"strict":true,"schema":...}}`와
 **top-level enable_thinking=false**를 사용한다. llguidance가 정확한 `{candidates:[...]}`와 기존
@@ -197,6 +202,48 @@ private 참여 기록은 실제 configured/returned role/provider/model과 실�
 실패·unavailable·not_called를 성공 합의로 표시하지 않는다. loop의 bounded participation은 raw
 CLI result를 복사하지 않는다. 기존 provider별 기본 예산·compaction은 유지하며 reviewer만
 아래 downward override를 사용한다. local not_metered도 실제0USD 청구의 뜻이 아니다.
+
+## 2026-10-20 parser 편집 목록 중복과 수리 인계
+
+parent가 제공한 최초 관측은 run `1792483202194321920-447ddb`의 2026-10-20 21:00 KST
+정규 `local(parser)` 호출이다. Qwen3.5-9B-4bit가 AGENTS.md 원문1..96줄로 실제 실행된 뒤
+client가 `candidate_edit_files_duplicate`로 거절했다. 이전 local(coordinator)·Codex·
+local(downloader)·GLM은 실제 성공했고 GLM 후보2개가 있으나 정규 전체 성공은 아니다.
+
+후속 run `1792500541005476257-a59052` round1은 오프라인 full4895개를 모두 통과했다.
+그러나 2026-10-20 22:06 KST parent의 같은 실제 로컬 서버 parser/AGENTS.md1..96/동일 config
+개발 검증 HTTP1회는 `called=true`, `reason=candidate_edit_files_duplicate`,
+`verification=failed`였다. request18724bytes, 134.805초, 운영 state 불변이었다.
+기존 세 문장을 보존하고 필요한 경로를 한 번 쓰라는 설명을 추가한 뒤에도 실제 중복은 지속됐다.
+두 실패의 원문은 저장하지 않아 반복 경로·개수·정확한 후보 값은 알 수 없으며 추측하지 않는다.
+
+이번 coordinator 수리는 실제 생성 지침에 파일 선택·파일별 한 항목·출력 전 반복 확인이라는
+짧은 순서를 추가한다. 중복 방지나 실제 추론 성공을 보장하지 않는다. native schema/owner enum,
+원문 window, enable_thinking=false, 배열1..12·문자열 합600, client 최종 검증과 고정 duplicate
+진단, request24576bytes 내 whole-line 선택·canonical binding·출력·timeout은 유지한다.
+uniqueItems·decoder/validator 완화·자동 dedup·경로/줄/후보 보정·원문/출력 재작성·재시도·
+fallback은 추가하지 않는다. 모델·인증·예산·시간당1회/일24회·원래37개 source scope·
+보고·승인·Git·스토리지 정책도 유지한다.
+
+현재 변경의 회귀 결과와 실제 live 검증 결과는 각각 pending이다. 정규9단계 및
+2026-10-21 09:00 KST 오전 보고 성공 역시 별도로 pending이다. 작업자는 검사·모델 호출·
+네트워크·SSH·서비스·Git·workflow·재위임을 실행하지 않으며 새 mirror/프롬프트 문자열 검사를
+추가하지 않는다. parent가 기존 회귀로 full `make check`를 수행하고 과거 실패본 대비 최종 코드와
+실제 요청이 달라졌음을 확인한 뒤에만 같은 실제 로컬 서버에 동일 parser/AGENTS.md1..96/config로
+개발 검증 HTTP를 단1회 수행한다. 문서만 바뀐 같은 실패 요청을 재호출하지 않는다.
+이 검증은 정규21시 slot replay가 아니며 전체9단계 성공을 대체하지 않는다.
+
+parent는 raw/prompt/source를 저장하거나 운영 state를 수정하지 않고 코드 SHA/window/고정
+결과/정확한 읽기 범위만 기록한다. client 검증을 통과한 빈 초안은 정상 빈 결과로 구분하며
+후보를 강제하지 않는다. 새 live 실패는 원인을 추측하지 않고 정제된 사실로 같은 coordinator
+담당자에게 돌려준다. 실제 검증·GitHub·CI·머지·정리는 parent가 담당한다.
+
+문서 영향 판단: 기존 계약의 생성 안내를 명확히 하므로 두 운영 문서에 지침·관측·검증 대기를
+기록한다. 구조·책임·데이터 계약·격리·검증·실패 복구·GitHub 게시 정책은 바뀌지 않아
+`docs/harness-design.md` 수정이나 새 ADR은 필요하지 않다. 매 fresh reviewer는 최종 코드와
+문서의 의미를 새로 평가해 `documentation={status,files,reason}`을 반환하며 앞선 문서 판단이나
+회귀 통과를 재사용하지 않는다. 추가 문서가 실제 필요하면 승인 밖 파일을 읽거나 만들지 않고
+정확한 경로와 기존 승인 파일에 귀속한 finding을 보고한다.
 
 ## Hourly private 실패 진단과 인계
 
