@@ -159,8 +159,16 @@ GitHub 허용 목록과 비교하며, 도구 인자를 셸 명령으로 실행�
 커넥터 오류는 `isError=true` 응답으로 실행기에 전달하고, `needs_reconciliation`이나 결과가 모호한
 쓰기는 재시도하지 않는다. 원래 요청 ID로 실제 결과를 확인할 때만 이어 실행한다.
 세 CI(`Offline harness (SQLite)`, `MySQL harness`, `Chromium browser harness`)의 실제 success와
-GitHub `merged=true`·merge SHA 확인이 게시·머지 완료 기준이다. CI 실패·누락·skip/neutral, 충돌, 권한 부족은 PR을 유지하고
-실제 상태를 보고한다. 30분 제한에서 `awaiting_ci`이면 기존 PR을 `agent-git-resume`으로 이어갈 수 있다.
+GitHub `merged=true`·merge SHA 확인이 게시·머지 완료 기준이다. required의 skip/neutral·실패는 계속 거부한다.
+[ADR0022](docs/adr/0022-documentation-only-validation.md)의 예정 heavy skip 예외는 정확히
+`Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped뿐이다.
+각 skip과 같은 SHA·GitHub Actions·동일한 양의 정수 check_suite.id 안의 최신 selection success,
+세 required success와 세 heavy skip 전체를 요구하며 전체 이름별 최신 selection/required도 success여야 한다.
+최신 selection/required의 suite metadata도 유효해야 하며 잘못된 metadata를 옛 성공으로 보완하지 않는다.
+다른 suite의 성공을 합치거나 최신 failure/pending을 우회하지 않는다. 먼저 도착한 skip은 증거가
+완성될 때까지 `waiting_for_ci`로 대기하며 불명 suite도 성공이 아니다. 임의 skip과 실제 실패는 거부하고
+추가 실행 중인 job도 기다린다. 충돌·권한 부족은 실제 상태를 보고한다.
+30분 제한에서 `awaiting_ci`이면 기존 PR을 `agent-git-resume`으로 이어갈 수 있다.
 실행 파일이나 서버 CLI만으로 GitHub 앱 도구를 호출할 수 없으므로 메인 Codex가 없는 단독 실행은
 `awaiting_github`에서 대기한다. `READ_ONLY=1`·데모·사용자가 로컬만 요청한 `GIT=0`에서는
 원격 게시·삭제나 로컬 refs 정리를 자동 실행하지 않는다.
@@ -181,6 +189,8 @@ base.ref, 고정 head와 확정 merge SHA, 세 CI success와 commit status, 새 
 정확한 branch tip/보호 여부 및 같은 head의
 열린 PR 부재를 확인한다. 머지 후 base.sha 전진은 허용하지만 불완전 collection·조회 실패는
 부재의 증거가 아니다. 기본·보호·작업 중·추가 커밋·다른 worktree 점유 브랜치는 보존한다.
+fresh cleanup CI에도 같은 예정 skip 증거를 새로 요구한다. 미완료·잘못된 proof는 정리를 막고
+확정 merge SHA를 보존하며 기존 cleanup 재개 절차를 따른다.
 
 원격 삭제는 기존 인증된 로컬 Git만 사용한다. origin의 raw/effective fetch·push URL이 승인 저장소의
 credential-free 단일 대상으로 일치해야 한다. 첫 fetch부터 모든 fetch/prune 전에 표준 origin heads →

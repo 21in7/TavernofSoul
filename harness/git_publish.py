@@ -29,6 +29,8 @@ CONFIG = ROOT / 'harness/git-publish-config.json'
 SHA = re.compile(r'^[a-f0-9]{40}$')
 RUN_ID = re.compile(r'^[0-9]+-[a-f0-9]{6}$')
 REQUIRED = {'Offline harness (SQLite)', 'MySQL harness', 'Chromium browser harness'}
+SELECTION = 'Select actual change validation'
+HEAVY_EXECUTION = {'Offline execution (SQLite)', 'MySQL execution', 'Chromium browser execution'}
 TOOLS = {name: 'mcp__codex_apps__github_' + name for name in
          ('fetch', 'create_tree', 'create_commit', 'create_branch', 'create_pull_request',
           'merge_pull_request')}
@@ -312,8 +314,36 @@ def check_pr(ledger, data):
         raise ValueError('PR has conflicts or an outdated base.')
 
 
+def check_suite_id(row):
+    suite = row.get('check_suite')
+    value = suite.get('id') if isinstance(suite, dict) else None
+    return value if type(value) is int and value > 0 else None
+
+
+def docs_skips_proven(skipped, latest, suites):
+    """Require a complete suite per skip and valid current gate success."""
+    success_names = REQUIRED | {SELECTION}
+
+    def successful(rows):
+        return all(rows.get(name, {}).get('status') == 'completed' and
+                   rows[name].get('conclusion') == 'success' and
+                   check_suite_id(rows[name]) is not None for name in success_names)
+
+    cohorts = [suites.get(check_suite_id(row), {}) for row in skipped]
+    # Another suite's newer success cannot hide this execution's real failure.
+    for cohort in cohorts:
+        if any(row.get('status') == 'completed' and row.get('conclusion') != 'success' and
+               not (row['name'] in HEAVY_EXECUTION and row.get('conclusion') == 'skipped')
+               for row in cohort.values()):
+            raise ValueError('CI failed, skipped, neutral or cancelled; PR remains unmerged.')
+    return successful(latest) and all(successful(cohort) and all(
+        cohort.get(name, {}).get('status') == 'completed' and
+        cohort[name].get('conclusion') == 'skipped' for name in HEAVY_EXECUTION)
+        for cohort in cohorts)
+
+
 def checks_gate(records, cfg, sha):
-    latest = {}
+    latest, suites = {}, {}
     for row in records:
         if not isinstance(row, dict) or type(row.get('id')) is not int or row['id'] <= 0 or \
                 not isinstance(row.get('name'), str) or row.get('head_sha') != sha:
@@ -322,12 +352,25 @@ def checks_gate(records, cfg, sha):
             continue
         if row['name'] not in latest or row['id'] > latest[row['name']]['id']:
             latest[row['name']] = row
+        suite = check_suite_id(row)
+        if suite is not None:
+            cohort = suites.setdefault(suite, {})
+            if row['name'] not in cohort or row['id'] > cohort[row['name']]['id']:
+                cohort[row['name']] = row
     states = {name: latest.get(name, {}).get('conclusion') or 'pending' for name in cfg['required_checks']}
-    if any(row.get('status') == 'completed' and row.get('conclusion') != 'success' for row in latest.values()):
-        raise ValueError('CI failed, skipped, neutral or cancelled; PR remains unmerged.')
+    skipped = []
+    for row in latest.values():
+        if row.get('status') == 'completed' and row.get('conclusion') != 'success':
+            if row['name'] in HEAVY_EXECUTION and row.get('conclusion') == 'skipped':
+                skipped.append(row)
+            else:
+                raise ValueError('CI failed, skipped, neutral or cancelled; PR remains unmerged.')
+    # Expected skips can arrive before selection/final gates. Missing or invalid
+    # suite evidence must wait, never turn a skip into required-check success.
+    skips_proven = not skipped or docs_skips_proven(skipped, latest, suites)
     passed = all(name in latest and latest[name].get('status') == 'completed' and
                  latest[name].get('conclusion') == 'success' for name in cfg['required_checks']) and \
-        all(row.get('status') == 'completed' for row in latest.values())
+        all(row.get('status') == 'completed' for row in latest.values()) and skips_proven
     return passed, states
 
 

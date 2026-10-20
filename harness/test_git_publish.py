@@ -121,6 +121,332 @@ def check_response(rows):
     return {'check_runs': rows, 'total_count': len(rows)}
 
 
+@pytest.fixture
+def ci_ledger():
+    """Fixed connector journal: no Git, configuration reads or network needed."""
+    return {'config': {'version': 'github-v1', 'enabled': True,
+                       'repository': '21in7/TavernofSoul', 'base': 'master',
+                       'merge_method': 'squash', 'check_app': 'github-actions',
+                       'required_checks': ['Offline harness (SQLite)', 'MySQL harness',
+                                           'Chromium browser harness'], 'wait_seconds': 1800},
+            'step': 'pr', 'status': 'awaiting_connector', 'events': [],
+            'base_sha': BASE, 'head_sha': HEAD, 'branch': 'codex/123456-abcdef',
+            'pr_number': 11, 'deadline': 10 ** 20}
+
+
+def docs_rows_for(sha=HEAD, suite=101, first_id=1):
+    # REST ordering observed in docs CI: skips are visible before the final gates.
+    names = ['Offline execution (SQLite)', 'MySQL execution', 'Chromium browser execution',
+             'Select actual change validation', 'Offline harness (SQLite)',
+             'MySQL harness', 'Chromium browser harness']
+    return [{'id': first_id + i, 'name': name, 'head_sha': sha,
+             'app': {'slug': 'github-actions'}, 'check_suite': {'id': suite},
+             'status': 'completed', 'conclusion': 'skipped' if i < 3 else 'success'}
+            for i, name in enumerate(names)]
+
+
+def test_docs_skips_wait_for_real_gates_then_merge_and_fresh_cleanup(ci_ledger):
+    ledger = ci_ledger
+    for phase in ('missing', 'selection_pending', 'queued', 'in_progress'):
+        delivery.accept(ledger, pr_data(ledger))
+        rows = docs_rows_for()
+        if phase == 'missing':
+            rows = rows[:3]
+        elif phase == 'selection_pending':
+            rows = rows[:4]
+            rows[3].update(status='in_progress', conclusion=None)
+        else:
+            for row in rows[4:]:
+                row.update(status=phase, conclusion=None)
+        delivery.accept(ledger, check_response(rows))
+        assert ledger['step'] == 'pr' and ledger['status'] == 'waiting_for_ci'
+        assert not ledger.get('merge_sha')
+        assert delivery.request(ledger)['arguments']['url'].endswith('/pulls/11')
+    delivery.accept(ledger, pr_data(ledger))
+    delivery.accept(ledger, check_response(docs_rows_for()))
+    assert ledger['step'] == 'statuses' and ledger['check_sha'] == HEAD
+    assert set(ledger['checks'].values()) == {'success'}
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    assert ledger['step'] == 'final_pr'
+    delivery.accept(ledger, pr_data(ledger))
+    assert delivery.request(ledger)['arguments']['expected_head_sha'] == HEAD
+    delivery.accept(ledger, {'merged': True, 'sha': MERGE})
+    assert ledger['step'] == 'cleanup_pr' and ledger['cleanup_proof'] == {}
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    # Fresh checks are collected again, including all pages, before proof exists.
+    rows = docs_rows_for(suite=202, first_id=101)
+    delivery.accept(ledger, {'check_runs': rows[:3], 'total_count': len(rows)})
+    assert ledger['step'] == 'cleanup_checks' and ledger['cleanup_page'] == 2
+    assert 'checks' not in ledger['cleanup_proof']
+    assert delivery.request(ledger)['arguments']['url'].endswith('page=2')
+    delivery.accept(ledger, {'check_runs': rows[3:], 'total_count': len(rows)})
+    assert ledger['step'] == 'cleanup_statuses'
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    delivery.accept(ledger, {'full_name': ledger['config']['repository'], 'default_branch': 'master'})
+    delivery.accept(ledger, [])
+    delivery.accept(ledger, [])
+    assert ledger['step'] == 'cleanup_execute' and ledger['cleanup_proof']['verified'] is True
+    assert ledger['cleanup_proof']['check_sha'] == HEAD and ledger['merge_sha'] == MERGE
+    # Verified API proof permits the existing parent cleanup, not a fixture claim
+    # that branch transport/deletion or operational cleanup has happened.
+    assert not delivery.cleanup_complete(ledger)
+
+
+@pytest.mark.parametrize('head_only', [False, True])
+def test_docs_pagination_and_test_merge_priority(ci_ledger, head_only):
+    ledger = ci_ledger
+    delivery.accept(ledger, pr_data(ledger, merge_commit_sha=TEST_MERGE))
+    head = docs_rows_for() if head_only else []
+    delivery.accept(ledger, check_response(head))
+    assert TEST_MERGE in delivery.request(ledger)['arguments']['url']
+    rows = [] if head_only else docs_rows_for(sha=TEST_MERGE)
+    if rows:
+        delivery.accept(ledger, {'check_runs': rows[:3], 'total_count': len(rows)})
+        assert ledger['step'] == 'merge_checks' and ledger['page'] == 2
+        delivery.accept(ledger, {'check_runs': rows[3:], 'total_count': len(rows)})
+    else:
+        delivery.accept(ledger, check_response([]))
+    assert ledger['step'] == 'statuses'
+    assert ledger['check_sha'] == (HEAD if head_only else TEST_MERGE)
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    assert TEST_MERGE in delivery.request(ledger)['arguments']['url']
+    delivery.accept(ledger, {'sha': TEST_MERGE, 'total_count': 0})
+    delivery.accept(ledger, pr_data(ledger, merge_commit_sha=TEST_MERGE))
+    assert ledger['step'] == 'merge'
+
+
+@pytest.mark.parametrize('phase', ['pre_merge', 'cleanup'])
+def test_docs_head_success_cannot_fill_test_merge_gates(ci_ledger, phase):
+    ledger = ci_ledger
+    if phase == 'pre_merge':
+        delivery.accept(ledger, pr_data(ledger, merge_commit_sha=TEST_MERGE))
+    else:
+        ledger.update(step='merge', test_merge_sha=TEST_MERGE)
+        delivery.accept(ledger, {'merged': True, 'sha': MERGE})
+        delivery.accept(ledger, cleanup_pr_data(ledger))
+    delivery.accept(ledger, check_response(docs_rows_for()))
+    assert TEST_MERGE in delivery.request(ledger)['arguments']['url']
+    rows = docs_rows_for(sha=TEST_MERGE)[:3]
+    if phase == 'pre_merge':
+        delivery.accept(ledger, check_response(rows))
+        assert ledger['step'] == 'pr' and ledger['status'] == 'waiting_for_ci'
+    else:
+        with pytest.raises(ValueError, match='Fresh pinned CI'):
+            delivery.accept(ledger, check_response(rows))
+        assert ledger['merge_sha'] == MERGE and not delivery.cleanup_complete(ledger)
+        assert 'checks' not in ledger['cleanup_proof']
+
+
+@pytest.mark.parametrize('head_only', [False, True])
+def test_docs_cleanup_retains_test_merge_priority_and_both_statuses(ci_ledger, head_only):
+    ledger = ci_ledger
+    ledger.update(step='merge', test_merge_sha=TEST_MERGE)
+    delivery.accept(ledger, {'merged': True, 'sha': MERGE})
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    delivery.accept(ledger, check_response(docs_rows_for()))
+    delivery.accept(ledger, check_response([] if head_only else docs_rows_for(sha=TEST_MERGE)))
+    assert ledger['cleanup_proof']['check_sha'] == (HEAD if head_only else TEST_MERGE)
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    assert TEST_MERGE in delivery.request(ledger)['arguments']['url']
+    delivery.accept(ledger, {'sha': TEST_MERGE, 'total_count': 0})
+    assert ledger['step'] == 'cleanup_repository' and ledger['merge_sha'] == MERGE
+
+
+@pytest.mark.parametrize('target,conclusion', [
+    *[(4, value) for value in ('skipped', 'neutral', 'failure', 'cancelled',
+                               'timed_out', 'action_required')],
+    (3, 'failure'), (0, 'failure'), (0, 'neutral'), (0, 'cancelled'),
+])
+def test_docs_real_non_success_is_never_hidden(ci_ledger, target, conclusion):
+    rows = docs_rows_for()
+    rows[target]['conclusion'] = conclusion
+    delivery.accept(ci_ledger, pr_data(ci_ledger))
+    with pytest.raises(ValueError, match='CI failed'):
+        delivery.accept(ci_ledger, check_response(rows))
+    assert ci_ledger['step'] != 'merge'
+
+
+def test_docs_unknown_skip_fails_even_before_gates_arrive(ci_ledger):
+    rows = docs_rows_for()[:3]
+    rows.append({**rows[0], 'id': 99, 'name': 'Unexpected execution'})
+    with pytest.raises(ValueError, match='CI failed'):
+        delivery.checks_gate(rows, ci_ledger['config'], HEAD)
+
+
+@pytest.mark.parametrize('kind', [
+    'required_missing', 'selection_missing', 'selection_pending', 'selection_wrong_app',
+    'required_wrong_app', 'heavy_wrong_app',
+    'extra_pending', 'heavy_missing', 'suite_mismatch', 'mixed_required_suites',
+    'old_suite_pending', 'latest_required_pending',
+    'latest_selection_pending', 'latest_heavy_pending',
+])
+def test_docs_incomplete_or_mixed_evidence_waits(ci_ledger, kind):
+    rows = docs_rows_for()
+    if kind == 'required_missing':
+        rows.pop()
+    elif kind == 'selection_missing':
+        rows.pop(3)
+    elif kind == 'selection_pending':
+        rows[3].update(status='in_progress', conclusion=None)
+    elif kind.endswith('_wrong_app'):
+        index = {'selection_wrong_app': 3, 'required_wrong_app': 4, 'heavy_wrong_app': 0}[kind]
+        rows[index]['app'] = {'slug': 'other-app'}
+    elif kind == 'extra_pending':
+        rows.append({**rows[3], 'id': 99, 'name': 'Extra job', 'status': 'queued', 'conclusion': None})
+    elif kind == 'heavy_missing':
+        rows.pop(2)
+    elif kind == 'suite_mismatch':
+        rows[3]['check_suite'] = {'id': 202}
+    elif kind == 'mixed_required_suites':
+        for i, row in enumerate(rows[4:]):
+            row['check_suite'] = {'id': 202 + i}
+    elif kind == 'old_suite_pending':
+        # A newer success in another suite must not repair this skip's suite.
+        old = copy.deepcopy(rows[4])
+        rows[4].update(status='in_progress', conclusion=None)
+        rows.append({**old, 'id': 99, 'check_suite': {'id': 202}})
+    else:
+        index = {'latest_required_pending': 4, 'latest_selection_pending': 3,
+                 'latest_heavy_pending': 0}[kind]
+        rows.append({**rows[index], 'id': 99, 'status': 'queued', 'conclusion': None})
+    delivery.accept(ci_ledger, pr_data(ci_ledger))
+    delivery.accept(ci_ledger, check_response(list(reversed(rows))))
+    assert ci_ledger['step'] == 'pr' and ci_ledger['status'] == 'waiting_for_ci'
+
+
+@pytest.mark.parametrize('target,suite', [
+    *[(0, value) for value in (None, {}, [], 'invalid', {'id': True}, {'id': '101'},
+                               {'id': 0}, {'id': -1}, {'id': None}, {'id': []})],
+    (3, {'id': True}), (4, {'id': True}),
+])
+def test_docs_malformed_suite_never_proves_exception(ci_ledger, target, suite):
+    rows = docs_rows_for()
+    rows[target]['check_suite'] = suite
+    assert delivery.checks_gate(rows, ci_ledger['config'], HEAD)[0] is False
+
+
+def test_docs_missing_suite_never_proves_exception(ci_ledger):
+    rows = docs_rows_for()
+    for row in rows:
+        row.pop('check_suite')
+    assert delivery.checks_gate(rows, ci_ledger['config'], HEAD)[0] is False
+
+
+@pytest.mark.parametrize('target', [3, 4])
+@pytest.mark.parametrize('suite', [None, {'id': True}, {'id': '101'}])
+def test_docs_latest_success_with_invalid_suite_cannot_reuse_old_proof(ci_ledger, target, suite):
+    rows = docs_rows_for()
+    # The original suite is complete, but the current result cannot be assigned
+    # to a suite. Its older success must not supply the missing metadata.
+    rows.append({**rows[target], 'id': 99, 'check_suite': suite})
+    delivery.accept(ci_ledger, pr_data(ci_ledger))
+    delivery.accept(ci_ledger, check_response(list(reversed(rows))))
+    assert ci_ledger['status'] == 'waiting_for_ci' and ci_ledger['step'] == 'pr'
+    assert not ci_ledger.get('merge_sha')
+
+
+@pytest.mark.parametrize('target', [0, 3, 4])
+def test_docs_stale_sha_is_rejected(ci_ledger, target):
+    rows = docs_rows_for()
+    rows[target]['head_sha'] = TEST_MERGE
+    with pytest.raises(ValueError, match='stale'):
+        delivery.checks_gate(rows, ci_ledger['config'], HEAD)
+
+
+@pytest.mark.parametrize('target', [0, 3, 4])
+def test_docs_latest_failure_wins_across_suites(ci_ledger, target):
+    rows = docs_rows_for()
+    rows.append({**rows[target], 'id': 99, 'check_suite': {'id': 202}, 'conclusion': 'failure'})
+    with pytest.raises(ValueError, match='CI failed'):
+        delivery.checks_gate(list(reversed(rows)), ci_ledger['config'], HEAD)
+
+
+def test_docs_suite_latest_pending_cannot_use_older_success(ci_ledger):
+    rows = docs_rows_for()
+    # Global success is newer still, but the skip's own suite now has pending CI.
+    rows += [{**rows[4], 'id': 50, 'status': 'queued', 'conclusion': None},
+             {**rows[4], 'id': 99, 'check_suite': {'id': 202}}]
+    assert delivery.checks_gate(list(reversed(rows)), ci_ledger['config'], HEAD)[0] is False
+
+
+def test_docs_suite_latest_failure_cannot_use_other_suite_success(ci_ledger):
+    rows = docs_rows_for()
+    rows += [{**rows[4], 'id': 50, 'conclusion': 'failure'},
+             {**rows[4], 'id': 99, 'check_suite': {'id': 202}}]
+    with pytest.raises(ValueError, match='CI failed'):
+        delivery.checks_gate(list(reversed(rows)), ci_ledger['config'], HEAD)
+
+
+def test_docs_two_complete_suites_do_not_require_interleaved_names_to_match(ci_ledger):
+    first, second = docs_rows_for(), docs_rows_for(suite=202, first_id=101)
+    # Push and PR suites are independently complete; latest names can interleave.
+    first[0]['id'] = 201
+    first[3]['id'] = 202
+    assert delivery.checks_gate(first + second, ci_ledger['config'], HEAD)[0] is True
+
+
+def test_full_and_legacy_ci_remain_successful_without_suite_proof(ci_ledger):
+    legacy = rows_for(ci_ledger)
+    assert delivery.checks_gate(legacy, ci_ledger['config'], HEAD)[0] is True
+    full = docs_rows_for()
+    for row in full:
+        row['conclusion'] = 'success'
+        row.pop('check_suite')
+    assert delivery.checks_gate(full, ci_ledger['config'], HEAD)[0] is True
+
+
+@pytest.mark.parametrize('kind', ['pending', 'malformed_suite', 'latest_malformed_suite',
+                                 'failure', 'wrong_sha'])
+def test_docs_cleanup_rejects_incomplete_fresh_proof_and_keeps_merge(ci_ledger, kind):
+    ledger = ci_ledger
+    # Pre-merge success must never substitute for the new cleanup read.
+    delivery.accept(ledger, pr_data(ledger))
+    delivery.accept(ledger, check_response(docs_rows_for()))
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    delivery.accept(ledger, pr_data(ledger))
+    delivery.accept(ledger, {'merged': True, 'sha': MERGE})
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    rows = docs_rows_for()
+    if kind == 'pending':
+        rows[4].update(status='in_progress', conclusion=None)
+    elif kind == 'malformed_suite':
+        rows[3]['check_suite'] = {'id': True}
+    elif kind == 'latest_malformed_suite':
+        rows.append({**rows[3], 'id': 99, 'check_suite': {'id': True}})
+    elif kind == 'failure':
+        rows[0]['conclusion'] = 'failure'
+    else:
+        rows[3]['head_sha'] = TEST_MERGE
+    with pytest.raises(ValueError):
+        delivery.accept(ledger, check_response(rows))
+    assert ledger['merge_sha'] == MERGE and ledger['merge_status'] == 'merged'
+    assert not delivery.cleanup_complete(ledger) and 'checks' not in ledger['cleanup_proof']
+
+
+def test_docs_cleanup_resume_collects_new_proof_after_early_skips(ci_ledger):
+    ledger = ci_ledger
+    ledger['step'] = 'merge'
+    delivery.accept(ledger, {'merged': True, 'sha': MERGE})
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    # main accepts into a copy and retains the original journal on failure.
+    with pytest.raises(ValueError, match='Fresh pinned CI'):
+        delivery.accept(copy.deepcopy(ledger), check_response(docs_rows_for()[:3]))
+    assert ledger['merge_sha'] == MERGE and not delivery.cleanup_complete(ledger)
+    assert 'checks' not in ledger['cleanup_proof']
+    # The existing resume boundary starts a completely fresh proof collection.
+    delivery.begin_cleanup(ledger)
+    assert ledger['cleanup_proof'] == {} and ledger['merge_sha'] == MERGE
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    delivery.accept(ledger, check_response(docs_rows_for(suite=303, first_id=201)))
+    assert ledger['step'] == 'cleanup_statuses'
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    delivery.accept(ledger, {'full_name': ledger['config']['repository'], 'default_branch': 'master'})
+    delivery.accept(ledger, [])
+    delivery.accept(ledger, [])
+    assert ledger['step'] == 'cleanup_execute' and ledger['cleanup_proof']['verified'] is True
+    assert ledger['merge_sha'] == MERGE and not delivery.cleanup_complete(ledger)
+
+
 def test_delivery_requests_only_task_changes_and_preserves_real_index(prepared):
     item, ledger = prepared, prepared['ledger']
     to_tree(ledger)

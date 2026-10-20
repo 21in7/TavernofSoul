@@ -629,6 +629,22 @@ Chromium browser harness는 실제 final gate다. docs이면 selection/docs arti
 full 실행 실패/미실행은 대응 gate 실패다. skipped/neutral로 success를 대체하거나 임의 CI 생략·
 branch protection/권한/lock 우회는 하지 않는다.
 
+2026-10-20 publisher 연결 정정: pre-merge와 fresh cleanup의 `checks_gate`는 정확히
+`Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped만
+예외 후보로 본다. 각 skip과 같은 SHA·GitHub Actions·동일한 유효 양의 정수 check_suite.id의
+최신 이름별 selection completed/success, 세 required completed/success, 세 heavy completed/skipped
+전체를 요구한다. 전체 이름별 최신 selection/required도 success여야 하므로 다른 suite의 성공을
+합치거나 오래된 성공으로 최신 failure/pending을 덮지 않는다. bool/문자열/0/null/누락·잘못된
+suite는 증거가 아니다. 최신 selection/required success의 suite metadata가 불명이면 옛 정상
+증거로 대신하지 않고 대기한다. skip 선도착 후 gates 누락·queued·in_progress이면 waiting_for_ci로
+대기하고 증거 없이는 merge하지 않는다. required skip/neutral 등 non-success, 임의 job skip,
+heavy failure/neutral/cancelled 등은 계속 실패이며 추가 pending도 기다린다. cleanup은 새 proof에
+같은 조건을 요구하고 미완료·불명 proof는 정리를 막되 확정 merge SHA를 보존한다.
+selection/suite 없는 기존 required-only 성공, full CI, 전체 pagination·head/test-merge 우선순위·
+양쪽 commit statuses·최종 PR 재확인·정확한 cleanup 계약은 유지한다.
+고정 응답 회귀의 작성은 실행 증거가 아니며 이번 연결 수리는 새 Claude 의미 검토·full make check·
+실제 문서 검사와 parent의 GitHub 게시·세 required CI·merge·cleanup·archive 확인이 필요하다.
+
 이번 harness/CI 구현은 docs-only 대상이 아니며 새 전체 `make check`가 필수다. 이전 run
 `1792414748889186714-9305b2`는 coordinator CLI 900초 timeout, applied=[]였고 초안/테스트 정의는
 성공 근거가 아니다. parent가 새 실제 Codex 작업·Claude 의미 검토·full check·CI·새 Git 전달 증거를

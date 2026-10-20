@@ -718,7 +718,18 @@ github-approved.json은 검토·검증된 hash/권한/정책을 고정하고 git
 required CI는 `Offline harness (SQLite)`, `MySQL harness`, `Chromium browser harness` 세 개이며
 github-actions의 실제 success를 요구한다. check-runs 페이지·최신 ID·SHA·commit statuses·최종 PR을
 확인한다. test merge SHA에 검사 결과가 있으면 사용하고 없으면 head 검사로 판단한다.
-head/base 변경·충돌·실패·skip·neutral·누락·미완료는 merge 성공이 아니다. 최종 test merge SHA가
+head/base 변경·충돌·required의 실패·skip·neutral·누락·미완료는 merge 성공이 아니다.
+[ADR0022](adr/0022-documentation-only-validation.md)의 publisher 연결 정정은 정확히
+`Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped만
+예외 후보로 둔다. 각 skip과 같은 SHA·github-actions·동일 양의 정수 check_suite.id 안의 최신
+`Select actual change validation` success, 세 required success, 세 heavy skip 전체를 요구한다.
+전체 이름별 최신 selection/required도 completed/success여야 하며 suite 내부 최신 결과도 확인한다.
+예정 skip 예외에서는 최신 selection/required의 suite metadata도 유효해야 한다. 옛 정상 suite
+증거로 최신 결과의 누락·malformed metadata를 대신할 수 없다.
+다른 suite/SHA/app·오래된 성공을 합치지 않고 bool/문자열/0/null/누락·malformed suite는 증거가 아니다.
+skip 선도착과 selection/required 미완료·누락은 waiting_for_ci이며 불완전 증거로 성공하지 않는다.
+required non-success·임의 skip·heavy의 failure/neutral/cancelled 등은 거부하고 추가 pending도 기다린다.
+selection/suite 없는 정상 required-only legacy와 full 성공은 유지한다. 최종 test merge SHA가
 바뀌면 재확인하고 clean일 때 expected_head_sha를 지정해 merge한다. 앱의 merged=true와 merge SHA를
 확인해야 게시·머지 완료다. report의 전체 passed는 아래 자동 cleanup 게이트까지 요구한다.
 브랜치 보호의 required 설정 자체는 관리자 설정이며 CI YAML만으로 설정되지 않는다.
@@ -734,6 +745,9 @@ proof는 merged PR/head/merge SHA·repository/base.ref, pinned CI/statuses, 새 
 정확한 branch tip/protection,
 동일 head의 열린 PR 부재를 검증한다. base.sha 전진은 정상이다. 배열은 명시적 per_page query의 모든
 페이지를 요구하며 불완전 wrapper/빈 object/페이지 한도/조회 실패는 fail closed다.
+fresh CI에도 위와 같은 suite별 예정 skip 증거를 새로 요구한다. 이전 pre-merge 성공은 대체
+증거가 아니며 미완료·잘못된 proof는 cleanup을 막고 확정 merge SHA를 보존한다. 기존 cleanup
+보류/재개·정확한 삭제 proof·journal schema는 유지한다.
 
 마지막 proof accept는 별도 모듈 git_cleanup을 자동 실행한다. 인증된 parent만 로컬 Git 전송을 사용하며
 모델은 Git/cleanup/workflow를 실행하지 않는다. 대상은 해당 run의 정확한 codex/<run_id> 하나다.

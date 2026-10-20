@@ -649,6 +649,18 @@ PR은 pinned base/head와 같은 저장소인지 재확인하며 변경되면 �
 GitHub Actions의 `Offline harness (SQLite)`, `MySQL harness`, `Chromium browser harness`가 모두 실제
 `success`여야 한다. 실행 중·누락·다른 앱이 만든 동명 검사·skip·neutral·실패·취소는 머지 성공이 아니다.
 check-runs의 모든 페이지를 읽고 중복 ID·불완전한 coverage를 거부하며 같은 이름의 최신 실행만 판단한다.
+[ADR0022](adr/0022-documentation-only-validation.md)의 2026-10-20 연결 정정에 따라 정확히
+`Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped만
+예정 skip 예외 후보로 둔다. 각 skip과 같은 SHA·GitHub Actions·동일한 양의 정수 check_suite.id의
+최신 이름별 `Select actual change validation` completed/success, 세 required completed/success,
+세 heavy completed/skipped 전체가 필요하다. 전체 이름별 최신 selection/required success도 확인하여
+오래된 성공·다른 suite/SHA/app을 섞거나 최신 failure/pending을 우회하지 않는다. bool·문자열·0·
+null·누락·잘못된 suite 객체는 증거가 아니다. 최신 selection/required success의 suite metadata도
+유효해야 하며 불명 metadata를 옛 정상 증거로 보완하지 않는다. skip이 먼저 도착하고 gates가
+누락·queued·in_progress이면
+`waiting_for_ci`로 기다린다. 불완전·불일치 증거로 성공하지 않으며 required non-success, 임의 skip,
+heavy failure/neutral/cancelled 등은 계속 거부하고 추가 pending job도 기다린다.
+selection/suite 없는 정상 required-only legacy와 full 성공은 유지한다.
 테스트 merge SHA에 검사가 있으면 그 결과를 사용하며 없으면 head SHA 검사로 판단한다.
 head와 테스트 merge 양쪽 SHA의 commit status 실패를 차단하고, 최종 PR 조회에서 테스트 merge SHA가
 달라졌으면 새 SHA의 CI를 다시 확인한다.
@@ -670,6 +682,11 @@ head query의 열린 PR 페이지를 조회한다. 현재 default_branch가 작�
 REST 배열은 per_page=100의 명시적 query 응답으로 처리하며 100개 페이지는 다음 페이지를 요구한다.
 wrapper는 complete/page/per_page/truncated coverage를 증명해야 한다. 중복 branch, 잘린 응답,
 페이지 한도, malformed/실패 응답은 fail closed이며 빈 object/읽기 실패를 ref 부재로 해석하지 않는다.
+fresh CI에도 위 예정 skip 예외의 같은 suite 증거를 새로 확인한다. pre-merge 성공은 fresh proof를
+대체하지 않으며 미완료·잘못된 증거는 cleanup을 막고 기존 보류/재개 경계와 확정 merge SHA를
+보존한다. 고정 API 응답 회귀는 명세이며 운영 성공 증거가 아니다. 이번 연결 수리는 parent의 새
+Claude 검토(fresh documentation={status,files,reason})·full make check·실제 문서 검사와 GitHub
+게시·세 required CI·merge·cleanup·archive 확인이 필요하다.
 
 마지막 proof accept가 신뢰한 parent의 `git_cleanup.execute`를 자동 호출한다. 별도 수동 명령이
 기본 흐름의 필수 단계는 아니다. 정리 대상은 그 run의 codex/<run_id> 하나이며 기본/base/main/dev,

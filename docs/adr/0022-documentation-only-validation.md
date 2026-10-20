@@ -109,6 +109,34 @@ full일 때 SQLite는 기존 `make check`와 `make check-live`, MySQL과 Chromiu
 실행/gate를 요구하고 실패·미실행은 대응 final gate 실패로 전파된다. 게시·merge는 세 실제
 success와 고정 head SHA·branch protection·기존 권한/lock 계약을 모두 유지한다.
 
+### 2026-10-20 publisher 연결 정정
+
+`git_publish.checks_gate`가 모든 completed non-success를 일괄 거부하여 정상 docs-only의
+heavy skip까지 pre-merge와 fresh cleanup에서 막던 연결 오류를 고친다. 새 검증 면제나 권한
+정책이 아니며 위 실제 final gate 계약을 publisher에 연결한다. 예외는 정확히 `Offline execution (SQLite)`,
+`MySQL execution`, `Chromium browser execution`의 completed/skipped만 대상으로 한다.
+각 skip과 같은 SHA·허용 GitHub Actions app·동일 check_suite.id의 최신 이름별 결과에 selection
+`Select actual change validation` completed/success, 세 required completed/success, 세 heavy
+completed/skipped 전체가 있어야 한다. suite id는 양의 int만 인정하고 bool·문자열·0·null·누락·
+잘못된 객체는 증거가 아니다. 전체 이름별 최신 selection/required success도 요구하여 오래된
+성공이나 다른 suite/SHA/app을 섞거나 최신 failure/pending을 우회하지 않는다.
+최신 selection/required success의 suite metadata가 잘못되거나 누락돼도 대기한다. 옛 정상 suite
+증거로 최신 결과의 불명 metadata를 보완하지 않는다. 이 조건은 예정 skip 예외에만 적용한다.
+
+skip이 먼저 보이고 selection/required가 누락·queued·in_progress이면 기존 `waiting_for_ci`로
+기다린다. 불완전·불일치·malformed 증거도 fail-closed이며 merge/cleanup 성공을 허용하지 않는다.
+required의 skipped/neutral 등 모든 non-success, 임의 job의 skip, heavy의 failure/neutral/cancelled
+등은 계속 거부하고 추가 pending job도 기다린다. selection/suite 없는 정상 required-only legacy와
+full 성공은 유지한다. cleanup은 동일 판정을 fresh CI에 적용하며 잘못되거나 미완료인 proof는
+기존 cleanup 보류/재개 경계를 따르고 확정 merge SHA를 보존한다. 전체 pagination, head/test-merge
+우선순위, 양쪽 commit statuses, 최종 PR 확인과 journal schema는 유지한다. ADR0023의 새 branch
+전체 diff 선택 결정도 바꾸지 않는다.
+
+고정 응답 회귀는 skip 선도착→대기→실제 gate 성공과 fresh cleanup, suite/최신성/페이지/SHA
+경계를 위한 명세다. 작성만 한 fixture나 PR52의 이전 검증은 이번 실행 성공의 증거가 아니다.
+parent가 최종 코드·문서의 새 Claude 검토와 fresh documentation={status,files,reason}, full
+`make check`, 실제 문서 검사·GitHub 게시·세 required CI·merge·cleanup·archive를 확인해야 한다.
+
 ## 비교 대안과 선택 이유
 
 | 대안 | 판단 |
