@@ -1,6 +1,6 @@
 # 0022. 실제 최종 변경에 결합한 문서 전용 검증과 CI gate
 
-- 상태: 제안(proposed), 사용자 요청 방향 기록; 최종 Claude 의미 검토·full make check·CI·GitHub 전달 대기
+- 상태: 채택(accepted), 2026-10-20 구현·검증·전달 완료 (메인 제공 관측 근거는 아래 기록)
 - 기록일: 2026-10-19
 - 부분 대체: 2026-10-20 사용자 직접 요청에 따른 [0023](0023-new-branch-documentation-validation.md)이 새 브랜치 zero-before의 무조건 full 결정만 대체한다. 아래 해당 문단은 당시 결정의 역사이며 다른 docs-only 정책은 유지한다.
 - 정밀화: [0004](0004-reviewed-and-validated-publication.md)의 필수 검증 선택과 [0005](0005-github-connector-delivery.md)의 CI 실행 경로. 승인 범위·모델·branch protection·GitHub 권한·lock·merge/cleanup 완료 계약은 유지한다.
@@ -134,8 +134,8 @@ full 성공은 유지한다. cleanup은 동일 판정을 fresh CI에 적용하�
 
 고정 응답 회귀는 skip 선도착→대기→실제 gate 성공과 fresh cleanup, suite/최신성/페이지/SHA
 경계를 위한 명세다. 작성만 한 fixture나 PR52의 이전 검증은 이번 실행 성공의 증거가 아니다.
-parent가 최종 코드·문서의 새 Claude 검토와 fresh documentation={status,files,reason}, full
-`make check`, 실제 문서 검사·GitHub 게시·세 required CI·merge·cleanup·archive를 확인해야 한다.
+최종 코드·문서의 새 Claude 검토와 fresh documentation={status,files,reason}, full
+`make check`, 실제 문서 검사·GitHub 게시·세 required CI·merge·cleanup·archive의 완료 관측은 아래에 기록한다.
 
 ## 비교 대안과 선택 이유
 
@@ -155,8 +155,23 @@ code 뒤 깨진 링크·역참조도 다룬다. docs/mixed/policy/mode/type·삭
 private 경계·empty/skip 거부·repair/최종 digest·CI 선택을 검증할 명세다. full check에는 새
 policy/checker/archive 회귀가 포함된다. **이번 구현은 harness·CI 변경이므로 full `make check`
 필수**다. 문서 작업자는 검사·네트워크·Git을 실행하지 않았으며 이전 timeout run/초안/테스트
-정의를 성공 근거로 쓰지 않는다. parent가 새 실제 구현·Claude 의미 검토·full check·CI·GitHub
-전달 증거를 확보한다. 매 review의 `documentation={status,files,reason}`에서 updated에는 실제
+정의를 성공 근거로 쓰지 않는다. 새 실제 구현·Claude 의미 검토·full check·CI·GitHub
+전달의 완료 근거는 아래 메인 관측으로 구분한다. 매 review의 `documentation={status,files,reason}`에서 updated에는 실제
 변경 Markdown만 기록하고 최종 코드와 문서의 의미적 완전성을 새로 판단한다.
 
 관련 절차: [harness](../harness.md), [workflow](../workflow.md), 책임 설계: [harness-design](../harness-design.md).
+
+2026-10-20 메인 제공 관측: 아래는 문서 작업자나 reviewer가 직접 실행한 결과가 아니다.
+[PR51](https://github.com/21in7/TavernofSoul/pull/51)은 로컬 작업·검증/terminal 결과의 NFS archive와
+최종 diff 기반 문서 검증을, [PR52](https://github.com/21in7/TavernofSoul/pull/52)는 ADR0023의
+새 브랜치 zero-before에서 검증 가능한 기본 브랜치 공통 조상→head 전체 diff 선택을 구현했다.
+두 PR은 새 역할 검토·로컬 전체 검사·세 필수 CI 성공과 merge·cleanup·archive를 완료했다.
+[PR53](https://github.com/21in7/TavernofSoul/pull/53)은 동일 suite의 selection success·세 필수 gate
+success·세 예정 heavy skip을 확인하도록 publisher 연결을 정정했다. 실제 Codex 구현과 새 Claude
+승인·문서 갱신, 최종 로컬 전체 `make check` 4726개 통과(selected=passed, skip/failure/error 0),
+별도 변경 문서 링크·역참조 검사 22개 통과를 확인했다. 메인은 실제 push와 PR의 세 필수 CI 성공,
+merged=true·merge SHA, 정확한 branch cleanup complete, terminal archive archived를 관측했다.
+
+세 구현 PR은 코드·하네스 변경으로 full 경로를 거쳤으므로 별도 문서 전용 실행의 관측을 대신하지
+않는다. 이 단일 문서 후속 PR의 실제 local selection·새 브랜치 첫 push·GitHub docs-only·자동
+merge·cleanup은 메인의 후속 확인 대상이며, 아직 성공을 관측하거나 완료로 기록하지 않는다.
