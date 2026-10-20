@@ -150,14 +150,27 @@ tick의 설정 로드·Store 생성·저장소 readiness 실패는 bounded 정�
 
 기본 쓰기 작업은 `git` 역할(Codex `gpt-6.1-sol`, `medium`)까지 실행한다. 보고서가
 `awaiting_github`이면 메인 `/root`는 완료로 보고하거나 다시 허락을 묻지 않고 다음을 이어 실행한다.
-`make agent-git-request RUN_ID=...`의 JSON `request`에 지정된 GitHub 앱 도구와 인자를 그대로 사용하고,
-응답을 private UTF-8 JSON 파일에 저장해 `make agent-git-accept RUN_ID=... REQUEST_ID=... RESPONSE_FILE=...`로
-검사한다. 응답 처리에서 반환된 다음 요청을 직접 실행하며 `poll_after_seconds`만큼 기다린다.
+표준 parent 경로는 [ADR0024](docs/adr/0024-immediate-batched-github-transport.md)의
+`harness/git_bridge.js`를 workflow 시작 전에 읽어 eval하고 tools·private load/store·artifact 연결·
+sleep/yield를 주입하는 것이다. 이미 시작한 exec 결과를 `bridge.handoff(result,
+{readOnly:false,demo:false,git:true})`에 넘기면 정상 종료와 마지막 실제 awaiting_github summary를
+확인한 같은 async 흐름에서 즉시 게시를 잇는다. [호출 예시·복구](docs/workflow.md#trusted-parent-bridge와-즉시-handoff)를 따른다.
+bridge는 `python3 -m harness.git_transport request|accept`로 기존 native main 전체를 호출한다.
+accept 한 shell 호출 안에서 stdin 응답 저장·fsync·native 검증·다음 요청 반환을 처리한다.
+32KiB까지 inline, 초과 결과만 private payload의 bounded chunk·size/hash 검증으로 읽는다.
+응답 처리에서 반환된 다음 요청을 직접 실행하며 `poll_after_seconds`만큼 기다린다.
+기존 `make agent-git-request`/`agent-git-accept`/resume/cleanup은 명시 복구 경로로 보존한다.
 이미 반환된 쓰기를 `agent-git-request`로 재발급하지 않는다. 도구 이름은 실행기의
 GitHub 허용 목록과 비교하며, 도구 인자를 셸 명령으로 실행하지 않는다. 파일 내용이 포함된 요청은
 사용자 터미널에 출력하지 않는다. 새 PR URL은 생성 직후 `codex_app.attach_artifact`로 반드시 연결한다.
 커넥터 오류는 `isError=true` 응답으로 실행기에 전달하고, `needs_reconciliation`이나 결과가 모호한
 쓰기는 재시도하지 않는다. 원래 요청 ID로 실제 결과를 확인할 때만 이어 실행한다.
+receipt·unknown dispatch·잘림·invalid JSON은 새 request 또는 쓰기 재전송의 근거가 아니다.
+기존 receipt가 있으면 자동 cached 요청 반환도 하지 않고 private saved response/native journal을
+parent가 대조한다. worker/reviewer·child/discovery에는 transport/bridge·앱 실행 권한이 없다.
+이번 harness 변경은 기존 publisher 회귀와 함께 full `make check`가 필수이며 parent가 실행한다.
+parent는 후속 실제 bridge 사용과 구현 PR·별도 문서 PR의 required CI·merge·cleanup/archive,
+PR54와 동일 구간의 시간을 관측한다. synthetic 테스트를 실제 PR 개선으로 보고하지 않는다.
 세 CI(`Offline harness (SQLite)`, `MySQL harness`, `Chromium browser harness`)의 실제 success와
 GitHub `merged=true`·merge SHA 확인이 게시·머지 완료 기준이다. required의 skip/neutral·실패는 계속 거부한다.
 [ADR0022](docs/adr/0022-documentation-only-validation.md)의 예정 heavy skip 예외는 정확히

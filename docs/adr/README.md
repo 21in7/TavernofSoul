@@ -28,6 +28,7 @@
 | [0021](0021-local-work-and-result-archives.md) | 명시 v2 local 작업·검증과 allowlist terminal archive, frozen/current 일치·NFS 파일 link/최종 commit·보관만 재개 | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
 | [0022](0022-documentation-only-validation.md) | 최종 실제 diff·digest에 결합한 prose 검증과 세 required CI의 실제 gate | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
 | [0023](0023-new-branch-documentation-validation.md) | 최초 비기본 branch push의 fetched default와 유일 merge base에 근거한 전체 diff 선택; 0022의 zero-before 결정만 대체 | 제안(proposed), 새 Claude 의미 검토/full check/CI/Git 전달 대기 | 2026-10-20 |
+| [0024](0024-immediate-batched-github-transport.md) | trusted-parent 단일 accept transport·사전 로드 Codex bridge·workflow 즉시 handoff, native 검증과 보수적 receipt 복구 유지 | 제안(proposed), 새 의미 검토/full check/실제 PR 관측 대기 | 2026-10-20 |
 
 ## 상태와 근거의 의미
 
