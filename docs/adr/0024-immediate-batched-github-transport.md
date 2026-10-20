@@ -1,6 +1,6 @@
 # 0024. Trusted-parent 단일 전송과 workflow 즉시 GitHub handoff
 
-- 상태: 채택(accepted) — 2026-10-20 구현·검증·전달 관측 완료, 문서 전용 PR 성능 관측 대기
+- 상태: 채택(accepted) — 2026-10-20 구현·검증·전달 및 문서 PR 최초 실측 완료, 부모 입력 조정 후 실제 PR 재측정 대기
 - 기록일: 2026-10-20
 - 기록 성격: 새 결정
 - 대체 관계: 없음. [0005](0005-github-connector-delivery.md)의 게시·앱·CI 경계를 유지한다.
@@ -48,8 +48,9 @@ native 진입 전에 flock을 해제한다. durable inflight가 후속 operation
 artifact/sleep/yield를 주입한다. Node fake 도구에도 같은 모듈을 쓴다. 기존 exact allowlist·도구
 존재를 확인하고 request의 arguments를 그대로 실행한다. dispatch 전 ID와 상태를 private store에
 등록하고 원응답을 보존한다. connector 예외도 같은 ID의 isError=true로 accept한다. ordinary 응답은
-accept shell 한 번으로 저장·native 검증·다음 요청 읽기를 마친다. 큰 응답은 no-echo PTY stdin,
-큰 출력만 chunk를 사용한다. PR 관측 즉시 기존 codex_app.attach_artifact adapter를 호출한다.
+accept shell 한 번으로 저장·native 검증·다음 요청 읽기를 마친다. 초기 부모 입력은 큰 응답에
+no-echo PTY stdin을 사용했으며 후속 조정은 아래에 기록한다. 큰 출력만 chunk를 사용한다.
+PR 관측 즉시 기존 codex_app.attach_artifact adapter를 호출한다.
 poll_after_seconds를 지키고 merged/cleanup_*의 다음 proof를 계속 처리한다. awaiting_ci는 기존
 explicit resume다. native nonzero·실제 실패·archive pending을 임의 성공으로 바꾸지 않는다.
 
@@ -91,7 +92,7 @@ same-OS-account 침해까지 막는 권한 서비스는 아니다. 원문·복�
 PR 생성 전 NFS archive를 추가하지 않고 native의 최종 save·두 lock 해제·completion·archive를 유지한다.
 
 이번 harness 변경의 기존 publisher 회귀와 full `make check` 요구에 대한 구현 PR 관측은 아래에 기록한다.
-별도 문서 PR의 검사·required CI·merge·cleanup/archive와 성능은 아직 미관측이다.
+후속 문서 PR56의 검사·required CI·merge·cleanup/archive와 최초 성능 실측도 아래에 기록한다.
 synthetic 순서 테스트·부분 probe로 실제 PR 개선율을 쓰거나 미관측 PR/검사/성능 성공을 선기록하지 않는다.
 
 메인은 [구현 PR55](https://github.com/21in7/TavernofSoul/pull/55)의 실제 Codex 구현,
@@ -103,14 +104,50 @@ terminal archive `archived`도 메인이 확인했다.
 
 구현 PR에서 큰 stdin 입력은 부모 도구의 자동 승인 검토 한계로 거절됐다. 메인은 native 진입 전
 중단된 입력 수신기와 원응답·원요청 ID를 확인해 복구했으며 GitHub 쓰기를 재전송하지 않았다.
-이 부모 도구 환경의 `tools.write_stdin` 어댑터는 동일 base64 frame을 4096문자 이하로 분할해
-전달한다. 원응답 bytes·request ID·native 저장/검증·receipt·필수 게이트는 동일하며,
-입력 조각별 도구 호출 시간도 실제 성능에 포함된다.
+PR56 최초 실측 당시 부모 도구 환경의 `tools.write_stdin` 어댑터는 동일 base64 frame을
+4096문자 이하로 분할해 전달했다. 원응답 bytes·request ID·native 저장/검증·receipt·필수 게이트는
+동일하며, 입력 조각별 도구 호출 시간도 실제 성능에 포함됐다.
 
-PR55에는 이 복구 대기가 있어 PR54와 성능을 직접 비교하지 않는다. 메인은 이 문서 후속 실행을
-시작하기 전에 승인된 bridge와 부모 도구 어댑터를 로드하고 workflow 종료를 같은 async handoff로
-이어 새 문서 PR의 구간별 소요 시간을 측정할 예정이다. 새 실제 측정은 아직 미관측이며,
-위 PR54 기준 105.047초와 구간별 수치는 그대로 유지한다.
+PR55에는 이 복구 대기가 있어 PR54와 성능을 직접 비교하지 않는다. 메인이 확인한
+[후속 문서 PR56](https://github.com/21in7/TavernofSoul/pull/56)은 문서 한 파일의 실제 PR이다.
+새 Claude 의미 검토, 로컬 `check-docs` 7개 `selected=passed`(skip/failure/error 각 0),
+첫 push와 PR의 문서 선택 성공, 예상 heavy 3종 skip과 필수 gate 3종 actual success를 확인했다.
+merge `d90a78885bb18fa26addacbda23d093424881ae3`, `cleanup complete`, terminal archive `archived`까지
+완료됐으며 확인 당시 clean master다.
+
+PR56에서 PR54와 같은 검증 통과→PR 생성 구간을 처음 실측한 결과는 다음과 같다.
+
+| 구간 | PR56 소요 시간(초) |
+| --- | ---: |
+| 검증 통과→게시 준비 | 10.163494 |
+| 게시 준비→첫 request 결과 저장 | 2.931837 |
+| 첫 request→GitHub PR created_at | 119.298011 |
+| 합계 | 132.393342 |
+
+PR54 총 105.046988초보다 27.346354초 느렸다. 준비 후 대기는 41.236280초에서 2.931837초로
+줄었지만, 4KiB 단위 PTY 입력 도구 호출 비용으로 전체 구간은 퇴행했다. GitHub 생성 시각은
+초 단위이며 단일 실행 관측이다. API·모델 시간을 상수로 해석하지 않는다.
+
+PR56 머지는 자동 승인 검토에서 CI 증거가 보이지 않는다는 이유로 호출 전에 차단됐다.
+메인은 GitHub의 같은 head·미머지 상태·필수 CI 3종 actual success를 직접 확인한 뒤 원래 요청 ID로
+한 번 조정해 중복 GitHub 쓰기·검증 우회 없이 완료했다. 이는 PR 생성 이후라 위 132.393342초에
+포함되지 않는다. 이 세션의 조정은 일반적인 승인 면제나 자동 쓰기 재시도 권한을 뜻하지 않는다.
+
+현재 메인은 부모의 기존 tools 주입 지점에 새 입력 어댑터를 준비했다. 작은 frame은 기존 no-echo
+stdin으로 전달하고, 큰 frame은 도구를 통해 로컬 임시 owner-private 0700 디렉터리의 0600 파일로
+준비한다. 원응답이나 base64 frame을 shell/OS argv에 넣지 않는다. native 호출 직전에 no-follow·
+owner·regular/nlink=1·0600·정확한 전체 크기/SHA256·fsync/readback을 확인한 뒤 같은 frame을
+stdin으로 한 번 전달한다. 저장소의 `git_bridge.js`·`git_transport.py`·`git_publish.py`와 검증·journal
+계약은 그대로이며, native 원응답 저장·기존 검증·다음 요청 반환은 여전히 한 호출이다.
+부모 입력 준비 도구 호출 시간도 실제 시간에 포함하므로 전체를 단일 tool 호출이라고 하지 않는다.
+
+메인의 합성 큰 입력 53413bytes 경로 점검은 약 6.989초였다. 작은 stdin 경로·입력 bytes 변조 거부·
+mode 변조 거부도 확인했고, 존재하지 않는 run의 native 거부는 유지됐으며 GitHub 호출은 0이었다.
+이는 입력 어댑터 점검이며 실제 PR 개선율이나 재측정 성공의 증거가 아니다.
+
+메인은 다음 문서 후속 실행 전에 수정한 부모 입력 어댑터와 승인 bridge를 미리 로드하고,
+workflow→GitHub를 같은 async handoff로 이어 두 번째 실제 문서 PR에서 재측정할 예정이다.
+새 입력 방식의 실제 PR 재측정은 대기이며 해당 PR의 검사·CI·머지·성능 개선은 아직 확인되지 않았다.
 
 ## 관련 코드·검증·문서
 
