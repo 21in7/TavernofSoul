@@ -255,8 +255,11 @@ workspace·`.git`·모델 context·credential·lock·private config·승인 지�
 docs checker는 Python 3.8 표준라이브러리로 링크·heading/fragment·역참조 등을 오프라인 검증한다.
 복잡한 Markdown의 지원 한계와 최종 내용의 의미적 완전성은 Claude 검토 책임으로 남긴다.
 공개 Git 관리 소스 [.github/workflows/harness.yml](.github/workflows/harness.yml) 참조는 credential
-접근이 아니며 CI 파일 수정 자체는 full이다. CI complete PR diff는 docs-only일 수 있지만 새
-브랜치 push의 zero before SHA, shallow/invalid/unknown/workflow_dispatch는 full fallback이다.
+접근이 아니며 CI 파일 수정 자체는 full이다. CI complete PR diff는 docs-only일 수 있다.
+[ADR0023](docs/adr/0023-new-branch-documentation-validation.md)에 따라 정확한 zero-before,
+created=true/deleted=false인 비기본 branch 최초 push는 검증된 fetched default tip과 event head의
+유일 merge base부터 전체 raw diff가 prose뿐일 때 docs 검증을 선택한다. metadata/ref/commit·
+범위 증거 불명, shallow/dirty/untracked/head 불일치·빈 diff·unknown/workflow_dispatch는 full이다.
 세 required check는 docs 증거 또는 해당 full 실행 성공을 확인하는 실제 gate로 계속 실행한다.
 skipped/neutral을 success로 취급하거나 branch protection·권한·lock·CI를 우회하지 않는다.
 

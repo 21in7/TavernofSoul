@@ -34,7 +34,11 @@ check-docs는 Python 3.8 stdlib로 링크/Unicode heading·fragment·삭제/rena
 inline code는 같은 block의 줄바꿈·정확한 backtick run·code 안팎의 escape를 구별해 마스킹하며
 원문 줄 번호·heading 텍스트·뒤의 실제 링크 검사와 fence 경계를 보존한다.
 CI complete event diff와 세 required final gate는 positive selected/passed·zero skip의 docs 증거
-또는 기존 heavy 실행 성공을 요구한다. zero-before 새 브랜치 push 등 불명 근거는 full이다.
+또는 기존 heavy 실행 성공을 요구한다. [ADR0023](adr/0023-new-branch-documentation-validation.md)은
+정확한 zero-before·created=true/deleted=false·유효한 비기본 branch 최초 push에서 fetched
+default ref의 commit을 고정하고 유일 merge base→event head 전체 raw diff를 사용한다.
+일반 push before→after/PR base→head는 유지하며 선택된 changes를 docs 보고서/gate까지 전달한다.
+불명 metadata/ref·불완전 history·공통 조상 없음/복수·dirty/untracked/head 불일치·빈 diff는 full이다.
 trusted parent의 최종 archive.py 실제 NFS 저장/readback/hash·동일 결과 멱등 재개 성공 관측은
 일반 pipeline 전체 성공이 아니다. 이번 수정은 새 실제 Claude 검토·full make check·실제 문서 검사·
 GitHub/CI 검증이 필요하다.

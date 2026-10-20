@@ -2,6 +2,7 @@
 
 - 상태: 제안(proposed), 사용자 요청 방향 기록; 최종 Claude 의미 검토·full make check·CI·GitHub 전달 대기
 - 기록일: 2026-10-19
+- 부분 대체: 2026-10-20 사용자 직접 요청에 따른 [0023](0023-new-branch-documentation-validation.md)이 새 브랜치 zero-before의 무조건 full 결정만 대체한다. 아래 해당 문단은 당시 결정의 역사이며 다른 docs-only 정책은 유지한다.
 - 정밀화: [0004](0004-reviewed-and-validated-publication.md)의 필수 검증 선택과 [0005](0005-github-connector-delivery.md)의 CI 실행 경로. 승인 범위·모델·branch protection·GitHub 권한·lock·merge/cleanup 완료 계약은 유지한다.
 
 ## 문맥
@@ -93,6 +94,7 @@ CI는 공개 [.github/workflows/harness.yml](../../.github/workflows/harness.yml
 전달한다. rename/deletion/mode와 완전성을 확인하고 event JSON은 Python으로 읽는다. untrusted
 event 값을 shell code에 직접 보간하지 않는다. checkout은 event head이고 fetch-depth=0이다.
 
+2026-10-19 당시 결정(새 브랜치 zero-before 부분은 0023으로 대체):
 complete PR diff가 prose뿐이면 docs 검증 경로다. **새 브랜치 push의 before=000…000은 full
 fallback**이며 같은 변경의 PR docs-only 경로와 다르다. shallow·zero/invalid/unavailable SHA·
 dirty/mismatched checkout·unknown event·workflow_dispatch도 full이다. PR이라는 이유만으로

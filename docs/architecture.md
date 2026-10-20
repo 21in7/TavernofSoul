@@ -24,7 +24,11 @@ readback해야 완료다. 알려진 동일 inode의 임시/최종 nlink=2 전이
 로컬 POSIX mode 정수는 정규화하지 않아 동일 비실행 권한(0664/0640/0600 등)을 허용하고 실제
 권한 변경을 거부한다. CI raw Git mode는 기존 100644 기준이다. 여러 줄 inline code는 정확한
 backtick run·escape와 block/fence 경계를 구별하며 원문 줄 번호·heading 텍스트·실제 링크 검사를 유지한다.
-새 브랜치 push의 zero-before는 full fallback이다. 이번 harness/CI 변경도 full make check 대상이다.
+[ADR0023](adr/0023-new-branch-documentation-validation.md)은 정확한 zero-before와
+created=true/deleted=false인 비기본 branch 최초 push에 한해 fetched default ref의 commit을
+고정하고 event head와의 유일 merge base→head 전체 diff를 같은 classifier에 전달한다.
+불명 metadata/ref/history·dirty/untracked/head 불일치·빈 diff는 full이다. 선택한 전체 changes는
+docs 보고서와 세 required gate까지 유지한다. 이번 harness/CI 변경도 full make check 대상이다.
 
 하네스 전체의 목표·책임·격리·검토·게시 설계는 [전체 설계서](harness-design.md),
 주요 선택과 변경 이력은 [ADR 목록](adr/README.md)에 기록한다.

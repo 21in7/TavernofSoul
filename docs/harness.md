@@ -611,10 +611,19 @@ custom anchor 등 모호한 문법은 unsupported 오류로 두며 skip/성공�
 passed==selected, zero skip/failure/error가 필수다. 빈·누락·과거 결과나 CLI 0만으로 통과하지 않는다.
 실패는 정제 feedback으로 해당 task에 귀속하고 새 review/최종 diff 선택을 반복한다.
 
-CI는 event JSON을 shell code에 직접 보간하지 않고 complete PR base→head 또는 push before→after
-raw diff의 rename/deletion/mode로 같은 판정을 한다. **새 브랜치 push의 zero before SHA는 full**이며
-complete PR prose-only 경로와 구분한다. shallow/invalid/unavailable SHA·불명 event·dirty/mismatched
-checkout·workflow_dispatch도 full이다. 세 required 이름 Offline harness (SQLite), MySQL harness,
+CI는 event JSON을 shell code에 직접 보간하지 않고 complete PR base→head 또는 일반 push before→after
+raw diff의 rename/deletion/mode로 같은 판정을 한다.
+[ADR0023](adr/0023-new-branch-documentation-validation.md)에 따라 before가 정확한 40자리 zero,
+created=true/deleted=false이며 유효한 refs/heads/...가 repository.default_branch와 다른 최초 push는
+예외다. forced가 있으면 bool만 허용하며 생성 이벤트의 true/false는 이전 tip 증거로 사용하지 않는다.
+기존 checkout fetch-depth:0으로 받은 정확한 `refs/remotes/origin/<default_branch>`를 검증해 commit
+SHA로 고정하고 event.after와의 `merge-base --all`이 유효한 하나일 때만 조상→after 전체 diff를 쓴다.
+분기 후 default의 전진은 branch 변경에 섞이지 않으며 이전 코드 commit 뒤 최신 docs만 바뀌어도 full이다.
+비교 기준은 실제 fetched default tip이며 최초 push 당시 원격 상태를 재구성하지 않는다. 추가 fetch/API,
+HEAD^·event.commits·empty tree 추측은 없다. default ref 없음/모호함·tag/삭제/기본 branch 생성·
+잘못된 metadata/ref/SHA·공통 조상 없음/복수·shallow/missing objects·dirty/untracked/head 불일치·
+빈 diff·불명 event·workflow_dispatch는 full이다. 선택 JSON의 전체 changes를 docs 검증에 그대로
+전달하고 보고서 selection equality로 세 gate까지 유지한다. 세 required 이름 Offline harness (SQLite), MySQL harness,
 Chromium browser harness는 실제 final gate다. docs이면 selection/docs artifact의 일치와 구조화
 성공을 확인하고 full이면 해당 기존 실행 성공을 요구한다. docs 실패·증거 누락은 세 gate 실패,
 full 실행 실패/미실행은 대응 gate 실패다. skipped/neutral로 success를 대체하거나 임의 CI 생략·
