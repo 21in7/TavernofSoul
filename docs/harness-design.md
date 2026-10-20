@@ -736,6 +736,56 @@ selection/suite 없는 정상 required-only legacy와 full 성공은 유지한�
 30분 대기는 awaiting_ci로 남겨 기존 PR을 resume하며 보호 규칙 우회·강제 push·자동 배포는 없다.
 로컬 반영 후 git 모델/앱/CI가 실패할 수 있으며 그 실패를 로컬 반영 취소나 전체 완료로 표현하지 않는다.
 
+### Trusted-parent 전송과 native 검증 경계
+
+[ADR0024](adr/0024-immediate-batched-github-transport.md)는 전달 도구 왕복을 줄이는 선택이다.
+`harness/git_transport.py`는 request/accept의 `git_publish.main` 전체를 호출하고 native stdout을
+capture·durable 저장한다. 검증 로직 복제·journal schema 변경·가짜 성공·새 connector 네트워크
+경로는 없다. 기존 origin·scope/hash/mode·approval·CI·project → GitHub lock·cleanup·completion·
+최종 save/lock 해제 뒤 archive 순서를 그대로 실행한다. PR 이전 archive를 추가하지 않는다.
+모델/역할/인증/storage 정책·GitHub allowlist는 유지하며 worker/reviewer·child/discovery는 호출할 수 없다.
+
+selected active run의 owned0700 디렉터리 안에 전용 transport 디렉터리를 두고 0600/nlink=1
+regular 파일만 사용한다. 모든 ancestor는 no-follow로 열고 descriptor attachment·owner/mode·
+readback size/hash·readiness를 확인한다. v1/no-config/explicit v2와 legacy lookup은 native와
+동일한 storage 선택을 사용한다. 불명 위치·symlink/hardlink·ambiguous run은 fallback하지 않는다.
+추가 claim은 run별 nonblocking exclusive flock으로 begin/응답 저장을 직렬화한다. native 진입
+전에 flock을 해제하고 durable inflight가 새 operation을 차단한다. native lock과 중첩하지 않아
+역순 의존을 만들지 않으며 connector dispatch·completion/archive network wait에도 잡지 않는다.
+
+native 호출 전 immutable begin receipt와 durable inflight를 기록하고 응답을 저장·fsync·readback한다.
+receipt는 run/operation/request ID/response digest를 결합한다. 같은 operation은 completed라도
+자동 재호출/재발급/cached-next-write 반환을 금지한다. 중단 후 inflight가 남으면 모든 mutation을
+차단한다. complete receipt·transport head의 journal hash·실제 native pending 상태를 대조하고
+어긋나면 fail closed한다. native 호출 뒤 결과 보관 중 실패도 원응답과 receipt를 보존한다.
+원래 CLI로 saved response/native journal/실제 결과를 확인하는 명시 parent 복구를 유지한다.
+일반 same-OS-account 침해 방어용 권한 서비스는 아니며 worker의 격리 범위를 확장하지 않는다.
+
+accept 응답은 bounded UTF-8 JSON8MiB까지 stdin의 base64 frame으로 전달한다. shell은 원문을
+해석하지 않는다. 전체 native stdout은32MiB 한도에서 보존하며32KiB까지 inline, 초과만
+12288byte chunk metadata를 반환한다. chunk는 해당 run의 최신 완료 transport 결과만 읽고
+파일명을 받지 않는다. 디렉터리 생성·native 재호출 없는 read-only 경로다. size/hash와 정확한
+offset/count를 확인한 뒤 UTF-8/JSON을 파싱한다. 잘림/invalid JSON을 새 요청 발급으로 보정하지 않는다.
+
+`harness/git_bridge.js`는 parent가 미리 eval하고 tools/load/store/attachArtifact/sleep/yield를
+주입한다. Node fake 도구에도 같은 모듈을 쓴다. shell에는 안전하게 quote한 CLI 인자만 넣으며
+큰 응답도 PTY no-echo stdin을 사용해 argv 한계를 피한다. dispatch 전에 private state에 ID를
+저장하고 원응답을 보존한다. 보통 응답은 accept shell 한 번으로 native 검증과 다음 요청을 읽는다.
+PR 관측 즉시 artifact를 연결하고 native가 반환한 다음 cleanup proof를 끝까지 처리한다.
+중간 merged/cleanup_* nonzero와 실제 실패·archive pending을 구분하되 native 코드를 변경하지 않는다.
+awaiting_ci는 기존 explicit resume다. ambiguous dispatch는 자동 재전송하지 않는다.
+
+workflow의 기존 exec 결과를 받는 handoff는 짧은 write_stdin poll과 yield를 사용한다. 마지막
+완전한 structured summary·정상 exit·실제 awaiting_github·게시 모드·변경 존재를 확인한 같은
+async 흐름에서 request를 시작한다. read-only/demo/GIT=0/실패/변경 없음/불명 summary는 금지한다.
+sleep은30초 이하로 나누고 parent가60초 이내 진행을 전달할 수 있도록 yield한다. 도구 없는
+단독 workflow의 awaiting_github 의미는 바뀌지 않는다. public notify에는 stage metadata만 둔다.
+private timestamp/duration·원응답의 backend created_at·native progress event가 실측 근거이며
+합성 테스트는 실제 PR 속도를 입증하지 않는다. [호출·복구·측정](workflow.md#trusted-parent-bridge와-즉시-handoff)을 따른다.
+
+이번 harness 변경의 full `make check`와 기존 publisher 회귀, 실제 bridge 사용·구현 PR 및
+별도 문서 PR의 required CI/merge/cleanup/archive 관측은 parent 책임이다. worker는 실행하지 않는다.
+
 ### 머지 후 자동 정리와 완료 계약
 
 [ADR 0010](adr/0010-automatic-post-merge-cleanup.md)이 0009의 별도 수작업 완료 경계를 대체한다.

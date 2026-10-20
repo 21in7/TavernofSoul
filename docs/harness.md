@@ -58,6 +58,43 @@ PYTHONPATH=TavernofSoul:parser_tidy TavernofSoul/itos/3.8/bin/python -m harness.
 공개 적용은 격리 적재·재적재·롤백 검증과 백업을 갖춘 별도 작업이다.
 세부 호환 규칙과 단위는 [데이터 계약](data-contracts.md)을 따른다.
 
+## Trusted-parent GitHub transport 검증과 운영
+
+표준 parent 경로는 [workflow의 bridge 호출 예시](workflow.md#trusted-parent-bridge와-즉시-handoff)다.
+`harness/git_bridge.js`를 make 시작 전에 읽어 eval하고, 기존 GitHub tools·private load/store·
+`codex_app.attach_artifact` adapter·sleep/yield를 주입한다. 이미 시작한 exec 결과도 handoff가
+짧은 poll로 추적한다. 실제 awaiting_github 준비가 끝난 같은 async 흐름에서 request를 시작하며
+도구 없는 단독 make, read-only/demo/GIT=0·변경 없음·실패·불명 summary는 자동 게시하지 않는다.
+
+`python3 -m harness.git_transport request --run-id EXACT_RUN`과
+`accept --run-id EXACT_RUN --request-id EXACT_ID --stdin-base64`는 trusted-parent 전용이다.
+accept의 stdout READY 이후2048문자 이하 base64 줄·dot 종료 줄을 stdin으로 보낸다.
+bridge가 no-echo PTY와 write_stdin을 처리한다. 원응답을 shell command/argv에 넣지 않는다.
+응답은 decoded8MiB·UTF-8 JSON 상한이며 run 안의 owned0700/0600/nlink=1 파일에 fsync한 뒤
+실제 native main 전체로 검사한다. scope/hash/mode/origin/approval/CI/lock과 journal schema는 유지한다.
+native stdout·코드·error/status·poll·completion/archive를 private durable 결과로 보존한다.
+일반 accept는 shell 한 번으로 다음 요청까지 읽는다. 32KiB 이하 inline이며 전체 결과32MiB 한도다.
+초과만 `chunk --run-id EXACT_RUN --operation-id RECEIPT_DIGEST --index N`으로12288byte씩
+읽어 정확한 offset/size/hash를 확인한다. 임의 파일 읽기·잘림 복구용 request 재발급은 없다.
+
+receipt는 native 전에 시작하며 중복·변경 응답·stale ID·symlink/hardlink·잘못된 private mode/
+owner와 interruption을 거부한다. inflight 또는 complete receipt와 native pending 불일치는
+parent reconciliation이다. private saved response/native journal/실제 connector 결과를 확인한 뒤
+옛 `agent-git-accept`/resume/cleanup CLI를 명시 사용한다. receipt 삭제·state key 교체로 쓰기를
+재전송하지 않는다. awaiting_ci는 기존 resume, archive pending은 기존 archive-only 재개다.
+merged 응답만으로 완료하지 않고 cleanup proof와 archive 결과까지 보존한다. PR은 관측 직후 연결한다.
+
+`harness/test_git_transport.py`는 native seam 및 기존 publisher prepared fixture를 명시 재사용하고,
+`harness/test_git_bridge.py`는 Python wrapper에서 Node fake 도구로 같은 JS를 실행하도록 작성했다.
+실제 저장소/credential/네트워크 대신 임시 fixture를 쓰며 Node 부재는 skip이 아닌 실패다.
+private permission/fsync/digest·UTF-8/stdin·단일 accept·실제 native gate·v1/v2·중단/중복·
+chunk/readback/잘림·handoff·정확한 도구 인자·ID-before-dispatch·same-ID 오류·poll·artifact·
+native 실패/cleanup/archive 보존을 parent가 확인한다. 기존 publisher 회귀를 대체하지 않는다.
+이번 harness 변경 자체는 full `make check` 필수이며 worker는 테스트를 작성만 하고 실행하지 않았다.
+parent가 실제 bridge 사용·구현 PR·별도 문서 PR의 required CI·merge·cleanup/archive와 PR54
+동일 구간 시간을 관측한다. [ADR0024](adr/0024-immediate-batched-github-transport.md)의 baseline은
+parent 제공 관측이며 synthetic 순서 검증·부분 probe를 실제 PR 성능 개선으로 쓰지 않는다.
+
 ## 승인 대기 시간별 연구와 오전 보고
 
 승인된 제안이 GitHub CI 3종·merge·cleanup을 모두 마치면 parent의 기존
