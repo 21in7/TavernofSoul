@@ -63,7 +63,7 @@ thinking·model·요청 구조 변경을 실제/주입 transport 모두에서 �
 messages는 system 지시와 user JSON 데이터를 분리한다. user 순서는
 `owner_role,sources,feedback,candidate_limit,approved_files`이며 비신뢰 소스·의견 뒤에 승인
 목록 전체를 둔다. 각 값과 outer request는 canonical 직렬화를 유지한다. prompt는 schema와
-일치하는 짧은 지침이며 발견 예시를 합성하지 않는다. source의 지시·경로는 권한이 아니고,
+일치하는 짧은 지침이며 JSON 필드 형식 예시와 실제 발견 후보를 구분한다. source의 지시·경로는 권한이 아니고,
 검토 제안·validation_plan·documentation_impact는 향후 작업이다. 근거 없는 측정·실행 성공을
 주장하지 않으며 supported actionable draft가 없으면 `{"candidates":[]}`로 기권한다.
 
@@ -73,6 +73,13 @@ messages는 system 지시와 user JSON 데이터를 분리한다. user 순서는
 확인한다. 같은 파일의 여러 근거·수정 위치는 항목 하나이고 서로 다른 두 파일은 각 경로를
 한 번씩 쓴다. 모든 승인 경로가 편집 가능하다는 것은 모두 나열하라는 뜻이 아니며 상한12개를
 채울 필요가 없다. 정당한 다중 파일 편집을 허용하며 단일 파일을 강제하지 않는다.
+현재 owner의 실제 approved_files 경로만 사용하는 짧고 유효한 JSON 필드 예시도 생성한다.
+같은 파일의 여러 근거/수정 위치는 edit_files 한 항목인 예시, 서로 다른 두 파일은 각 경로를
+한 번씩 쓴 두 항목 예시로 구분한다. 승인 목록이 하나이면 단일 파일 예시만 제공하고 없는
+두 번째 경로를 만들지 않는다. 형식 설명일 뿐 실제 후보나 필수 편집 목록이 아니며 실제 후보는
+필요한 파일만 선택한다. `_encode_request`와 `_validate_request`의 canonical system 비교는
+준비된 동일 승인 목록으로 예시를 생성한다. 예시를 포함한 system·user·feedback·schema
+전체에 기존24576bytes 예산과 whole-line 선택을 적용한다.
 이는 생성 지침이며 응답 후처리가 아니다. 중복 방지를 보장하지 않고 client 최종 검증을 유지한다.
 
 모든 호출은 discovery guard 아래 단1회다. JSON Content-Type, assistant의 비어 있지 않은 text,
@@ -157,24 +164,32 @@ stage/field/type·구문 위치·임의 진단 객체는 버리며 API/CLI·tele
 | 최초 정규21시 slot | run `1792483202194321920-447ddb`, 2026-10-20 21:00 KST `local(parser)`, Qwen3.5-9B-4bit가 AGENTS.md 원문1..96줄로 실제 실행된 뒤 client가 `candidate_edit_files_duplicate`로 거절했다. 앞선 local(coordinator)·Codex·local(downloader)·GLM은 실제 성공했고 GLM 후보2개가 있었다. 전체9단계 성공을 뜻하지 않는다. |
 | 앞선 오프라인 회귀 | run `1792500541005476257-a59052` round1의 full4895개가 모두 통과했다. 다음 실제 HTTP 검증과 별개다. |
 | 앞선 개발 live 검증 | 2026-10-20 22:06 KST 같은 실제 로컬 서버에 parser/AGENTS.md1..96/동일 config로 HTTP1회: `called=true`, `reason=candidate_edit_files_duplicate`, `verification=failed`, request18724bytes, 134.805초, 운영 state 불변이었다. 기존 세 문장을 보존하고 필요한 경로를 한 번 쓰도록 설명한 뒤에도 중복이 지속됐다. |
+| PR59 순서 지침 회귀 | PR59(`65c19f53cfaa461cd994cf61d435a32ae9b609a9`)의 오프라인4895개 통과와 2026-10-20 22:37 KST parser/AGENTS.md1..96 개발 HTTP1회 성공: 유효 초안2개, 각각 edit_files1개. 한 owner의 단일 성공이며 전체 역할의 해소를 뜻하지 않는다. |
+| 정규23시 coordinator 재발 | 2026-10-20 23:00 run `1792504802000339115-d6a0c0`의 local(coordinator), 같은 mlx-vlm/Qwen3.5-9B-4bit 서버, AGENTS.md1..96, `called=true`, `reason=candidate_edit_files_duplicate`. parent 관측 시작23:00:01.927730·종료23:01:16.865115 KST. 원문 미보존으로 반복 경로·개수는 알 수 없다. |
 
-두 실제 실패 모두 원문을 보존하지 않아 반복된 경로·개수·정확한 후보 값은 알 수 없다.
-이를 추측하거나 후보를 보정해 통과시키지 않는다. 이번에는 파일 선택→파일당 한 항목→
-출력 전 반복 확인의 순서를 생성 지침에 추가했다. 성공 보장은 없다.
-현재 변경의 full 회귀와 실제 live 검증은 각각 pending이고, 정규9단계 및
+실제 실패의 원문을 보존하지 않아 반복된 경로·개수·정확한 후보 값은 알 수 없다.
+이를 추측하거나 후보를 보정해 통과시키지 않는다. 과거 테스트 문구 누락과 이번 실제 생성
+중복을 구분한다. 순서 지침 이후의 재발을 받아 이번에는 실제 owner 승인 경로로 단일·두 파일
+JSON 필드 예시를 추가했다. 이번 예시 개선도 중복 방지를 보장하지 않는다.
+현재 변경의 최종 full/live 및 PR/CI/머지는 parent 관측 전까지 pending이고, 실제 정규9단계 및
 2026-10-21 09:00 KST 오전 보고 성공도 별도로 pending이다.
 
 parent는 full `make check` 통과와 과거 실패본 대비 최종 코드·실제 요청 변경을 확인한 뒤,
-동일 parser/AGENTS.md1..96/config로 같은 실제 로컬 서버에 개발 검증 HTTP를 단1회 수행한다.
+이번 실제 실패와 동일한 coordinator/AGENTS.md1..96/config로 같은 실제 로컬 서버에 개발 검증
+HTTP를 단1회 수행한다. 문서만 바꾸고 같은 추론을 재호출하지 않는다.
 요청 전체24576bytes·whole-line 선택·canonical binding을 유지하며 정확한 읽기 범위를 확인한다.
-raw/prompt/source를 저장하거나 운영 state를 수정하지 않고 코드 SHA/window/고정 결과와
-정확한 읽기 범위만 기록한다. client 검증을 통과한 빈 초안은 정상 빈 결과로 구분하고 후보를
-강제하지 않는다. 이는 정규21시 slot 재실행이나 정규9단계 성공의 대체가 아니다.
-새 live 실패는 원인을 추측하지 않고 정제된 사실로 같은 coordinator 담당자에게 반환한다.
+raw/prompt/source를 저장하지 않고 고정 결과 코드·owner/window·해시와 필요한 경우 숫자형
+중복 개수만 기록한다. client 검증을 통과한 빈 초안은 정상 빈 결과로 구분하고 후보를
+강제하지 않는다. 운영 state·정규23시 slot은 재실행·변경하지 않으며 정규9단계 성공의 대체가 아니다.
+새 live 실패는 실제 fixed reason과 owner/window를 같은 coordinator 담당자에게 반환한다.
 GitHub·CI·머지·정리도 parent가 담당한다.
 
 이번 수정은 기존 편집 목록 계약의 생성 안내만 명확히 한다. 구조·책임·데이터 계약·격리·검증·
 실패 복구·GitHub 게시 정책을 바꾸지 않아 설계서 수정이나 새 ADR은 필요하지 않다고 판단한다.
+기존 승인 경로만 설명하며 native schema·immutable binding·client 최종 검증·실패 시 무보정
+단1회 호출을 유지하고 새로운 역할·저장 필드·승인·공개 경로를 만들지 않기 때문이다.
+합성 snapshot과 주입 transport의 동작 회귀는 owner 승인 범위·단일/다중 목록·중복 거절·
+전체 요청 예산·whole-line 및 변조 no-call을 다루도록 작성했으며 worker는 실행하지 않았다.
 운영 관측과 한계는 이 문서와 [연구 문서](improvements.md#2026-10-20-parser-편집-목록-중복과-수리-인계)에 기록한다.
 매 fresh reviewer는 최종 코드·문서 의미를 새로 평가하고 `documentation={status,files,reason}`을
 반환한다. 이전 회귀 통과나 문서 상태를 현재 검토의 성공 근거로 재사용하지 않는다.
