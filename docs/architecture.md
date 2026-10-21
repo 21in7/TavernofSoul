@@ -1,5 +1,18 @@
 # 프로젝트 지도와 데이터 경계
 
+2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 연구 입력·참여·보고를
+분리한다. `improvement_snapshot.py`가 승인37개 source만 두 private bank의 파일별 bounded record와
+마지막 atomic manifest로 고정하고 `improvement_loop.py`가 state seal을 매 호출 전 검증한다.
+누락·변조·owner/mode/link·size 실패는 no-call이다. source-only 변화/안전한 live 읽기 불가는
+control과 snapshot이 유효한 active 회차의 진행을 지우지 않는다. 새 회차는 현재 source의 유효한
+capture가 필요하다. snapshot review_complete는 현재 freshness와 별개이며 stale/unknown 후보의
+public eligible·approve·execute는 기존 전체 dependency/서명 검증으로 차단한다.
+최근192개 cloud 시도 history는 회차·무효화·재시작을 넘어 보존하며 오전 window의 마지막 시도를
+표시한다. 후보는 현재 dependencies 일치 최신 완료 review 하나만 선택하고 선택 후 별도 회차의
+참여를 그 제안 검토로 합치지 않는다. local 실패/빈 pool에도 cloud는 각 정규 slot에서 독립 점검한다.
+private snapshot·trace·local·cost·진단은 public/결과 archive에 포함하지 않는다. 새 의미 검토와
+full make check·실제 hourly 관측은 대기이며 메인 제공 오늘 frozen 보고는 재작성하지 않는다.
+
 ## 개발 작업 저장과 검증 선택
 
 [ADR0021](adr/0021-local-work-and-result-archives.md)은 명시 v2의 작업·검증·journal을 local
@@ -121,7 +134,7 @@ reason으로 구분한다. `candidate_invalid`는 검증 거절이지 검증 제
 실제 window 위반은 `evidence_outside_window`이며 raw 값·예외문은 진단에 보존하지 않는다.
 분류 한계는 [로컬 모델 문서](local-models.md#후보-거절-진단과-한계)를 따른다. retry·보정·fallback과 public 계약 변경은 없다.
 durable owner cursor로 다음 window/파일을 순환하며 긴 한 줄은 slice 없이 명시 skip한다.
-local 실패/빈 초안이면 관련 specialist는 미호출로 기록한다. local은 초안 참여자이며
+local 실패/빈 초안에도 관련 specialist와 최종 reviewer는 정규 slot에서 독립 점검한다. local은 초안 참여자이며
 private local_participation의 mlx-vlm/model/stage/owner_role로 구분하고 web-v1 agents에 넣지 않는다.
 정식 candidate는 기존 specialist가 자기 소스로 확인·보완하고 reviewer가 전체를 독립 검토한다.
 다음 round의 실제 local prompt에 정제 issue·specialist 설명·review.reason을 candidate_id/
@@ -133,9 +146,9 @@ metadata로 받고 non-null·다른 도구 필드는 거절한다. 모델/endpoi
 검토·전체 검증·실제9단계·다음 아침 게시 성공과 구분하며 [관측 한계](local-models.md)를 따른다.
 
 호출 전에 improvement/project locks 아래 slot·호출 수·Claude reservation·cursor/inflight를
-durable 기록한다. 실패 slot 자동 재호출/daemon/fallback은 없다. source bytes/mode/존재·scope·
-discovery/loop/local/agent/workflow config fingerprint 변경은 old pool/review/feedback/cursor를
-무효화한다. loop context digest도 proposal provenance와 HMAC 승인에 결합하여 동일 ID가
+durable 기록한다. 실패 slot 자동 재호출/daemon/fallback은 없다. source bytes/mode/존재 변화는
+회차의 sealed snapshot·pool·cursor를 유지하며 현재 freshness만 상실시킨다. scope/ownership·
+discovery/loop/local/agent/workflow/provider/model/protocol 변경은 진행을 무효화한다. loop context digest도 proposal provenance와 HMAC 승인에 결합하여 동일 ID가
 재발견되어도 옛 승인의 새 설정 재결합을 막는다. tick은 human decisions/approvals/claims를 쓰지 않는다.
 
 Claude는 KST 하루 추정 US$1·호출 cap min(US$0.20, 잔액, 기존 역할 한도)을 사전 예약한다.

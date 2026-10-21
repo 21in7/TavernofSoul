@@ -106,9 +106,9 @@ private config·설치·SSH·서비스 전환과 실제 추론 검증은 메인 
 
 ### 초안 실패·참여·의견 계승
 
-로컬 실패·빈 초안·missing/empty/긴 줄 skip이면 다음 slot의 관련 specialist는
-`local_draft_unavailable`로 미호출한다. skip도 한 hourly slot을 쓴다. 다른 owner 단계는 이어지고,
-후보도 성공한 specialist pool도 없으면 reviewer도 보류한다. reviewer 단계가 실패/skip해도
+ADR0025로 대체: 로컬 실패·빈 초안·missing/empty/긴 줄·준비 실패에도 다음 정규 slot의
+specialist는 승인 소스를 독립 분석한다. 최종 reviewer도 빈 pool의 coverage와 제안 유무를
+평가한다. 실패한 local을 성공으로 바꾸거나 추가 call을 하지 않는다. reviewer 단계가 실패해도
 다음 slot에 새 round를 시작한다. quota/budget 보류는 같은 단계를 다음 새 slot에서 다시
 admission하며 실패한 호출을 같은 slot에서 재시도하지 않는다.
 
@@ -139,8 +139,10 @@ legacy/unknown reason은 role_failed, 미허용 error_type은 Exception이고 �
 fallback은 [운영 계약](../improvements.md#hourly-private-실패-진단과-인계)에 둔다.
 이는 기존 실패 정제의 정밀화이며 이 ADR의 대체 범위·retry/fallback·스케줄·예산·승인·게시
 결정은 바꾸지 않는다. 이번 회귀는 작성 후 미실행이며 full make check·수리 검증·PR·CI·머지는
-메인과 실행기에게 인계한다. 실제9단계·정규 hourly 실모델·2026-10-21 09:00 KST 보고는
-메인 관측 전까지 pending이다.
+메인과 실행기에게 인계한다. 메인이 전달한 2026-10-21 09:00 KST failed/0카드 보고는 실제
+전달 관측이며 수정하지 않는다. 정확한 당시 참여·skip·reset 관측과 이를 대체하는 결정은
+[ADR0025](0025-progress-preserving-improvement-reviews.md)에 둔다. 이번 최종 코드의 실제9단계·
+정규 hourly 실모델·새 오전 보고 성공은 아직 관측하지 않았다.
 
 ### 비용·quota·자정·legacy 이행
 
@@ -166,7 +168,8 @@ replay를 거부한다. 실행 중 시계 이동/다음 날 복구로 날짜를 
 
 첫 활성화 때 같은 KST 날짜의 legacy days/scans를 scan_id로 중복 제거해 호출 수와 Claude
 비용을 carry-in한다. 메인 관측 최신 0.0434664 USD도 실제 기록에서 읽으며 상수로 넣지 않는다.
-추가 legacy 활동도 한 번씩 반영하고 loop scan/projection은 제외한다. 불완전 과거 기록은
+한 번의 bounded migration index와 이후 정확한 day pointer의 legacy 활동을 반영하고
+loop scan/projection은 비용 carry-in에서 제외한다. index 밖 scan을 계속 탐색하지 않는다. 불완전 과거 기록은
 숨은 중단 호출을 고려해 당일 호출 한도를 소진 처리하며, Claude unknown은 당일 dollar
 allowance를 보수적으로 소비 처리한다. 기존 day 보고는 덮어쓰거나 자동 재전달하지 않는다.
 
@@ -200,8 +203,9 @@ source/scope/discovery/loop/local/agent/workflow config fingerprints가 모두 �
 
 보고 확정은 모델 admission보다 먼저이며 보고용 새 모델을 호출하지 않는다. 유효 review가
 없으면 0카드 partial/failed로, window 밖 역할은 not_called로 사실대로 표시한다. 최신
-review의 전체 provenance는 private reviewed_agents/reviewed_local_participation에 남기되
-옛날 참여를 오늘 전원 성공으로 표시하지 않는다. source/config 미준비 시도 storage와 lock이
+review의 전체 provenance는 private reviewed_agents/reviewed_local_participation에 남긴다.
+ADR0025에 따라 참여는 회차와 독립된 bounded durable history의 역할별 마지막 시도이며
+완료/실패/무효화·새 round·재시작 뒤에도 유지한다. 옛날 참여를 오늘 전원 성공으로 표시하지 않는다. source/config 미준비 시도 storage와 lock이
 가능하면 실패 이유를 담은 0카드 보고를 확정한다. storage/lock 실패는 확정을 지연할 수 있다.
 date는 당일 KST, generated_at은 실제 확정 시각으로 같은 날짜를 만족한다.
 
@@ -223,10 +227,11 @@ canonical digest readback만 성공 증거다. delivery 성공 기록이 있으�
 
 ### freshness·승인·격리
 
-모든 source의 bytes/mode/존재, scope와 위 config digest가 바뀌면 old pool/review/feedback과
-cursor를 무효화하고 새 round를 시작한다. 과거 scan은 보존하고 invalidated 사본을 별도 기록한다.
-호출 후에도 source와 다시 읽은 discovery/agent/workflow 의존성을 재확인한다. loop/local 설정은
-해당 tick에 수용한 값을 사용하며 다음 tick과 승인 freshness에서 파일을 다시 읽는다.
+ADR0025로 대체: source bytes/mode/존재 변화는 sealed snapshot 회차의 진행·pool·cursor를
+유지한다. scope/ownership/config/provider/model/protocol 변경은 진행을 무효화하며 새
+snapshot을 시작하되 실제 참여와 완료 review index를 보존한다. 과거 scan과 invalidated 사본은
+보존한다. 호출 후 source와 loop/local을 포함한 control 의존성을 다시 확인한다.
+review_complete는 snapshot 검토 완료이며 현재 source freshness나 승인 권한이 아니다.
 proposal은 기존 ID/full digest와 scan provenance를 유지해
 기존 status/approve/execute에서 사용할 수 있다. loop_dependencies digest를 추가
 discovery_fingerprint로 proposal/서명 승인에 묶고 `_eligible/_fresh/_authorization`과 workflow
@@ -294,10 +299,11 @@ fingerprint 변경·전송 unknown/동시 sender·기존 승인 불변식을 다
 후보/benefit 양쪽 evidence 위반 거절, tampered/no schema의 no-transport, request byte 경계·
 whole-line 선택·schema-only 초과 no-call, 서버가 schema를 무시한 응답 거절, 유효 canonical
 후보·`empty_draft`, 단일 호출/no retry, v1 거절·v2/provider 이행·fingerprint 무효화,
-loop specialist 미호출과 진단 privacy다. 이는 전체 make check의 요구 명세이며 실행 성공 기록이 아니다.
+loop specialist 독립 slot 진행과 진단 privacy다(ADR0025로 기대 교체). 이는 전체 make check의 요구 명세이며 실행 성공 기록이 아니다.
 
 시작과 최종 자체 검토에서 문서 영향은 요청 계약·검증·책임·배포 이행 변경으로 판단했다.
-이번21개 범위는 coordinator 단일 작업이며 승인된 이 ADR을 갱신하고 새 ADR을 만들지 않는다.
+이전21개 프로토콜 수리는 coordinator 단일 작업으로 이 ADR을 갱신했다. 이번32개 진행 보존
+수리는 coordinator 작업 정확히 하나이며 주요 결정과 이행을 신규 ADR0025에 기록한다.
 AGENTS·ADR index·모델 연결·운영·구조/격리/검증/워크플로 문서를 같은 계약으로 갱신한다.
 파일별 이유는 [운영 인계](../improvements.md#이번-프로토콜-수리의-문서-영향)에 기록한다.
 매 후속 review도 `documentation={status,files,reason}`을 새로 반환하고 최종 소스와 실제 수정

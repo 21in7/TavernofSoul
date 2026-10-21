@@ -397,10 +397,10 @@ def test_discovery_exact_role_scope_cross_review_and_no_operating_calls(lab):
     assert [c['role'] for c in runner.calls] == list(contract.ROLES)
     shared = ['AGENTS.md', 'docs/architecture.md', 'docs/harness-design.md']
     expected = {
-        'coordinator': shared + ['harness/example.py'],
-        'downloader': shared + ['downloader/example.py'],
-        'parser': shared + ['parser_tidy/example.py'],
-        'django': shared + ['TavernofSoul/example.py', 'parser_tidy/tests/test_import_safety.py'],
+        'coordinator': ['harness/example.py'] + shared,
+        'downloader': ['downloader/example.py'] + shared,
+        'parser': ['parser_tidy/example.py'] + shared,
+        'django': ['TavernofSoul/example.py', 'parser_tidy/tests/test_import_safety.py'] + shared,
         'reviewer': list(FILES),
     }
     for call in runner.calls:
@@ -1114,9 +1114,10 @@ def loop_pool(lab, candidates=None):
         agent.update(started_at=value['generated_at'], finished_at=NOW.isoformat())
     lab.store.write('scans/' + value['scan_id'] + '.json', value)
     loop._save_proposals(lab.store, value)
-    state = {'round': {'report': value}, 'completed': [{
+    state = dict(loop._new_state(), round={'report': value}, completed=[{
         'scan_id': value['scan_id'], 'at': NOW.isoformat(),
-        'dependency_digest': contract.digest(dependencies)}]}
+        'dependency_digest': contract.digest(dependencies)}])
+    loop._import_participation(state, value)
     return loop, value, state, dependencies
 
 
@@ -1136,8 +1137,9 @@ def test_morning_selects_latest_current_review_and_keeps_all_provenance(lab):
     selected['review_completed_at'] = (MORNING - dt.timedelta(minutes=30)).isoformat()
     # A review may finish today after downtime while an owner ran before the
     # window. It must stay privately provable and publicly incomplete.
-    selected['agents'][0]['finished_at'] = (MORNING - dt.timedelta(days=2)).isoformat()
+    selected['agents'][0]['started_at'] = (MORNING - dt.timedelta(days=2)).isoformat()
     lab.store.write('scans/' + selected['scan_id'] + '.json', selected)
+    loop._import_participation(state, selected)
     state['completed'].append({'scan_id': selected['scan_id'], 'at': selected['review_completed_at'],
                                'dependency_digest': contract.digest(deps)})
     for scan_id, at, digest in (
@@ -1154,7 +1156,8 @@ def test_morning_selects_latest_current_review_and_keeps_all_provenance(lab):
     assert journal['status'] == 'publication_pending'
     assert private['reviewed_scan_id'] == selected['scan_id']
     assert private['reviewed_agents'][0]['status'] == 'succeeded'
-    assert public['status'] == 'partial' and public['agents'][0]['status'] == 'not_called'
+    # Another actual round covered this owner inside the window.
+    assert public['agents'][0]['status'] == 'succeeded'
     assert public['counts'] == {'candidates': 8, 'reported': 3, 'additional_candidates': 5, 'eligible': 8}
     assert private['local_participation'][0]['model'] == 'synthetic-local'
     assert all(a['provider'] != 'mlx-vlm' for a in public['agents'])

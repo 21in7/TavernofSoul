@@ -11,6 +11,11 @@
 loop/local/agent/workflow config digest도 추가 승인 freshness에 결합한다. 당시 준비/대기 관찰은
 역사로 보존하며 최신 준비·미가동 상태는 [운영 문서](../improvements.md)를 따른다.
 
+2026-10-21 후속: hourly의 local 실패 gating·source-only reset·오전 참여 집계는
+[ADR0025](0025-progress-preserving-improvement-reviews.md)로 정밀화한다. snapshot 검토 완료와
+현재 소스에 대한 freshness를 분리하며 이 ADR의 개별 서명 승인·일회성 claim 경계는 유지한다.
+아래 daily scheduler/전송 설명은 당시 legacy 기록이며 현 예약·불변 보고 복구는 ADR0017/0025를 따른다.
+
 ## 문맥
 
 사용자는 역할별 에이전트가 개선점을 찾고 서로 검토하여 쉬운 한국어 비유를 담은 한 장 보고서를

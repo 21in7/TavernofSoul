@@ -1,5 +1,22 @@
 # 개발 작업 자동 배정과 실행
 
+이번 2026-10-21 연구 진행 보존 복구는 승인32개를 coordinator 작업 정확히 하나로 배정한다.
+직전 run `1792547845263535412-a3f550`은900초 종료·applied=[]로 미검토/미검증 상태다.
+trusted parent의 baseline/checkpoint 확인과 첫 실제 쓰기 직전 초안 준비는 작업 준비다.
+worker는 보존 초안을 이어 누락만 마무리하며 checkpoint/private 기록을 받지 않고 검사·Git·
+재위임·workflow·네트워크를 실행하지 않는다. 새 Jev/Codex 계획→실제 coordinator 마무리→
+새 Claude 의미 검토(documentation 포함)→full make check→scoped apply→기존 Git 역할→
+trusted parent GitHub/required CI·merge/cleanup의 실제 증거가 있어야 각 단계를 완료로 기록한다.
+
+[ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 자동 연구의 local 실패 gating과
+source-only reset을 대체한다. 각 cloud 역할은 초안/빈 pool과 독립된 정규 slot에서 승인 snapshot을
+평가한다. source-only 변화와 live source 읽기 불가에는 유효 control/seal의 active 회차 진행을
+유지하지만 snapshot 완료를 current freshness로 표시하지 않는다. source/scope/config 전체
+freshness와 signed approval·일회성 claim은 public eligible/approve/execute에서 그대로 필요하다.
+bounded 실제 cloud 참여는 회차·재시작·control 무효화와 독립 보존하고 오전 후보 선택과 분리한다.
+runtime37개 승인 scope·auth/provider/model·예산/호출·slot·게시 정책은 유지한다. 오늘 frozen 보고는
+재생성하지 않으며 합성 회귀 작성은 실제9단계·새 오전 보고 성공 관측이 아니다.
+
 ## 현재 저장·검증·복구 순서
 
 [ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2에서 workspace/checks/logs/backup/
@@ -141,9 +158,10 @@ scheduler는 bounded hourly 연구·09:00 once 보고만 수행하며 제안의 
 parser→local(django)→django→독립 Claude 검토의9단계를 한 hourly slot씩 진행한다.
 tick당 모델 최대1회·로컬 포함 KST 하루24회, specialist2/전체8 후보이며 기존37개 scope와
 ownership/shared를 유지한다. local은 정확한 path/원래 line 번호의 작은 연속 window와 정제
-feedback만 받는다. 실패/빈 초안의 관련 specialist는 미호출한다. 정식 candidate는 기존
+feedback만 받는다. 실패/빈 초안에도 관련 specialist와 빈 pool의 최종 reviewer는 독립 점검한다. 정식 candidate는 기존
 specialist가 만들고 reviewer가 독립 검토한다. 다음 round의 실제 prompt에 정제 issue와
-specialist/Claude reason을 이어받으며 source/config 변경은 pool/feedback/cursor를 무효화한다.
+specialist/Claude reason을 이어받는다. source-only 변화는 sealed snapshot 회차의 진행과
+cursor를 보존하며 control 변경만 진행을 무효화한다. 실제 과거 참여는 어느 경우에도 보존한다.
 local 참여는 private mlx-vlm/model/stage/owner로 구분하고 web-v1의5역할을 위장하지 않는다.
 
 local은 mlx-vlm0.7.8 native response_format.json_schema(strict)와 top-level enable_thinking=false를

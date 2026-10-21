@@ -37,12 +37,13 @@ day conservatively counts/charges that day too and stops it. Estimates/admission
 do not guarantee billing. GLM's 80% gate leaves nominal 20% development headroom
 at admission; it cannot guarantee consumption during an already running call.
 
-Each round has four local/owner pairs and one independent reviewer. A missing,
-failed, empty or oversize-line local draft skips its paired owner on the next
-slot. Every stage, including a skip, consumes one hourly slot. After the reviewer
+Each round has four local/owner pairs and one independent reviewer. Local drafts
+are optional advice; their failures never gate the regular cloud slots. Every
+stage, including a local preparation skip, consumes one hourly slot. After the reviewer
 stage (even failure) a fresh round starts on the NEXT slot. Cursors and bounded
-sanitized feedback survive ordinary rounds; source/scope/config/model changes
-invalidate both the pool and feedback and reset cursors. The local adapter sees
+sanitized feedback survive ordinary rounds and source-only changes. Each round
+pins exact approved inputs in a bounded sealed private snapshot. Scope/config/model
+changes invalidate progression, but never actual participation history. The local adapter sees
 only its selected continuous numbered line window, never the full snapshot.
 
 Morning selection: latest completed independent review in [yesterday 09:00,
@@ -55,7 +56,7 @@ report before materialization; existing legacy days are preserved and never
 automatically redelivered. Catchup considers today's date only, after 09:00.
 
 Documentation impact: AGENTS.md, docs/{architecture,harness-design,harness,
-improvements,workflow,agent-models,local-models}.md and ADR0017/index must describe
+improvements,workflow,agent-models,local-models}.md and ADR0017/0025/index describe
 these new scheduling, privacy, costs, provenance and recovery contracts. ADR0015
 keeps its approval boundary; only its daily scheduling/call policy is replaced.
 Implementation workflow charges are separate from the exploration dollar ledger.
@@ -79,12 +80,15 @@ from contextlib import contextmanager
 
 from harness import agent_models, improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
+from harness import improvement_snapshot as sealed
 
 
 CONFIG = Path(__file__).with_name('improvement-loop-config.json')
 CONFIG_VERSION = 'improvement-loop-config-v1'
 STATE_VERSION = 'improvement-loop-state-v1'
 STATE_FILE = 'loop/state.json'
+HISTORY_LIMIT = 192  # eight days at the fixed maximum of 24 hourly attempts
+LEGACY_INDEX = 'loop/legacy-index.json'
 QUOTA_HOST = 'api.z.ai'
 QUOTA_PATH = '/api/monitor/usage/quota/limit'
 STAGES = tuple(stage for role in contract.SPECIALIST_ROLES
@@ -164,7 +168,7 @@ def _id():
     return str(time.time_ns()) + '-' + secrets.token_hex(3)
 
 
-def _dependencies(config, local_config, selected):
+def _dependencies(config, local_config, selected, *, allow_unavailable_sources=False):
     discovery = imp.load_config()
     # The loop never accepts a caller-selected or expanded discovery scope.
     if discovery['scope_file'] != 'harness/improvement-scope.txt':
@@ -172,17 +176,30 @@ def _dependencies(config, local_config, selected):
     scope_path = imp.ROOT / discovery['scope_file']
     body, mode = imp._read_file(scope_path, 65536)
     paths = contract.validate_scope_paths(body.decode('utf-8').splitlines(), 37)
-    snapshots = imp.snapshot_sources(paths, discovery['limits'], selected)
     scope = {'sha256': hashlib.sha256(body).hexdigest(), 'mode': mode, 'paths': paths}
     dependencies = {
         'scope_fingerprint': scope,
-        'source_fingerprints': contract.fingerprint_sources(snapshots),
         'config_fingerprint': contract.digest(discovery),
         'loop_config_fingerprint': contract.digest(config),
         'local_config_fingerprint': local_model.config_digest(local_config),
         'agent_config_fingerprint': contract.digest(agent_models.load_config()),
         'workflow_config_fingerprint': contract.digest(workflow.load_policy()),
+        'ownership_fingerprint': contract.digest({role: imp.role_scope(role, paths, discovery)
+                                                for role in contract.ROLES}),
+        'review_protocol': 'sealed-round-history-v1',
     }
+    # Controls must always be readable and valid. Only a sealed active round
+    # may continue when live source bytes cannot be captured safely (e.g. a
+    # file grew past the bound). This is unknown freshness, never a new seal or
+    # approval dependency. Approval/execute keep the strict default below.
+    try:
+        snapshots = imp.snapshot_sources(paths, discovery['limits'], selected)
+        fingerprints = contract.fingerprint_sources(snapshots)
+    except Exception:
+        if not allow_unavailable_sources:
+            raise
+        snapshots, fingerprints = None, None
+    dependencies['source_fingerprints'] = fingerprints
     return discovery, paths, snapshots, dependencies
 
 
@@ -343,21 +360,37 @@ def _new_state():
     return {'version': STATE_VERSION, 'high_water_at': None, 'last_slot': None,
             'days': {}, 'inflight': None, 'round': None, 'stage_index': 0,
             'cursors': {}, 'feedback': {}, 'completed': [], 'last_review_at': None,
-            'pause_reason': 'not_started', 'dependency_digest': None}
+            'pause_reason': 'not_started', 'dependency_digest': None,
+            'participation': [], 'history_migrated': False, 'cursor_order': 0}
 
 
 def _read_state(store):
     if not store.exists(STATE_FILE):
         return _new_state()
     state = store.read(STATE_FILE)
+    # Only these additive fields may be missing from a legacy v1 record.
+    if isinstance(state, dict):
+        for key in ('participation', 'history_migrated', 'cursor_order'):
+            state.setdefault(key, copy.deepcopy(_new_state()[key]))
     expected = set(_new_state())
     if not isinstance(state, dict) or set(state) != expected or state['version'] != STATE_VERSION:
         raise LoopError('state_invalid')
     if (type(state['stage_index']) is not int or not 0 <= state['stage_index'] <= 9 or
             not isinstance(state['days'], dict) or len(state['days']) > 7 or
             not isinstance(state['completed'], list) or len(state['completed']) > 32 or
-            not isinstance(state['feedback'], dict) or not isinstance(state['cursors'], dict)):
+            not isinstance(state['feedback'], dict) or not isinstance(state['cursors'], dict) or
+            type(state['history_migrated']) is not bool or
+            type(state['cursor_order']) is not int or state['cursor_order'] not in (0, 1) or
+            not isinstance(state['participation'], list) or
+            len(state['participation']) > HISTORY_LIMIT):
         raise LoopError('state_invalid')
+    identities = set()
+    for entry in state['participation']:
+        _validate_history(entry)
+        identity = _history_identity(entry)
+        if identity in identities:
+            raise LoopError('history_invalid')
+        identities.add(identity)
     if state['high_water_at'] is not None:
         _stamp(state['high_water_at'])
     for date, day in state['days'].items():
@@ -377,6 +410,128 @@ def _write_state(store, state):
     store.write(STATE_FILE, state)
 
 
+def _validate_history(entry):
+    if (not isinstance(entry, dict) or set(entry) != {
+            'scan_id', 'slot', 'stage_index', 'role', 'provider', 'model',
+            'status', 'started_at', 'finished_at'} or
+            not isinstance(entry['scan_id'], str) or not storage.RUN_ID.fullmatch(entry['scan_id']) or
+            entry['role'] not in contract.ROLES or
+            type(entry['stage_index']) is not int or
+            entry['stage_index'] != (8 if entry['role'] == 'reviewer' else
+                                    2 * contract.SPECIALIST_ROLES.index(entry['role']) + 1) or
+            entry['status'] not in ('reserved', 'succeeded', 'failed', 'unavailable') or
+            not isinstance(entry['provider'], str) or not 1 <= len(entry['provider']) <= 80 or
+            not isinstance(entry['model'], str) or not 1 <= len(entry['model']) <= 120):
+        raise LoopError('history_invalid')
+    at = _stamp(entry['started_at'])
+    if entry['slot'] != at.strftime('%Y-%m-%dT%H'):
+        raise LoopError('history_invalid')
+    if entry['finished_at'] is not None and _stamp(entry['finished_at']) < at:
+        raise LoopError('history_invalid')
+
+
+def _history_identity(entry):
+    return (entry['scan_id'], entry['slot'], entry['stage_index'])
+
+
+def _history_order(entry):
+    return (_stamp(entry['started_at']), entry['slot'], entry['stage_index'], entry['scan_id'])
+
+
+def _remember(state, scan_id, role, agent, pending=None):
+    """Same atomic state transaction as reservation/settlement/recovery.
+
+    Admission time defines participation's half-open window, including unknown
+    interrupted attempts. Later recovery never moves an old call into today.
+    Latest attempt per role wins; a failure cannot hide behind an older success.
+    """
+    if agent.get('status') == 'not_called':
+        return
+    stamp = pending['at'] if pending else agent.get('started_at', agent.get('finished_at'))
+    provider = agent.get('provider') or (pending or {}).get('provider')
+    model = agent.get('model') or (pending or {}).get('model')
+    if stamp is None or not provider or not model:
+        return  # Legacy gaps are not invented participation.
+    role_index = 8 if role == 'reviewer' else 2 * contract.SPECIALIST_ROLES.index(role) + 1
+    entry = {'scan_id': scan_id, 'slot': _stamp(stamp).strftime('%Y-%m-%dT%H'),
+             'stage_index': role_index, 'role': role,
+             'provider': provider, 'model': model, 'status': agent['status'],
+             'started_at': stamp, 'finished_at': agent.get('finished_at')}
+    _validate_history(entry)
+    identity = _history_identity(entry)
+    previous = [e for e in state['participation'] if _history_identity(e) != identity]
+    state['participation'] = sorted(previous + [entry], key=_history_order)[-HISTORY_LIMIT:]
+
+
+def _import_participation(state, report):
+    if report.get('report_window') or not storage.RUN_ID.fullmatch(str(report.get('scan_id', ''))):
+        return  # Frozen projections are not additional executions.
+    for agent in report.get('agents', []):
+        if agent.get('role') in contract.ROLES:
+            _remember(state, report['scan_id'], agent['role'], agent)
+
+
+def _migrate_history(store, state):
+    """One bounded migration, then exact index reads only. No recurring scan.
+
+    At most 4096 legacy names, 32 completed pointers, current round and two day
+    pointers. Overflow fails closed. Missing/unrecorded historical calls cannot
+    be reconstructed. Existing approvals, ledgers and publications are untouched.
+    """
+    if state['history_migrated']:
+        return
+    if not store.exists(LEGACY_INDEX):
+        names = []
+        try:
+            directory = store.policy.fs.open_directory(store.path('scans'))
+        except FileNotFoundError:
+            directory = None
+        if directory is not None:
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if len(names) >= 4096:
+                            raise LoopError('legacy_history_unbounded')
+                        names.append(entry.name)
+            finally:
+                os.close(directory)
+        legacy = []
+        for name in sorted(names):
+            if not name.endswith('.json') or not storage.RUN_ID.fullmatch(name[:-5]):
+                continue
+            report = store.read('scans/' + name)
+            if report.get('scan_id') != name[:-5]:
+                raise LoopError('legacy_history_invalid')
+            _import_participation(state, report)
+            if not report.get('loop_engine'):
+                legacy.append({'scan_id': name[:-5], 'date': imp._date(report['date'])})
+        # Participation carry-in is committed with the index, so a crash between
+        # index and state publication does not discard migrated executions.
+        store.write(LEGACY_INDEX, {'version': 1, 'legacy': legacy,
+                                  'participation': state['participation']})
+    index = store.read(LEGACY_INDEX)
+    if (not isinstance(index, dict) or set(index) != {'version', 'legacy', 'participation'} or
+            index['version'] != 1 or not isinstance(index['legacy'], list) or
+            len(index['legacy']) > 4096 or not isinstance(index['participation'], list) or
+            len(index['participation']) > HISTORY_LIMIT):
+        raise LoopError('legacy_history_invalid')
+    for entry in index['participation']:
+        _validate_history(entry)
+        _remember(state, entry['scan_id'], entry['role'], entry)
+    pointers = {'scans/' + e['scan_id'] + '.json' for e in state['completed']}
+    for offset in (0, 1):
+        date = (_stamp(state['high_water_at']).date() if state['high_water_at'] else
+                _clock().date()) - dt.timedelta(days=offset)
+        pointers.add('days/' + date.isoformat() + '.json')
+    for name in sorted(pointers):
+        if store.exists(name):
+            _import_participation(state, store.read(name))
+    if state['round']:
+        _import_participation(state, state['round']['report'])
+    state['history_migrated'] = True
+    _write_state(store, state)
+
+
 def _legacy_reports(store, date):
     """Bounded exact private scans, deduplicated by scan ID (days is a pointer).
 
@@ -393,29 +548,16 @@ def _legacy_reports(store, date):
             raise LoopError('legacy_history_invalid')
         if not report.get('loop_engine'):
             reports[report.get('scan_id', 'legacy-day-' + date)] = report
-    try:
-        directory = store.policy.fs.open_directory(store.path('scans'))
-    except FileNotFoundError:
-        return reports
-    try:
-        names = []
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                if len(names) == 4096:
-                    raise LoopError('legacy_history_unbounded')
-                names.append(entry.name)
-    finally:
-        os.close(directory)
-    for name in sorted(names):
-        if not name.endswith('.json') or not storage.RUN_ID.fullmatch(name[:-5]):
-            continue
-        report = store.read('scans/' + name)
-        if report.get('date') == date and not report.get('loop_engine'):
-            scan_id = report.get('scan_id')
-            if scan_id != name[:-5]:
+    index = store.read(LEGACY_INDEX)
+    for entry in index['legacy']:
+        if (not isinstance(entry, dict) or set(entry) != {'scan_id', 'date'} or
+                not storage.RUN_ID.fullmatch(str(entry['scan_id']))):
+            raise LoopError('legacy_history_invalid')
+        if entry['date'] == date:
+            report = store.read('scans/' + entry['scan_id'] + '.json')
+            if report.get('scan_id') != entry['scan_id'] or report.get('date') != date:
                 raise LoopError('legacy_history_invalid')
-            # Prefer the scan if a crash left its day projection behind.
-            reports[scan_id] = report
+            reports[entry['scan_id']] = report
     return reports
 
 
@@ -425,6 +567,9 @@ def _day_ledger(store, state, date, config):
                                         'legacy_cost_status': 'no_prior_activity'})
     reports = _legacy_reports(store, date)
     for scan_id, report in sorted(reports.items()):
+        # An exact day pointer may introduce legacy activity after the one-time
+        # directory migration. Import facts as well as costs, idempotently.
+        _import_participation(state, report)
         if scan_id in day['legacy_seen']:
             continue
         agents = report.get('agents')
@@ -474,7 +619,27 @@ def _archive_days(store, state):
         del state['days'][old]
 
 
-def _new_round(state, now, discovery, paths, dependencies):
+def _controls(dependencies):
+    return {key: value for key, value in dependencies.items() if key != 'source_fingerprints'}
+
+
+def _migrate_cursors(state, paths, discovery):
+    if state['cursor_order'] == 1:
+        return
+    # Legacy integer indices refer to scope order. Map by exact path once;
+    # owner-first ordering changes no membership or canonical line meaning.
+    for role, cursor in list(state['cursors'].items()):
+        new = imp.role_scope(role, paths, discovery)
+        old = [p for p in paths if p in new]
+        if (isinstance(cursor, dict) and type(cursor.get('file_index')) is int and
+                0 <= cursor['file_index'] < len(old)):
+            cursor['file_index'] = new.index(old[cursor['file_index']])
+        else:
+            state['cursors'].pop(role, None)
+    state['cursor_order'] = 1
+
+
+def _new_round(store, state, now, discovery, paths, snapshots, dependencies, previous=None):
     report = {'version': 'improvement-private-v1', 'loop_engine': STATE_VERSION,
               'date': now.date().isoformat(), 'generated_at': now.isoformat(),
               'started_at': now.isoformat(), 'scan_id': _id(), 'status': 'failed',
@@ -486,7 +651,10 @@ def _new_round(state, now, discovery, paths, dependencies):
               'scope_input': str((imp.ROOT / discovery['scope_file']).absolute()),
               'scope_override': False, 'config_fingerprint': dependencies['config_fingerprint'],
               'loop_dependencies': dependencies}
-    state['round'] = {'report': report, 'drafts': {}, 'feedback': copy.deepcopy(state['feedback'])}
+    snapshot = sealed.publish(store, report['scan_id'], paths, snapshots,
+                              discovery['limits'], previous)
+    state['round'] = {'report': report, 'drafts': {}, 'feedback': copy.deepcopy(state['feedback']),
+                      'snapshot': snapshot}
     state['stage_index'] = 0
 
 
@@ -611,7 +779,8 @@ def _persist_round(store, state, config, now):
             state['last_review_at'] = report['review_completed_at']
             if not any(item['scan_id'] == report['scan_id'] for item in state['completed']):
                 state['completed'].append({'scan_id': report['scan_id'],
-                    'at': report['review_completed_at'], 'dependency_digest': state['dependency_digest']})
+                    'at': report['review_completed_at'],
+                    'dependency_digest': contract.digest(report['loop_dependencies'])})
             state['completed'] = state['completed'][-config['max_completed_rounds']:]
 
 
@@ -674,10 +843,16 @@ def _recover(store, state, config, now):
             'cost_status': 'cli_estimated_usd' if _number(known_cost) else 'unknown',
             'started_at': pending['at'],
             'finished_at': now.isoformat()})
+        _remember(state, report['scan_id'], role, report['agents'][contract.ROLES.index(role)], pending)
         if stage == 'specialist':
             drafts = state['round']['drafts'].get(role, {}).get('candidates', [])
-            _record_feedback(state, role, [_feedback_entry(c, reason='specialist_interrupted_unknown',
-                draft_digest=contract.digest(drafts)) for c in drafts][:2])
+            entries = [_feedback_entry(c, reason='specialist_interrupted_unknown',
+                draft_digest=contract.digest(drafts)) for c in drafts][:2]
+            if not drafts:
+                entries = copy.deepcopy(state['feedback'].get(role, [])[:2]) + [
+                    _feedback_entry(reason='specialist_interrupted_unknown',
+                                    draft_digest=contract.digest(drafts))]
+            _record_feedback(state, role, entries)
         else:
             report['review_complete'] = False
             _review_feedback(state, 'reviewer_interrupted_unknown')
@@ -732,7 +907,7 @@ def _deadline(seconds):
 
 
 def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
-                keys, runner, selected, config, budget):
+                keys, runner, selected, config, budget, coverage=None):
     source_bytes = sum(len(snapshots[path]['content'] or b'') for path in own_paths)
 
     def bounded_runner(actual_role, prompt, runtime_keys, **options):
@@ -740,11 +915,18 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
         # receives the small line window. Drafts are untrusted advice, not proof.
         extra = ''
         if actual_role != 'reviewer':
-            extra = ('\nReview and refine these LOCAL DRAFTS against your approved sources. '
+            extra = ('\nIndependently inspect your approved sources and produce grounded candidates, '
+                     'including when local_drafts is empty or failed. Local drafts are optional advice. '
+                     'Review and refine these LOCAL DRAFTS against your approved sources. '
                      'Reject unsupported claims; return the existing candidates schema. '
                      'No draft is an eligible proposal or proof of specialist participation. '
                      'Prior feedback refers to the same draft batch when draft_digest matches.\n' +
                      contract.canonical_json({'local_drafts': draft, 'feedback': feedback}).decode('utf-8'))
+        else:
+            prompt = ('\nIndependently evaluate coverage and whether proposals are supported, even '
+                       'with an empty pool or failed/missing local drafts. Empty reviews are valid '
+                       'only after your own assessment; never infer successful coverage from them.\n'
+                       + contract.canonical_json({'coverage': coverage}).decode('utf-8') + '\n' + prompt)
         prompt = agent_models.redact(prompt + extra, runtime_keys)
         if source_bytes + len(prompt.encode('utf-8')) > discovery['limits']['max_context_bytes']:
             raise LoopError('cloud_context_too_large')
@@ -815,10 +997,35 @@ def _publication_name(date):
 def _window_agents(report, start, end):
     agents = _empty_agents()
     for agent in report['agents']:
-        stamp = agent.get('finished_at', agent.get('started_at'))
+        stamp = agent.get('started_at', agent.get('finished_at'))
         if stamp is not None and start <= _stamp(stamp) < end:
             _role_agent({'agents': agents}, agent['role'], copy.deepcopy(agent))
     return agents
+
+
+def _history_agents(state, start, end):
+    agents = _empty_agents()
+    for entry in sorted(state['participation'], key=_history_order):
+        if start <= _stamp(entry['started_at']) < end:
+            agent = copy.deepcopy(entry)
+            if agent['status'] == 'reserved':
+                agent['status'] = 'failed'  # uncertain attempt, never success
+            _role_agent({'agents': agents}, agent['role'], agent)
+    return agents
+
+
+def _morning_summary(state, agents, start, end, current_review, later_attempts=False):
+    succeeded = sum(a['status'] == 'succeeded' for a in agents)
+    failed = sum(a['status'] in ('failed', 'unavailable') for a in agents)
+    completed = any(start <= _stamp(e['at']) < end for e in state['completed'])
+    assessment = ('현재 소스에 유효한 최신 완료 검토의 제안을 정리했습니다.' if current_review else
+                  '고정 소스 검토는 완료됐지만 현재 소스에 유효한 완료 검토 제안이 없습니다.' if completed else
+                  '독립 검토가 완료되지 않아 현재 소스에 유효한 제안이 없습니다.')
+    if later_attempts:
+        assessment += ' 선택한 완료 검토 뒤의 별도 회차 참여는 해당 제안의 검토에 포함되지 않았습니다.'
+    return ('이전 오전 9시부터 오늘 오전 9시까지 역할별 마지막 실제 시도: 성공 {}개, '
+            '실패·준비 실패 {}개, 미호출 {}개. {} 사용자 승인을 대신하지 않습니다.').format(
+                succeeded, failed, 5 - succeeded - failed, assessment)
 
 
 def _window_locals(report, start, end):
@@ -842,11 +1049,12 @@ def _freeze_morning(store, state, now, discovery, dependencies):
         store.write(journal_name, journal)
         return journal
     chosen = None
+    chosen_completed_at = None
     dependency_digest = contract.digest(dependencies)
     eligible = [entry for entry in state['completed'] if
                 entry['dependency_digest'] == dependency_digest and
                 start <= _stamp(entry['at']) < end]
-    for entry in sorted(eligible, key=lambda item: (item['at'], item['scan_id']), reverse=True):
+    for entry in sorted(eligible, key=lambda item: (_stamp(item['at']), item['scan_id']), reverse=True):
         candidate = store.read('scans/' + entry['scan_id'] + '.json')
         if candidate.get('review_complete') and candidate.get('loop_dependencies') == dependencies:
             # Revalidate all verdict coverage instead of trusting a stored flag.
@@ -855,26 +1063,30 @@ def _freeze_morning(store, state, now, discovery, dependencies):
                 candidate['proposals'], candidate['approved_files'], private=True)
             if any(a['role'] == 'reviewer' and a['status'] == 'succeeded' for a in candidate['agents']):
                 chosen = copy.deepcopy(candidate)
+                chosen_completed_at = _stamp(entry['at'])
                 break
+    later_attempts = False
     if chosen is not None:
         # A quota/downtime pause may stretch one round beyond the window.
         # Keep complete private provenance, but never present its old owners as
         # today's successful participation. Its fresh reviewer remains genuine.
         chosen['reviewed_agents'] = copy.deepcopy(chosen['agents'])
         chosen['reviewed_local_participation'] = copy.deepcopy(chosen['local_participation'])
-        chosen['agents'] = _window_agents(chosen, start, end)
+        chosen['agents'] = _history_agents(state, start, end)
         chosen['local_participation'] = _window_locals(chosen, start, end)
-        if not all(a['status'] == 'succeeded' for a in chosen['agents']):
+        later_attempts = any(entry['scan_id'] != chosen['scan_id'] and
+            chosen_completed_at < _stamp(entry['started_at']) < end and
+            start <= _stamp(entry['started_at']) for entry in state['participation'])
+        if later_attempts or not all(a['status'] == 'succeeded' for a in chosen['agents']):
             chosen['status'] = 'partial'
-            chosen['errors'].append('participation_outside_report_window')
+            chosen['errors'].append('latest_window_participation_incomplete')
     if chosen is None:
         current = state['round']['report'] if state['round'] else None
-        agents = _empty_agents()
+        agents = _history_agents(state, start, end)
         locals_ = []
         if current and current['loop_dependencies'] == dependencies:
-            agents = _window_agents(current, start, end)
             locals_ = _window_locals(current, start, end)
-        any_ok = any(a['status'] == 'succeeded' for a in agents) or bool(locals_)
+        any_ok = any(a['status'] != 'not_called' for a in agents)
         chosen = {'version': 'improvement-private-v1', 'loop_engine': STATE_VERSION,
                   'proposals': [], 'agents': agents, 'local_participation': locals_,
                   'documentation': dict(imp.NO_DOCUMENT_EDITS), 'review_complete': False,
@@ -888,10 +1100,10 @@ def _freeze_morning(store, state, now, discovery, dependencies):
     reviewed_scan_id = chosen.get('scan_id')
     chosen.update(scan_id=_id(), date=date, generated_at=now.isoformat(),
                   reviewed_scan_id=reviewed_scan_id,
+                  participation_basis='admission-v1',
                   report_window={'start': start.isoformat(), 'end': end.isoformat()},
-                  summary=('이전 오전 9시부터 오늘 오전 9시까지의 최신 완료 검토를 정리했습니다. 사용자 승인을 대신하지 않습니다.'
-                           if chosen['review_complete'] else
-                           '이전 오전 9시부터 오늘 오전 9시까지 현재 소스에 유효한 독립 검토가 완료되지 않았습니다.'))
+                  summary=_morning_summary(state, chosen['agents'], start, end,
+                                           chosen['review_complete'], later_attempts))
     payload = contract.build_web_report(chosen, discovery['limits']['max_reported_proposals'])
     journal = {'version': 'improvement-publication-v1', 'date': date, 'status': 'prepared',
                'at': now.isoformat(), 'digest': payload['digest'], 'report': chosen, 'payload': payload}
@@ -919,20 +1131,21 @@ def _freeze_unavailable_morning(store, state, now, reason):
                    'status': 'legacy_preserved', 'at': now.isoformat(), 'digest': None}
         store.write(name, journal)
         return journal
-    agents, locals_ = _empty_agents(), []
+    agents, locals_ = _history_agents(state, start, end), []
     current = state['round']['report'] if state['round'] else None
     if current:
-        agents = _window_agents(current, start, end)
         locals_ = _window_locals(current, start, end)
     report = {'version': 'improvement-private-v1', 'loop_engine': STATE_VERSION,
               'scan_id': _id(), 'date': date, 'generated_at': now.isoformat(),
-              'status': 'partial' if any(a['status'] == 'succeeded' for a in agents) else 'failed',
+              'status': 'partial' if any(a['status'] != 'not_called' for a in agents) else 'failed',
               'proposals': [], 'agents': agents, 'local_participation': locals_,
               'documentation': dict(imp.NO_DOCUMENT_EDITS), 'approved_files': [],
               'review_complete': False, 'errors': ['current_dependencies_unavailable'],
               'readiness_reason': reason,
+              'participation_basis': 'admission-v1',
               'report_window': {'start': start.isoformat(), 'end': end.isoformat()},
-              'summary': '현재 설정과 소스의 유효성을 확인할 수 없어 독립 검토 완료 후보를 선택하지 못했습니다.'}
+              'summary': (_morning_summary(state, agents, start, end, False) +
+                          ' 현재 설정과 소스의 유효성을 확인할 수 없어 후보를 선택하지 못했습니다.')}
     payload = contract.build_web_report(report)
     journal = {'version': 'improvement-publication-v1', 'date': date, 'status': 'prepared',
                'at': now.isoformat(), 'digest': payload['digest'], 'report': report,
@@ -1169,6 +1382,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     if state['high_water_at'] and now < _stamp(state['high_water_at']):
         return dict(_summary(state, now, config), status='paused', reason='clock_rollback',
                     message_ko='시계가 이전 기록보다 과거여서 모델 호출과 보고 확정을 보류했습니다.')
+    _migrate_history(store, state)
     _recover(store, state, config, now)
     # Repair a crash between the atomic completion/settlement write and its
     # derived private scan/proposal writes. This never repeats a model call.
@@ -1189,25 +1403,49 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                     local_model.validate_config(supplied_local_config))
     if local_config['limits']['timeout_seconds'] + 80 > config['tick_timeout_seconds']:
         raise LoopError('local_timeout_exceeds_tick')
-    discovery, paths, snapshots, dependencies = _dependencies(config, local_config, store.policy)
+    active_seal = (state['round'] is not None and state['round'].get('snapshot') is not None and
+                   state['stage_index'] < len(STAGES))
+    discovery, paths, snapshots, dependencies = _dependencies(
+        config, local_config, store.policy, allow_unavailable_sources=active_seal)
     dependency_digest = contract.digest(dependencies)
-    if state['dependency_digest'] != dependency_digest:
-        if state['round']:
-            old = state['round']['report']
-            old['review_complete'] = False
-            old['status'] = 'partial' if old['proposals'] else 'failed'
-            old['errors'].append('dependencies_changed')
-            for record in old['proposals']:
+    previous = state['round'].get('snapshot') if state['round'] else None
+    _migrate_cursors(state, paths, discovery)
+    if state['round']:
+        old = state['round']['report']
+        controls_changed = _controls(old['loop_dependencies']) != _controls(dependencies)
+        legacy_active = previous is None
+        if controls_changed or legacy_active:
+            # Invalidate progression, never erase actual attempts or completed
+            # review provenance. A legacy active round cannot prove pinned bytes.
+            invalidated = copy.deepcopy(old)
+            invalidated['review_complete'] = False
+            invalidated['status'] = 'partial' if old['proposals'] else 'failed'
+            invalidated['errors'].append('dependencies_changed' if controls_changed else
+                                         'legacy_snapshot_unavailable')
+            for record in invalidated['proposals']:
                 record.pop('review', None)
-            # Never rewrite a completed immutable scan used by an approval.
-            store.write('loop/invalidated/' + old['scan_id'] + '.json', old)
-        state.update(dependency_digest=dependency_digest, round=None, stage_index=0,
-                     feedback={}, cursors={}, completed=[])
+            store.write('loop/invalidated/' + old['scan_id'] + '.json', invalidated)
+            state.update(round=None, stage_index=0, feedback={})
+            if controls_changed:
+                state.update(cursors={}, cursor_order=1)
+    state['dependency_digest'] = dependency_digest
     if state['round'] is None or state['stage_index'] == len(STAGES):
-        _new_round(state, now, discovery, paths, dependencies)
+        if snapshots is None:
+            raise LoopError('current_sources_unavailable')
+        _new_round(store, state, now, discovery, paths, snapshots, dependencies, previous)
+    pinned = state['round']['report']
+    if state['round']['snapshot']['scan_id'] != pinned['scan_id']:
+        raise sealed.SnapshotError('snapshot_invalid')
+    snapshots = sealed.load(store, state['round']['snapshot'], pinned['approved_files'],
+                            pinned['source_fingerprints'], discovery['limits'])
+    paths = pinned['approved_files']
+    pinned['current_fresh_at_last_tick'] = pinned['loop_dependencies'] == dependencies
     # Morning is independent of budget, quota and model availability. It runs
     # before admission and will never invoke a model to manufacture a report.
     _freeze_morning(store, state, now, discovery, dependencies)
+    # Candidate identities, evidence and completion belong to the pinned input.
+    # Live dependencies above are used ONLY for current freshness and selection.
+    dependencies = pinned['loop_dependencies']
     _write_state(store, state)
     midnight = (now + dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     if (midnight - now).total_seconds() <= config['midnight_guard_seconds']:
@@ -1220,18 +1458,18 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     own_paths = imp.role_scope(role, paths, discovery)
     if not own_paths:
         return _skip_stage(store, state, day, slot, now, config, 'owner_scope_empty')
-    if stage == 'specialist' and not state['round']['drafts'].get(role, {}).get('candidates'):
-        return _skip_stage(store, state, day, slot, now, config, 'local_draft_unavailable')
-    if stage == 'independent_reviewer':
-        report = state['round']['report']
-        if not report['proposals'] and not all(a['status'] == 'succeeded' for a in report['agents'][:-1]):
-            return _skip_stage(store, state, day, slot, now, config, 'specialist_pool_unavailable')
     budget, spec, feedback, prepared, cursor = None, None, [], None, None
     if stage == 'local_explorer':
         cursor = state['cursors'].get(role, {'file_index': 0, 'line': 1})
-        feedback = _bounded_feedback(state['feedback'].get(role, []), own_paths, local_config)
-        prepared = local_model.prepare_request(role, own_paths, snapshots, config=local_config,
-            cursor=cursor, feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
+        try:
+            feedback = _bounded_feedback(state['feedback'].get(role, []), own_paths, local_config)
+            prepared = local_model.prepare_request(role, own_paths, snapshots, config=local_config,
+                cursor=cursor, feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
+        except (Exception, KeyboardInterrupt) as exc:
+            reason = (exc.reason if isinstance(exc, local_model.LocalModelError) and
+                      exc.reason in local_model._REASONS else 'input_invalid')
+            prepared = {'status': 'skipped', 'reason': reason, 'sources': [],
+                        'skipped_lines': [], 'next_cursor': cursor}
         state['cursors'][role] = prepared['next_cursor']
         if prepared['status'] != 'ready':
             state['round']['drafts'][role] = {'candidates': [], 'reason': prepared['reason']}
@@ -1284,6 +1522,9 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                'read_windows': [{key: item[key] for key in ('path', 'start_line', 'end_line')}
                                 for item in prepared['sources']] if prepared else []}
     state['inflight'] = pending
+    if stage != 'local_explorer':
+        _remember(state, pending['round_id'], role,
+                  {'provider': provider, 'model': model, 'status': 'reserved'}, pending)
     day['slots'][slot].update(status='calling', stage=stage, role=role,
                              reservation_usd=budget)
     _write_state(store, state)
@@ -1303,7 +1544,9 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
         feedback = _bounded_feedback(state['feedback'].get(role, []), own_paths, local_config)
         participation, parsed = _cloud_call(role, own_paths, snapshots, discovery,
             report['proposals'], drafts, feedback, keys, runner or agent_models.run,
-            store.policy, config, budget)
+            store.policy, config, budget,
+            coverage=[{'role': a['role'], 'status': a['status'],
+                       'read_files': a.get('read_files', [])} for a in report['agents'][:-1]])
         # Use the supplied trusted clock, not helper wall time, for window tests.
         participation.update(started_at=now.isoformat(), finished_at=now.isoformat())
         _role_agent(report, role, participation)
@@ -1327,6 +1570,13 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                           imp.sanitize_role_failure(participation.get('reason')))
                 entries = [_feedback_entry(candidate, reason=reason, draft_digest=contract.digest(drafts))
                            for candidate in drafts][:2]
+                if not drafts:
+                    # Independent inspection may legitimately yield no candidate.
+                    # Keep the local failure/empty diagnostic for the next window,
+                    # and record this distinct specialist outcome without inventing
+                    # a candidate or relabeling either attempt as successful.
+                    entries = copy.deepcopy(state['feedback'].get(role, [])[:2]) + [
+                        _feedback_entry(reason=reason, draft_digest=contract.digest(drafts))]
             _record_feedback(state, role, entries)
         else:
             if parsed is not None:
@@ -1377,15 +1627,27 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
         _account_cross_day(state, pending, now)
     participation['finished_at'] = now.isoformat()
     state['high_water_at'] = max(_stamp(state['high_water_at']), now).isoformat()
-    # Re-read fingerprints after the call, before marking its review current.
+    # Snapshot completion is independent of live source freshness. Control
+    # changes remain fail-closed; next tick invalidates their progression.
     try:
-        _, _, _, after = _dependencies(config, local_config, store.policy)
-        if after != dependencies:
+        after_config = load_config()
+        after_local = (local_model.load_config(root=imp.ROOT) if supplied_local_config is None else
+                       local_model.validate_config(supplied_local_config))
+        _, _, _, after = _dependencies(after_config, after_local, store.policy,
+                                      allow_unavailable_sources=True)
+        state['dependency_digest'] = contract.digest(after)
+        report['current_fresh_at_last_tick'] = after == dependencies
+        if _controls(after) != _controls(dependencies):
             report['review_complete'] = False
             report['errors'].append('dependencies_changed_during_call')
     except Exception:
-        report['review_complete'] = False
+        state['dependency_digest'] = None
+        report['current_fresh_at_last_tick'] = False
         report['errors'].append('freshness_unavailable_after_call')
+        # Cannot establish whether controls changed; do not certify completion.
+        report['review_complete'] = False
+    if stage != 'local_explorer':
+        _remember(state, pending['round_id'], role, participation, pending)
     state['stage_index'] += 1
     state['inflight'] = None
     day['slots'][slot]['status'] = participation['status']
@@ -1430,7 +1692,8 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
                     # Disk failure can prevent this diagnostic write. The last
                     # durable pending reservation remains authoritative then.
                     reason = (exc.reason if isinstance(exc, local_model.LocalModelError) else
-                              str(exc) if isinstance(exc, LoopError) else 'tick_unavailable')
+                              str(exc) if isinstance(exc, (LoopError, sealed.SnapshotError)) else
+                              'tick_unavailable')
                     state['pause_reason'] = reason
                     if state['inflight'] is not None:
                         # Leave durable pending intact for next-slot recovery;

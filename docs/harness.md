@@ -3,6 +3,16 @@
 [전체 하네스 설계](harness-design.md)와 [ADR 목록](adr/README.md)은 목표·책임·격리·검토·게시의
 설계 기준을 설명한다. 이 문서는 환경 준비와 상세 명령을 다룬다.
 
+2026-10-21 연구 진행 보존 수리는 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)와
+[최신 인계](improvements.md#진행-보존-수리의-문서-영향과-실행기-인계)를 따른다. local 실패 뒤
+specialist와 빈 pool reviewer의 정규 독립 slot, sealed 입력9단계와 stale 승인/execute 거부,
+durable cloud 참여·09시 경계·legacy bounded 이행·snapshot 변조/crash no-call을 Lab engine→
+Store 재개 경로의 합성 회귀로 작성했다. live source 읽기 불가와 control 무효화를 구분하며
+current freshness를 snapshot review_complete로 대신하지 않는다. 작성·읽기 검토는 검사 통과가 아니다.
+이 worker는 검사·실모델·Git·네트워크를 실행하지 않았다. 실행기가 새 Claude 의미 검토와 full
+make check를 수행하고 기존 Git 역할·parent GitHub/CI·merge/cleanup을 잇는다. 실제 hourly
+성공 관측은 별도다. 메인 제공 오늘09시 failed/0카드 보고는 불변 보존하며 복구 초안으로 고치지 않는다.
+
 2026-10-19 현재 정책은 [ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2 local
 작업/검증 + remote terminal archive와 [ADR0022](adr/0022-documentation-only-validation.md)의
 실제 최종 diff 기반 문서 검증이다. 아래 과거 실행별 NFS 유지 서술은 당시 기록이며 개발 작업의
@@ -144,7 +154,7 @@ rediscovery로 human state를 덮어쓰거나 옛 승인을 새 설정에 결합
 hourly tick은 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
 local(django)→django→독립 Claude의9단계 중 하나만 진행하며 모델 최대1회·로컬 포함 하루24회다.
 local은 owner 승인 파일의 작은 연속 numbered window만 받고 durable cursor로 순환한다.
-긴 한 줄은 slice 없이 skip하며 실패/빈 초안이면 관련 specialist를 미호출한다. 정식 후보는 기존
+긴 한 줄은 slice 없이 local만 skip하며 실패/빈 초안에도 관련 specialist를 정규 slot에 호출한다. 정식 후보는 기존
 specialist가 소스 확인 후 만들고 다음 round의 실제 prompt에 정제 issue와 specialist/Claude
 review.reason을 이어받는다. local 참여는 private에서 mlx-vlm/model/stage/owner_role로 구분한다.
 web-v1 agents는 기존5역할만 담고 원문/endpoint/비용을 공개하지 않는다. 기존37개 읽기 scope를 늘리지 않는다.

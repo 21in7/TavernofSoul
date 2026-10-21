@@ -85,7 +85,7 @@ _CANDIDATE_REASONS = frozenset((
 _REASONS = frozenset((
     'config_invalid', 'config_unavailable', 'config_permissions', 'endpoint_invalid',
     'input_invalid', 'feedback_invalid', 'feedback_too_large', 'context_too_large',
-    'missing_source', 'empty_source', 'line_too_long', 'guard_required',
+    'missing_source', 'empty_source', 'cursor_exhausted', 'line_too_long', 'guard_required',
     'transport_failed', 'timeout', 'response_too_large', 'headers_too_large',
     'response_malformed', 'redirect_refused', 'http_failed', 'model_mismatch',
     'response_incomplete', 'tools_refused', 'empty_response', 'candidate_invalid',
@@ -281,8 +281,10 @@ def select_window(approved_files, snapshots, cursor=None, *, config, byte_budget
     if not lines:
         return result
     if line > len(lines):
-        # A changed source needs a fingerprint reset, not a silent cursor wrap.
-        raise LocalModelError('input_invalid')
+        # A later round may pin a shorter file. Advance once without slicing,
+        # replaying the old prefix or resetting every owner's progress.
+        result['reason'] = 'cursor_exhausted'
+        return result
     window = {'path': path, 'start_line': line, 'end_line': line, 'numbered_lines': []}
     # Include the actual path and original line-number widths in the schema
     # overhead. This empty window is a sizing probe, never transmitted.
