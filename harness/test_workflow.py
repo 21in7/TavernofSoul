@@ -29,8 +29,10 @@ def isolated_storage(monkeypatch):
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
+    # Synthetic projects choose their own modes; do not inherit parent controls.
     for key in list(os.environ):
-        if key.startswith(('GIT_', 'SSH_', 'GCM_')) or key in ('GIT', 'GH_TOKEN', 'GITHUB_TOKEN', 'EMAIL'):
+        if key.startswith(('GIT_', 'SSH_', 'GCM_')) or key in (
+                'GIT', 'READ_ONLY', 'GH_TOKEN', 'GITHUB_TOKEN', 'EMAIL'):
             monkeypatch.delenv(key, raising=False)
     home = tmp_path / 'git-home'
     home.mkdir()
@@ -179,6 +181,38 @@ def test_workflow_hands_github_to_parent_only_after_review_checks_and_apply(proj
     assert set(ledger['files']) == {'parser_tidy/example.py'}
     assert ledger['step'] == 'repository' and 'pr_number' not in ledger
     assert calls[-1][2] == Path(report['model_workspace'])
+
+
+def test_parent_read_only_is_isolated_before_synthetic_github_preparation(request, monkeypatch):
+    monkeypatch.setenv('READ_ONLY', '1')
+    # Request project lazily so the inherited control is present during setup.
+    project = request.getfixturevalue('project')
+    assert 'READ_ONLY' not in os.environ
+    enable_github(project, monkeypatch)
+    calls, checks = [], []
+    name = 'parser_tidy/example.py'
+    def checker(candidate, command, report_dir, keys, policy):
+        checks.append(command)
+        if command == 'check':
+            assert (candidate / name).read_text() == 'validated edit\n'
+            assert (project / name).read_text() == 'existing parser edit\n'
+        return successful_check(candidate, command, report_dir, keys, policy)
+    report = run_fixture(runner=runner_for(calls), checker=checker)
+    assert report['status'] == 'awaiting_github', report.get('error')
+    assert checks == ['doctor', 'check']
+    assert [role for role, _, _ in calls] == ['coordinator', 'parser', 'reviewer', 'git']
+    assert calls[-1][1] is False
+    assert report['review']['verdict'] == 'approved'
+    assert report['applied'] == [name]
+    assert (project / name).read_text() == 'validated edit\n'
+    assert report['github']['status'] == 'awaiting_connector'
+    directory = Path(report['report']).parent
+    assert project in directory.parents
+    journal = json.loads((directory / 'github.json').read_text())
+    assert journal['status'] == 'awaiting_connector' and journal['step'] == 'repository'
+    assert set(journal['files']) == {name}
+    assert journal['files'][name]['after']['content'] == 'validated edit\n'
+    assert 'pr_number' not in journal
 
 
 @pytest.mark.parametrize('mode', ['read_only', 'no_git'])
