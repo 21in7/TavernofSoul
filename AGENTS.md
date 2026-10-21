@@ -1,5 +1,20 @@
 # TavernofSoul 작업 지도
 
+2026-10-21 연구 진행·보고 수리는 [ADR0025](docs/adr/0025-progress-preserving-improvement-reviews.md)를
+따른다. 이번 승인32개는 coordinator 작업 정확히 하나이며 runtime 읽기 승인37개를 늘리지 않는다.
+보존 초안 준비는 구현 성공·검토·검증·적용이 아니다. 아래 이전21개 프로토콜 수리 기록은 당시 이력이다.
+local 실패/빈 초안과 빈 pool은 정규 specialist/reviewer slot을 생략할 근거가 아니다.
+private 두 bank의 sealed source snapshot을 매 호출 전 검증하고, source-only 변화에는 회차 진행과
+cursor를 보존한다. live source를 읽을 수 없어도 control 검증과 seal이 유효한 active 회차만
+독립 검토를 마칠 수 있으며 현재 freshness·public eligible·approve·execute 권한은 얻지 않는다.
+scope/ownership/config/provider/model/protocol 변화는 기존대로 진행을 무효화한다.
+오전 cloud 참여는 회차와 독립된 bounded durable history의 window 내 마지막 실제 시도다.
+현재 dependencies 일치 최신 완료 review 하나의 후보 선택과 분리하며, 뒤의 별도 회차 참여를
+선택한 제안의 검토로 표시하지 않는다. private trace·local·cost·진단은 public에 추가하지 않는다.
+메인이 전달한 2026-10-21 09시 failed/0카드 보고는 실제 전달 관측이며 불변 보존한다.
+이번 최종 코드의 새 Claude 의미 검토·full make check·scoped apply·Git 역할과 parent GitHub/CI
+전달 및 실제 hourly 성공 관측은 별도 증거가 필요하다. worker/reviewer는 이를 실행하지 않는다.
+
 이 저장소는 Tree of Savior 게임 데이터를 수집·파싱하고 Django로 제공한다.
 전체 흐름과 책임 경계는 [docs/architecture.md](docs/architecture.md),
 검증 범위와 환경 준비는 [docs/harness.md](docs/harness.md)를 먼저 확인한다.
@@ -96,8 +111,8 @@ absent/null reset을 idle로 허용하며 private null을 미상·미활성으�
 예외가 없고 잘못된 reset·실패 envelope·model limit 부재를0%로 해석하지 않는다.
 기본 단계는 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
 local(django)→django→Claude 독립 검토다. local은 작은 연속 line window와 정제 feedback만 받고,
-초안은 기존 specialist 근거 확인 전까지 정식 proposal이 아니다. local 실패/빈 초안의 관련
-specialist는 미호출로 기록한다. 기존 37개 읽기 승인과 ownership/shared는 확대하지 않는다.
+초안은 기존 specialist 근거 확인 전까지 정식 proposal이 아니다. local 실패/빈 초안에도 관련
+specialist와 최종 reviewer는 각 정규 slot에서 승인 소스를 독립 점검한다. 기존 37개 읽기 승인과 ownership/shared는 확대하지 않는다.
 로컬 초안의 최종 프로토콜은 mlx-vlm 0.7.8 네이티브 JSON Schema constrained generation이다.
 `local-model-config-v2`의 provider는 `mlx-vlm`, `api_model`은 `model`의 상대 repository ID와
 정확히 같아야 한다. `default_model` 별칭이나 절대 호스트 경로를 요청하지 않으며 v1 mlx-lm
@@ -132,7 +147,8 @@ legacy 참여를 다룬다. 기존 Lab의 실제 engine tick 경로로 다음-ro
 공개 payload의 진단·비밀 배제를 확인하도록 검사를 작성하며 작업자·검토자는 실행하지 않는다.
 설계·운영 문서는 최종 코드와 함께 갱신한다. 기존 JSON fence 호환 수리를 다시 변경하거나
 과거 원문 없는 실패 필드·값을 추정하지 않는다. retry/fallback·스케줄·호출·예산·승인·GitHub 정책은
-유지한다. 정규 hourly 실모델·실제9단계·2026-10-21 09:00 보고는 메인 관측 전까지 pending이다.
+유지한다. 이 문단의 과거 pending 판단은 아래 ADR0025의 2026-10-21 전달 관측으로 정정한다.
+이번 변경 후 실제 hourly·최종9단계·새 오전 보고 성공은 아직 관측하지 않았다.
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
 대기가 풀릴 때까지 멈춘다. 09:00 보고 확정은 이 대기와 독립적이다.

@@ -1,5 +1,15 @@
 # 에이전트 모델 연결
 
+2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)에 따라 local은 선택적
+참고 자료다. duplicate/empty/exception/긴 줄 때문에 paired specialist나 빈 pool reviewer를
+생략하지 않으며 각 정규 slot에서 동일 sealed 승인 source를 독립 점검한다. 추가 call·재시도·
+새 provider/model fallback은 없다. 실패/부분 coverage는 전체 정상 점검으로 보고하지 않는다.
+source-only 변화에는 sealed 회차/cursor 진행을 유지하되 현재 freshness는 별도 검사하고,
+scope/ownership/config/provider/model/protocol 변화는 진행을 무효화한다. 실제 cloud 참여는
+회차와 독립된 bounded history로 오전 window에 집계한다. private local·cost·진단·원문은
+web-v1에 추가하지 않는다. 기존 인증·모델·GLM>=80%·Claude$1/reviewer$.20·틱1회/하루24회와
+승인/게시 경계는 유지한다. 최종 의미 검토·full check·실제 hourly 관측은 별도 증거가 필요하다.
+
 `harness/agent-models.json`은 역할별 공급자·모델·추론 수준과 관련 검증 명령을 지정한다.
 `harness/agent_models.py`는 기존 Codex/Claude Code CLI를 실행한다. 별도 Python SDK 설치는 필요 없다.
 다운로드·파싱·Django 운영 프로세스에는 연결하지 않으며 개발 작업에만 사용한다.
@@ -243,7 +253,7 @@ Codex는 기존 ChatGPT 로그인, GLM은 Claude Code의 기존 Coding Lite
 기본 round는 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
 local(django)→django→independent Claude reviewer다. 한 hourly tick에서 모델 최대1회·로컬 포함
 KST 하루24회이며 specialist는 local 초안을 기존 승인 소스로 검증해 정식 후보로 만든다.
-local 실패/빈 초안의 관련 specialist는 미호출로 기록하고 다음 round prompt에 정제 issue와
+local 실패/빈 초안에도 관련 specialist와 빈 pool의 reviewer를 정규 slot에 호출한다. 다음 round prompt에 정제 issue와
 specialist/Claude review.reason을 이어받는다. private local_participation은 provider=mlx-vlm,
 설정된 실제 model identity/stage=local_explorer/owner_role을 보존하며 기존5역할 참여를 위장하지 않는다.
 설정은 `local-model-config-v2`/`provider=mlx-vlm`, `api_model == model`인 검증된 상대
@@ -297,7 +307,8 @@ reset 소비는 없다. 공식 FAQ에 따라 Coding Plan 소진 시 balance 자�
 기존37개 읽기 승인과 role ownership/shared는 유지한다. 로컬은 exact path/원래 line 번호의
 작은 연속 window와 sanitized feedback만 받으며 전체 소스·SSH/home/key·도구·remote_code를
 받지 않는다. private0600 endpoint/model config digest도 loop freshness와 signed authorization에
-결합한다. source/scope/config 변경은 pool/review/feedback/cursor를 무효화하며 실제 원문이나
+결합한다. source-only 변화는 sealed snapshot 회차의 진행을 유지하고 현재 freshness만 잃는다.
+control 변경은 진행을 무효화하지만 실제 참여는 보존한다. 실제 원문이나
 비용/로컬 설정을 기존 web-v1 public shape에 추가하지 않는다.
 
 메인의 기존 서비스/터널 준비와 약19.54초 합성 추론은 이전 adapter 관측이다.

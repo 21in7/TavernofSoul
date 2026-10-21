@@ -9,6 +9,87 @@
 daily-only/하루5회/one-pass를 [ADR 0017](adr/0017-budgeted-continuous-improvement.md)의 bounded
 hourly 연구와 09:00 once 보고로 대체한다. 보고를 보고 고칠 항목을 승인하는 권한은 확대하지 않는다.
 
+## 진행 보존 수리의 문서 영향과 실행기 인계
+
+2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 local 실패 gating·
+source-only 전체 reset·선택 회차에 종속된 오전 참여 집계를 대체한다. 이번32개는 coordinator 작업
+정확히 하나다. 직전 run `1792547845263535412-a3f550`의900초 종료/applied=[]와 trusted parent의
+baseline/checkpoint 확인·첫 쓰기 직전 보존 초안 준비는 구현 성공·검토·검증·적용이 아니다.
+worker는 준비된 코드·테스트·문서에서 누락과 오류만 마무리하고 private 기록/checkpoint를 읽지 않았다.
+
+메인이 전달한 오늘 관측은 00/04/06시 local 성공, 02시 duplicate, 01/05/07시
+coordinator/parser/django 성공·정식 후보 없음, 03시 downloader 초안 부재 skip, 08시 빈 pool
+reviewer skip이다. 09시 새 회차 이후 잘못된 not_called/failed/0카드 보고가 전달됐고, 10시 source
+변경으로 회차가 다시 초기화됐다. 전날 downloader 후보2개도 문서 변경으로 무효화됐다.
+이는 parent 제공 사실이며 worker가 private 원문이나 실제 모델을 관측한 것이 아니다.
+기존 frozen 2026-10-21 보고는 수정·재생성하지 않는다. 아래 이전 보고 pending 문구와
+21개 프로토콜/진단 수리의 표는 당시 이력이며 이번 최종 코드의 성공 증거로 재사용하지 않는다.
+
+loop state는 최근192개 cloud 시도와 최대32개 완료 pointer를 별도로 보존한다. admission 시각의
+반개방 오전 window에서 역할별 마지막 실제 시도를 표시하고 scan_id/slot/stage로 중복을 없앤다.
+완료·실패·무효화·재시작에도 참여를 지우지 않으며 최신 실패가 옛 성공에 가려지지 않는다.
+후보는 현재 전체 dependency 일치 최신 완료 review 하나만 선택한다. 그 완료 뒤 별도 회차의
+성공 시도가 있어도 전체 scanned로 합치지 않고 partial과 summary로 provenance 차이를 표시한다.
+history에는 source/local/진단/cost를 추가하지 않는다. 최초 최대4096개 scan 이름의 bounded 이행 후
+directory 재탐색 없이 index/current/completed/day pointer를 사용한다. 이후 정확한 legacy day
+pointer는 실제 참여와 비용 모두 중복 없이 carry-in한다. timestamp 없는 활동은 추정하지 않는다.
+
+`improvement_snapshot.py`는 runtime 기존37개만 a/b private bank의 파일별 bounded record에
+저장하고 manifest 마지막 atomic publication과 state digest로 결합한다. 매 호출 전 전체 seal과
+fingerprints·no-follow·owner/private mode·nlink·파일/총 bytes를 검증하며 손상·누락은 no-call이다.
+모델 context·credential·scope 밖 파일·전체 repo를 지속 저장하지 않으며 snapshot은 public/archive/
+diagnostic으로 전달하지 않는다. legacy active에는 현재 bytes를 붙이지 않고 참여 보존 후 종료한다.
+snapshot Store staging은 bank당 최대38개 고정 이름이다. 강제 종료의 유효한 owned0600/nonlinked
+bounded partial만 회수하며 unsafe staging은 삭제·수정하지 않고 no-call로 남긴다.
+source-only 변경은 pinned stage/pool/feedback/cursor를 유지한다. live source가 과대/비UTF-8/unsafe로
+읽히지 않아도 control이 유효한 active seal의 검토는 끝낼 수 있지만 current freshness는 unknown이다.
+새 round는 안전한 현재 capture가 필요하며 stale/unknown 후보의 public eligible·approve·execute는
+기존 strict 전체 read dependency·ID/digest·signed approval 검증으로 차단한다. scope/ownership/
+config/provider/model/protocol 변경은 진행을 무효화하며 실제 참여는 남긴다. owner 비공유 source
+우선 탐색은 승인 membership·canonical path/원문 줄 번호를 바꾸지 않고 legacy cursor를 path로 이행한다.
+
+local duplicate/empty/exception/긴 줄·준비 실패는 해당 local slot만 소비한다. specialist는 자기
+승인 소스를 독립 점검하고 빈 pool reviewer도 최종 정규 slot에서 coverage·제안 유무를 평가한다.
+strict validator/diagnostic과 실패 상태는 보존하며 후보를 보정하지 않는다. 추가 call·retry·provider/
+model fallback은 없고 기존 예산/quota/readiness/child guard/slot·승인·Git 정책은 유지한다.
+
+시작과 최종 자체 읽기 검토의 문서 판단은 `documentation.status=updated`다. 구조·책임·입력/보고
+계약·격리·이행·복구가 바뀌므로 다음 승인 문서를 함께 갱신했다. 이는 독립 reviewer 승인이 아니다.
+
+| files | reason |
+| --- | --- |
+| AGENTS.md | 32개 coordinator1작업·37개 runtime scope·snapshot/current freshness·실제 참여와 역할 책임 |
+| docs/adr/0015-approval-gated-improvement-discovery.md | 기존 개별 승인 경계를 유지하고 현 스케줄 결정으로 연결 |
+| docs/adr/0017-budgeted-continuous-improvement.md | 구식 gating/reset·관측 pending·신규 ADR 불필요 기록을 현 결정과 구분 |
+| docs/adr/0025-progress-preserving-improvement-reviews.md | 새 결정·대안·bounded snapshot/history·이행·한계와 미실행 검증 |
+| docs/adr/README.md | ADR0025 등록과 이전 run 실패/초안 준비의 근거 수준 |
+| docs/agent-models.md | 선택적 local·독립 cloud slot·기존 provider/model/예산 경계 |
+| docs/architecture.md | snapshot helper·history/index·current freshness의 분리와 공개 경계 |
+| docs/harness-design.md | 저장/manifest·호출 전 검증·legacy 복구·무효화와 cursor 계약 |
+| docs/harness.md | Lab engine→Store 합성 회귀와 full 검증/운영 관측의 실행기 책임 |
+| docs/improvements.md | 실제 전달 관측과 현재 동작·문서 영향·실행기 인계 |
+| docs/local-models.md | local 실패/빈 pool 뒤 정규 독립 점검과 window/cursor·관측 한계 |
+| docs/workflow.md | 새 계획/실제 구현·새 의미 검토·full check·Git 역할/parent 전달 순서 |
+
+회귀는 Lab engine tick→Store 재개 경로로 source bytes/mode/존재 변화 속 동일 snapshot9단계,
+stale approve/execute 거부, live source 읽기 불가, local 실패 뒤 독립 근거 후보/빈 pool coverage,
+snapshot tamper/missing/size/owner/mode/link/crash no-call, control 변경, 최신 실패·09시 경계·
+bounded legacy·중복·frozen digest/privacy·호출 불변식을 작성·보완했다. 구식 skip/reset 기대값만
+바꾸고 기존 보안 회귀는 보존한다. 이 worker는 검사·Git·네트워크·workflow·cron·실모델을 실행하지
+않았다. 실행기는 최종 코드와 위 문서의 의미를 새 Claude와 매 repair review에서 다시 평가하고
+full make check, scoped apply, 기존 Git 역할과 parent GitHub/required CI·merge/cleanup을 잇는다.
+이번 최종 코드의 실제 hourly9단계·새 오전 보고 성공은 관측하지 않았으며 합성 회귀로 대신하지 않는다.
+legacy 기록 상한 초과는 fail-closed로 main 조정이 필요하고 timestamp 없는 과거 참여는 복원하지
+못한다. 같은 OS 계정의 state/payload 동시 재작성은 기존 Store 신뢰 경계 밖이다.
+
+이번 repair에 전달된 세 진단은 소스 읽기로 대조했다. local만 호출된 일일 한도 사례는
+cloud 전원 not_called와 failed를 기대하도록 수정했다. 초안 없는 specialist의 빈 결과·실패·
+중단이 local 복구 진단을 덮어쓰던 경로는 이전 요약 최대2개와 별도 specialist 결과를 남기도록
+고쳤고 다음 실제 local 요청까지 이어지는 합성 회귀를 보완했다. provider 변경 사례는 parser의
+기존 codex를 다시 지정하던 입력을 서로 다른 zai로 수정해 실제 control 무효화를 요구한다.
+이 진단 대조와 수정은 검사 재실행이나 통과 증거가 아니다. 새 의미 검토와 full make check는
+실행기가 담당하며 이 worker는 실행하지 않았다. 새 정책 결정은 ADR0025 안에서 유지한다.
+
 ## 구현 책임과 읽기 범위
 
 Python 3.8의 [improvement_report.py](../harness/improvement_report.py)는 I/O 없는 엄격한
@@ -70,8 +151,9 @@ source snapshot은 symlink·비정규 파일·보호 경로·private 설정을 �
 parser → local(django) → django → independent reviewer(Claude)`의 9단계다. 매 tick은 한
 단계에서 모델 최대1회, 로컬 포함 KST calendar day 최대24회다. skip도 한 시간 slot을 쓰며
 한 tick에서 다음 역할을 몰아호출하지 않는다. reviewer 단계 종료 뒤 다음 slot에 새 round를 시작한다.
-실패한 local·빈 초안·missing/empty/긴 줄 skip이면 다음 slot의 관련 specialist는
-`local_draft_unavailable`로 미호출한다. 후보도 성공 specialist pool도 없으면 reviewer도 skip한다.
+실패한 local·빈 초안·missing/empty/긴 줄·준비 실패는 local slot만 종료한다. 관련 specialist는
+다음 정규 slot에서 승인 소스를 독립 분석한다. 최종 reviewer도 빈 pool의 coverage와 제안 유무를
+독립 평가하며 local 실패나 빈 pool만으로 생략하지 않는다. 추가 call·재시도·fallback은 없다.
 quota/budget 보류는 해당 단계를 유지하고 다음 새 slot에서 admission을 다시 판단한다.
 
 로컬에는 owner별 승인 파일의 한 작은 연속 window와 정제 feedback만 보낸다. request 전체
@@ -135,7 +217,7 @@ agents에는 실제 기존 5역할만 넣고 로컬을 cloud specialist 성공�
 전송 근거 window를 벗어나면 `evidence_outside_window`다. 기존 검증 순서상 먼저 도달한
 실패만 분류하므로 정확한 값이나 모든 오류의 목록을 복원할 수 없다. loop는 allowlist 코드만
 private 기록·의견으로 전달하며 원문 prompt/response·임의 예외문·모델 오류 값은 남기지 않는다.
-실패한 초안의 관련 specialist 미호출과 web-v1 payload는 그대로이며 경로/근거 보정·재시도·
+실패한 초안의 진단과 web-v1 schema는 보존하며 specialist는 독립 점검한다. 경로/근거 보정·재시도·
 fallback으로 성공을 만들지 않는다. 자세한 분류와 한계는 [로컬 진단](local-models.md#후보-거절-진단과-한계)을 따른다.
 
 메인 제공 최초 초안은 JSON 파싱 뒤 candidate_invalid였으며 원문이 없어 당시 필드·값을
@@ -157,12 +239,12 @@ specialist가 정제한 candidate의 issue/edit_files와 설명·독립 `review.
 표시된 축약을 사용한다. 하나도 담을 수 없으면 `feedback_cannot_fit`으로 보류한다. 전체 private
 후보/검토는 잘라 저장하지 않는다. 무제한 prompt·response cache는 없다.
 
-매 tick은 source 전체의 bytes/mode/존재, scope 원문/mode/paths, discovery config,
-loop config, private local config, agent config, workflow policy의 fingerprints를 비교한다.
-변경 시 old pool/review/feedback·cursor를 무효화하고 새 round를 시작한다. invalidated 사본과
-이전 scan은 보존한다. 호출 후 source와 다시 읽은 discovery/agent/workflow 의존성을 비교하고
-검증 불가/변경이면 성공 review로 사용하지 않는다. loop/local 설정은 tick admission 때 수용한
-값을 사용하며 다음 tick과 승인 freshness에서 파일을 다시 읽는다.
+매 tick은 source 전체의 bytes/mode/존재와 scope/config/ownership/provider/model/protocol을
+비교한다. source-only 변화에도 회차의 sealed snapshot과 stage/pool/feedback/cursor는
+유지한다. review_complete는 그 고정 입력의 검토 완료다. 현재 freshness는 별도 비교하며
+불일치 후보의 public eligible·approve·execute를 차단한다. control 변경은 진행을 무효화하고
+새 snapshot을 시작하되 실제 참여와 완료 index를 보존한다. invalidated 사본과 이전 scan을
+보존하며 기존 승인·claim은 재작성하지 않는다. 호출 후 loop/local 설정도 다시 읽어 비교한다.
 loop_dependencies digest는 proposal의 discovery_fingerprint와 서명 승인에도
 묶는다. 동일 candidate가 새 설정 아래 재발견되어도 old approval을 재결합할 수 없다.
 
@@ -514,7 +596,8 @@ exact ID 오름차순으로 정렬해 최대3카드만 projection한다. eligibl
 needs_evidence도 카드에 포함될 수 있다. counts.eligible은 표시 밖을 포함한 전체 적격 수다.
 
 선택한 review의 모든 원본 참여는 private reviewed_agents/reviewed_local_participation에
-보존하고 window 밖 역할은 공개 agents에서 not_called로 남긴다. 전원 성공 조건을 못 채우면
+보존한다. 공개 agents는 선택 회차와 독립된 durable history에서 window 안 역할별 마지막
+실제 시도를 집계하며 window 밖 역할만 있으면 not_called로 남긴다. 전원 성공 조건을 못 채우면
 partial이다. 유효 review 부재·미완료·budget/quota/모델 실패에는 그 window의 실제 참여만 담은
 0카드 partial/failed로 확정한다. config/source 유효성을 확인할 수 없어도 storage와 lock이
 가능하면 0카드 실패/부분 보고를 만든다. storage/lock 실패는 확정을 지연할 수 있다.
@@ -997,6 +1080,9 @@ feedback 초과 거절·운영 상한은 유지한다. 예외 정보가 unavaila
 확정하지 않으며 새 독립 검토·전체 make check 결과는 대기다. worker는 검사를 실행하지 않았다.
 
 ## 이번 프로토콜 수리의 문서 영향
+
+아래는 이전21개 프로토콜/진단 수리 당시 판단이다. 이번32개 진행 보존 수리의 문서 판단과
+신규 ADR 여부는 [최신 인계](#진행-보존-수리의-문서-영향과-실행기-인계)를 따른다.
 
 시작 시 10개 문서 모두 요청 계약·검증·책임/배포 설명의 일치 여부를 검토 대상으로 판단했다.
 이번 진단 수리의 최종 자체 판단은 `updated`이며 실제 문서 수정은 local-models/harness/이 문서다.

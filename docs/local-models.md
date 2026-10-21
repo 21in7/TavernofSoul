@@ -1,5 +1,17 @@
 # 제한된 로컬 MLX 탐색
 
+2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 local 실패 gating과
+source-only 회차 reset을 대체한다. local duplicate/empty/exception/긴 줄·준비 실패는 해당 local
+slot만 소비하고 다음 정규 specialist는 승인 snapshot을 독립 점검한다. 빈 pool의 reviewer도
+정규 마지막 slot에서 실제 coverage와 제안 유무를 독립 평가한다. strict 후보/window validator와
+진단은 그대로이며 실패를 성공으로 바꾸거나 근거/중복을 보정하지 않는다. 추가 call/fallback은 없다.
+parent가 승인37개만 두 private bank에 sealed 저장하고 local에는 기존 단일 연속 window만 준다.
+source-only 변화와 live source 읽기 불가에도 유효 control/seal의 active 회차·cursor는 보존한다.
+owner 비공유 source를 최초 우선 탐색하되 승인 membership과 canonical path/원문 줄은 유지한다.
+snapshot 완료는 current freshness가 아니며 stale/unknown 후보의 public eligible·approve·execute는
+차단한다. private snapshot·local·diagnostic·cost는 public/archive에 넣지 않는다. 오늘09시 보고의
+메인 전달 관측과 이번 미실행 합성 회귀·미관측 실제 hourly 성공을 구분한다.
+
 Mac mini는 작은 승인 소스 부분에서 초안을 찾고, 기존 네 specialist와 Claude reviewer가
 검토한다. 로컬은 기존 역할을 대체하거나 제안 실행을 승인하지 않는다. 전체 순서·보고·예산은
 [improvements](improvements.md), 결정은 [ADR 0017](adr/0017-budgeted-continuous-improvement.md)에 둔다.
@@ -116,9 +128,12 @@ durable owner별 file/line cursor는 다음 window/파일로 순환한다. missi
 전체1.5MiB snapshot·SSH/home/key·도구 접근을 모델에 제공하지 않는다.
 
 이전 정제 issue·specialist 설명·Claude review.reason과 candidate_id/draft_digest를 제한된 feedback으로
-실제 다음 prompt에 전달한다. feedback은 비신뢰 의견이며 근거·승인이 아니다. source/scope/config
-fingerprint 변경은 pool/review/feedback/cursor를 무효화한다. 무제한 prompt/response cache는 없다.
-로컬 실패/빈 초안이면 관련 specialist는 미호출한다. private `local_participation`은 실제 mlx-vlm/
+실제 다음 prompt에 전달한다. feedback은 비신뢰 의견이며 근거·승인이 아니다. source-only 변화는
+sealed snapshot 회차의 pool/feedback/cursor를 유지한다. control 변경은 진행을 무효화한다.
+초안이 없는 독립 specialist가 후보 없이 종료하거나 실패·중단되어도 이전 local 고정 진단을
+지우지 않는다. 이전 요약 최대2개와 별도 specialist 결과 요약을 기존 bounded feedback에 남기며,
+다음 local window가 두 결과를 구별해서 받는다. 이는 후보나 성공을 보정하는 처리가 아니다.
+무제한 prompt/response cache는 없다. 로컬 실패/빈 초안에도 관련 specialist는 독립 점검한다. private `local_participation`은 실제 mlx-vlm/
 model/stage=local_explorer/owner_role/read_windows/status를 남기고 web-v1의5역할을 위장하지 않는다.
 called는 시도이며 서버 수신·읽기·성공의 증거가 아니다. 로컬 not_metered와 cloud unknown은
 실제0USD 청구를 뜻하지 않는다. reviewer 예산 보류는 그 stage를 유지하며 09:00 보고와 독립이다.
@@ -135,7 +150,7 @@ called는 시도이며 서버 수신·읽기·성공의 증거가 아니다. 로
 | `candidate_edit_files_outside_scope` | 형식이 유효하고 중복 없는 목록에 정확한 승인 밖 경로가 있음 |
 | `candidate_invalid` | 위 고정 분류가 없는 후보 계약 오류; 특정 필드를 뜻하지 않음 |
 | `evidence_outside_window` | 공통 후보/원본 줄 존재 검증은 통과했지만 실제 전송 window 밖 근거가 있음 |
-| `empty_draft` | 빈 배열을 정상 검증했으며 관련 specialist는 미호출 |
+| `empty_draft` | 빈 배열을 정상 검증했으며 다음 specialist는 참고 초안 없이 독립 점검 |
 
 먼저 도달한 실패만 분류한다. 원본에도 없는 줄·잘못된 evidence 구조는 공통 검증에서 먼저
 `candidate_invalid`일 수 있다. 사용자 노출은 코드 allowlist만 허용하며 loop private 진단/feedback에도
@@ -153,7 +168,9 @@ stage/field/type·구문 위치·임의 진단 객체는 버리며 API/CLI·tele
 사용하고 feedback은 계속 비신뢰 의견이다. 진단·비밀은 web-v1 payload/digest에 추가하지 않는다.
 세부 목록과 기존 result 보존의 구분은 [hourly private 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다.
 이번 회귀는 미실행이며 full make check·수리 검증·PR·CI·머지는 메인/실행기의 후속 작업이다.
-실제 자동 연구9단계·정규 hourly 실모델·2026-10-21 09:00 KST 보고는 메인 확인 전까지 pending이다.
+메인이 전달한 2026-10-21 09:00 KST failed/0카드 보고는 실제 전달 관측이며 수정하지 않는다.
+당시 참여 누락과 reset/skip은 ADR0025에 기록한다. 이번 최종 코드의 실제 자동 연구9단계·
+정규 hourly 실모델·새 오전 보고 성공은 별도 관측 전까지 pending이다.
 
 ### 2026-10-20 실제 duplicate 거절과 이번 생성 지침 수리
 

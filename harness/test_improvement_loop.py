@@ -8,8 +8,8 @@ not evidence of execution or host/model readiness.
 Documentation review: these tests preserve the engine API and authority boundary;
 they add no production policy. docs/local-models.md, docs/improvements.md,
 docs/harness-design.md and docs/architecture.md describe grounding, allowlisted
-private diagnostics, skipped owners and unchanged public participation. ADR 0017
-policy is preserved; historical parent observations are not test execution proof.
+private diagnostics, independent owners and durable public participation. ADR 0025
+replaces local gating and source-only resets; historical parent observations are not test execution proof.
 """
 
 import copy
@@ -411,9 +411,12 @@ class Lab:
         assert paths == imp.role_scope(role, FILES, self.discovery)
         context = options['workspace']
         assert self.root not in context.parents and context not in self.root.parents
-        assert sorted(str(p.relative_to(context)) for p in context.rglob('*') if p.is_file()) == sorted(paths)
-        for path in paths:
-            assert (context / path).read_bytes() == (self.root / path).read_bytes()
+        expected = getattr(self, 'expected_sources', None)
+        present = [p for p in paths if expected[p]['exists']] if expected else paths
+        assert sorted(str(p.relative_to(context)) for p in context.rglob('*') if p.is_file()) == sorted(present)
+        for path in present:
+            content = expected[path]['content'] if expected else (self.root / path).read_bytes()
+            assert (context / path).read_bytes() == content
             assert (context / path).stat().st_mode & 0o777 == 0o400
         self.events.append(('independent_reviewer' if role == 'reviewer' else 'specialist', role))
         self.cloud_requests.append({'role': role, 'prompt': prompt, 'options': options})
@@ -578,7 +581,10 @@ def test_lower_day_cap_blocks_new_slot_but_morning_still_finalizes(lab):
     assert result['reason'] == 'daily_call_limit' and len(lab.events) == 1
     report = lab.store.read('days/2026-10-15.json')
     assert report['review_complete'] is False and report['proposals'] == []
-    assert report['status'] == 'partial'
+    # Local-only activity is private and cannot imply actual cloud coverage.
+    assert report['status'] == 'failed'
+    assert all(a['status'] == 'not_called' for a in report['agents'])
+    assert '미호출 5개' in report['summary']
 
 
 @pytest.mark.parametrize('project', [False, True])
@@ -1134,7 +1140,7 @@ def test_cross_midnight_recovery_charges_both_days_without_double_refund(lab):
     assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2) and lab.ledger()['calls'] == 1
 
 
-def test_interrupted_local_cursor_is_durable_and_paired_owner_is_skipped(lab):
+def test_interrupted_local_cursor_is_durable_and_paired_owner_runs_independently(lab):
     def crash(*args, **kwargs):
         lab.assert_reserved('mlx-vlm')
         raise PowerLoss()
@@ -1143,8 +1149,12 @@ def test_interrupted_local_cursor_is_durable_and_paired_owner_is_skipped(lab):
         lab.tick(0, local_runner=crash)
     assert lab.state()['cursors']['coordinator'] == {'file_index': 0, 'line': 3}
     lab.store = imp.Store(lab.selected)
-    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
-    assert lab.cloud_requests == [] and lab.ledger()['calls'] == 1
+    lab.tick(1)
+    assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
+    context = json.loads(lab.cloud_requests[-1]['prompt'].rsplit('\n', 1)[1])
+    assert context['local_drafts'] == []
+    assert context['feedback'][0]['specialist_reason'] == 'local_interrupted_unknown'
+    assert lab.ledger()['calls'] == 2
     local = lab.state()['round']['report']['local_participation'][0]
     assert local['status'] == 'failed' and local['reason'] == 'interrupted_unknown'
     lab.hours(start=2, count=8)
@@ -1152,6 +1162,41 @@ def test_interrupted_local_cursor_is_durable_and_paired_owner_is_skipped(lab):
     assert request['owner_role'] == 'coordinator'
     assert request['sources'][0]['start_line'] == 3
     assert request['feedback'][0]['specialist_reason'] == 'local_interrupted_unknown'
+    assert request['feedback'][1]['specialist_reason'] == 'specialist_empty_candidates'
+
+
+@pytest.mark.parametrize('crash', [False, True])
+def test_empty_local_feedback_survives_failed_or_interrupted_independent_owner(lab, crash):
+    lab.local_transform = lambda user, candidates: []
+    lab.tick(0)
+
+    def unavailable(*args, **kwargs):
+        lab.assert_reserved(lab.models['roles']['coordinator']['provider'])
+        if crash:
+            raise PowerLoss()
+        raise RuntimeError(RAW)
+
+    if crash:
+        with pytest.raises(PowerLoss):
+            lab.tick(1, runner=unavailable)
+    else:
+        lab.tick(1, runner=unavailable)
+    lab.store = imp.Store(lab.selected)
+    assert lab.tick(1, 1)['reason'] == 'slot_already_claimed'
+    assert lab.ledger()['calls'] == 2 and lab.state()['stage_index'] == 2
+    lab.hours(start=2, count=7)
+    report = lab.state()['round']['report']
+    assert report['review_complete'] is True and report['status'] == 'partial'
+    assert report['agents'][0]['status'] in ('failed', 'unavailable')
+    assert report['agents'][-1]['status'] == 'succeeded'
+    assert report['proposals'] == [] and lab.ledger()['calls'] == 9
+    lab.tick(9)
+    request = lab.local_requests[-1]
+    assert request['owner_role'] == 'coordinator'
+    assert request['sources'][0]['start_line'] == 3
+    assert [entry['specialist_reason'] for entry in request['feedback']] == [
+        'empty_draft', 'specialist_interrupted_unknown' if crash else 'role_execution_failed']
+    assert RAW not in json.dumps(request)
 
 
 def test_settlement_survives_crash_before_derived_scan_and_does_not_repeat_review(lab, monkeypatch):
@@ -1202,13 +1247,15 @@ def test_legacy_day_and_scan_are_carried_once_without_hardcoded_cost_or_redelive
     assert lab.store.read(loop._publication_name('2026-10-15'))['status'] == 'legacy_preserved'
 
 
-def test_additional_same_day_legacy_activity_is_imported_once_and_loop_scans_are_excluded(lab):
+def test_indexed_legacy_and_exact_day_pointer_carry_in_without_rescanning(lab):
     first = legacy(lab, cost=.03)
     lab.tick(0)
     second = copy.deepcopy(first)
     second['scan_id'] = '123456790-abcdef'
     second['agents'][-1]['cost'] = .02
     lab.store.write('scans/' + second['scan_id'] + '.json', second)
+    # After one-time migration, only explicit day pointers add legacy activity.
+    lab.store.write('days/2026-10-15.json', second)
     already_accounted = dict(copy.deepcopy(second), scan_id='123456791-abcdef',
                              loop_engine=loop.STATE_VERSION)
     lab.store.write('scans/' + already_accounted['scan_id'] + '.json', already_accounted)
@@ -1248,7 +1295,7 @@ def test_owner_cursor_rotates_contiguous_original_line_windows_across_restarts(l
         assert all(line['text'] == 'value_{} = {}'.format(line['line'], line['line']) for line in window['numbered_lines'])
 
 
-def test_long_single_line_is_explicit_skip_without_http_slicing_or_specialist(lab):
+def test_long_single_line_is_explicit_skip_and_specialist_still_runs(lab):
     (lab.root / FILES[0]).write_text('x' * 30000 + '\nvalue = 2\n', encoding='utf-8')
     result = lab.tick(0)
     assert result['reason'] == 'line_too_long' and lab.local_requests == []
@@ -1258,8 +1305,8 @@ def test_long_single_line_is_explicit_skip_without_http_slicing_or_specialist(la
     assert participation['skipped_lines'] == [{'path': FILES[0], 'start_line': 1, 'end_line': 1,
                                               'reason': 'line_too_long'}]
     assert lab.state()['cursors']['coordinator'] == {'file_index': 0, 'line': 2}
-    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
-    assert lab.cloud_requests == []
+    lab.tick(1)
+    assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
 
 
 @pytest.mark.parametrize('failure,reason', [
@@ -1270,7 +1317,7 @@ def test_long_single_line_is_explicit_skip_without_http_slicing_or_specialist(la
     ('edit_duplicate', 'candidate_edit_files_duplicate'),
     ('edit_scope', 'candidate_edit_files_outside_scope'),
 ])
-def test_failed_local_draft_skips_only_paired_owner_and_retains_truthful_participation(lab, failure, reason):
+def test_failed_local_draft_keeps_regular_owner_slot_and_truthful_diagnostic(lab, failure, reason):
     def transform(user, cs):
         if user['owner_role'] != 'coordinator':
             return cs
@@ -1303,18 +1350,19 @@ def test_failed_local_draft_skips_only_paired_owner_and_retains_truthful_partici
     assert lab.state()['feedback']['coordinator'][0]['specialist_reason'] == reason
     assert len(lab.local_requests) == 1
     result = lab.tick(1)
-    assert result['reason'] == 'local_draft_unavailable'
     owner = lab.state()['round']['report']['agents'][0]
-    assert owner['status'] == 'not_called' and owner['provider'] is None and owner['cost'] is None
-    assert lab.cloud_requests == [] and lab.ledger()['calls'] == 1
+    assert owner['status'] == 'succeeded' and owner['provider'] == lab.models['roles']['coordinator']['provider']
+    assert len(lab.cloud_requests) == 1 and lab.ledger()['calls'] == 2
+    assert 'Independently inspect' in lab.cloud_requests[0]['prompt']
     lab.hours(start=2, count=7)
-    assert lab.state()['round']['report']['status'] == 'partial'
-    assert all(c['role'] != 'coordinator' for c in lab.cloud_requests)
+    assert lab.state()['round']['report']['status'] == 'scanned'
+    assert [c['role'] for c in lab.cloud_requests] == list(contract.ROLES)
     lab.tick(9)
-    assert lab.local_requests[-1]['feedback'][0]['specialist_reason'] == reason
+    # The original failure remains private even after an independent empty result.
+    assert failed['reason'] == reason
     public = lab.store.read('web/2026-10-15.json')
-    assert public['agents'][0]['status'] == 'not_called'
-    assert public['status'] == 'partial' and public['counts']['candidates'] == 3
+    assert public['agents'][0]['status'] == 'succeeded'
+    assert public['status'] == 'scanned' and public['counts']['candidates'] == 3
     assert all(a['provider'] != 'mlx-vlm' for a in public['agents'])
     assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
     assert 'harness/unapproved.py' not in json.dumps(lab.state())
@@ -1331,8 +1379,9 @@ def test_private_local_reason_propagation_accepts_only_allowlisted_codes(lab, re
     lab.tick(0, local_runner=forged)
     failed = lab.state()['round']['report']['local_participation'][0]
     assert failed['reason'] == 'transport_failed'
-    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
-    assert lab.cloud_requests == [] and lab.ledger()['calls'] == 1
+    lab.tick(1)
+    assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
+    assert lab.ledger()['calls'] == 2
     assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
 
 
@@ -1349,17 +1398,18 @@ def test_engine_revalidates_evidence_against_prepared_window_even_if_injected_ru
     assert local['status'] == 'failed'
     assert local['read_windows'] == [{'path': FILES[0], 'start_line': 1, 'end_line': 2}]
     assert lab.state()['round']['drafts']['coordinator']['candidates'] == []
-    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
-    assert lab.cloud_requests == []
+    lab.tick(1)
+    assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
 
 
-def test_all_empty_locals_skip_independent_reviewer_instead_of_fabricating_success(lab):
+def test_all_empty_locals_allow_independent_specialists_and_empty_pool_review(lab):
     lab.local_transform = lambda user, cs: []
     lab.hours()
     report = lab.state()['round']['report']
-    assert len(lab.events) == 4 and lab.cloud_requests == []
-    assert report['review_complete'] is False and report['status'] == 'failed'
-    assert report['agents'][-1]['reason'] == 'specialist_pool_unavailable'
+    assert len(lab.events) == 9 and len(lab.cloud_requests) == 5
+    assert report['review_complete'] is True and report['status'] == 'scanned'
+    assert all(a['status'] == 'succeeded' for a in report['agents'])
+    assert 'Independently evaluate coverage' in lab.cloud_requests[-1]['prompt']
     assert lab.state()['stage_index'] == 9
     lab.tick(9)
     assert lab.events[-1] == ('local_explorer', 'coordinator')
@@ -1461,15 +1511,11 @@ def test_independently_rejected_candidate_is_reportable_but_never_approvable(lab
     assert public['counts']['candidates'] == 4 and public['counts']['eligible'] == 0
 
 
-@pytest.mark.parametrize('change', ['source', 'mode', 'scope', 'loop_config', 'local_config', 'agent_config', 'workflow_config'])
-def test_dependency_change_invalidates_pool_feedback_and_resets_owner_cursor(lab, change):
+@pytest.mark.parametrize('change', ['scope', 'loop_config', 'local_config', 'agent_config', 'workflow_config'])
+def test_control_change_invalidates_progress_but_preserves_completed_history(lab, change):
     lab.hours()
     old = copy.deepcopy(lab.state()['round']['report'])
-    if change == 'source':
-        (lab.root / FILES[0]).write_text('changed = 1\nchanged = 2\n', encoding='utf-8')
-    elif change == 'mode':
-        (lab.root / FILES[0]).chmod(0o640)
-    elif change == 'scope':
+    if change == 'scope':
         lab.scope.write_text('\n'.join(FILES[:-1]) + '\n', encoding='utf-8')
     elif change == 'loop_config':
         lab.config['daily_budget_usd'] = .9
@@ -1489,7 +1535,7 @@ def test_dependency_change_invalidates_pool_feedback_and_resets_owner_cursor(lab
             return local_model.run(role, paths, snapshots, transport=lab.local_http, **options)
     lab.tick(9, local_runner=local_runner)
     state = lab.state()
-    assert state['completed'] == []
+    assert state['completed'] and state['completed'][-1]['scan_id'] == old['scan_id']
     assert state['round']['report']['scan_id'] != old['scan_id']
     assert state['round']['report']['proposals'] == []
     assert state['round']['report']['review_complete'] is False
@@ -1503,7 +1549,7 @@ def test_dependency_change_invalidates_pool_feedback_and_resets_owner_cursor(lab
     assert morning['proposals'] == [] and morning['review_complete'] is False
 
 
-def test_source_change_during_call_cannot_complete_current_review(lab):
+def test_source_change_during_call_completes_snapshot_review_but_is_stale(lab):
     lab.hours(count=8)
     def mutate(role, result, response, options):
         (lab.root / FILES[0]).write_text('changed = 1\nchanged = 2\n', encoding='utf-8')
@@ -1511,10 +1557,12 @@ def test_source_change_during_call_cannot_complete_current_review(lab):
     lab.cloud_transform = mutate
     lab.tick(8)
     report = lab.state()['round']['report']
-    assert report['review_complete'] is False
-    assert 'dependencies_changed_during_call' in report['errors']
-    assert all('review' not in r for r in report['proposals'])
-    assert lab.state()['completed'] == []
+    assert report['review_complete'] is True
+    assert report['current_fresh_at_last_tick'] is False
+    assert all('review' in r for r in report['proposals'])
+    assert lab.state()['completed'][-1]['scan_id'] == report['scan_id']
+    with pytest.raises(loop.LoopError, match='loop_dependencies_changed'):
+        loop.validate_scan_freshness(report, selected=lab.selected)
 
 
 def test_morning_boundary_freezes_once_then_later_research_cannot_regenerate(lab):
@@ -1940,10 +1988,12 @@ def test_interrupted_pre_v2_attempt_keeps_journaled_provider_without_replay(lab)
     state = lab.state()
     state['inflight']['provider'] = 'mlx-lm'  # synthetic pre-migration crash journal
     lab.store.write(loop.STATE_FILE, state)
-    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
+    lab.tick(1)
     entry = lab.state()['round']['report']['local_participation'][0]
     assert entry['provider'] == 'mlx-lm' and entry['reason'] == 'interrupted_unknown'
-    assert lab.ledger()['calls'] == 1 and lab.local_requests == [] and lab.cloud_requests == []
+    assert lab.ledger()['calls'] == 2 and lab.local_requests == []
+    assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
+    assert lab.state()['stage_index'] == 2
 
 
 @pytest.mark.parametrize('provider', ['mlx-lm', 'other-provider'])
@@ -1955,8 +2005,8 @@ def test_loop_refuses_local_runner_with_non_native_provider(lab, provider):
     lab.tick(0, local_runner=forged)
     entry = lab.state()['round']['report']['local_participation'][0]
     assert entry['provider'] == 'mlx-vlm' and entry['reason'] == 'local_response_invalid'
-    assert lab.tick(1)['reason'] == 'local_draft_unavailable'
-    assert lab.cloud_requests == []
+    lab.tick(1)
+    assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
     assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
 
 

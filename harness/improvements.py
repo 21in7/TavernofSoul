@@ -193,10 +193,30 @@ class Store:
         self.policy.ensure_directory(path.parent)
         self.policy.check_ready()
         parent = self.policy.fs.open_directory(path.parent)
-        temporary = '.improvement-' + secrets.token_hex(12)
+        # Sealed snapshot banks have a fixed bounded inventory even across
+        # SIGKILL/power loss. A random temporary per retry would accumulate
+        # source payloads forever. Only these internal record names use this
+        # recovery path; all other Store writes retain their existing policy.
+        snapshot_record = re.fullmatch(
+            r'loop/snapshots/[ab]/(?:manifest|[0-9]|[12][0-9]|3[0-6])\.json', str(name))
+        temporary = ('.' + path.name + '.pending' if snapshot_record else
+                     '.improvement-' + secrets.token_hex(12))
+        temporary_owned = False
         try:
+            if snapshot_record:
+                try:
+                    # A partial JSON record is expected after a crash. Verify
+                    # its bounded private inode before retiring exactly this
+                    # owned staging name; never follow or repair an unsafe one.
+                    _read_file(path.parent / temporary, MAX_PRIVATE_BYTES, private=True)
+                except FileNotFoundError:
+                    pass
+                else:
+                    self.policy.check_ready()
+                    os.unlink(temporary, dir_fd=parent)
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=parent)
+            temporary_owned = True
             with os.fdopen(fd, 'wb') as handle:
                 os.fchmod(handle.fileno(), 0o600)
                 handle.write(content)
@@ -206,10 +226,11 @@ class Store:
             os.replace(temporary, path.name, src_dir_fd=parent, dst_dir_fd=parent)
             os.fsync(parent)
         finally:
-            try:
-                os.unlink(temporary, dir_fd=parent)
-            except FileNotFoundError:
-                pass
+            if temporary_owned:
+                try:
+                    os.unlink(temporary, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
             os.close(parent)
 
     def remove_claim(self, proposal_id):
@@ -291,7 +312,8 @@ def role_scope(role, paths, config):
     if role == 'reviewer':
         return list(paths)
     shared = set(config['shared_files']) & set(paths)
-    return [name for name in paths if workflow.owner(name) == role or name in shared]
+    owned = [name for name in paths if workflow.owner(name) == role and name not in shared]
+    return owned + [name for name in paths if name in shared]
 
 
 def _summaries(records):
@@ -413,6 +435,8 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             prompt = REVIEW_PROMPT if role == 'reviewer' else CANDIDATE_PROMPT
             prompt += '\nApproved readable files (exact paths): ' + json.dumps(paths)
             prompt += '\nMissing files: ' + json.dumps([p for p in paths if not snapshots[p]['exists']])
+            prompt += '\nOriginal source modes (read-only context uses 0400): ' + json.dumps(
+                {p: snapshots[p]['mode'] for p in paths})
             prompt += '\nCandidate limit: ' + str(config['limits']['max_candidates_per_specialist'])
             review_data = ([{'id': r['id'], 'candidate': r['candidate']} for r in records]
                            if role == 'reviewer' else _summaries(records))

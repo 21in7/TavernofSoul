@@ -540,9 +540,9 @@ def test_cursor_rotates_files_and_failure_keeps_the_reserved_next_window(config,
 @pytest.mark.parametrize('cursor', [
     {'file_index': True, 'line': 1}, {'file_index': 3, 'line': 1},
     {'file_index': -1, 'line': 1}, {'file_index': 0, 'line': 0},
-    {'file_index': 0, 'line': 491}, {'file_index': 0, 'line': 1, 'path': SOURCE},
+    {'file_index': 0, 'line': 1, 'path': SOURCE},
 ])
-def test_invalid_or_stale_cursor_never_silently_wraps(cursor, config, snapshots):
+def test_invalid_cursor_never_silently_wraps(cursor, config, snapshots):
     assert_failure(invoke(config, snapshots, forbidden, cursor=cursor), 'input_invalid', called=False)
 
 
@@ -1286,3 +1286,10 @@ def test_native_tool_metadata_exception_is_exactly_null(field, value, config, sn
     transport = Transport(response)
     assert_failure(invoke(config, snapshots, transport), 'tools_refused')
     assert len(transport.calls) == 1
+
+
+def test_shorter_next_snapshot_advances_without_replaying_prefix(config, snapshots):
+    result = invoke(config, snapshots, forbidden, cursor={'file_index': 0, 'line': 491})
+    assert result['called'] is False and result['reason'] == 'cursor_exhausted'
+    assert result['read_windows'] == [] and result['candidates'] == []
+    assert result['next_cursor'] == {'file_index': 1, 'line': 1}

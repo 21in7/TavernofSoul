@@ -643,8 +643,14 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
             raise ValidationError("local exploration is private participation, not a cloud role")
         if window is not None and state == "succeeded":
             try:
+                # Existing frozen/prepared legacy journals retain their original
+                # finished-time projection. New history reports use admission
+                # time, stable across crash recovery and delayed settlement.
+                stamp_value = (item.get('started_at', item.get('finished_at'))
+                               if report.get('participation_basis') == 'admission-v1' else
+                               item.get('finished_at', item.get('started_at')))
                 stamp = dt.datetime.fromisoformat(_text(
-                    item.get("finished_at", item.get("started_at")), 40).replace("Z", "+00:00"))
+                    stamp_value, 40).replace("Z", "+00:00"))
                 if stamp.utcoffset() is None or not window[0] <= stamp < window[1]:
                     raise ValueError()
             except (TypeError, ValueError, OverflowError):
@@ -661,6 +667,9 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
                                 report.get("review_complete") is False):
         status = "partial"
     allowed, proposals, seen_ids = set(), [], set()
+    # Selection provenance remains private. Preserve web-v1's conservative
+    # eligibility rule: a latest failed reviewer cannot publish eligible cards,
+    # even when the selector retained an earlier valid completed review's pool.
     reviewer_succeeded = (report.get("review_complete") is not False and
                           any(x["role"] == "reviewer" and x["status"] == "succeeded" for x in agents))
     # A review response is an all-candidate decision. Losing even one verdict

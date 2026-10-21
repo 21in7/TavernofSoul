@@ -1,5 +1,27 @@
 # 전체 하네스 설계
 
+2026-10-21 진행 보존 계약은 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)를 따른다.
+loop는 cloud 예약/정산/복구와 최대192개 participation history를 같은 atomic state에 기록한다.
+identity는 scan_id/slot/stage이며 admission 시각의 `[전날09:00,당일09:00)`에 집계하고 최신 실패가
+옛 성공에 가려지지 않도록 마지막 시도를 표시한다. 최대32개 완료 index는 현재 dependency 일치
+review 하나의 후보 선택용이며 참여 집계와 독립적이다. 최초 legacy4096개 이름 상한 이행 후
+directory 재탐색 없이 정확한 index/current/day pointer만 사용한다. 과거 frozen/delivery는 보존한다.
+
+snapshot helper는 승인37개 UTF-8 source의 bytes/mode/존재만 private a/b bank에 저장한다.
+파일별 bounded record·manifest 마지막 atomic publication·state digest를 사용하고 매 호출 전
+no-follow/owner0700·0600/nlink1·파일128KiB/전체1.5MiB·manifest/fingerprint를 재검증한다.
+미완성 bank는 호출에 쓰지 않으며 model context/credential/범위 밖 파일·전체 repo는 저장하지 않는다.
+Store의 snapshot record 쓰기는 고정 staging 이름을 사용한다. 유효한 private bounded partial만
+회수하고 unsafe staging은 보존·no-call로 처리하여 반복 강제 종료에도 임시 source 수를 제한한다.
+source-only 변화는 pinned stage/pool/feedback/cursor를 보존한다. live source가 과대/비UTF-8 등으로
+읽히지 않아도 control 검증과 seal이 유효한 active 회차만 계속하며 current freshness는 unknown이다.
+control 변경은 진행 무효화, snapshot 손상은 no-call, snapshot 없는 legacy active는 과거 참여를
+보존한 뒤 종료한다. 새 회차 capture와 public eligible·approve·execute는 현재 읽기 검증을 요구한다.
+local 실패/빈 초안에도 specialist·빈 pool reviewer는 정규 slot에서 독립 평가한다. coverage 실패를
+scanned로 바꾸지 않는다. owner 비공유 파일 우선 순서는 membership/원문 줄 번호를 바꾸지 않고
+legacy cursor는 path로 한번 이행한다. 새 Claude는 매번 최종 코드·문서 의미를 평가하며 full make
+check·Git 역할/parent 게시와 실제 운영 관측은 실행기의 후속 책임이다. 합성 회귀는 실행하지 않았다.
+
 ## 로컬 실행·결과 보관과 실제 변경 검증
 
 [ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2는 local active artifacts/temporary와
@@ -386,8 +408,8 @@ user JSON은 `owner_role,sources,feedback,candidate_limit,approved_files` 순서
 없다. system 변경은 기존 전체 byte ceiling 안에서 처리하며 전송 검증은 모든 구조·값에 적용한다.
 전역 canonical_json·서명·보고 직렬화와 기존 후보 수용·bytes/token 상한·단일 호출은 유지한다.
 cursor는 owner별 file_index/line을 durable 순환하며 긴 single line은 slice 없이 skip한다.
-호출 실패에도 cursor를 자동 replay하지 않는다. local 실패/빈 초안이면 관련 specialist를
-다음 slot에 미호출로 남기며 reviewer까지 한 round가 끝나면 다음 slot에 새 round를 시작한다.
+호출 실패에도 cursor를 자동 replay하지 않는다. local 실패/빈 초안에도 관련 specialist와
+빈 pool의 reviewer가 각 정규 slot에서 독립 점검하며 round 종료 다음 slot에 새 round를 시작한다.
 정식 후보는 기존 specialist가 소스 확인 후 만들고 reviewer가 독립 검토한다. 이전 정제 issue·
 specialist 설명·review.reason을 candidate_id/draft_digest로 묶어 실제 다음 local prompt에 넣는다.
 feedback은 bytes/redaction으로 제한하며 담을 수 없으면 보류한다. private 원문을 자르지 않는다.
@@ -428,7 +450,7 @@ SSH/home/key·repo복사·전체1.5MiB 전송은 없으며 Linux MLX 의존성�
 공유 검증 통과 뒤 두 evidence 배열의 실제 window 위반은 `evidence_outside_window`다.
 진단은 첫 실패의 분류만 제공하며 모델 값·임의 예외문·prompt/response를 보존하지 않는다.
 실패 응답은 계속 닫힌 상태로 거절하고 경로 보정·중복 제거·줄 clamp·범위 확대·retry·fallback은
-없다. 실패한 local의 specialist 미호출과 public payload는 유지한다. 역사적 첫 거절 필드는
+없다. 실패한 local의 진단은 유지하며 specialist는 독립 점검한다. public schema는 유지한다. 역사적 첫 거절 필드는
 원문 미보존으로 복구할 수 없다. 동일 입력의 편집 범위·근거 줄 위반 재현은 최초 실패의
 정확한 필드를 증명하지 않는다. prompt/order 수리 두 실행은 full check 중 중단/applied=[]이며
 복원 초안·검증 사본 재사용은 성공이나 fallback이 아니다. native schema 전환은 승인된 ADR0017에
@@ -445,8 +467,9 @@ cursor/inflight를 한 atomic write로 저장한다. 준비 실패면 호출하�
 fallback을 실행하지 않는다. child/discovery 권한 거부는 이 처리 바깥에 유지하고 원문 예외는
 노출하지 않는다. storage/lock 준비 후 source/config 미준비의 실패 보고 확정과 구분한다.
 interruption은 소비된 예약을 유지하고 한 stage만 실패 진행한다. daemon/retry
-polling/fallback은 없다. source/scope/discovery/loop/local/agent/workflow fingerprints 변경은
-old pool/review/feedback/cursor 무효화·새 round를 요구한다. 호출 후 freshness도 확인한다.
+polling/fallback은 없다. source-only 변화는 pinned round의 진행·cursor를 보존하며 현재
+freshness를 별도 판정한다. scope/ownership/config/provider/model/protocol 변화는 진행을
+무효화한다. 실제 참여와 완료 review index는 지우지 않으며 호출 후 freshness도 확인한다.
 
 Claude는 KST 하루 추정US$1, reviewer cap min(0.20, 잔액, 기존 role한도)을 사전 예약하며
 agent_models의 검증된 downward-only optional max_budget_usd로 실제 --max-budget-usd에 연결한다.
