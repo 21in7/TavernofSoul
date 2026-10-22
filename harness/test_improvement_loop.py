@@ -605,11 +605,19 @@ def test_contending_lock_does_not_claim_or_report_a_scan(lab, project):
     with lab.store.lock(project=project):
         result = lab.tick(9)
     assert result['status'] == 'paused'
-    assert result['reason'] == 'lock_storage_or_runtime_unavailable'
-    assert lab.events == [] and not lab.store.exists(loop.STATE_FILE)
-    assert not lab.store.exists('days/2026-10-15.json')
-    # A lock rejection did not start this slot; a later invocation may claim it.
-    assert lab.tick(9)['calls_today'] == 1
+    assert result['reason'] == ('project_lock_busy' if project else 'discovery_lock_busy')
+    assert lab.events == []
+    if project:
+        # State is independent of source: the opportunity is durably claimed,
+        # failure is frozen honestly, and this slot cannot become another call.
+        assert lab.ledger()['calls'] == 0
+        assert lab.store.read('days/2026-10-15.json')['review_complete'] is False
+        assert lab.tick(9)['reason'] == 'slot_already_claimed'
+        assert lab.tick(10)['calls_today'] == 1
+    else:
+        assert not lab.store.exists(loop.STATE_FILE)
+        assert not lab.store.exists('days/2026-10-15.json')
+        assert lab.tick(9)['calls_today'] == 1
 
 
 def test_reentrant_tick_inside_model_cannot_double_admit(lab):
@@ -621,7 +629,7 @@ def test_reentrant_tick_inside_model_cannot_double_admit(lab):
         return actual(*args, **kwargs)
 
     lab.tick(0, local_runner=local)
-    assert reentered[0]['reason'] == 'lock_storage_or_runtime_unavailable'
+    assert reentered[0]['reason'] == 'discovery_lock_busy'
     assert len(lab.events) == 1 and lab.ledger()['calls'] == 1
 
 
@@ -632,8 +640,8 @@ def test_project_lock_is_shared_even_with_different_artifact_policy(lab):
         config_path=lab.root.parent / 'other-policy.json', env={}, fs=FixtureFS(lab.root.parent))
     with lab.store.lock(project=True):
         result = lab.tick(9, selected=other)
-    assert result['reason'] == 'lock_storage_or_runtime_unavailable'
-    assert lab.events == [] and not imp.Store(other).exists(loop.STATE_FILE)
+    assert result['reason'] == 'project_lock_busy'
+    assert lab.events == [] and imp.Store(other).read(loop.STATE_FILE)['days']['2026-10-15']['calls'] == 0
 
 
 @pytest.mark.parametrize('failure', ['readiness', 'storage_config', 'loop_config'])
@@ -660,7 +668,7 @@ def test_storage_unready_never_falls_back_or_loads_credentials(lab, monkeypatch,
         monkeypatch.setattr(obj, name, forbidden)
     result = lab.tick(9, **options)
     assert result['status'] == 'paused' and lab.events == []
-    assert result['reason'] == 'lock_storage_or_runtime_unavailable'
+    assert result['reason'] == ('storage_readiness_invalid' if failure == 'readiness' else 'config_invalid')
     assert attempts == [failure]
     assert lab.quotas == [] and lab.cloud_requests == [] and lab.local_requests == []
     assert not lab.store.exists(loop.STATE_FILE)

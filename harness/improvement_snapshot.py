@@ -5,7 +5,9 @@ The state pointer binds an atomic manifest; incomplete inactive banks are never
 read. Each payload is a separate bounded Store record (not a model context).
 Store uses fixed per-record staging names here, so repeated power loss cannot
 accumulate random temporary source files. Unsafe staging is never retired.
-Callers hold both improvement locks. Same-uid malicious writers are outside the
+Callers hold the improvement state lock; live capture separately holds the
+historical source lock. Sealed bank reads need no live source lock.
+Same-uid malicious writers are outside the
 Store trust boundary; hashes detect corruption, not an attacker rewriting state.
 """
 
@@ -14,6 +16,7 @@ import os
 import stat
 
 from harness import improvement_report as contract, improvements as imp
+from harness import improvement_diagnostics as diagnostics
 
 
 VERSION = 'improvement-snapshot-v1'
@@ -58,6 +61,7 @@ def _limits(paths, sources, limits):
     return fingerprints
 
 
+@diagnostics.at('seal')
 def publish(store, scan_id, paths, sources, limits, previous=None):
     """Write inactive bank, manifest last, then return a state-bound pointer.
 
@@ -102,6 +106,7 @@ def publish(store, scan_id, paths, sources, limits, previous=None):
         raise SnapshotError('snapshot_unavailable') from None
 
 
+@diagnostics.at('seal')
 def load(store, seal, paths, fingerprints, limits):
     try:
         if (not isinstance(seal, dict) or set(seal) != {'bank', 'scan_id', 'digest'} or

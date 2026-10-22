@@ -1,5 +1,10 @@
 # 0026: 실제 source Read 검증과 유효 제안 보존 보고
 
+2026-10-22 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)은 source capture와
+freshness를 짧은 기존 source mutex 아래 수행하고 일반/READ_ONLY 모델·검증은 격리 사본에서
+진행하도록 잠금 계약을 대체한다. 아래 Read pairing·coverage·ID별 최신 verdict·retained provenance와
+과거 frozen digest는 유지한다. source 변경 중 현재 정상0개/eligible을 추정하지 않는다.
+
 - 날짜: 2026-10-22
 - 상태: 사용자 직접 요청 구현안; 새 Claude 의미 검토·full make check·scoped apply·Git/CI 전달 대기
 - 문서 영향: transport 신뢰 경계, private 검증 계약, 완료/집계/승인 freshness 변경

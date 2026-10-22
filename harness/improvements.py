@@ -13,6 +13,7 @@ docs/improvements.md, docs/workflow.md, docs/harness-design.md and ADR0017 must
 describe immutable days, same-digest delivery reconciliation and this binding.
 """
 import argparse
+import contextlib
 from contextlib import contextmanager
 import datetime as dt
 import fcntl
@@ -32,6 +33,7 @@ from urllib.parse import urlsplit
 
 from harness import agent_telemetry, agent_models, improvement_report as contract, storage, workflow, workspace
 from harness import review_coverage as coverage
+from harness import improvement_diagnostics as diagnostics
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/improvement-config.json'
@@ -149,6 +151,7 @@ def _json_file(path):
     return workflow.status_object(content)
 
 
+@diagnostics.at('config')
 def load_config():
     path = CONFIG if CONFIG != _DEFAULT_CONFIG else ROOT / 'harness/improvement-config.json'
     return contract.validate_config(contract.parse_json(_read_file(path, 65536)[0]))
@@ -156,8 +159,10 @@ def load_config():
 
 class Store:
     """Policy-selected private artifacts; no storage fallback or policy mutation."""
+    @diagnostics.at('store')
     def __init__(self, selected=None):
-        self.policy = selected or storage.resolve_storage(ROOT)
+        with diagnostics.boundary('config'):
+            self.policy = selected or storage.resolve_storage(ROOT)
         default = REPORTS if REPORTS != _DEFAULT_REPORTS else ROOT / 'logs/harness/improvements'
         self.root = self.policy.report_dir('improvements', local_default=default)
 
@@ -248,13 +253,35 @@ class Store:
 
     @contextmanager
     def lock(self, project=False):
-        self.prepare()
-        path = self.policy.project_lock_path if project else self.path('.lock')
+        from harness import project_lock, improvement_diagnostics as diagnostics
+        if project:
+            try:
+                with project_lock.hold(self.policy, reentrant=False):
+                    yield
+            except BlockingIOError:
+                raise ImprovementError('Discovery, workflow or cleanup is already running.') from None
+            return
+        with diagnostics.boundary('storage_readiness'):
+            self.prepare()
+        try:
+            with project_lock.hold(self.policy, kind='discovery_lock', reentrant=False):
+                with self._artifact_lock():
+                    yield
+        except BlockingIOError:
+            raise ImprovementError('Discovery, workflow or cleanup is already running.') from None
+
+    @contextmanager
+    def _artifact_lock(self):
+        # Retain the old per-artifact inode too: running old code may own it.
+        from harness import improvement_diagnostics as diagnostics
+        path = self.path('.lock')
         self.policy.fs.create_directory(path.parent)
-        handle = workflow.git_publish.open_lock(self.policy, path)
+        with diagnostics.boundary('discovery_lock'):
+            handle = workflow.git_publish.open_lock(self.policy, path)
         try:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with diagnostics.boundary('discovery_lock'):
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise ImprovementError('Discovery, workflow or cleanup is already running.') from None
             yield
@@ -287,6 +314,13 @@ class Store:
 
 def snapshot_sources(paths, limits=None, selected=None):
     """Secure exact reads; no directory walk, Git enumeration or source discovery."""
+    from harness import project_lock, improvement_diagnostics as diagnostics
+    selected = selected or storage.resolve_storage(ROOT)
+    with project_lock.hold(selected), diagnostics.boundary('snapshot'):
+        return _snapshot_sources_locked(paths, limits, selected)
+
+
+def _snapshot_sources_locked(paths, limits, selected):
     limits = limits or contract.LIMIT_CEILINGS
     paths = contract.validate_scope_paths(paths, limits['max_scope_files'])
     result, total = {}, 0
@@ -306,6 +340,16 @@ def snapshot_sources(paths, limits=None, selected=None):
         if total > limits['max_source_bytes']:
             raise ImprovementError('Approved sources exceed the total byte limit.')
         result[name] = {'exists': True, 'mode': mode, 'content': content}
+    # Cooperating source writers are excluded by the project flock. Also detect
+    # a non-cooperating editor changing an earlier file during this capture.
+    for name in paths:
+        try:
+            content, mode = _read_file(workspace.safe_path(ROOT, name), limits['max_file_bytes'])
+            current = {'exists': True, 'mode': mode, 'content': content}
+        except FileNotFoundError:
+            current = {'exists': False, 'mode': None, 'content': None}
+        if current != result[name]:
+            raise ImprovementError('Sources changed during snapshot capture.')
     return result
 
 
@@ -595,6 +639,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             failure_reason = 'role_context_cleanup_failed'
             return participation, parsed
     except (Exception, KeyboardInterrupt) as exc:
+        diagnostics.record('stage', exc, start)
         participation['error_type'] = _role_error_type(exc)
         if isinstance(exc, KeyboardInterrupt):
             participation['interrupted'] = True
@@ -879,6 +924,12 @@ def _eligible(store, proposal_id):
 
 
 def _fresh(record, store):
+    from harness import project_lock
+    with project_lock.hold(store.policy):
+        return _fresh_locked(record, store)
+
+
+def _fresh_locked(record, store):
     snapshots = snapshot_sources(record['source_fingerprints'], selected=store.policy)
     current = contract.fingerprint_sources(snapshots)
     if current != record['source_fingerprints']:
@@ -1065,32 +1116,53 @@ def execute(proposal_id, *, now=None, selected=None, executor=None):
         outcome = {'status': 'claimed', 'proposal_id': proposal_id, 'run_id': None,
                    'at': now.isoformat(), 'recovery': 'reconcile_existing_run_then_new_explicit_authorization'}
         store.write('executions/' + proposal_id + '.json', outcome)
-        def guard(run_id):
+    guard_locked = False
+    @contextmanager
+    def guard_state_lock():
+        nonlocal guard_locked
+        with store.lock():
+            guard_locked = True
+            try:
+                yield
+            finally:
+                guard_locked = False
+    def validate_claim(run_id, starting=False):
+        # Production workflow acquires state -> source before calling this.
+        # Injected executors still get an independently exclusive guard.
+        with (contextlib.nullcontext() if guard_locked else store.lock()):
             _parent(trusted=True)
             checked_record, checked_approval = _authorization(store, proposal_id, _now(supplied_now),
                                                              claimed=True)
             current = store.verify(store.read('claims/' + proposal_id + '.json'))
-            if (current != claim or current['run_id'] is not None or
+            if (current != claim or current['run_id'] != (None if starting else run_id) or
                     checked_approval != approval or checked_record != record):
                 raise ImprovementError('Claim changed or was already handed to a workflow.')
-            claim['run_id'] = run_id
-            claim['status'] = 'running'
-            store.write('claims/' + proposal_id + '.json', store.sign(claim))
-            outcome.update(run_id=run_id, status='running')
-            store.write('executions/' + proposal_id + '.json', outcome)
-        try:
-            result = (executor or workflow.execute)(task, list(approval['allowed_edit_files']),
-                no_git=approval['publication'] == 'local-only', _improvement_guard=guard)
-            if outcome['run_id'] is None or result.get('run_id') != outcome['run_id']:
-                raise ImprovementError('Workflow did not retain the guarded run identity.')
-            outcome.update(status=result['status'], run_id=result['run_id'])
-            # awaiting_github is incomplete and deliberately preserved. The
-            # trusted parent continues the existing GitHub journal/CI/cleanup.
-            if 'github' in result:
-                outcome['github_status'] = result['github'].get('status')
-        except (Exception, KeyboardInterrupt) as exc:
-            outcome.update(status='interrupted' if isinstance(exc, KeyboardInterrupt) else 'failed',
-                           error_type=type(exc).__name__)
+            if starting:
+                claim['run_id'] = run_id
+                claim['status'] = 'running'
+                store.write('claims/' + proposal_id + '.json', store.sign(claim))
+                outcome.update(run_id=run_id, status='running')
+                store.write('executions/' + proposal_id + '.json', outcome)
+    def guard(run_id):
+        validate_claim(run_id, starting=True)
+    guard.state_lock = guard_state_lock
+    guard.validate_apply = validate_claim
+    try:
+        # Durable claim is exclusive; the Store mutex need not span models/checks.
+        result = (executor or workflow.execute)(task, list(approval['allowed_edit_files']),
+            no_git=approval['publication'] == 'local-only', _improvement_guard=guard)
+        if outcome['run_id'] is None or result.get('run_id') != outcome['run_id']:
+            raise ImprovementError('Workflow did not retain the guarded run identity.')
+        outcome.update(status=result['status'], run_id=result['run_id'])
+        if 'github' in result:
+            outcome['github_status'] = result['github'].get('status')
+    except (Exception, KeyboardInterrupt) as exc:
+        outcome.update(status='interrupted' if isinstance(exc, KeyboardInterrupt) else 'failed',
+                       error_type=type(exc).__name__)
+    with store.lock():
+        # Never overwrite a replaced signed claim after releasing the mutex.
+        if store.verify(store.read('claims/' + proposal_id + '.json')) != claim:
+            raise ImprovementError('Execution claim changed before settlement.')
         claim['status'] = 'consumed'
         claim['workflow_status'] = outcome['status']
         store.write('claims/' + proposal_id + '.json', store.sign(claim))

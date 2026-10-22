@@ -73,7 +73,10 @@ def copy_sources(root, destination, scope, policy):
 def copy_validation_sources(root, destination, scope, policy):
     """Create a complete LOCAL verification snapshot; never give it to a model."""
     names = sorted(set(source_names(root)) | set(scope))
-    return _copy_files(root, destination, names, policy)
+    baseline = _copy_files(root, destination, names, policy)
+    if sorted(set(source_names(root)) | set(scope)) != names:
+        raise ValueError('Source membership changed during workspace capture.')
+    return baseline
 
 
 def _copy_files(root, destination, names, policy):
@@ -94,6 +97,11 @@ def _copy_files(root, destination, names, policy):
                 fingerprint(path, policy['max_file_bytes']) != item:
             raise ValueError('Source changed while creating the workspace: ' + name)
         baseline[name] = item
+    # The source lock excludes cooperating apply/cleanup controllers. Recheck
+    # earlier files too, detecting external editors during a multi-file copy.
+    current = {name: fingerprint(safe_path(root, name), policy['max_file_bytes']) for name in names}
+    if {name: item for name, item in current.items() if item is not None} != baseline:
+        raise ValueError('Sources changed during workspace capture.')
     # No source repository metadata, history or credential files are copied.
     # A disposable empty repository lets existing Git ignore regression checks run.
     # Host Git templates must not introduce unapproved files into model context.
@@ -206,7 +214,7 @@ def publish(root, candidate, baseline, validated, changes, scope, backup, policy
             else:
                 replace_file(safe_path(candidate, name), target, validated[name]['mode'])
             applied.append(name)
-    except (OSError, ValueError):
+    except (OSError, ValueError, KeyboardInterrupt):
         for name in reversed(applied):
             target = safe_path(root, name)
             # Preserve an external edit that arrived after our file replacement.

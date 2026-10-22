@@ -66,12 +66,14 @@ import argparse
 from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass, field
+from functools import wraps
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import uuid
 
@@ -84,6 +86,24 @@ _CATEGORY = re.compile(r'^[a-z][a-z0-9_-]*$')
 
 class StorageError(ValueError):
     """Actionable fixed metadata only; never includes arbitrary config values."""
+
+
+def _diagnostic_at(name):
+    """Observe improvement calls without importing optional orchestration code.
+
+    An active improvement trace necessarily has its module loaded already.
+    Standalone storage packages need only this file; their errors still propagate.
+    """
+    def decorate(function):
+        @wraps(function)
+        def call(*args, **kwargs):
+            diagnostics = sys.modules.get('harness.improvement_diagnostics')
+            if diagnostics is None:
+                return function(*args, **kwargs)
+            with diagnostics.boundary(name):
+                return function(*args, **kwargs)
+        return call
+    return decorate
 
 
 class _StatxTimestamp(ctypes.Structure):
@@ -467,6 +487,7 @@ class Storage:
         if type(free) is not int or free < spec.min_free_bytes:
             raise StorageError(label + ' free space is below min_free_bytes; free space or revise the floor.')
 
+    @_diagnostic_at('storage_readiness')
     def check_ready(self):
         """Read-only; all required mounts/floors are checked before any writes."""
         return self._check_ready()
@@ -917,6 +938,7 @@ class Storage:
         return result
 
 
+@_diagnostic_at('config')
 def resolve_storage(project_root=None, *, env=None, fs=None):
     """Parse at call time; injection avoids real mounts and ambient test config."""
     fs = fs or FileSystem()

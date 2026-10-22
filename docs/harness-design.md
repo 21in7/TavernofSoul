@@ -1,5 +1,43 @@
 # 전체 하네스 설계
 
+## 개발 실행과 읽기 점검의 잠금 격리
+
+[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)은 workflow 전체 source lock과
+공통 준비 실패 코드를 대체한다. workflow 전용 `.workflow-lock`은 실행 소유권을 최종 save까지
+보유한다. 기존 로컬 `workflows/.lock`은 source capture/apply/cleanup/current freshness의 mutex로
+유지한다. 모델·review·full check·repair는 두 격리 사본에서 진행하므로 그 시간에는 source 잠금이 없다.
+apply는 새 source 잠금 아래 전체 원래 파일 목록/bytes/mode/존재와 candidate를 대조하고 승인
+제안의 signed claim/freshness도 재검증한다. rollback은 자신의 validated 내용인 파일만 복구한다.
+review diff는 capture에서 분리한 승인 파일 original 사본을 기준으로 만든다. source 잠금 해제
+후 live 원본을 검토 입력으로 다시 읽지 않으며 이후 사용자 편집은 apply 충돌로 보존한다.
+
+tick은 stable `.discovery-lock`→기존 Store artifact `.lock` 아래 state·slot·call·정산을 보호한다.
+이 상태 mutex는 연구 모델 중 유지하지만 source mutex는 controls/current capture·오전 freeze·
+seal 준비 및 호출 뒤 freshness 확인에만 사용한다. 기존 bank·Read proof·coverage·ID별 최신
+verdict 보존을 바꾸지 않는다. source mutex가 busy이면 controls도 확인할 수 없어 no-call이다.
+claimed slot에는 구체적 실패와 미완료 보고를 남기며 같은 slot을 재시도하지 않는다.
+
+09시 freeze는 새 seal/admission보다 먼저다. publication은 stable sender와 기존 sender mutex로
+직렬화하고 frozen journal만 사용하며 HTTP callback은 state/source lock 밖이다. 동일 digest GET
+readback·prepared 복구·unknown 무자동 POST는 유지한다. 일반/READ_ONLY 모델·검증에 대한
+완료 의존성이 없다. 실제 source 변경·짧은 capture·completion 또는 storage 장애는 여전히 실패/
+보류가 가능하다. v1/v2/no-config/override는 같은 로컬 inode를 유지하며 discovery root hash가
+다른 ledger로의 자동 호출 재개를 막는다. 구버전 종료 확인과 예약/서명/게시의 명시 이행 없이는
+저장 위치를 전환하지 않는다. stale PID나 finished_at만으로 잠금을 삭제하지 않는다.
+
+고정 private `improvement-diagnostic-v1`은 실제 UTC 발생시각, boundary/reason, logical lock,
+allowlist stage/hour와 bounded 정수 errno/elapsed_ms, 미확인 holder_pid=null만 가진다. 외부 문자열·
+자유 예외 클래스·원문·절대 경로는 없다. 첫 실패는 후속 정산/오류 기록 실패로 교체하지 않는다.
+state 잠금 안에서 마지막 진단을 저장할 수 없으면 private CLI 결과만 보존하며 persistence 한계를
+별도 표시한다. fallback·자동 재시도·잠금 밖 state 쓰기와 public 필드 확장은 없다. 매 새 review는
+최종 코드/문서의 documentation 판단을 새로 해야 하며 offline 검토/검증과 실제 운영 성공은 별개다.
+
+storage의 단독 사용은 개선 orchestration에 의존하지 않는다. config/readiness wrapper는 호출 때
+이미 로드된 `harness.improvement_diagnostics`만 관측하며 해당 모듈을 import하지 않는다.
+active trace가 있는 실제 개선 호출은 기존 경계에서 실패를 기록하고 원래 예외를 전파한다.
+진단 모듈이 없는 최소 storage 패키지도 동일한 storage 오류로 실패하며 import 시 I/O가 없다.
+import 오류를 포괄적으로 숨기거나 저장소 fallback을 만드는 경로는 추가하지 않는다.
+
 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이 source 읽기 확인과 오전 선택을 대체한다.
 parent 전용 Capture는 discovery Claude stream-json의 실제 성공 Read만 canonical 승인 bytes/줄 범위에
 결합한다. 최대32 window/각256줄/총32KiB와 stdout512KiB/stderr16KiB/256event를 제한한다.
@@ -489,9 +527,9 @@ SSH/home/key·repo복사·전체1.5MiB 전송은 없으며 Linux MLX 의존성�
 
 durable slot claim을 config/source/quota/model I/O보다 먼저 남기고 호출 직전 count·reservation·
 cursor/inflight를 한 atomic write로 저장한다. 준비 실패면 호출하지 않고 같은 claimed slot은
-재시작/설정 변경 후에도 재호출하지 않는다. improvement/project lock으로 중복/승인 실행과
-직렬화한다. tick의 loop 설정 로드·Store 생성·readiness 실패는 bounded 정제 paused
-(`lock_storage_or_runtime_unavailable`)로 반환하며 모델·키 조회·보고 확정·publisher·저장소
+재시작/설정 변경 후에도 재호출하지 않는다. stable discovery→artifact lock으로 중복 예약을
+직렬화하며 source capture/freshness는 그 뒤 source mutex 아래 수행한다. tick의 loop 설정 로드·
+Store 생성·readiness 실패는 실제 경계별 고정 private 진단과 paused로 반환하며 모델·키 조회·보고 확정·publisher·저장소
 fallback을 실행하지 않는다. child/discovery 권한 거부는 이 처리 바깥에 유지하고 원문 예외는
 노출하지 않는다. storage/lock 준비 후 source/config 미준비의 실패 보고 확정과 구분한다.
 interruption은 소비된 예약을 유지하고 한 stage만 실패 진행한다. daemon/retry
@@ -587,7 +625,8 @@ legacy 날짜는 KST이며 `daily`는 failed/partial도 같은 날 기존 결과
 호환 경로로만 남고 frozen day를 덮어쓰지 못한다. hourly와 병행 스케줄하지 않는다.
 pending 제안은 내용과 전체 읽기
 의존성 bytes/mode/존재 기반 ID로 중복을 피하며 human 결정은 별도 보존한다.
-improvement lock과 기존 고정 project lock은 발견/승인/실행의 경쟁과 workflow/cleanup 중첩을 막는다.
+discovery→artifact lock은 발견/승인/claim 경쟁을 막고 기존 source mutex는 capture/freshness와
+workflow apply/cleanup을 직렬화한다. 일반/READ_ONLY 모델·검증 중에는 source mutex를 해제한다.
 
 신뢰한 메인은 구체적 ID·private 지시 파일로 승인한다. HMAC private 승인에는 proposal/review
 digest·모든 원본 fingerprint·정확한 편집 범위·고정 게시 범위·만료(기본 7일)·고유 authorization을 묶는다.

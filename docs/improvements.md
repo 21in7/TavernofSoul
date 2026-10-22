@@ -1,5 +1,43 @@
 # 승인 대기 시간별 연구와 오전 개선 보고
 
+## 잠금 격리와 실제 실패 관측
+
+최신 잠금/복구 계약은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
+일반 개발/READ_ONLY 모델·검토·검증은 격리 사본에서 진행한다. workflow 전용 mutex와 달리
+기존 source `.lock`은 capture/apply/cleanup/current freshness 동안만 보유한다. tick의 stable
+discovery→artifact 잠금은 state·slot·call 예약을 보호하므로 동시에 두 tick을 호출해도 재호출
+권한이 생기지 않는다. source-only 진행 보존과 control 무효화, 실제 Read proof/coverage와 ID별
+최신 verdict·original provenance는 ADR0025/0026 그대로다. 보존 source 검토는 현재 eligible이 아니다.
+
+09시 freeze는 현재 전체 dependencies 아래 새 seal/admission 전에 수행한다. 일반 workflow의
+긴 model/check 완료를 기다리지 않는다. publication은 state/source mutex 밖의 stable sender와
+기존 sender 잠금으로 동일 frozen digest를 전송하고 GET으로 확인한다. prepared 복구는 exact
+journal만 사용하고 sending/unknown은 자동 재전송하지 않는다. 실제 apply/cleanup·구버전 holder나
+짧은 capture가 source 판단을 막으면 no-call·구체적 실패/미완료 보고다. 정상0개로 표현하지 않는다.
+state·storage가 불가하면 보고 확정도 불가할 수 있다. 과거 frozen 보고는 수정하지 않는다.
+
+private 결과의 `diagnostic`은 실제 UTC 발생시각·고정 boundary/reason·logical lock kind·allowlist
+stage/hour slot·bounded 정수 errno/elapsed_ms만 담고 holder_pid는 미확인 null이다. config, Store,
+storage readiness, 각 lock, state read/save, dependencies/snapshot/seal/stage, deadline/publication/
+정산을 구분한다. bool·과대/비정수·외부 reason/예외 문자열/원문/credential/절대 경로는 배제한다.
+가능하면 state 잠금 안에서 `loop/last-diagnostic.json` 마지막 한 건과 private 결과를 함께 남긴다
+(`diagnostic_preservation=private_record_and_result`). 최초 잠금/설정/storage/state 읽기 실패나
+진단 저장 실패는 `private_result_only`다. parent의 기존 private CLI JSON 캡처로 확인하고 설정
+저장소 자체가 불가하면 persistent 진단 보존도 보장할 수 없음을 구분한다. 오류 기록 실패로 최초
+실패/예약을 덮지 않고 fallback 저장소/재시도/잠금 밖 state 수정은 하지 않는다. 진단은 web-v1과
+digest에 추가하지 않는다. 과거12시 충돌의 정확한 예외/holder는 새 진단으로 소급 확정하지 않는다.
+
+기존 `.lock` inode와 artifact/sender inode를 지우지 않는다. stable discovery inode의 Store root
+hash가 다른 storage로 빈 ledger를 재시작하는 것을 막는다. v1/v2/no-config/override 전환은 실행
+중인 구버전 종료 확인과 기존 ledger/reservation/서명/게시의 명시 조정을 parent가 담당한다.
+finished_at·stale PID만 보고 잠금을 제거하거나 새 저장소로 우회하지 않는다. 장애 복구는 기존
+slot/claim/outbox를 먼저 확인하며 실패를 중복 호출/중복 POST 허가로 해석하지 않는다.
+
+이번 승인40개/coordinator1개의 검토·검증 이력은 ADR0027, 전달 절차는 [workflow](workflow.md)를 따른다.
+17시6/9단계·active sealed round는 제공된 관측이며 나머지 DAG/reviewer 완주와2026-10-23
+09:00 보고·09:20 같은 채팅 알림 성공은 미관측이다. 매시00분·기존 at→codex queue job1,
+runtime37개·owner/shared·model/provider/auth·9단계·slot/예산·승인 범위는 유지한다.
+
 2026-10-22 현재 계약은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
 parent가 discovery reviewer의 실제 성공 Read를 bytes/줄 범위에 묶어 검증한다. 빈 pool은 각 승인
 owner의 non-shared Python 프로그램을 테스트보다 우선 선택한다. AGENTS·안내 문서·설정만으로
@@ -30,17 +68,11 @@ eligible을 지우지 않고 후속 rejected/needs_evidence는 이전 eligible�
 web-v1과 frozen 과거 digest, runtime37개/owner/shared/예산/slot은 유지한다. Sites는 parent 소유다.
 아래32개/21개 승인·관측·미실행 인계는 당시 이력이며 이번 범위를 대체하지 않는다.
 
-이번 최종 baseline→candidate는 새 reviewer가 실제 source Read 증빙, 이전 유효 제안 보존,
-실패·미완료·확인한 범위 제안 없음의 구분과 CLI metadata 호환을 모두 독립 검토해야 한다.
-매 검토의 `documentation={status,files,reason}`도 최종 코드와 문서 전체의 의미를 다시 판단한다.
-이전 approved/5097개 통과·checkpoint 준비/복원은 새 성공 근거가 아니다. worker는 검사를 실행하지
-않았으며 실제 hourly9단계 완주는 미관측이다. Sites 배포·검증은 parent의 별도 관측이다.
-parent/native가 새 Claude 검토→full make check→scoped apply→기존 Git 역할→GitHub 필수CI3종
-success 확인→merge·cleanup을 수행한다. 미병합 종료(merged=false)된 PR63 대신 새 PR을 준비한다.
-Git 역할에 전달할 제목 초안은 “개선 검토의 소스 읽기 검증·유효 제안 보존·결과 구분과 Claude CLI metadata 호환”이다.
-본문은 실제 Read pairing/원본 proof·승인 gate, 뒤 빈/실패 회차에도 ID별 최신 명시 verdict와
-원본 provenance 보존, 실패·미완료·확인한 범위 제안 없음 구분, bounded rate_limit_event 무동작
-처리와 실제 result 권위 보존을 설명하고 PR63 대체 관계 및 이번 최종본의 실제 검토/검사 결과만 적는다.
+새 reviewer는 전체 baseline→최종본의 Read 증빙·제안 보존·결과 구분·CLI metadata 호환과
+`documentation={status,files,reason}`을 독립 판단한다. 이전 approved/5097개 통과·초안 복원은
+새 성공 근거가 아니다. Sites 배포/검증은 parent의 별도 관측이다. 미병합 종료된 PR63을 대체하는
+새 PR의 제목/본문에는 위 네 동작, 원본 proof/승인 gate·provenance, bounded rate_limit_event의
+무동작 처리와 실제 result 권위, 대체 관계 및 최종본의 실제 검토/검사 결과를 담는다.
 
 자동 점검은 정비사의 점검표처럼 개선 후보를 발견하고 서로 검토하여 한국어 비유를 담은
 한 장 보고서를 제공한다. 실제 수리는 차주가 특정 항목을 승인한 뒤에 시작한다.
@@ -476,7 +508,7 @@ Git/CI·local/NFS 정책과 retry/fallback은 변경하지 않는다.
 
 ## Claude 추정 ledger·GLM 구독 quota
 
-Claude 자동 탐색은 UTC+9 자정 기준 하루 US$1 추정 ledger를 쓴다. improvement/project lock 아래
+Claude 자동 탐색은 UTC+9 자정 기준 하루 US$1 추정 ledger를 쓴다. discovery→artifact lock 아래
 호출 전에 slot·role count·예약액·inflight와 local cursor를 atomic private state로 저장하고
 fsync한다. 예약 저장 실패면 모델을 실행하지 않는다. cap은 `min(0.20, 잔액, 기존 reviewer 한도)`로
 양수일 때만 `agent_models.run/command_for(max_budget_usd=...)`에 넘겨 실제 CLI
@@ -715,10 +747,12 @@ loop 제안의 `_eligible/_fresh/_authorization`는 private scan과 proposal의 
 현재 loop/local/agent/workflow config까지 확인한다. 서명 승인에 같은 context digest를 묶으므로
 단순 live freshness 재확인만으로 이전 승인을 새 설정의 동일 ID에 재결합할 수 없다.
 
-자체 nonblocking lock과 기존 고정 local project lock으로 discovery/workflow/cleanup 중첩을 거부한다.
-storage 선택이 달라도 동일 project lock을 유지한다. execute는 lock 아래 claim을 원자적으로
+stable discovery와 기존 artifact nonblocking lock은 discovery/승인/claim 예약을 직렬화한다.
+storage 선택이 달라도 source mutex inode를 유지하고 capture/freshness와 apply/cleanup의
+경쟁을 막는다. execute는 state→source 잠금 아래 claim을 원자적으로
 기록하고 생성한 고정 task·정확한 edit_files만 `workflow.execute`에 전달한다.
-workflow가 project lock을 잡은 뒤 guard가 재검증하고 run_id를 private 기록에 남긴다.
+workflow가 state→source 잠금을 잡은 뒤 guard가 재검증하고 run_id를 private 기록에 남긴다.
+모델·검증 중에는 두 잠금을 해제하며 apply 때 원래 signed claim과 freshness를 재검증한다.
 그 뒤의 새 Claude 의미 검토·필수 checks·충돌 검사·scoped apply·기존 Git 역할과 게시 정책을 유지한다.
 편집 범위에 필요한 읽기 참조/문서/테스트가 부족하면 자동 추가하지 않고 새 승인 필요로 중단한다.
 
@@ -1050,7 +1084,7 @@ HARNESS_STORAGE_CONFIG=/ABS/REPO/logs/harness/improvement-storage.json make agen
 status는 ledger를 초기화하거나 keys/quota를 읽지 않으며 마지막 tick의 freshness 판단을 표시한다.
 실시간 소스 유효성 재검증이나 실제 청구 잔액 조회는 아니다. 초기 잔액은 미초기화/unknown일 수 있다.
 tick의 loop 설정 로드·Store 생성·readiness를 포함한 저장소/설정 준비 실패는 bounded 정제
-`paused`와 `lock_storage_or_runtime_unavailable`로 반환한다. 이 준비 실패 경로에서는 모델·
+`paused`와 실제 경계별 고정 private 진단으로 반환한다. 이 준비 실패 경로에서는 모델·
 키 조회·보고 확정·publisher·저장소 fallback을 실행하지 않고 원문 예외도 내보내지 않는다.
 child/discovery 거부는 이 처리 바깥에서 유지한다. 저장소와 잠금이 준비된 뒤 source/config가
 미준비인 경우의 실패 보고 확정과는 구분한다. 잠금·runtime 미준비도 scanned가 아니다.

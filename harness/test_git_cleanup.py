@@ -510,6 +510,22 @@ def drive_cleanup_cli(repo, capsys, job):
 @pytest.mark.parametrize('dirty', [False, True])
 def test_cli_accept_merge_automatically_finishes_real_git_cleanup(repo, monkeypatch, capsys, dirty):
     cli_fixture(repo, monkeypatch)
+    from harness import improvements as imp, improvement_loop as loop
+    selected = storage.resolve_storage(repo['root'])
+    monkeypatch.setattr(imp, 'ROOT', repo['root'])
+    original_replace = cleanup.replace_bytes
+    protected_mutations = []
+    def observe_mutation(path, content, mode):
+        original_replace(path, content, mode)
+        if Path(path).parent == repo['root']:
+            # Execute the real snapshot/freshness entry points halfway through
+            # actual baseline restoration. The CLI owns an independent flock.
+            with pytest.raises(BlockingIOError):
+                imp.snapshot_sources(['edit.txt'], selected=selected)
+            with pytest.raises(BlockingIOError):
+                loop.validate_scan_freshness({'loop_dependencies': {}}, selected=selected)
+            protected_mutations.append(Path(path).name)
+    monkeypatch.setattr(cleanup, 'replace_bytes', observe_mutation)
     if dirty:
         apply_approved(repo)
     assert publication.main(['request', '--run-id', RUN_ID]) == 0
@@ -524,6 +540,9 @@ def test_cli_accept_merge_automatically_finishes_real_git_cleanup(repo, monkeypa
     assert code == 0 and output['github']['cleanup']['status'] == 'complete'
     assert json.loads((repo['directory'] / 'report.json').read_text())['status'] == 'passed'
     assert_complete(repo, json.loads((repo['directory'] / 'cleanup.json').read_text()))
+    if dirty:
+        assert protected_mutations
+    assert imp.snapshot_sources(['edit.txt'], selected=selected)['edit.txt']['content'] == b'new\n'
     assert publication.main(['resume', '--run-id', RUN_ID]) == 0
     job = json.loads(capsys.readouterr().out)['request']
     code, output, _ = drive_cleanup_cli(repo, capsys, job)

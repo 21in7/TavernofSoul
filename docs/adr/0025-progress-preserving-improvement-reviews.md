@@ -1,5 +1,10 @@
 # 0025. 진행을 보존하는 고정 소스 검토와 실제 참여 보고
 
+2026-10-22 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)은 잠금 책임과 private
+진단을 정밀화한다. live capture/freshness는 기존 source inode를 짧게 보유하고 sealed 모델
+검토는 해제 후 진행한다. controls를 확인할 수 없는 busy lock은 호출 보류다. 아래 snapshot/
+source-only 진행·cursor 보존과 현재 freshness/승인 구분은 유지한다.
+
 2026-10-22 대체 범위: [ADR0026](0026-source-verified-retained-improvement-reports.md)은 source 확인을
 parent의 실제 성공 Read 증거로 검증하고, 최신 단일 완료 회차 선택/최신 reviewer 실패의 일괄
 eligible 강등을 ID별 최신 명시 verdict 보존과 원본 provenance 재검증으로 대체한다. 아래의

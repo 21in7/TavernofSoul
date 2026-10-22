@@ -1,5 +1,10 @@
 # 0010. 머지 후 자동 Git 정리와 전체 완료 게이트
 
+2026-10-22 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)은 workflow 실행 소유권을
+별도 mutex로 분리하지만 cleanup은 기존 source `.lock`→journal `github.lock`을 계속 보유한다.
+refs/index/source 변경·복구·최종 save 동안 live capture/freshness를 차단한다. 모델·앱/CI 응답
+대기 전체에는 source mutex를 보유하지 않는다. 아래 lease·snapshot·사용자 편집 보존·완료 gate는 유지한다.
+
 - 상태: 승인(accepted), 새 구현 결정; 실행 성공의 증거는 아님
 - 기록일: 2026-10-12
 - 대체 관계: [0009](0009-post-merge-branch-cleanup.md)의 별도 수작업 정리·완료 경계를 대체한다.

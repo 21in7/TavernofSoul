@@ -80,12 +80,13 @@ import secrets
 import signal
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 from harness import agent_models, improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import improvement_snapshot as sealed
 from harness import review_coverage as coverage
+from harness import project_lock, improvement_diagnostics as diagnostics
 
 
 CONFIG = Path(__file__).with_name('improvement-loop-config.json')
@@ -150,9 +151,11 @@ def validate_config(value):
     return dict(value)
 
 
+@diagnostics.at('config')
 def load_config(path=None):
     try:
-        return validate_config(contract.parse_json(imp._read_file(path or CONFIG, 8192)[0], 8192))
+        with diagnostics.boundary('config'):
+            return validate_config(contract.parse_json(imp._read_file(path or CONFIG, 8192)[0], 8192))
     except LoopError:
         raise
     except (ValueError, OSError, TypeError):
@@ -174,6 +177,12 @@ def _id():
 
 
 def _dependencies(config, local_config, selected, *, allow_unavailable_sources=False):
+    with project_lock.hold(selected), diagnostics.boundary('dependencies'):
+        return _dependencies_locked(config, local_config, selected,
+            allow_unavailable_sources=allow_unavailable_sources)
+
+
+def _dependencies_locked(config, local_config, selected, *, allow_unavailable_sources=False):
     discovery = imp.load_config()
     # The loop never accepts a caller-selected or expanded discovery scope.
     if discovery['scope_file'] != 'harness/improvement-scope.txt':
@@ -182,13 +191,16 @@ def _dependencies(config, local_config, selected, *, allow_unavailable_sources=F
     body, mode = imp._read_file(scope_path, 65536)
     paths = contract.validate_scope_paths(body.decode('utf-8').splitlines(), 37)
     scope = {'sha256': hashlib.sha256(body).hexdigest(), 'mode': mode, 'paths': paths}
+    with diagnostics.boundary('config'):
+        agent_fingerprint = contract.digest(agent_models.load_config())
+        workflow_fingerprint = contract.digest(workflow.load_policy())
     dependencies = {
         'scope_fingerprint': scope,
         'config_fingerprint': contract.digest(discovery),
         'loop_config_fingerprint': contract.digest(config),
         'local_config_fingerprint': local_model.config_digest(local_config),
-        'agent_config_fingerprint': contract.digest(agent_models.load_config()),
-        'workflow_config_fingerprint': contract.digest(workflow.load_policy()),
+        'agent_config_fingerprint': agent_fingerprint,
+        'workflow_config_fingerprint': workflow_fingerprint,
         'ownership_fingerprint': contract.digest({role: imp.role_scope(role, paths, discovery)
                                                 for role in contract.ROLES}),
         'review_protocol': coverage.VERSION,
@@ -220,6 +232,11 @@ def validate_scan_freshness(scan, *, selected=None):
             raise LoopError('loop_dependencies_missing')
         return
     selected = selected or storage.resolve_storage(imp.ROOT)
+    with project_lock.hold(selected):
+        return _validate_scan_freshness_locked(scan, selected)
+
+
+def _validate_scan_freshness_locked(scan, selected):
     selected.check_ready()
     config = load_config()
     local_config = local_model.load_config(root=imp.ROOT)
@@ -394,6 +411,7 @@ def _new_state():
             'participation': [], 'history_migrated': False, 'cursor_order': 0}
 
 
+@diagnostics.at('state_read')
 def _read_state(store):
     if not store.exists(STATE_FILE):
         return _new_state()
@@ -440,6 +458,7 @@ def _read_state(store):
     return state
 
 
+@diagnostics.at('state_save')
 def _write_state(store, state):
     # Store.write pins private directories, fsyncs file and directory and checks
     # policy readiness. Never swallow a failed reservation write and then call.
@@ -863,6 +882,7 @@ def _recover(store, state, config, now):
     if not isinstance(pending, dict) or state['round'] is None:
         raise LoopError('state_invalid')
     stage, role = STAGES[state['stage_index']]
+    diagnostics.position(stage, now.hour)
     if pending.get('round_id') != state['round']['report']['scan_id']:
         raise LoopError('state_invalid')
     report = state['round']['report']
@@ -935,6 +955,7 @@ def _deadline(seconds):
     started = time.monotonic()
 
     def expired(signum, frame):
+        diagnostics.timeout()
         raise LoopError('tick_timeout')
 
     signal.signal(signal.SIGALRM, expired)
@@ -990,6 +1011,7 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
 
 def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
                 prepared, runner, config, now):
+    started = time.monotonic()
     try:
         result = runner(role, own_paths, snapshots, config=local_config, cursor=cursor,
                         feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
@@ -1021,7 +1043,8 @@ def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
                  'reason': 'ok' if candidates else reason, 'called': result.get('called') is True,
                  'read_windows': windows, 'skipped_lines': prepared['skipped_lines'],
                  'started_at': now.isoformat(), 'cost': None, 'cost_status': 'not_metered'}, candidates)
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt) as exc:
+        diagnostics.record('stage', exc, started)
         return ({'provider': 'mlx-vlm', 'model': local_config['model'], 'stage': 'local_explorer',
                  'owner_role': role, 'status': 'failed', 'reason': 'local_response_invalid',
                  'called': True, 'read_windows': [{key: item[key] for key in
@@ -1121,8 +1144,9 @@ def _origin(scan, record):
             'discovery_fingerprint': authorization_context(scan)}
 
 
+@diagnostics.at('publication')
 def _freeze_morning(store, state, now, discovery, dependencies):
-    """Requires both locks. Prepare journal first; never overwrite an older day."""
+    """Requires Store and source locks. Freeze current judgment before releasing source."""
     start, end = _morning_window(now)
     if now < end:
         return None
@@ -1261,6 +1285,7 @@ def _freeze_morning(store, state, now, discovery, dependencies):
     return _materialize_morning(store, journal, discovery)
 
 
+@diagnostics.at('publication')
 def _freeze_unavailable_morning(store, state, now, reason):
     """No current dependencies => no eligible pool, but still a factual report.
 
@@ -1354,13 +1379,16 @@ def _sender_lock(store):
     proposal claim. The callback can acquire both ordinary locks freely. A
     crash releases the kernel lock while its durable sending journal survives.
     """
-    store.prepare()
+    with diagnostics.boundary('storage_readiness'):
+        store.prepare()
     directory = store.path('loop')
-    store.policy.ensure_directory(directory)
-    handle = workflow.git_publish.open_lock(store.policy, directory / '.publication-lock')
+    with diagnostics.boundary('sender_lock'):
+        store.policy.ensure_directory(directory)
+        handle = workflow.git_publish.open_lock(store.policy, directory / '.publication-lock')
     try:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with diagnostics.boundary('sender_lock'):
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise LoopError('publication_busy') from None
         yield
@@ -1368,6 +1396,7 @@ def _sender_lock(store):
         handle.close()
 
 
+@diagnostics.at('publication')
 def publish(*, now=None, selected=None, publisher=None, reconcile=False):
     """One frozen digest, serialized sender, callback outside both state locks.
 
@@ -1376,9 +1405,27 @@ def publish(*, now=None, selected=None, publisher=None, reconcile=False):
     No source analysis or model is invoked here.
     """
     imp._parent()
-    store = imp.Store(selected)
-    with _sender_lock(store):
-        return _publish_once(now=now, selected=store.policy, publisher=publisher, reconcile=reconcile)
+    # Standalone API calls need the same private observation as the CLI. Nested
+    # tick/CLI publication preserves the invocation's original first failure.
+    with (nullcontext(diagnostics.current()) if diagnostics.current() is not None
+          else diagnostics.Trace()):
+        diagnostics.position('publication', _clock(now).hour)
+        store = imp.Store(selected)
+        with _stable_sender_lock(store), _sender_lock(store):
+            return _publish_once(now=now, selected=store.policy, publisher=publisher, reconcile=reconcile)
+
+
+@contextmanager
+def _stable_sender_lock(store):
+    mutex = project_lock.hold(store.policy, kind='sender_lock', reentrant=False)
+    try:
+        mutex.__enter__()
+    except BlockingIOError:
+        raise LoopError('publication_busy') from None
+    try:
+        yield
+    finally:
+        mutex.__exit__(None, None, None)
 
 
 def _publish_once(*, now=None, selected=None, publisher=None, reconcile=False):
@@ -1398,7 +1445,9 @@ def _publish_once(*, now=None, selected=None, publisher=None, reconcile=False):
     store = imp.Store(selected)
     date = now.date().isoformat()
     name = _publication_name(date)
-    with store.lock(), store.lock(project=True):
+    with store.lock():
+        with diagnostics.boundary('storage_binding'):
+            project_lock.bind_discovery_root(store.policy, store.root)
         state = _read_state(store)
         if state['high_water_at'] and now < _stamp(state['high_water_at']):
             return {'date': date, 'status': 'paused', 'reason': 'clock_rollback'}
@@ -1429,19 +1478,25 @@ def _publish_once(*, now=None, selected=None, publisher=None, reconcile=False):
     # deliver_report acquires its own Store.lock. No callback under either lock.
     delivered = False
     try:
-        result = (publisher or imp.deliver_report)(date, selected=store.policy)
+        with diagnostics.boundary('publication'):
+            result = (publisher or imp.deliver_report)(date, selected=store.policy)
         delivered = (isinstance(result, dict) and result.get('status') == 'delivered' and
                      result.get('date') == date and result.get('digest') == digest)
+        if not delivered:
+            with diagnostics.boundary('publication'):
+                raise ValueError('Publication result did not verify.')
     except (Exception, KeyboardInterrupt):
         pass
-    with store.lock(), store.lock(project=True):
+    with diagnostics.boundary('publication_settlement'), store.lock():
         journal = store.read(name)
         if journal.get('attempt_id') != attempt_id or journal['digest'] != digest:
             raise LoopError('publication_attempt_changed')
         journal.update(status='delivered' if delivered else 'publication_unknown',
                        finished_at=now.isoformat())
         store.write(name, journal)
-    return {'date': date, 'status': journal['status'], 'digest': digest}
+        result = {'date': date, 'status': journal['status'], 'digest': digest}
+        _attach_diagnostic(result, diagnostics.current(), store)
+    return result
 
 
 def _summary(state, now, config):
@@ -1511,6 +1566,7 @@ def _pause(store, state, slot, reason, now, config):
 
 def _skip_stage(store, state, day, slot, now, config, reason):
     stage, role = STAGES[state['stage_index']]
+    diagnostics.position(stage, now.hour)
     report = state['round']['report']
     if stage != 'local_explorer':
         _role_agent(report, role, {'role': role, 'provider': None, 'model': None,
@@ -1551,50 +1607,56 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     day['slots'][slot] = {'status': 'claimed', 'at': now.isoformat()}
     # First durable journal, before local config, snapshots, quota or model I/O.
     _write_state(store, state)
-    local_config = (local_model.load_config(root=imp.ROOT) if supplied_local_config is None else
-                    local_model.validate_config(supplied_local_config))
-    if local_config['limits']['timeout_seconds'] + 80 > config['tick_timeout_seconds']:
-        raise LoopError('local_timeout_exceeds_tick')
-    active_seal = (state['round'] is not None and state['round'].get('snapshot') is not None and
-                   state['stage_index'] < len(STAGES))
-    discovery, paths, snapshots, dependencies = _dependencies(
-        config, local_config, store.policy, allow_unavailable_sources=active_seal)
-    dependency_digest = contract.digest(dependencies)
-    previous = state['round'].get('snapshot') if state['round'] else None
-    _migrate_cursors(state, paths, discovery)
-    if state['round']:
-        old = state['round']['report']
-        controls_changed = _controls(old['loop_dependencies']) != _controls(dependencies)
-        legacy_active = previous is None
-        if controls_changed or legacy_active:
-            # Invalidate progression, never erase actual attempts or completed
-            # review provenance. A legacy active round cannot prove pinned bytes.
-            invalidated = copy.deepcopy(old)
-            invalidated['review_complete'] = False
-            invalidated['status'] = 'partial' if old['proposals'] else 'failed'
-            invalidated['errors'].append('dependencies_changed' if controls_changed else
-                                         'legacy_snapshot_unavailable')
-            for record in invalidated['proposals']:
-                record.pop('review', None)
-            store.write('loop/invalidated/' + old['scan_id'] + '.json', invalidated)
-            state.update(round=None, stage_index=0, feedback={})
-            if controls_changed:
-                state.update(cursors={}, cursor_order=1)
-    state['dependency_digest'] = dependency_digest
-    if state['round'] is None or state['stage_index'] == len(STAGES):
-        if snapshots is None:
-            raise LoopError('current_sources_unavailable')
-        _new_round(store, state, now, discovery, paths, snapshots, dependencies, previous)
-    pinned = state['round']['report']
-    if state['round']['snapshot']['scan_id'] != pinned['scan_id']:
-        raise sealed.SnapshotError('snapshot_invalid')
-    snapshots = sealed.load(store, state['round']['snapshot'], pinned['approved_files'],
-                            pinned['source_fingerprints'], discovery['limits'])
-    paths = pinned['approved_files']
-    pinned['current_fresh_at_last_tick'] = pinned['loop_dependencies'] == dependencies
-    # Morning is independent of budget, quota and model availability. It runs
-    # before admission and will never invoke a model to manufacture a report.
-    _freeze_morning(store, state, now, discovery, dependencies)
+    with project_lock.hold(store.policy, reentrant=False):
+        with diagnostics.boundary('config'):
+            if load_config() != config:
+                raise LoopError('loop_dependencies_changed')
+            local_config = (local_model.load_config(root=imp.ROOT) if supplied_local_config is None else
+                            local_model.validate_config(supplied_local_config))
+        if local_config['limits']['timeout_seconds'] + 80 > config['tick_timeout_seconds']:
+            raise LoopError('local_timeout_exceeds_tick')
+        active_seal = (state['round'] is not None and state['round'].get('snapshot') is not None and
+                       state['stage_index'] < len(STAGES))
+        discovery, paths, snapshots, dependencies = _dependencies(
+            config, local_config, store.policy, allow_unavailable_sources=active_seal)
+        # Report selection needs current dependencies, never a healthy next
+        # round or a successful seal/stage. Freeze before those fallible steps.
+        _freeze_morning(store, state, now, discovery, dependencies)
+        dependency_digest = contract.digest(dependencies)
+        previous = state['round'].get('snapshot') if state['round'] else None
+        _migrate_cursors(state, paths, discovery)
+        if state['round']:
+            old = state['round']['report']
+            controls_changed = _controls(old['loop_dependencies']) != _controls(dependencies)
+            legacy_active = previous is None
+            if controls_changed or legacy_active:
+                # Invalidate progression, never erase actual attempts or completed
+                # review provenance. A legacy active round cannot prove pinned bytes.
+                invalidated = copy.deepcopy(old)
+                invalidated['review_complete'] = False
+                invalidated['status'] = 'partial' if old['proposals'] else 'failed'
+                invalidated['errors'].append('dependencies_changed' if controls_changed else
+                                             'legacy_snapshot_unavailable')
+                for record in invalidated['proposals']:
+                    record.pop('review', None)
+                store.write('loop/invalidated/' + old['scan_id'] + '.json', invalidated)
+                state.update(round=None, stage_index=0, feedback={})
+                if controls_changed:
+                    state.update(cursors={}, cursor_order=1)
+        state['dependency_digest'] = dependency_digest
+        if state['round'] is None or state['stage_index'] == len(STAGES):
+            if snapshots is None:
+                raise LoopError('current_sources_unavailable')
+            _new_round(store, state, now, discovery, paths, snapshots, dependencies, previous)
+        pinned = state['round']['report']
+        if state['round']['snapshot']['scan_id'] != pinned['scan_id']:
+            raise sealed.SnapshotError('snapshot_invalid')
+        snapshots = sealed.load(store, state['round']['snapshot'], pinned['approved_files'],
+                                pinned['source_fingerprints'], discovery['limits'])
+        paths = pinned['approved_files']
+        pinned['current_fresh_at_last_tick'] = pinned['loop_dependencies'] == dependencies
+        # Morning is independent of budget, quota and model availability. It runs
+        # before admission and will never invoke a model to manufacture a report.
     # Candidate identities, evidence and completion belong to the pinned input.
     # Live dependencies above are used ONLY for current freshness and selection.
     dependencies = pinned['loop_dependencies']
@@ -1607,6 +1669,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     if day['stopped']:
         return _pause(store, state, slot, day.get('stop_reason', 'daily_budget_overrun'), now, config)
     stage, role = STAGES[state['stage_index']]
+    diagnostics.position(stage, now.hour)
     own_paths = imp.role_scope(role, paths, discovery)
     if not own_paths:
         return _skip_stage(store, state, day, slot, now, config, 'owner_scope_empty')
@@ -1618,6 +1681,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             prepared = local_model.prepare_request(role, own_paths, snapshots, config=local_config,
                 cursor=cursor, feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
         except (Exception, KeyboardInterrupt) as exc:
+            diagnostics.record('stage', exc)
             reason = (exc.reason if isinstance(exc, local_model.LocalModelError) and
                       exc.reason in local_model._REASONS else 'input_invalid')
             prepared = {'status': 'skipped', 'reason': reason, 'sources': [],
@@ -1785,16 +1849,18 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     # Snapshot completion is independent of live source freshness. Control
     # changes remain fail-closed; next tick invalidates their progression.
     try:
-        after_config = load_config()
-        after_local = (local_model.load_config(root=imp.ROOT) if supplied_local_config is None else
-                       local_model.validate_config(supplied_local_config))
-        _, _, _, after = _dependencies(after_config, after_local, store.policy,
-                                      allow_unavailable_sources=True)
-        state['dependency_digest'] = contract.digest(after)
-        report['current_fresh_at_last_tick'] = after == dependencies
-        if _controls(after) != _controls(dependencies):
-            report['review_complete'] = False
-            report['errors'].append('dependencies_changed_during_call')
+        with project_lock.hold(store.policy, reentrant=False):
+            with diagnostics.boundary('config'):
+                after_config = load_config()
+                after_local = (local_model.load_config(root=imp.ROOT) if supplied_local_config is None else
+                               local_model.validate_config(supplied_local_config))
+            _, _, _, after = _dependencies(after_config, after_local, store.policy,
+                                          allow_unavailable_sources=True)
+            state['dependency_digest'] = contract.digest(after)
+            report['current_fresh_at_last_tick'] = after == dependencies
+            if _controls(after) != _controls(dependencies):
+                report['review_complete'] = False
+                report['errors'].append('dependencies_changed_during_call')
     except Exception:
         state['dependency_digest'] = None
         report['current_fresh_at_last_tick'] = False
@@ -1811,12 +1877,14 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                              participation.get('reason', 'role_failed'))
     if state['stage_index'] == len(STAGES) and report['review_complete']:
         report['review_completed_at'] = now.isoformat()
+    diagnostics.position('settlement', now.hour)
     # Settlement and terminal stage are authoritative even if a subsequent
     # derived scan write fails. In particular, never lose an observed overrun.
-    _archive_days(store, state)
-    _write_state(store, state)
-    _persist_round(store, state, config, now)
-    _write_state(store, state)
+    with diagnostics.boundary('settlement'):
+        _archive_days(store, state)
+        _write_state(store, state)
+        _persist_round(store, state, config, now)
+        _write_state(store, state)
     return _summary(state, now, config)
 
 
@@ -1833,41 +1901,89 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
     finish_clock = clock or ((lambda: fixed_now) if fixed_now is not None else
                              (lambda: dt.datetime.now(dt.timezone.utc)))
     now = _clock(clock() if clock is not None else now)
-    try:
-        config = load_config()
-        store = imp.Store(selected)
-        with _deadline(config['tick_timeout_seconds']):
-            store.policy.check_ready()
-            with store.lock(), store.lock(project=True):
-                state = _read_state(store)
-                try:
-                    result = _tick_locked(store, state, now, config, runner, keys, local_runner,
-                                          local_config, quota_transport, finish_clock)
-                except (Exception, KeyboardInterrupt) as exc:
-                    # Disk failure can prevent this diagnostic write. The last
-                    # durable pending reservation remains authoritative then.
-                    reason = (exc.reason if isinstance(exc, local_model.LocalModelError) else
-                              str(exc) if isinstance(exc, (LoopError, sealed.SnapshotError)) else
-                              'tick_unavailable')
-                    state['pause_reason'] = reason
-                    if state['inflight'] is not None:
-                        # Leave durable pending intact for next-slot recovery;
-                        # never accidentally refund an attempted model call.
+    with diagnostics.Trace() as trace:
+        diagnostics.position('prepare', now.hour)
+        store = None
+        try:
+            with diagnostics.boundary('config'):
+                config = load_config()
+            with diagnostics.boundary('store'):
+                store = imp.Store(selected)
+            with diagnostics.boundary('deadline'), _deadline(config['tick_timeout_seconds']):
+                with diagnostics.boundary('storage_readiness'):
+                    store.policy.check_ready()
+                with store.lock():
+                    with diagnostics.boundary('storage_binding'):
+                        project_lock.bind_discovery_root(store.policy, store.root)
+                    state = _read_state(store)
+                    try:
+                        with diagnostics.boundary('stage'):
+                            result = _tick_locked(store, state, now, config, runner, keys, local_runner,
+                                                  local_config, quota_transport, finish_clock)
+                    except (Exception, KeyboardInterrupt) as exc:
+                        failure = trace.capture('stage', exc)
+                        reason = _failure_reason(exc, failure['reason'])
+                        # Build a usable private observation BEFORE attempting any
+                        # error write. Inflight reservations remain authoritative.
                         result = dict(_summary(state, now, config), reason=reason, status='paused')
-                    else:
-                        slot = state['last_slot']
-                        result = _pause(store, state, slot, reason, now, config)
-                    _freeze_unavailable_morning(store, state, now, reason)
-            if (publisher is not None or deliver) and result.get('reason') != 'clock_rollback':
-                result['publication'] = publish(now=_clock(finish_clock()),
-                                                selected=store.policy, publisher=publisher)
-            return result
+                        try:
+                            if state['inflight'] is None and state['last_slot'] is not None:
+                                _pause(store, state, state['last_slot'], reason, now, config)
+                            _freeze_unavailable_morning(store, state, now, reason)
+                        except (Exception, KeyboardInterrupt):
+                            result['recovery'] = 'durable_state_retained'
+                    _attach_diagnostic(result, trace, store)
+                if (publisher is not None or deliver) and result.get('reason') != 'clock_rollback':
+                    with diagnostics.boundary('publication'):
+                        result['publication'] = publish(now=_clock(finish_clock()),
+                                                        selected=store.policy, publisher=publisher)
+                if trace.first is not None:
+                    result['diagnostic'] = trace.first
+                    # Publication may be the first failure, after the original
+                    # state mutex was released. Its own settlement owns writes.
+                    result.setdefault('diagnostic_preservation',
+                        result.get('publication', {}).get('diagnostic_preservation', 'private_result_only'))
+                return result
+        except (Exception, KeyboardInterrupt) as exc:
+            failure = trace.capture('stage', exc)
+            # No loop state mutation outside Store.lock, including first-lock
+            # failure. stdout is the existing private CLI observation path.
+            return {'version': STATE_VERSION, 'date': now.date().isoformat(), 'status': 'paused',
+                    'reason': failure['reason'], 'diagnostic': failure,
+                    'diagnostic_preservation': 'private_result_only',
+                    'message_ko': '점검을 안전하게 완료할 수 없어 보류했습니다. private 진단 경계를 확인하세요.'}
+
+
+def _failure_reason(exc, fallback):
+    # Compatibility codes for established snapshot/recovery callers. These
+    # cannot forge the independent boundary diagnostic or grant any authority.
+    fixed = frozenset(('current_sources_unavailable', 'legacy_history_unbounded',
+        'legacy_history_invalid', 'local_timeout_exceeds_tick', 'tick_timeout',
+        'snapshot_invalid', 'snapshot_permissions', 'snapshot_size', 'snapshot_unavailable',
+        'snapshot_manifest_changed', 'snapshot_sources_changed'))
+    if isinstance(exc, (LoopError, sealed.SnapshotError)) and len(exc.args) == 1:
+        value = exc.args[0]
+        if type(value) is str and value in fixed:
+            return value
+    if isinstance(exc, local_model.LocalModelError):
+        value = exc.reason
+        if type(value) is str and value in local_model._REASONS:
+            return value
+    return fallback
+
+
+def _attach_diagnostic(result, trace, store):
+    if trace is None or trace.first is None:
+        return
+    result['diagnostic'] = trace.first
+    try:
+        # Fixed bounded private record, under the state mutex; never an append
+        # store, public field, fallback, or state write outside its lock.
+        with diagnostics.boundary('diagnostic_save'):
+            store.write('loop/last-diagnostic.json', trace.first)
+        result['diagnostic_preservation'] = 'private_record_and_result'
     except (Exception, KeyboardInterrupt):
-        # Lock/storage/runtime failures are not successful scans. No keys,
-        # paths, raw HTTP bodies or provider exceptions leave this boundary.
-        return {'version': STATE_VERSION, 'date': now.date().isoformat(), 'status': 'paused',
-                'reason': 'lock_storage_or_runtime_unavailable',
-                'message_ko': '프로젝트 잠금·저장소·실행 제한을 확인할 수 없어 탐색을 보류했습니다.'}
+        result['diagnostic_preservation'] = 'private_result_only'
 
 
 def main(argv=None):
@@ -1880,16 +1996,21 @@ def main(argv=None):
         parser.error('--reconcile requires publish')
     if args.no_deliver and args.action != 'tick':
         parser.error('--no-deliver requires tick')
-    try:
-        if args.action == 'tick':
-            result = tick(deliver=not args.no_deliver)
-        elif args.action == 'publish':
-            result = publish(reconcile=args.reconcile)
-        else:
-            result = status()
-    except (Exception, KeyboardInterrupt):
-        result = {'status': 'paused', 'reason': 'loop_unavailable',
-                  'message_ko': '개선 탐색 상태를 확인할 수 없어 보류했습니다.'}
+    with diagnostics.Trace() as trace:
+        try:
+            if args.action == 'tick':
+                result = tick(deliver=not args.no_deliver)
+            elif args.action == 'publish':
+                result = publish(reconcile=args.reconcile)
+            else:
+                result = status()
+        except (Exception, KeyboardInterrupt) as exc:
+            failure = trace.capture('publication' if args.action == 'publish' else 'state_read', exc)
+            result = {'status': 'paused', 'reason': failure['reason'], 'diagnostic': failure,
+                      'diagnostic_preservation': 'private_result_only'}
+        if trace.first is not None:
+            result['diagnostic'] = trace.first
+            result.setdefault('diagnostic_preservation', 'private_result_only')
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
     return 1 if result.get('status') in ('paused', 'publication_unknown') else 0
 
