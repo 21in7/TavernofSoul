@@ -31,6 +31,7 @@ import time
 from urllib.parse import urlsplit
 
 from harness import agent_telemetry, agent_models, improvement_report as contract, storage, workflow, workspace
+from harness import review_coverage as coverage
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/improvement-config.json'
@@ -51,7 +52,7 @@ _CANDIDATE_FAILURE_REASONS = frozenset((
 ROLE_FAILURE_REASONS = frozenset((
     'role_preparation_failed', 'role_execution_failed', 'role_result_invalid',
     'role_identity_mismatch', 'role_context_changed', 'role_json_invalid',
-    'candidate_invalid', 'review_invalid', 'role_context_cleanup_failed',
+    'candidate_invalid', 'review_invalid', 'source_review_unverified', 'role_context_cleanup_failed',
     'role_interrupted', 'role_failed',
 )) | _CANDIDATE_FAILURE_REASONS
 
@@ -412,7 +413,7 @@ def _parse_model_response(value, max_bytes):
 def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
     participation = {'role': role, 'provider': None, 'model': None,
                      'status': 'unavailable', 'cost': None, 'cost_status': 'unknown',
-                     'read_files': list(paths), 'started_at': _now().isoformat()}
+                     'read_files': [] if role == 'reviewer' else list(paths), 'started_at': _now().isoformat()}
     start = time.monotonic()
     result = None
     preparation_ms = verification_ms = None
@@ -420,6 +421,9 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
     try:
         spec = agent_models.load_config()['roles'][role]
         participation.update(provider=spec['provider'], model=spec['model'])
+        if role == 'reviewer' and spec['provider'] != 'claude':
+            failure_reason = 'source_review_unverified'
+            coverage.fail()
         with selected.temporary_directory(prefix='tavern-improvement-context-', purpose='context') as context:
             if context == ROOT or ROOT in context.parents or context in ROOT.parents:
                 raise ImprovementError('Model contexts must be outside repository ancestry.')
@@ -433,6 +437,24 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     target.write_bytes(item['content'])
                     target.chmod(0o400)
             prompt = REVIEW_PROMPT if role == 'reviewer' else CANDIDATE_PROMPT
+            capture = None
+            if role == 'reviewer':
+                failure_reason = 'source_review_unverified'
+                owners = {r: role_scope(r, paths, config) for r in contract.SPECIALIST_ROLES}
+                windows = coverage.plan(paths, snapshots, records, owners, config['shared_files'])
+                capture = coverage.Capture(model_root, snapshots, windows)
+                prompt += ('\nDiscovery source-read-review-v1 overrides the response keys above: '
+                           'return exactly reviews,documentation,assessments. Use actual Read tools '
+                           'for EVERY numbered window below, with exact file_path, offset=start_line, '
+                           'limit=end_line-start_line+1. No other reads or tools. '
+                           'assessments is one ordered {window: zero-based index, assessment: '
+                           '24..720 characters} per window, explaining concrete observed behavior, '
+                           'limitations and documentation implications. Empty-pool owner windows '
+                           'sample executable Python bodies (at most 96 continuous lines each), '
+                           'separately from shared documentation. A sample is not a complete file '
+                           'or repository read and cannot establish absence of defects outside it. Model read claims are '
+                           'not evidence. If coverage cannot be completed, do not claim success.\n'
+                           'Required Read windows: ' + json.dumps(windows, ensure_ascii=False))
             prompt += '\nApproved readable files (exact paths): ' + json.dumps(paths)
             prompt += '\nMissing files: ' + json.dumps([p for p in paths if not snapshots[p]['exists']])
             prompt += '\nOriginal source modes (read-only context uses 0400): ' + json.dumps(
@@ -466,7 +488,8 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             try:
                 result = runner(role, safe_prompt, keys, write=False,
                                 timeout=timeout,
-                                workspace=model_root, scoped=True)
+                                workspace=model_root, scoped=True,
+                                **({'discovery_review': capture} if capture is not None else {}))
             finally:
                 if previous is None:
                     os.environ.pop('TAVERN_IMPROVEMENT_DISCOVERY', None)
@@ -532,7 +555,25 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                        for p in paths}
             if role == 'reviewer':
                 failure_reason = 'review_invalid'
-                parsed = contract.validate_review(parsed, records, paths, private=True)
+                if not isinstance(parsed, dict) or set(parsed) != {'reviews', 'documentation', 'assessments'}:
+                    raise contract.ValidationError('Invalid discovery review contract.')
+                failure_reason = 'source_review_unverified'
+                if capture.receipts is None:
+                    coverage.fail()
+                assessed = coverage.assessments(parsed['assessments'], windows)
+                review_body = {k: parsed[k] for k in ('reviews', 'documentation')}
+                failure_reason = 'review_invalid'
+                parsed = contract.validate_review(review_body, records, paths, private=True)
+                by_id = {r['candidate_id']: r for r in parsed['reviews']}
+                parsed['reviews'] = [by_id[r['id']] for r in records]
+                failure_reason = 'source_review_unverified'
+                coverage.document_reads(parsed, windows)
+                participation['source_review'] = {
+                    'version': coverage.VERSION, 'plan': windows, 'reads': capture.receipts,
+                    'assessments': assessed,
+                    'fingerprints_digest': contract.digest(contract.fingerprint_sources(snapshots)),
+                    'review_digest': contract.digest(parsed)}
+                participation['read_files'] = sorted({w['path'] for w in windows})
             else:
                 failure_reason = 'candidate_invalid'
                 try:
@@ -574,6 +615,18 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
 
 def _persist_report(store, report, config):
     date, scan_id = report['date'], report['scan_id']
+    if 'headline' not in report or report['headline'].startswith('점검'):
+        complete = report['status'] == 'scanned' and report.get('review_complete') is True
+        report['headline'] = ('점검 완료 · 확인한 범위에서 제안 없음' if complete and not report['proposals'] else
+                              '점검 완료 · 검토된 제안' if complete else
+                              '점검 미완료 · 개선점 없음으로 판단할 수 없음')
+        if not report['proposals']:
+            report['summary'] = ('점검 완료 · 확인한 범위에서 제안 없음. owner 코드의 연속 최대96줄 표본과 '
+                                 'shared 문서를 확인했습니다. 전체 파일·저장소 완독이 아니며 표본 밖의 결함 여부는 판단하지 않습니다.'
+                                 if complete else '점검이 끝나지 않았습니다. 실패·불완전·미점검을 개선점 없음으로 판단할 수 없습니다.')
+        else:
+            report['summary'] = ('독립 점검으로 검토된 제안입니다. 사용자 승인을 대신하지 않습니다.' if complete else
+                                 '점검이 불완전합니다. 독립 검토와 읽기 증거가 검증된 제안만 승인할 수 있습니다.')
     # Persist private report before deriving any deliverable; a crash is visible.
     store.write('scans/' + scan_id + '.json', report)
     # Manual legacy discovery can still create a private scan, but cannot
@@ -668,6 +721,9 @@ def discover(scope_file=None, *, runner=None, keys=None, now=None, selected=None
                 for record in records:
                     record['review'] = {k: v for k, v in verdicts[record['id']].items()
                                         if k != 'candidate_id'}
+                coverage.attach(report, participation['source_review'])
+                coverage.validate(report, snapshots, {r: role_scope(r, paths, config)
+                                  for r in contract.SPECIALIST_ROLES}, config['shared_files'])
             complete = all(a['status'] == 'succeeded' for a in report['agents'])
             report['status'] = 'scanned' if complete else (
                 'partial' if any(a['status'] == 'succeeded' for a in report['agents']) else 'failed')
@@ -761,7 +817,13 @@ def report(date=None, *, selected=None):
     return status(date, selected=selected)['report']
 
 
-def _eligible(store, proposal_id):
+def _persisted_review(store, proposal_id, *, legacy_completion=False):
+    """Original proposal and complete explicit verdict, without new authority.
+
+    Approval/execution additionally require _eligible's source Read gate.
+    Completion can inspect a pre-protocol signed claim without retroactively
+    changing its original authorization or testing post-execution freshness.
+    """
     saved = store.read('proposals/' + _proposal_id(proposal_id) + '.json')
     record = saved['proposal']
     verified = contract.proposal_record(record['candidate'], record['source_fingerprints'])
@@ -770,13 +832,23 @@ def _eligible(store, proposal_id):
     if record['id'] != proposal_id or not saved.get('review_complete') or saved['status'] == 'failed':
         raise ImprovementError('Independent review is incomplete.')
     # Revalidate the complete persisted discovery review, not a model boolean
-    # or the visible (max three) web cards. Failed/missing coverage is fatal.
+    # or the visible (max three) web cards. Failed/missing verdicts are fatal;
+    # _eligible separately requires transport-verified source coverage.
     if not isinstance(saved.get('scan_id'), str) or not storage.RUN_ID.fullmatch(saved['scan_id']):
         raise ImprovementError('Invalid discovery provenance.')
     scan = store.read('scans/' + saved['scan_id'] + '.json')
+    if legacy_completion:
+        from harness import improvement_loop
+        # This guarded path retains the old signed context for completion only.
+        # Any modern protocol marker prevents downgrading, even without proof.
+        context = improvement_loop.legacy_completion_context(scan)
     if scan.get('loop_engine') or 'loop_dependencies' in scan:
         from harness import improvement_loop
-        context = improvement_loop.authorization_context(scan)
+        if not legacy_completion:
+            try:
+                context = improvement_loop.authorization_context(scan)
+            except ValueError:
+                raise ImprovementError('Independent source Read evidence is required.') from None
         if (saved.get('discovery_fingerprint') != context or
                 record['source_fingerprints'] != scan.get('source_fingerprints') or
                 scan.get('source_fingerprints') != scan['loop_dependencies'].get('source_fingerprints')):
@@ -795,13 +867,30 @@ def _eligible(store, proposal_id):
     return record
 
 
+def _eligible(store, proposal_id):
+    record = _persisted_review(store, proposal_id)
+    saved = store.read('proposals/' + _proposal_id(proposal_id) + '.json')
+    scan = store.read('scans/' + saved['scan_id'] + '.json')
+    try:
+        coverage.validate(scan)
+    except ValueError:
+        raise ImprovementError('Independent source Read evidence is required.') from None
+    return record
+
+
 def _fresh(record, store):
-    current = contract.fingerprint_sources(snapshot_sources(record['source_fingerprints'],
-                                                            selected=store.policy))
+    snapshots = snapshot_sources(record['source_fingerprints'], selected=store.policy)
+    current = contract.fingerprint_sources(snapshots)
     if current != record['source_fingerprints']:
         raise ImprovementError('Approved read dependencies changed in bytes, mode or existence.')
     saved = store.read('proposals/' + record['id'] + '.json')
     scan = store.read('scans/' + saved['scan_id'] + '.json')
+    config = load_config()
+    try:
+        coverage.validate(scan, snapshots, {r: role_scope(r, scan['approved_files'], config)
+                          for r in contract.SPECIALIST_ROLES}, config['shared_files'])
+    except ValueError:
+        raise ImprovementError('Independent source Read evidence changed.') from None
     scope_bytes, mode = _read_file(Path(scan['scope_input']), 65536)
     fingerprint = {'sha256': hashlib.sha256(scope_bytes).hexdigest(), 'mode': mode,
                    'paths': contract.validate_scope_paths(scope_bytes.decode('utf-8').splitlines())}
@@ -819,7 +908,9 @@ def _discovery_context(store, record):
     if scan.get('loop_engine') or 'loop_dependencies' in scan:
         from harness import improvement_loop
         return improvement_loop.authorization_context(scan)
-    return None
+    coverage.validate(scan)
+    return contract.digest({'protocol': coverage.VERSION, 'scan_id': scan['scan_id'],
+                            'source_review_binding': scan['source_review_binding']})
 
 
 def _reconcile(store, proposal_id, run_id):

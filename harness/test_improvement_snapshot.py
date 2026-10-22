@@ -359,8 +359,10 @@ def test_latest_failed_attempts_visible_while_current_completed_pool_keeps_its_p
     public = lab.store.read('web/2026-10-16.json')
     contract.validate_web_report(public)
     assert public['counts']['candidates'] == 4
-    # web-v1 retains its conservative reviewer-status eligibility gate.
-    assert public['counts']['eligible'] == 0
+    # Latest failed participation does not revoke the original verified review.
+    assert public['counts']['eligible'] == 4
+    assert public['agents'][-1]['status'] == 'failed'
+    assert all(imp._eligible(lab.store, r['id']) == r for r in report['proposals'])
     for sensitive in ('local_participation', 'loop_dependencies', 'cost', RAW, SECRET,
                       'snapshot', 'diagnostic', str(lab.root)):
         assert sensitive not in json.dumps(public)

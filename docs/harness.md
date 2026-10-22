@@ -1,5 +1,15 @@
 # 개발 하네스 사용법
 
+2026-10-22 검증 인계는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다.
+새 offline 명세는 Read pairing/실패/자가 주장/위조/상한과 Lab tick→Store 재시작→morning→public→
+approve 원본 freshness를 다룬다. 앞 eligible 뒤0/실패와 후속 reject, 기존 publisher·frozen/privacy도
+실행기가 함께 검사한다. worker는 실행하지 않았다. parent의 새 Claude 문서 의미 판단·full make check·
+scoped apply·Git/CI 전달이 필요하며 실제 hourly/Sites 성공은 별도 관측이다.
+source/context 상한 및 실제 Read projection 회귀는 [test_review_coverage.py](../harness/test_review_coverage.py)에
+모았다. 테스트 삭제·skip·상한/scope 확대 없이 runtime `test_improvements.py`의131072bytes 상한을
+지킨다. 영역 AGENTS 선행·문서/설정만 존재·owner 코드 부재/빈 파일·읽기/파싱/size/window 실패와
+연속 최대96줄 코드 표본의 한계도 실행기가 확인한다. 작성된 명세는 실행 통과 증거가 아니다.
+
 [전체 하네스 설계](harness-design.md)와 [ADR 목록](adr/README.md)은 목표·책임·격리·검토·게시의
 설계 기준을 설명한다. 이 문서는 환경 준비와 상세 명령을 다룬다.
 
@@ -205,7 +215,7 @@ bounded 정제 `lock_storage_or_runtime_unavailable`이며 모델·키 조회·�
 fallback을 실행하지 않는다. child/discovery 권한 거부는 이 처리 바깥에 유지하고 원문 예외를
 노출하지 않는다. daemon/무한 polling은 없다.
 
-09:00 이후 첫 tick은 이전09:00~현재09:00의 현재 fingerprint 일치 최신 완료 review 하나로
+09:00 이후 첫 tick은 이전09:00~현재09:00의 현재 fingerprint 일치 검증된 완료 회차의 ID별 최신 verdict로
 모델 없이 오늘 보고를 불변 확정한다. 최대8 distinct 후보 중 priority/ID순 최대3카드 web-v1을
 사용한다. 미완료는0카드 partial/failed이며 옛날 참여를 오늘 성공으로 표시하지 않는다.
 기존 days/<date>.json은 보존하고 자동 재전달하지 않는다. catchup은 오늘 하나뿐이다.

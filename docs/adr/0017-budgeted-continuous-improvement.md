@@ -1,5 +1,10 @@
 # 0017. 예산 우선의 시간별 연구와 불변 오전 보고 분리
 
+2026-10-22 대체 범위: [ADR0026](0026-source-verified-retained-improvement-reports.md)은 source 확인을
+parent의 실제 성공 Read 증거로 검증하고, 최신 단일 완료 회차 선택/최신 reviewer 실패의 일괄
+eligible 강등을 ID별 최신 명시 verdict 보존과 원본 provenance 재검증으로 대체한다. 아래의
+해당 규칙과 당시 관측은 역사적 기록이다. sealed snapshot/참여 history·개별 승인/claim·예산은 유지한다.
+
 - 상태: 제안(proposed), 사용자 승인 방향의 구현 결정 기록; mlx-vlm 최종 어댑터의 새 의미 검토·전체 검사·범위 반영·운영 검증 대기
 - 기록일: 2026-10-16
 - 대체 관계: [0015](0015-approval-gated-improvement-discovery.md)의 daily-only 예약·하루 한 scan/5회 호출·one-pass 정책만 대체한다. 개별 승인·claim·workflow·GitHub 권한은 유지한다. [0016](0016-bounded-private-improvement-text.md)의 private/public 서술·strict envelope 계약도 유지한다.

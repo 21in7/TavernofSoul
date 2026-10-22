@@ -667,11 +667,15 @@ def build_web_report(report: Mapping[str, Any], max_proposals: int = MAX_PROPOSA
                                 report.get("review_complete") is False):
         status = "partial"
     allowed, proposals, seen_ids = set(), [], set()
-    # Selection provenance remains private. Preserve web-v1's conservative
-    # eligibility rule: a latest failed reviewer cannot publish eligible cards,
-    # even when the selector retained an earlier valid completed review's pool.
+    # New morning projections carry individually verified original reviews.
+    # Latest participation can fail while earlier fresh eligible cards survive.
+    # The parent validates these bounded private pointers against original scans.
+    retained = (report.get('morning_aggregate') == 'source-read-review-v1' and
+                isinstance(report.get('reviewed_source'), dict) and
+                isinstance(report.get('retained_provenance'), dict) and
+                set(report['retained_provenance']) == {r['id'] for r in records})
     reviewer_succeeded = (report.get("review_complete") is not False and
-                          any(x["role"] == "reviewer" and x["status"] == "succeeded" for x in agents))
+                          (retained or any(x["role"] == "reviewer" and x["status"] == "succeeded" for x in agents)))
     # A review response is an all-candidate decision. Losing even one verdict
     # must never leave the remaining cards executable through a partial report.
     reviews = {}
@@ -784,7 +788,7 @@ def validate_web_report(payload: Any) -> dict:
         value = _text(payload[field], limit)
         if safe_text(value, limit) != value:
             raise ValidationError("unsanitized public text")
-    roles, reviewer_succeeded = set(), False
+    roles = set()
     for agent in _list(payload["agents"], 5):
         _object(agent, ("role", "provider", "model", "status"))
         role = _enum(agent["role"], ROLES)
@@ -798,7 +802,6 @@ def validate_web_report(payload: Any) -> dict:
             value = _text(agent[key], limit)
             if safe_text(value, limit) != value:
                 raise ValidationError("unsanitized model identity")
-        reviewer_succeeded |= role == "reviewer" and agent_status == "succeeded"
     if status == "scanned" and (roles != set(ROLES) or
                                 any(x["status"] != "succeeded" for x in payload["agents"])):
         raise ValidationError("completed report needs genuine complete participation")
@@ -823,8 +826,12 @@ def validate_web_report(payload: Any) -> dict:
             raise ValidationError("unsanitized public review")
         if review["verdict"] == "eligible":
             visible_eligible += 1
-            if not reviewer_succeeded or status == "failed":
-                raise ValidationError("eligibility requires successful independent review")
+            # agents describe the latest attempts, which may postdate each
+            # retained card's successful review. Public validation is structural;
+            # only the private parent can validate original Read/provenance and
+            # authorize execution. A failed report still cannot certify cards.
+            if status == "failed":
+                raise ValidationError("failed report cannot certify eligibility")
             if not set(review_doc["files"]).issubset(card["edit_files"]):
                 raise ValidationError("eligible card omits required document edits")
         if card["approval_wording"] != "제안 " + proposal_id + " 승인":
@@ -834,8 +841,8 @@ def validate_web_report(payload: Any) -> dict:
     _integer(counts["reported"], len(cards), len(cards))
     _integer(counts["additional_candidates"], total - len(cards), total - len(cards))
     _integer(counts["eligible"], visible_eligible, total)
-    if (status == "failed" or not reviewer_succeeded) and counts["eligible"]:
-        raise ValidationError("failed or missing review cannot produce executable proposals")
+    if status == "failed" and counts["eligible"]:
+        raise ValidationError("failed report cannot certify eligibility")
     doc = _object(payload["documentation"], ("status", "files", "reason"))
     validate_documentation(doc, _paths(doc["files"], doc["files"]), private=False)
     if _safe_documentation(doc) != doc:
@@ -890,7 +897,8 @@ def render_html(payload: dict) -> str:
                          }.items()}))
     if not cards:
         cards.append('<p class="empty">{}</p>'.format(esc(
-            "점검 완료: 보고할 제안이 없습니다." if payload["status"] == "scanned" else
+            ("점검 완료 · 확인한 범위에서 제안 없음" if payload['headline'].startswith('점검 완료') else
+             "점검 완료: 보고할 제안이 없습니다.") if payload["status"] == "scanned" else
             "점검 미완료: 개선점이 없음을 의미하지 않습니다.")))
     return '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -950,7 +958,8 @@ def render_markdown(payload: dict) -> str:
                                                  esc(_brief(card["review"]["reason"], 110))), "",
                       "승인 의사 표현: **" + esc(card["approval_wording"]) + "**", ""])
     if not payload["proposals"]:
-        lines.extend(["점검 완료: 보고할 제안이 없습니다." if payload["status"] == "scanned" else
+        lines.extend([("점검 완료 · 확인한 범위에서 제안 없음" if payload['headline'].startswith('점검 완료') else
+                       "점검 완료: 보고할 제안이 없습니다.") if payload["status"] == "scanned" else
                       "점검 미완료: 개선점이 없음을 의미하지 않습니다.", ""])
     lines.extend(["추가 후보 {}개 · 전체 후보 {}개".format(payload["counts"]["additional_candidates"],
                                                       payload["counts"]["candidates"]), "",

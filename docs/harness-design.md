@@ -1,10 +1,33 @@
 # 전체 하네스 설계
 
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이 source 읽기 확인과 오전 선택을 대체한다.
+parent 전용 Capture는 discovery Claude stream-json의 실제 성공 Read만 canonical 승인 bytes/줄 범위에
+결합한다. 최대32 window/각256줄/총32KiB와 stdout512KiB/stderr16KiB/256event를 제한한다.
+CLI content는 원본 UTF-8의 최초 BOM 한 번 제외 → LF split → 각 줄 끝 CR 하나 제거 → 선택 줄 LF join
+하나만 허용한다. LF를 덧붙이지 않으며 totalLines는 끝 LF 뒤 빈 줄까지 센 전체 split 길이다. 마지막
+빈 줄만 선택하면 content는 빈 문자열이다. 원본 bytes/hash/POSIX mode·evidence 줄 번호와 range
+bytes/hash는 CLI 표현과 별도로 보존한다. 이 bounded 표본은 표본 밖 무결함의 증거가 아니다.
+빈 pool은 승인 owner의 non-shared Python 프로그램을 테스트보다 우선하며 AGENTS·문서·설정을
+코드 확인으로 세지 않는다. 함수 본문 우선(없으면 script 실행문) 기준의 앞 문맥 최대8줄과
+연속 최대96줄을 명시한다. 선택 프로그램 부재/빈 파일/읽기·파싱 불가/header-only와 한도 초과는
+미완료다. shared 문서 최대12줄은 별도다. 이 표본은 전체 파일·저장소 완독이 아니며 후보가 있는
+회차의 전체 evidence/benefit.evidence·필요 문서 Read,32KiB/32window 한도는 유지한다.
+private proof·assessment·검토 binding은 완료/원본 freshness에서 재검증한다. 모델 자기 보고·legacy는
+증거가 아니다. ID별 최신 verdict를 보존하며 morning aggregate는 approval/proposal 원본을 만들지 않는다.
+web-v1의 latest agents와 원래 검토된 eligible은 병존할 수 있다. 공개 validator는 구조를 검사하고
+private parent만 원본 Read/provenance/freshness를 검증한다. 완료 outbox는 현대 claim의 원본 proof와
+서명 binding을 보존하며, 도입 전 loop·non-loop 서명 claim의 원래 독립 verdict/실행 증거는 별도로
+확인한다. 이전 loop의 서명 context는 원래 `digest(scan['loop_dependencies'])`로 approval과 persisted
+proposal provenance에 대조하고 non-loop는 원래 context 없음으로 검증한다. source_review·
+source_review_binding 또는 scan/dependencies의 review_protocol 표식이 있으면 null/오류여도
+현대 proof 검증을 요구하며 호환 경로로 낮추지 않는다. 새 승인·execute의 Read gate는 유지하고
+완료 후 freshness/만료를 다시 검사하거나 승인을 갱신하지 않는다.
+
 2026-10-21 진행 보존 계약은 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)를 따른다.
 loop는 cloud 예약/정산/복구와 최대192개 participation history를 같은 atomic state에 기록한다.
 identity는 scan_id/slot/stage이며 admission 시각의 `[전날09:00,당일09:00)`에 집계하고 최신 실패가
 옛 성공에 가려지지 않도록 마지막 시도를 표시한다. 최대32개 완료 index는 현재 dependency 일치
-review 하나의 후보 선택용이며 참여 집계와 독립적이다. 최초 legacy4096개 이름 상한 이행 후
+검증된 회차의 ID별 최신 verdict 선택용이며 참여 집계와 독립적이다. 최초 legacy4096개 이름 상한 이행 후
 directory 재탐색 없이 정확한 index/current/day pointer만 사용한다. 과거 frozen/delivery는 보존한다.
 
 snapshot helper는 승인37개 UTF-8 source의 bytes/mode/존재만 private a/b bank에 저장한다.
@@ -577,8 +600,8 @@ checks·범위 반영·기존 Git 역할·세 CI·squash merge·증거 기반 cl
 자동 retry하지 않으며 legacy 재전달 API로 우회하지 않는다.
 unattended 환경은 승인/reject/execute를 거부하고 child/discovery 환경은 orchestration을 거부한다.
 CLI나 HMAC은 인간 신원을 증명하지 못한다. 동일 OS 계정 탈취와 신뢰한 메인의 오용은 별도 위협이다.
-오전 보고는 `[전날09:00, 당일09:00)`의 현재 fingerprints 일치 최신 완료 review pool 하나를
-완료시각/scan_id 내림차순으로 선택한다. distinct 최대8후보를 high/medium/low 다음 exact ID순
+오전 보고는 `[전날09:00, 당일09:00)`의 현재 fingerprints 일치 검증된 완료 회차를 모아
+ID별 최신 명시 verdict를 선택한다(ADR0026). distinct 최대8후보를 high/medium/low 다음 exact ID순
 최대3카드로 투영한다. eligible 우선정렬은 아니며 counts는 전체를 센다. window 밖 실제 참여는
 public 성공으로 표시하지 않고 private reviewed_agents 등에 전체 provenance를 남긴다.
 완료 review가 없으면0카드 partial/failed다. 09:00 이후 첫 tick은 모델 admission 전 보고를
@@ -586,7 +609,7 @@ public 성공으로 표시하지 않고 private reviewed_agents 등에 전체 pr
 참여 시각을 projection validator가 검사한다. 그날 확정 내용은 이후 연구로 바뀌지 않는다.
 
 publication journal의 prepared에 report/payload/digest/limit를 먼저 고정한 뒤 day/scans/
-proposals/web/latest를 materialize한다. crash는 같은 prepared journal만 복구한다. 기존 day는
+web/latest를 materialize한다. proposal pointer는 원래 round만 기록한다. crash는 같은 prepared journal만 복구한다. 기존 day는
 legacy_preserved·내용충돌은 existing_day_conflict로 남겨 덮어쓰기/자동 재전달하지 않는다.
 다운타임 catchup은 오늘 하나만이며 과거 보고/모델 몰아호출은 없다. CLI tick은 deliver 기본으로
 두 state locks를 풀고 기존 deliver_report를 호출한다. sender mutex가 callback/reconcile을
