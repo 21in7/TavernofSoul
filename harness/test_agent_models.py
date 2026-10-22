@@ -3,14 +3,155 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from harness import agent_models as models
 from harness import compaction, storage, triage
+from harness import review_coverage as coverage
+from harness.test_review_coverage import read_events, stdout, with_rate_limit_events
 
 
 PATH_ALIASES_WARNING = 'PATH aliases: Read-only file system (os error 30)'
+
+
+@pytest.mark.parametrize('mode', [
+    'verified', 'no_read', 'failed_read', 'oversize', 'forged', 'failed_result', 'exit_failure'])
+@pytest.mark.parametrize('notice_mode', ['none', 'valid', 'malformed', 'oversize'])
+def test_discovery_only_stream_transport_and_secret_sanitization(
+        local_keys, tmp_path, monkeypatch, mode, notice_mode):
+    snapshots = {'AGENTS.md': {'exists': True, 'mode': 0o644, 'content': b'bounded document\n'},
+                 'harness/example.py': {'exists': True, 'mode': 0o644, 'content': b'value = 1\n'}}
+    owners = {r: ['harness/example.py'] for r in coverage.contract.SPECIALIST_ROLES}
+    windows = coverage.plan(list(snapshots), snapshots, [], owners, ['AGENTS.md'])
+    capture = coverage.Capture(tmp_path, snapshots, windows)
+    calls = []
+    def synthetic(command, prompt, cwd, env, timeout):
+        calls.append(command)
+        assert command[command.index('--output-format') + 1] == 'stream-json'
+        assert '--verbose' in command
+        assert command[command.index('--tools') + 1] == 'Read'
+        assert command[command.index('--max-budget-usd') + 1] == '0.2'
+        assert env['TAVERN_WORKFLOW_CHILD'] == '1'
+        events = read_events(capture, '{"model_text":"safe response"}')
+        if mode == 'no_read':
+            events = events[-1:]
+        elif mode == 'failed_read':
+            events[1]['message']['content'][0]['is_error'] = True
+        elif mode == 'forged':
+            events[-1]['result'] = stdout(events)
+            events = events[-1:]
+        elif mode == 'oversize':
+            events[0]['message']['content'].append({'type': 'text', 'text': 'x' * coverage.MAX_STDOUT})
+        elif mode == 'failed_result':
+            events[-1].update(is_error=True, subtype='error_max_budget_usd')
+        events[-1]['total_cost_usd'] = .27
+        if notice_mode != 'none':
+            events = with_rate_limit_events(events)
+            for event in events:
+                if event['type'] == 'rate_limit_event':
+                    event['rate_limit_info'].update(total_cost_usd=999, provider='PRIVATE_RATE_PROVIDER')
+            if notice_mode == 'malformed':
+                events[-1]['rate_limit_info']['status'] = True
+            elif notice_mode == 'oversize':
+                events[-1]['rate_limit_info']['errorCode'] = 'PRIVATE_RATE_METADATA' * 8192
+        return subprocess.CompletedProcess(command, 7 if mode == 'exit_failure' else 0, stdout(events),
+                                           local_keys['ANTHROPIC_API_KEY'] + ' /private/host diagnostic')
+    monkeypatch.setattr(models, '_review_subprocess', synthetic)
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **k: pytest.fail('ordinary subprocess used'))
+    report = models.run('reviewer', 'bounded inspection', local_keys, timeout=17,
+                        compaction=False, workspace=tmp_path, scoped=True, max_budget_usd=.2,
+                        discovery_review=capture)
+    assert len(calls) == 1
+    if mode == 'exit_failure':
+        assert 'cli_estimated_cost_usd' not in report
+    else:
+        assert report['cli_estimated_cost_usd'] == .27
+    verified = mode == 'verified' and notice_mode in ('none', 'valid')
+    assert report['provider'] == 'claude'
+    assert report['status'] == ('passed' if verified else 'failed')
+    assert (capture.receipts is not None) is verified
+    if verified:
+        assert report['response'] == '{"model_text":"safe response"}'
+    assert '/private/host' not in json.dumps(report)
+    assert all(secret not in json.dumps(report) for secret in local_keys.values())
+    for private in ('PRIVATE_RATE_METADATA', 'PRIVATE_RATE_PROVIDER', 'private-session',
+                    'rate_limit_info', 'errorCode'):
+        assert private not in json.dumps(report)
+        assert private not in json.dumps(capture.receipts)
+    if not verified:
+        assert report['error'] == 'source_review_transport_failed'
+
+
+def test_discovery_capture_is_unavailable_to_other_roles_or_unscoped_calls(tmp_path, local_keys):
+    capture = coverage.Capture(tmp_path, {}, [])
+    for options in ({'role': 'downloader', 'scoped': True}, {'role': 'reviewer', 'scoped': False}):
+        with pytest.raises(ValueError, match='source_review_transport_invalid'):
+            models.run(task='fixture', keys=local_keys, workspace=tmp_path,
+                       discovery_review=capture, **options)
+
+
+def test_ordinary_reviewer_command_and_json_parser_stay_unchanged():
+    command = models.command_for('reviewer', compaction=False)
+    assert command[command.index('--output-format') + 1] == 'json'
+    assert '--verbose' not in command
+    assert command[command.index('--tools') + 1] == 'Read,Glob,Grep'
+    assert models.response_text('claude', '{"result":"ordinary","total_cost_usd":0.1}') == ('ordinary', .1)
+
+
+@pytest.mark.parametrize('channel,limit', [('stdout', coverage.MAX_STDOUT), ('stderr', coverage.MAX_STDERR)])
+def test_private_pipe_collector_stops_oversize_before_retaining_unbounded_output(monkeypatch, channel, limit):
+    class Pipe:
+        def __init__(self, number):
+            self.number, self.closed = number, False
+        def fileno(self):
+            return self.number
+        def close(self):
+            self.closed = True
+    class Process:
+        def __init__(self):
+            self.stdin, self.stdout, self.stderr = Pipe(101), Pipe(102), Pipe(103)
+            self.returncode, self.pid = None, 123456
+        def poll(self):
+            return self.returncode
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+    class Selector:
+        def __init__(self):
+            self.mapping = {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def register(self, pipe, event):
+            self.mapping[pipe] = event
+        def unregister(self, pipe):
+            self.mapping.pop(pipe)
+        def get_map(self):
+            return self.mapping
+        def select(self, timeout):
+            return [(SimpleNamespace(fileobj=next(iter(self.mapping))), 0)]
+    process, killed, read_bytes = Process(), [], []
+    descriptor = getattr(process, channel).number
+    def read(fd, size):
+        if fd != descriptor:
+            return b''
+        read_bytes.append(size)
+        return b'x' * size
+    with monkeypatch.context() as patch:
+        patch.setattr(models.subprocess, 'Popen', lambda *a, **k: process)
+        patch.setattr(models.selectors, 'DefaultSelector', Selector)
+        patch.setattr(models.os, 'set_blocking', lambda *a: None)
+        patch.setattr(models.os, 'write', lambda fd, data: len(data))
+        patch.setattr(models.os, 'read', read)
+        patch.setattr(models.os, 'killpg', lambda pid, sig: killed.append(pid))
+        with pytest.raises(ValueError, match='source_review_transport_failed'):
+            models._review_subprocess(['synthetic'], 'prompt', '.', {}, 10)
+    assert killed == [process.pid]
+    assert sum(read_bytes) <= limit + 4096
+    assert all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr))
 
 
 @pytest.fixture(autouse=True)

@@ -7,6 +7,8 @@ import math
 import os
 from pathlib import Path
 import secrets
+import selectors
+import signal
 import shutil
 import stat
 import subprocess
@@ -501,8 +503,60 @@ def response_text(provider, output):
     return messages[-1], None
 
 
+def _review_subprocess(command, prompt, cwd, env, timeout):
+    """Discovery-only bounded pipes, including stderr and wall time.
+
+    No raw partial output escapes timeout, interrupt or size failure. Normal
+    workflow/GLM keep their existing subprocess and telemetry paths.
+    """
+    from harness import review_coverage as coverage
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, cwd=cwd, env=env, start_new_session=True)
+    output, errors = bytearray(), bytearray()
+    body, offset = prompt.encode('utf-8'), 0
+    deadline = time.monotonic() + timeout
+    try:
+        with selectors.DefaultSelector() as selector:
+            for pipe, event in ((process.stdin, selectors.EVENT_WRITE),
+                                (process.stdout, selectors.EVENT_READ),
+                                (process.stderr, selectors.EVENT_READ)):
+                os.set_blocking(pipe.fileno(), False)
+                selector.register(pipe, event)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('source_review_transport_failed')
+                for key, _ in selector.select(min(remaining, .25)):
+                    pipe = key.fileobj
+                    if pipe is process.stdin:
+                        if offset < len(body):
+                            offset += os.write(pipe.fileno(), body[offset:offset + 4096])
+                        if offset == len(body):
+                            selector.unregister(pipe)
+                            pipe.close()
+                    else:
+                        chunk = os.read(pipe.fileno(), 4096)
+                        if not chunk:
+                            selector.unregister(pipe)
+                            pipe.close()
+                            continue
+                        target = output if pipe is process.stdout else errors
+                        target.extend(chunk)
+                        if len(target) > (coverage.MAX_STDOUT if pipe is process.stdout else coverage.MAX_STDERR):
+                            raise ValueError('source_review_transport_failed')
+            process.wait(timeout=max(.001, deadline - time.monotonic()))
+        return subprocess.CompletedProcess(command, process.returncode, output.decode('utf-8', 'strict'),
+                                           errors.decode('utf-8', 'replace'))
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            pipe.close()
+
+
 def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None, workspace=None,
-        scoped=False, *, max_budget_usd=None):
+        scoped=False, *, max_budget_usd=None, discovery_review=None):
     """Run one role; invalid budget overrides raise before any runtime or model call.
 
     Exploration callers must persist their reservation before entry. Ordinary
@@ -514,6 +568,18 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
     work_root = Path(workspace) if workspace is not None else ROOT
     command = command_for(role, write=write, smoke=smoke, compaction=compaction, workspace=workspace,
                           scoped=scoped, max_budget_usd=max_budget_usd)
+    if discovery_review is not None:
+        from harness import review_coverage as coverage
+        if (type(discovery_review) is not coverage.Capture or role != 'reviewer' or
+                provider != 'claude' or write or smoke or not scoped or workspace is None or
+                str(Path(workspace).absolute()) != discovery_review.root):
+            raise ValueError('source_review_transport_invalid')
+        command[command.index('--output-format') + 1] = 'stream-json'
+        command += ['--verbose']
+        # Read is the sole tool in this private protocol. Compaction hooks,
+        # identity, budget and environment handling retain the existing path.
+        command[command.index('--tools') + 1] = 'Read'
+        command[command.index('--allowedTools') + 1] = 'Read'
     nonce = 'TAVERN_MODEL_OK_' + secrets.token_hex(8)
     prompt = ('Reply with exactly {}. Do not use any tools.'.format(nonce) if smoke
               else task_prompt(role, task, workspace=workspace, scoped=scoped))
@@ -572,8 +638,11 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                         collector = None
                         report['telemetry'] = agent_telemetry.unavailable()
                 try:
-                    result = subprocess.run(command, input=prompt, cwd=str(work_root), env=env,
-                                            capture_output=True, text=True, timeout=timeout)
+                    if discovery_review is not None:
+                        result = _review_subprocess(command, prompt, str(work_root), env, timeout)
+                    else:
+                        result = subprocess.run(command, input=prompt, cwd=str(work_root), env=env,
+                                                capture_output=True, text=True, timeout=timeout)
                     if collector is not None:
                         collector.wall_ms = (time.monotonic() - collector.started) * 1000
                     telemetry_outcome = 'child_failed' if result.returncode else 'success'
@@ -608,7 +677,7 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                         report['telemetry'] = agent_telemetry.unavailable(telemetry_outcome)
             report['exit_code'] = result.returncode
             if provider != 'codex':
-                report['stderr'] = redact(result.stderr, keys)
+                report['stderr'] = '' if discovery_review is not None else redact(result.stderr, keys)
             else:
                 report['warnings'].extend(codex_warnings(result.stderr, 'execution'))
             if enabled and any(message in result.stderr.lower() for message in (
@@ -618,10 +687,33 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                 if provider == 'codex':
                     raise CodexFailure('execution', codex_failure_category(
                         result.stdout + '\n' + result.stderr, 'execution'))
-                report['diagnostic'] = redact(result.stdout, keys)
+                if discovery_review is None:
+                    report['diagnostic'] = redact(result.stdout, keys)
                 raise ValueError('Model CLI exited with code {}.'.format(result.returncode))
             try:
-                response, cost = response_text(provider, result.stdout)
+                response_output = result.stdout
+                if discovery_review is not None:
+                    # Retain actual final CLI cost even if receipt validation
+                    # fails afterwards; never refund a failed discovery call.
+                    stream_lines = result.stdout.splitlines()
+                    final = None
+                    for line in reversed(stream_lines):
+                        event = coverage.event_json(line)
+                        if isinstance(event, dict) and event.get('type') == 'rate_limit_event':
+                            # Locate cost only in the actual result. Capture
+                            # still rejects malformed/oversize advisories and
+                            # invalid ordering before this call can succeed.
+                            continue
+                        final = event
+                        break
+                    if not isinstance(final, dict) or final.get('type') != 'result':
+                        raise ValueError('source_review_transport_failed')
+                    response_output = json.dumps(final)
+                    if 'total_cost_usd' in final:
+                        report['cli_estimated_cost_usd'] = final['total_cost_usd']
+                response, cost = response_text(provider, response_output)
+                if discovery_review is not None:
+                    discovery_review.accept(result.stdout)
             except (ValueError, KeyError, TypeError):
                 if provider == 'codex':
                     category = codex_failure_category(result.stdout + '\n' + result.stderr, 'execution')
@@ -659,7 +751,8 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             report['diagnostic'] = {'stage': 'execution', 'category': 'cli_failed'}
             report['error'] = CodexFailure.REASONS['cli_failed']
         else:
-            report['error'] = redact(str(exc), keys)
+            report['error'] = ('source_review_transport_failed' if discovery_review is not None
+                               else redact(str(exc), keys))
     finally:
         # Also owns interruption during collector setup or environment assembly,
         # before the inner subprocess finally has been entered.

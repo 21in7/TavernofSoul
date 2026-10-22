@@ -1,5 +1,22 @@
 # TavernofSoul 작업 지도
 
+2026-10-22 현재 개선 연구 계약은 [ADR0026](docs/adr/0026-source-verified-retained-improvement-reports.md)이다.
+discovery reviewer만 parent의 실제 Claude Read 성공 pairing과 bounded owner/evidence/문서 coverage를
+검증한다. 자기 보고나 legacy 기록은 읽기 증거가 아니다.
+빈 후보 점검은 owner의 non-shared 프로그램 본문 연속 최대96줄과 shared 문서를 별도로 읽는다.
+안내·설정만 읽거나 대상이 없고 비었거나 읽기 불가이면 미완료이며 전체 파일·저장소 완독을 뜻하지 않는다.
+오전은 bounded completed index의 현재 전체 의존성 일치 회차를 모아 ID별 최신 명시 verdict를
+보존하고, 원래 scan/검토/protocol에 승인 freshness를
+결합한다. 최신 실패와 앞선 유효 제안을 함께 표시한다. 검증된 정상 0개만 확인 범위 내 제안 없음이다.
+runtime37개·owner/shared·예산·slot은 그대로이며 과거 frozen 보고는 수정하지 않는다. 아래32개/21개
+승인과 실행 관측은 당시 이력이다. 이번 정확한 승인 목록만 구현 범위이며 parent의 새 의미 검토·전체
+검사·scoped apply·Git/CI 전달과 Sites 변경은 별도다. worker는 검사·모델·Git·네트워크를 실행하지 않는다.
+
+완료 outbox는 도입 전 loop·non-loop signed claim의 원래 독립 검토와 서명·실행 증거를 보존한다.
+이전 loop의 context는 원래 `digest(scan['loop_dependencies'])`로 대조하며 새 승인으로 재사용하지 않는다.
+`source_review`·`source_review_binding`·`review_protocol` 표식이 있으면 현대 proof/binding 검증을
+낮추지 않는다. 완료 단계에서 실행 전 freshness·현재 만료를 소급 검사하거나 승인을 갱신하지 않는다.
+
 2026-10-21 연구 진행·보고 수리는 [ADR0025](docs/adr/0025-progress-preserving-improvement-reviews.md)를
 따른다. 이번 승인32개는 coordinator 작업 정확히 하나이며 runtime 읽기 승인37개를 늘리지 않는다.
 보존 초안 준비는 구현 성공·검토·검증·적용이 아니다. 아래 이전21개 프로토콜 수리 기록은 당시 이력이다.
@@ -9,7 +26,7 @@ cursor를 보존한다. live source를 읽을 수 없어도 control 검증과 se
 독립 검토를 마칠 수 있으며 현재 freshness·public eligible·approve·execute 권한은 얻지 않는다.
 scope/ownership/config/provider/model/protocol 변화는 기존대로 진행을 무효화한다.
 오전 cloud 참여는 회차와 독립된 bounded durable history의 window 내 마지막 실제 시도다.
-현재 dependencies 일치 최신 완료 review 하나의 후보 선택과 분리하며, 뒤의 별도 회차 참여를
+현재 dependencies 일치 검증된 완료 회차들의 ID별 최신 verdict 선택과 분리하며, 뒤의 별도 회차 참여를
 선택한 제안의 검토로 표시하지 않는다. private trace·local·cost·진단은 public에 추가하지 않는다.
 메인이 전달한 2026-10-21 09시 failed/0카드 보고는 실제 전달 관측이며 불변 보존한다.
 이번 최종 코드의 새 Claude 의미 검토·full make check·scoped apply·Git 역할과 parent GitHub/CI
@@ -152,7 +169,7 @@ legacy 참여를 다룬다. 기존 Lab의 실제 engine tick 경로로 다음-ro
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
 대기가 풀릴 때까지 멈춘다. 09:00 보고 확정은 이 대기와 독립적이다.
-보고는 전날09:00~당일09:00의 현재 fingerprint 일치 최신 완료 review 하나를 선택해 당일
+보고는 전날09:00~당일09:00의 현재 전체 의존성 일치 검증된 완료 회차에서 ID별 최신 verdict를 모아 당일
 09:00 이후 첫 tick에 불변 확정한다. 기존 day는 보존하고 그날 다시 생성·중복 게시하지 않는다.
 최대8 후보/3카드 web-v1을 유지하고 local 참여·endpoint·비용은 private에만 둔다. 미완료는
 partial/failed로 표시한다. 전송 unknown은 자동 재시도하지 않고 메인이 같은 digest만 조정한다.

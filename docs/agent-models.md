@@ -1,5 +1,28 @@
 # 에이전트 모델 연결
 
+discovery reviewer의 source 확인은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다.
+이 호출만 parent Capture와 Claude stream-json/verbose·Read 단일 도구를 쓴다. canonical 승인 경로,
+성공 structured Read result와 원래 bytes/줄 범위의 pairing이 필수다. prompt/result의 read_files는
+권위가 아니다. bounded 수집 실패·알 수 없는 CLI 형식은 fail-closed이며 retry/fallback하지 않는다.
+Claude Code2.1.294 headless stdout에서 관측된 `rate_limit_event`만 무동작 안내로 받는다.
+정확한 envelope(type/object rate_limit_info/string uuid·session_id)와 status
+allowed/allowed_warning/rejected를 요구하며 원래 줄8192bytes·JSON value256개·깊이8(root=0),
+uuid/session_id 각각 UTF-8 1~128bytes로 제한한다. Read 전·사이·정상 result 뒤에도 안내만 버린다.
+모든 metadata 값은 Read/성공/비용·예산/identity/진단의 권위가 아니며 원문을 보존하지 않는다.
+응답·비용은 실제 result에서만 추출하고 전체 pairing과 유일한 정상 final을 계속 검증한다.
+malformed/과대 안내·unknown event·result 뒤 assistant/user/tool·중복 result·pending tool은 거절한다.
+Read content는 원본 UTF-8의 최초 BOM 한 번 제외 → LF split → 각 줄 끝 CR 하나 제거 → 선택 줄 LF
+join의 정확한 값만 허용하며 LF를 덧붙이지 않는다. totalLines는 끝 LF 뒤 빈 줄까지 포함한 전체 split
+길이다. 마지막 빈 줄만 선택하면 content는 빈 문자열이다. 원본 bytes/hash/POSIX mode·evidence 줄 번호와
+range bytes/hash는 별도로 보존한다. Read 표본은 표본 밖이나 저장소 전체의 무결함을 보장하지 않는다.
+빈 pool은 owner membership 안의 non-shared Python 프로그램을 테스트보다 우선 선택한다.
+AGENTS·안내 문서·설정은 코드 확인으로 세지 않는다. 함수 본문(없으면 script 실행문) 주변의
+연속 최대96줄과 별도 shared 문서 최대12줄을 실제 Read한다. 선택 프로그램 부재·빈 파일·읽기/
+파싱 불가·header만 존재하거나 기존32KiB/32window 한도를 넘으면 coverage는 미완료다.
+표본은 전체 파일·저장소 완독이 아니다. 후보가 있으면 모든 evidence/benefit.evidence와 필요한
+문서 Read 요구는 그대로다.
+일반 workflow/GLM telemetry·compaction·identity/cost/interrupt와 인증/provider/model/예산은 보존한다.
+
 2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)에 따라 local은 선택적
 참고 자료다. duplicate/empty/exception/긴 줄 때문에 paired specialist나 빈 pool reviewer를
 생략하지 않으며 각 정규 slot에서 동일 sealed 승인 source를 독립 점검한다. 추가 call·재시도·
