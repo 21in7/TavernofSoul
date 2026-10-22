@@ -29,7 +29,8 @@
 | [0022](0022-documentation-only-validation.md) | 최종 실제 diff·digest에 결합한 prose 검증과 세 required CI의 실제 gate | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
 | [0023](0023-new-branch-documentation-validation.md) | 최초 비기본 branch push의 fetched default와 유일 merge base에 근거한 전체 diff 선택; 0022의 zero-before 결정만 대체 | 제안(proposed), 새 Claude 의미 검토/full check/CI/Git 전달 대기 | 2026-10-20 |
 | [0024](0024-immediate-batched-github-transport.md) | trusted-parent 단일 accept transport·사전 로드 Codex bridge·workflow 즉시 handoff, native 검증과 보수적 receipt 복구 유지 | 제안(proposed), 새 의미 검토/full check/실제 PR 관측 대기 | 2026-10-20 |
-| [0025](0025-progress-preserving-improvement-reviews.md) | 회차와 독립된 bounded 실제 참여 history·선택적 local·sealed source snapshot과 current freshness 분리 | 사용자 직접 요청 구현안, 새 Claude 의미 검토/full make check/Git·parent 전달 대기 | 2026-10-21 |
+| [0025](0025-progress-preserving-improvement-reviews.md) | 회차와 독립된 bounded 실제 참여 history·선택적 local·sealed source snapshot과 current freshness 분리 | 사용자 직접 요청 구현안, source 확인/단일 회차 선택은 0026으로 대체·검토/검증 대기 | 2026-10-21 |
+| [0026](0026-source-verified-retained-improvement-reports.md) | parent Read 증거·owner 코드 표본과 별도 문서 coverage·ID별 최신 verdict 보존·원본 승인 freshness | 사용자 요청 구현안, 새 Claude 의미 검토/full check/scoped apply/Git·CI 전달 대기 | 2026-10-22 |
 
 ## 상태와 근거의 의미
 
@@ -40,7 +41,7 @@
 초안 준비는 실행 성공이 아니다. 메인이 전달한 오늘09시 failed/0카드 전달은 역사적 사실로
 보존하고 재생성하지 않는다. 새 최종 코드의 review/full check와 실제 hourly 관측은 대기다.
 아래21개 작업·신규 ADR 불필요·당일 보고 pending 문장은 이전 프로토콜/진단 수리의 당시 기록이며
-현재 구현 결정은 0025와 [최신 인계](../improvements.md#진행-보존-수리의-문서-영향과-실행기-인계)를 따른다.
+현재 source 검증/집계/승인 freshness는 0026이며, 0025의 나머지 진행 보존 결정과 [최신 인계](../improvements.md#진행-보존-수리의-문서-영향과-실행기-인계)를 따른다.
 
 0021/0022와 최초 push 선택을 정밀화한 0023이 현재 개발 저장·검증 선택이다. 사용자 직접 요청으로 아래 날짜별 'NFS 유지' 지시는
 개발 작업의 active 저장 선택에 한해 대체한다. v1/no-config·명시 기존 설정과 옛 NFS 기록/

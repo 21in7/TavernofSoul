@@ -18,6 +18,10 @@ import pytest
 
 from harness import agent_models, git_publish, improvement_report as contract
 from harness import improvements as imp, storage, triage, workflow
+from harness import review_coverage as coverage
+from harness.test_review_coverage import (
+    FixtureFS, candidate, add_assessments, capture_result, read_events, stdout,
+)
 
 
 NOW = dt.datetime(2026, 10, 14, 16, 0, tzinfo=dt.timezone.utc)
@@ -30,16 +34,6 @@ DOC = {'status': 'not_required', 'files': [],
        'reason': '읽기 전용 분석의 가상 지역 수정 제안으로 구조와 계약 변경이 없어 문서 수정은 필요하지 않습니다.'}
 
 
-def candidate(path='harness/example.py', title='중복 점검 줄이기'):
-    return {'title': title, 'priority': 'medium',
-            'analogy': '정비사가 같은 나사를 두 번 살피는 점검표를 정리합니다.',
-            'issue': '동일한 점검을 반복할 가능성을 검토해야 합니다.',
-            'evidence': [{'path': path, 'start_line': 1, 'end_line': 2,
-                          'summary': '점검 순서가 두 줄에 나뉘어 있습니다.'}],
-            'benefit': {'kind': 'estimated', 'text': '미측정: 점검표를 읽는 부담 감소 예상.', 'evidence': []},
-            'risk': '점검 누락 가능성을 별도 검토해야 합니다.', 'edit_files': [path],
-            'validation_plan': ['해당 파일의 합성 입력으로 중복과 누락을 확인합니다.'],
-            'documentation_impact': '지역 동작 보존 제안이며 구조와 권한 정책의 변경은 없습니다.'}
 
 
 def forbidden(*args, **kwargs):
@@ -92,199 +86,6 @@ def test_edit_diagnostics_leave_documentation_and_unknown_failures_unclassified(
 
 
 @pytest.fixture
-def offline_source_limits(monkeypatch):
-    """Read shipped config only; never resolve operational storage or credentials."""
-    root = Path(__file__).resolve().parents[1]
-    monkeypatch.setattr(imp, 'ROOT', root)
-    monkeypatch.setattr(imp, 'CONFIG', root / 'harness/improvement-config.json')
-    for target, name in ((agent_models, 'load_keys'), (agent_models, 'run'),
-                         (workflow, 'execute'), (workflow, 'run_check'),
-                         (triage, 'observe'), (git_publish, 'prepare'),
-                         (storage, 'resolve_storage'), (subprocess, 'run'),
-                         (subprocess, 'Popen'), (imp.http.client, 'HTTPSConnection')):
-        monkeypatch.setattr(target, name, forbidden)
-    config = imp.load_config()
-    assert config['limits']['max_file_bytes'] == 131072
-    assert config['limits']['max_source_bytes'] == 1572864
-    assert config['limits']['max_context_bytes'] == 2097152
-    for key in ('max_source_bytes', 'max_context_bytes'):
-        assert config['limits'][key] == contract.LIMIT_CEILINGS[key]
-    return config
-
-
-def test_default_project_scope_fits_configured_source_limits(offline_source_limits, tmp_path, monkeypatch):
-    """Run locally in the full validation copy, never a scoped model context."""
-    config = offline_source_limits
-    scope, _ = imp._read_file(imp.ROOT / config['scope_file'], 65536)
-    paths = contract.validate_scope_paths(scope.decode('utf-8').splitlines(),
-                                          config['limits']['max_scope_files'])
-    assert len(paths) == 37
-    snapshots = imp.snapshot_sources(paths, config['limits'])
-    fingerprints = contract.fingerprint_sources(snapshots)
-    assert set(snapshots) == set(fingerprints) == set(paths)
-    for path, snapshot in snapshots.items():
-        assert snapshot['exists'], 'Default scope source is missing: ' + path
-        content = snapshot['content']
-        assert len(content) <= config['limits']['max_file_bytes']
-        assert fingerprints[path] == {'exists': True, 'mode': snapshot['mode'],
-                                      'size': len(content),
-                                      'sha256': hashlib.sha256(content).hexdigest()}
-    assert sum(item['size'] for item in fingerprints.values()) <= config['limits']['max_source_bytes']
-    sources = {p: item['content'].decode('utf-8') for p, item in snapshots.items()}
-    validated = contract.validate_candidate(candidate('AGENTS.md'), sources, paths)
-    # Proposal construction revalidates stored source fingerprints as well.
-    assert contract.proposal_record(validated, fingerprints)['source_fingerprints'] == fingerprints
-    records = []
-    for index in range(len(contract.SPECIALIST_ROLES) * config['limits']['max_candidates_per_specialist']):
-        item = contract.validate_candidate(candidate('AGENTS.md', title='점검 제안 ' + str(index)), sources)
-        records.append(contract.proposal_record(item, fingerprints))
-    # Check the full reviewer context with all eight candidate slots using a
-    # Python envelope only. The real snapshot is never offered to a model.
-    root = tmp_path / 'sources'
-    root.mkdir()
-    monkeypatch.setattr(imp, 'ROOT', root)
-    selected = source_limit_storage(root, tmp_path)
-    spec = {'provider': 'fixture', 'model': 'fixture-model'}
-    monkeypatch.setattr(agent_models, 'load_config', lambda: {'roles': {'reviewer': spec}})
-    context_sizes = []
-
-    def capture_only(role, prompt, keys, **options):
-        assert role == 'reviewer' and keys == {}
-        assert options['write'] is False and options['scoped'] is True
-        context_sizes.append(sum(len(item['content']) for item in snapshots.values()) +
-                             len(prompt.encode('utf-8')))
-        response = {'reviews': [dict(candidate_id=record['id'], verdict='eligible',
-                                    reason='합성 후보 envelope로 실제 소스의 context 한도만 검사합니다.',
-                                    documentation=DOC) for record in records],
-                    'documentation': DOC}
-        return dict(spec, role=role, status='passed', response=json.dumps(response, ensure_ascii=False))
-
-    participation, review = imp._call_role('reviewer', paths, snapshots, config,
-                                          records, {}, capture_only, selected)
-    assert participation['status'] == 'succeeded'
-    assert len(context_sizes) == 1 and context_sizes[0] <= config['limits']['max_context_bytes']
-    assert len(review['reviews']) == len(records)
-
-
-@pytest.mark.parametrize('source_bytes', [1048577, 1572864])
-def test_large_source_snapshots_and_fingerprints_fit_new_ceiling(
-        offline_source_limits, tmp_path, monkeypatch, source_bytes):
-    limits = offline_source_limits['limits']
-    root = tmp_path / 'sources'
-    root.mkdir()
-    monkeypatch.setattr(imp, 'ROOT', root)
-    expected = {}
-    remaining = source_bytes
-    while remaining:
-        name = 'source-{:02d}.txt'.format(len(expected))
-        size = min(remaining, limits['max_file_bytes'])
-        content = b'x\n' * (size // 2) + b'x' * (size % 2)
-        (root / name).write_bytes(content)
-        expected[name] = {'exists': True, 'mode': (root / name).stat().st_mode & 0o7777,
-                          'content': content}
-        remaining -= len(content)
-    snapshots = imp.snapshot_sources(list(expected), limits)
-    assert snapshots == expected and source_bytes > 1048576
-    fingerprints = contract.fingerprint_sources(snapshots)
-    assert sum(item['size'] for item in fingerprints.values()) == source_bytes
-    sources = {p: item['content'].decode('utf-8') for p, item in snapshots.items()}
-    validated = contract.validate_candidate(candidate(next(iter(expected))), sources)
-    proposal = contract.proposal_record(validated, fingerprints)
-    assert proposal['source_fingerprints'] == fingerprints
-    lowered = dict(limits, max_source_bytes=1048576)
-    with pytest.raises(imp.ImprovementError, match='total byte limit'):
-        imp.snapshot_sources(list(expected), lowered)
-
-    if source_bytes == limits['max_source_bytes']:
-        extra = {'exists': True, 'mode': 0o644, 'content': b'x'}
-        (root / 'overflow.txt').write_bytes(extra['content'])
-        oversized = {**snapshots, 'overflow.txt': extra}
-        with pytest.raises(imp.ImprovementError, match='total byte limit'):
-            imp.snapshot_sources(list(oversized), limits)
-        with pytest.raises(contract.ValidationError, match='total bound'):
-            contract.fingerprint_sources(oversized)
-        oversized_fingerprints = {**fingerprints, **contract.fingerprint_sources({'overflow.txt': extra})}
-        with pytest.raises(contract.ValidationError, match='total bound'):
-            contract.proposal_record(proposal['candidate'], oversized_fingerprints)
-        with pytest.raises(contract.ValidationError, match='byte bounds'):
-            contract.validate_candidate(validated, {**sources, 'overflow.txt': 'x'})
-
-
-@pytest.mark.parametrize('setting', ['max_source_bytes', 'max_context_bytes'])
-def test_source_and_context_configuration_cannot_exceed_hard_ceilings(offline_source_limits, setting):
-    config = copy.deepcopy(offline_source_limits)
-    config['limits'][setting] += 1
-    with pytest.raises(contract.ValidationError):
-        contract.validate_config(config)
-
-
-class FixtureFS(storage.FileSystem):
-    """Only this test's temporary directory acts as a mount; no host probes."""
-    def __init__(self, mount):
-        self.mount = mount
-
-    def mount_ready(self, path):
-        return path == self.mount
-
-    def free_bytes(self, path):
-        assert path == self.mount
-        return 2 ** 40
-
-
-def source_limit_storage(root, tmp_path):
-    return storage.Storage(root=root,
-        artifacts=storage.DirectorySpec(tmp_path / 'artifacts', tmp_path, 0),
-        temporary=storage.DirectorySpec(tmp_path / 'contexts', tmp_path, 0),
-        config_path=tmp_path / 'synthetic-storage-policy.json', env={}, fs=FixtureFS(tmp_path))
-
-
-@pytest.mark.parametrize('overflow', [0, 1])
-def test_context_byte_ceiling_includes_sources_and_prompt_without_models(
-        offline_source_limits, tmp_path, monkeypatch, overflow):
-    config = offline_source_limits
-    limits = config['limits']
-    root = tmp_path / 'sources'
-    root.mkdir()
-    monkeypatch.setattr(imp, 'ROOT', root)
-    snapshots = {'source-{:02d}.txt'.format(i):
-                 {'exists': True, 'mode': 0o644, 'content': b'x' * limits['max_file_bytes']}
-                 for i in range(limits['max_source_bytes'] // limits['max_file_bytes'])}
-    source_bytes = sum(len(item['content']) for item in snapshots.values())
-    assert source_bytes == limits['max_source_bytes'] > 1048576
-    selected = source_limit_storage(root, tmp_path)
-    spec = {'provider': 'fixture', 'model': 'fixture-model'}
-    monkeypatch.setattr(agent_models, 'load_config', lambda: {'roles': {'reviewer': spec}})
-    prompt_sizes = []
-
-    def capture_only(role, prompt, keys, **options):
-        # Pure Python envelope; no model, credentials, network or workflow.
-        assert options['write'] is False and options['scoped'] is True and keys == {}
-        prompt_sizes.append(len(prompt.encode('utf-8')))
-        return dict(spec, role=role, status='passed', response=json.dumps(
-            {'reviews': [], 'documentation': DOC}, ensure_ascii=False))
-
-    monkeypatch.setattr(imp, 'REVIEW_PROMPT', '')
-    participation, _ = imp._call_role('reviewer', list(snapshots), snapshots,
-                                     config, [], {}, capture_only, selected)
-    assert participation['status'] == 'succeeded'
-    padding = limits['max_context_bytes'] - source_bytes - prompt_sizes[0]
-    assert padding > 0
-    # Non-ASCII padding catches accidental character counts in a byte contract.
-    monkeypatch.setattr(imp, 'REVIEW_PROMPT', '가' * (padding // 3) + 'x' * (padding % 3 + overflow))
-    prompt_sizes.clear()
-    participation, review = imp._call_role('reviewer', list(snapshots), snapshots,
-                                          config, [], {}, capture_only, selected)
-    if overflow:
-        assert prompt_sizes == [] and review is None
-        assert participation['status'] == 'unavailable'
-        assert participation['error_type'] == 'ImprovementError'
-    else:
-        assert participation['status'] == 'succeeded'
-        assert source_bytes + prompt_sizes[0] == limits['max_context_bytes']
-        assert review['reviews'] == []
-
-
-@pytest.fixture
 def lab(tmp_path, monkeypatch):
     for key in ('TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY',
                 'TAVERN_IMPROVEMENT_UNATTENDED', storage.CONFIG_ENV, storage.REPORT_ENV):
@@ -296,7 +97,7 @@ def lab(tmp_path, monkeypatch):
     for name in FILES:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('fixture first line\nfixture second line\n', encoding='utf-8')
+        path.write_text('first_value = 1\nsecond_value = 2\n', encoding='utf-8')
         path.chmod(0o644)
     scope = root / 'harness/improvement-scope.txt'
     scope.write_text('\n'.join(FILES) + '\n', encoding='utf-8')
@@ -331,6 +132,7 @@ class ModelRunner:
         self.candidates = {'coordinator': [candidate()]} if candidates is None else candidates
         self.transform = transform
         self.calls = []
+        self.read_results = []
 
     def __call__(self, role, prompt, keys, **options):
         assert options['write'] is False and options['scoped'] is True
@@ -353,13 +155,21 @@ class ModelRunner:
                                         reason='승인된 실제 줄 범위를 독립적으로 확인한 가상 검토입니다.',
                                         documentation=copy.deepcopy(DOC)) for p in prior],
                         'documentation': copy.deepcopy(DOC)}
+            add_assessments(response, options['discovery_review'])
         else:
             response = {'candidates': copy.deepcopy(self.candidates.get(role, []))}
         spec = self.lab.models['roles'][role]
         result = {'role': role, 'provider': spec['provider'], 'model': spec['model'],
                   'status': 'passed', 'response': json.dumps(response, ensure_ascii=False),
                   'cli_estimated_cost_usd': 0.0123}
-        return self.transform(role, result, response, options) if self.transform else result
+        result = self.transform(role, result, response, options) if self.transform else result
+        if role == 'reviewer':
+            capture = options['discovery_review']
+            events = read_events(capture, result.get('response', '{}'))
+            self.read_results = [copy.deepcopy(event['tool_use_result']['file'])
+                                 for event in events if event['type'] == 'user']
+            capture.accept(stdout(events))
+        return result
 
 
 def scan(lab, runner=None, **kwargs):
@@ -394,6 +204,11 @@ def test_discovery_exact_role_scope_cross_review_and_no_operating_calls(lab):
     runner = ModelRunner(lab)
     report = scan(lab, runner)
     assert report['status'] == 'scanned' and report['review_complete'] is True
+    assert runner.read_results
+    for file in runner.read_results:
+        # Literal wire expectation for the two LF-terminated Lab source lines.
+        assert file['content'] == 'first_value = 1\nsecond_value = 2'
+        assert (file['startLine'], file['numLines'], file['totalLines']) == (1, 2, 3)
     assert [c['role'] for c in runner.calls] == list(contract.ROLES)
     shared = ['AGENTS.md', 'docs/architecture.md', 'docs/harness-design.md']
     expected = {
@@ -420,7 +235,7 @@ def test_discovery_exact_role_scope_cross_review_and_no_operating_calls(lab):
         assert agent['elapsed_seconds'] >= 0 and agent['started_at'] and agent['finished_at']
     assert not lab.store.exists('authority.key')
     assert not lab.store.exists('claims/' + report['proposals'][0]['id'] + '.json')
-    assert (lab.root / 'harness/example.py').read_text() == 'fixture first line\nfixture second line\n'
+    assert (lab.root / 'harness/example.py').read_text() == 'first_value = 1\nsecond_value = 2\n'
     assert lab.store.path('days/' + DATE + '.json').stat().st_mode & 0o777 == 0o600
     assert lab.store.root.stat().st_mode & 0o777 == 0o700
 
@@ -647,6 +462,10 @@ def test_source_change_during_discovery_invalidates_review(lab):
 
 @pytest.mark.parametrize('mutation', ['content', 'mode'])
 def test_changed_read_only_context_is_model_failure(lab, mutation):
+    source = lab.root / 'harness/example.py'
+    original_bytes = source.read_bytes()
+    original_mode = source.stat().st_mode
+
     def transform(role, result, response, options):
         if role == 'coordinator':
             path = options['workspace'] / 'harness/example.py'
@@ -657,7 +476,8 @@ def test_changed_read_only_context_is_model_failure(lab, mutation):
         return result
     report = scan(lab, ModelRunner(lab, transform=transform))
     assert report['agents'][0]['status'] == 'failed' and not report['proposals']
-    assert (lab.root / 'harness/example.py').read_text().startswith('fixture')
+    assert source.read_bytes() == original_bytes
+    assert source.stat().st_mode == original_mode
 
 
 @pytest.mark.parametrize('setting', [('max_role_calls', 6), ('call_timeout_seconds', 601),
@@ -768,7 +588,10 @@ def test_invalid_model_envelope_and_json_keep_partial_failure(lab, role, bad):
     report = scan(lab, runner)
     assert report['status'] == 'partial' and len(runner.calls) == 5
     failed = next(a for a in report['agents'] if a['role'] == role)
-    assert failed['status'] == 'failed' and failed['error_type']
+    # Invalid Unicode can fail inside the synthetic Read transport before
+    # it returns an envelope; that attempt is unavailable, never successful.
+    expected = 'unavailable' if role == 'reviewer' and bad == 'invalid_utf8' else 'failed'
+    assert failed['status'] == expected and failed['error_type']
     public = imp.report(DATE, selected=lab.selected)
     assert public['counts']['eligible'] == 0
     if role == 'reviewer':
@@ -1102,7 +925,8 @@ def loop_pool(lab, candidates=None):
     dependencies.update(loop_config_fingerprint=contract.digest({'budget': 1}),
                         local_config_fingerprint=contract.digest({'model': 'synthetic-local'}),
                         agent_config_fingerprint=contract.digest(lab.models),
-                        workflow_config_fingerprint=contract.digest({'synthetic': True}))
+                        workflow_config_fingerprint=contract.digest({'synthetic': True}),
+                        review_protocol=coverage.VERSION)
     value.update(loop_engine=loop.STATE_VERSION, loop_dependencies=dependencies,
                  review_completed_at=NOW.isoformat(), local_participation=[{
                      'provider': 'mlx-vlm', 'model': 'synthetic-local', 'stage': 'local_explorer',
@@ -1112,6 +936,7 @@ def loop_pool(lab, candidates=None):
                      'cost': None, 'cost_status': 'not_metered'}])
     for agent in value['agents']:
         agent.update(started_at=value['generated_at'], finished_at=NOW.isoformat())
+    coverage.attach(value, value['source_review'])
     lab.store.write('scans/' + value['scan_id'] + '.json', value)
     loop._save_proposals(lab.store, value)
     state = dict(loop._new_state(), round={'report': value}, completed=[{
@@ -1138,7 +963,9 @@ def test_morning_selects_latest_current_review_and_keeps_all_provenance(lab):
     # A review may finish today after downtime while an owner ran before the
     # window. It must stay privately provable and publicly incomplete.
     selected['agents'][0]['started_at'] = (MORNING - dt.timedelta(days=2)).isoformat()
+    coverage.attach(selected, selected['source_review'])
     lab.store.write('scans/' + selected['scan_id'] + '.json', selected)
+    loop._save_proposals(lab.store, selected)
     loop._import_participation(state, selected)
     state['completed'].append({'scan_id': selected['scan_id'], 'at': selected['review_completed_at'],
                                'dependency_digest': contract.digest(deps)})
@@ -1355,6 +1182,7 @@ def test_signed_loop_approval_cannot_rebind_same_proposal_after_control_change(l
     fresh = copy.deepcopy(pool)
     fresh['scan_id'] = '523456789-abcdef'
     fresh['loop_dependencies']['loop_config_fingerprint'] = contract.digest({'budget': .9})
+    coverage.attach(fresh, fresh['source_review'])
     lab.store.write('scans/' + fresh['scan_id'] + '.json', fresh)
     loop._save_proposals(lab.store, fresh)
     with pytest.raises(imp.ImprovementError, match='discovery controls changed'):
@@ -1375,11 +1203,16 @@ def test_loop_freshness_failure_prevents_human_approval_without_quota_checks(lab
     assert not lab.store.exists('approvals/' + pid + '.json')
 
 
-def test_legacy_approval_signature_contract_has_no_loop_binding(lab):
+def test_new_nonloop_approval_binds_source_review_and_legacy_signatures_fail_closed(lab):
     pid, record, instruction = authorize(lab)
-    assert 'discovery_fingerprint' not in lab.store.verify(lab.store.read('approvals/' + pid + '.json'))
+    assert 'discovery_fingerprint' in lab.store.verify(lab.store.read('approvals/' + pid + '.json'))
     checked, approval = imp._authorization(lab.store, pid, NOW)
     assert checked == record
+    old = dict(approval)
+    old.pop('discovery_fingerprint')
+    lab.store.write('approvals/' + pid + '.json', lab.store.sign(old))
+    with pytest.raises(imp.ImprovementError):
+        imp._authorization(lab.store, pid, NOW)
 
 
 def test_improvements_tick_cli_explicitly_connects_sites_publisher(monkeypatch, capsys):
@@ -1527,7 +1360,7 @@ def private_report(records=(), status='scanned'):
 
 def records_for(count=1, unsafe=False):
     snapshots = {path: {'exists': True, 'mode': 0o644,
-                        'content': b'fixture first line\nfixture second line\n'} for path in FILES}
+                        'content': b'first_value = 1\nsecond_value = 2\n'} for path in FILES}
     fingerprints = contract.fingerprint_sources(snapshots)
     records = []
     for index in range(count):
@@ -1608,7 +1441,7 @@ def test_long_private_candidates_survive_review_persistence_and_authorized_hando
     card = next(p for p in public['proposals'] if p['id'] == report['proposals'][0]['id'])
     assert card['issue'] == '가' * 399 + '…' and len(card['issue']) == 400
     assert report['proposals'][0]['candidate']['issue'] == first['issue']
-    assert (lab.root / 'downloader/example.py').read_text() == 'fixture first line\nfixture second line\n'
+    assert (lab.root / 'downloader/example.py').read_text() == 'first_value = 1\nsecond_value = 2\n'
     # Only an explicit synthetic human instruction permits the later handoff.
     pid = report['proposals'][0]['id']
     instruction = lab.root.parent / 'synthetic-long-proposal-approval.txt'
@@ -1806,10 +1639,13 @@ def test_full_review_digest_and_explicit_mocked_handoff(lab, field, change_suffi
         saved = lab.store.read('proposals/' + pid + '.json')
         saved['proposal'] = record
         lab.store.write('proposals/' + pid + '.json', saved)
-        assert imp._eligible(lab.store, pid) == record  # Still a valid full review.
+        # Editing persisted verdict text cannot reuse the original transport/
+        # review binding, even when the visible 360-character card is identical.
+        with pytest.raises(imp.ImprovementError, match='source Read evidence'):
+            imp._eligible(lab.store, pid)
         assert contract.build_web_report(report) == public_before
         assert approval['review_digest'] != contract.digest(record['review'])
-        with pytest.raises(ValueError, match='bind the exact eligible proposal'):
+        with pytest.raises(ValueError, match='source Read evidence'):
             imp.execute(pid, now=NOW, selected=lab.selected, executor=executor_for(calls))
         assert not lab.store.exists('claims/' + pid + '.json')
         assert calls == []
@@ -2407,7 +2243,7 @@ def test_role_failure_comes_from_actual_boundary_not_result_diagnostics(lab, fai
     assert marker not in json.dumps({k: agent[k] for k in ('reason', 'error_type')})
     assert len(runner.calls) == 1 and all(not path.exists() for path in observed)
     assert 'TAVERN_IMPROVEMENT_DISCOVERY' not in os.environ
-    assert (lab.root / 'harness/example.py').read_text().startswith('fixture first line')
+    assert (lab.root / 'harness/example.py').read_text().startswith('first_value = 1')
     if failure == 'execution_status':
         assert agent['cost'] == .0123 and agent['cost_status'] == 'cli_estimated_usd'
 
@@ -2508,3 +2344,22 @@ def test_diagnostic_boundary_preserves_preparation_cleanup_interrupt_and_success
         assert agent['error_type'] == ('KeyboardInterrupt' if failure == 'interrupt' else 'Exception')
         assert agent.get('interrupted', False) is (failure == 'interrupt')
         assert 'SECRET' not in json.dumps({k: agent[k] for k in ('reason', 'error_type')})
+
+
+def test_empty_discovery_with_only_shared_docs_for_owner_is_incomplete(lab):
+    # Removing the program from the synthetic approval must not permit shared
+    # documentation to masquerade as that owner's completed code inspection.
+    paths = [p for p in FILES if not p.startswith('downloader/')]
+    lab.scope.write_text('\n'.join(paths) + '\n', encoding='utf-8')
+    runner = ModelRunner(lab, candidates={})
+    private = scan(lab, runner)
+    assert private['status'] == 'partial' and not private['review_complete']
+    assert [c['role'] for c in runner.calls] == list(contract.SPECIALIST_ROLES)
+    reviewer = private['agents'][-1]
+    assert reviewer['role'] == 'reviewer' and reviewer['status'] == 'unavailable'
+    assert reviewer['reason'] == 'source_review_unverified'
+    public = imp.report(DATE, selected=lab.selected)
+    assert public['counts']['eligible'] == 0 and public['proposals'] == []
+    assert '점검 미완료' in public['headline']
+    assert '개선점 없음' in public['summary']
+    assert not lab.store.exists('authority.key')

@@ -8,6 +8,7 @@ Parent API (all clocks are aware datetime values, all I/O seams are injectable):
   publish(now=None, selected=None, publisher=None, reconcile=False)
   validate_scan_freshness(scan, selected=None)
   authorization_context(scan) -> digest or None for legacy discovery
+  legacy_completion_context(scan) -> original pre-Read context; completion only
 
 The production CLI's tick delivers by default through improvements.deliver_report.
 An embedded caller must request deliver=True or supply publisher. Publishers take
@@ -46,8 +47,11 @@ pins exact approved inputs in a bounded sealed private snapshot. Scope/config/mo
 changes invalidate progression, but never actual participation history. The local adapter sees
 only its selected continuous numbered line window, never the full snapshot.
 
-Morning selection: latest completed independent review in [yesterday 09:00,
-today 09:00), matching ALL current dependencies, at most eight distinct records.
+Morning selection: source-verified completed independent reviews in [yesterday
+09:00, today 09:00), matching ALL current dependencies. Latest explicit verdict
+per ID wins; empty/failed rounds do not delete earlier eligible proposals.
+Each retained record binds its original scan, proof and full controls. The
+aggregate never becomes a review/approval origin. At most eight distinct records.
 Web-v1 sorts priority high/medium/low then exact ID and displays at most three.
 No suitable review produces a truthful partial/failed zero-card report, with
 only actual participation in that window. Private scans retain every candidate,
@@ -81,6 +85,7 @@ from contextlib import contextmanager
 from harness import agent_models, improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import improvement_snapshot as sealed
+from harness import review_coverage as coverage
 
 
 CONFIG = Path(__file__).with_name('improvement-loop-config.json')
@@ -186,7 +191,7 @@ def _dependencies(config, local_config, selected, *, allow_unavailable_sources=F
         'workflow_config_fingerprint': contract.digest(workflow.load_policy()),
         'ownership_fingerprint': contract.digest({role: imp.role_scope(role, paths, discovery)
                                                 for role in contract.ROLES}),
-        'review_protocol': 'sealed-round-history-v1',
+        'review_protocol': coverage.VERSION,
     }
     # Controls must always be readable and valid. Only a sealed active round
     # may continue when live source bytes cannot be captured safely (e.g. a
@@ -218,9 +223,31 @@ def validate_scan_freshness(scan, *, selected=None):
     selected.check_ready()
     config = load_config()
     local_config = local_model.load_config(root=imp.ROOT)
-    _, _, _, current = _dependencies(config, local_config, selected)
+    discovery, paths, snapshots, current = _dependencies(config, local_config, selected)
     if scan['loop_dependencies'] != current:
         raise LoopError('loop_dependencies_changed')
+    coverage.validate(scan, snapshots, {r: imp.role_scope(r, paths, discovery)
+                      for r in contract.SPECIALIST_ROLES}, discovery['shared_files'])
+
+
+def has_source_review_protocol(scan):
+    """Presence, even with a null/invalid value, forbids legacy completion."""
+    dependencies = scan.get('loop_dependencies', {})
+    return (any(key in scan for key in ('source_review', 'source_review_binding', 'review_protocol')) or
+            not isinstance(dependencies, dict) or 'review_protocol' in dependencies)
+
+
+def legacy_completion_context(scan):
+    """Original pre-Read signature binding; completion only, never new authority."""
+    if has_source_review_protocol(scan) or scan.get('morning_aggregate'):
+        raise LoopError('legacy_completion_forbidden')
+    if 'loop_dependencies' not in scan:
+        if scan.get('loop_engine'):
+            raise LoopError('loop_dependencies_missing')
+        return None
+    # Old hourly approvals already signed discovery_fingerprint. Preserve its
+    # exact original definition instead of converting it to the new protocol.
+    return contract.digest(scan['loop_dependencies'])
 
 
 def authorization_context(scan):
@@ -235,7 +262,10 @@ def authorization_context(scan):
         if scan.get('loop_engine'):
             raise LoopError('loop_dependencies_missing')
         return None
-    return contract.digest(scan['loop_dependencies'])
+    coverage.validate(scan)
+    return contract.digest({'dependencies': scan['loop_dependencies'],
+                            'scan_id': scan['scan_id'],
+                            'source_review_binding': scan['source_review_binding']})
 
 
 def validate_quota(value, now=None, pause_percentage=80):
@@ -401,6 +431,12 @@ def _read_state(store):
                 not isinstance(day.get('legacy_seen'), list) or len(day['legacy_seen']) > 4096 or
                 type(day.get('stopped')) is not bool):
             raise LoopError('state_invalid')
+    for entry in state['completed']:
+        if (not isinstance(entry, dict) or set(entry) != {'scan_id', 'at', 'dependency_digest'} or
+                type(entry['scan_id']) is not str or not storage.RUN_ID.fullmatch(entry['scan_id']) or
+                type(entry['dependency_digest']) is not str or len(entry['dependency_digest']) != 64):
+            raise LoopError('state_invalid')
+        _stamp(entry['at'])
     return state
 
 
@@ -720,6 +756,8 @@ def _safe_participation(participation):
         'elapsed_seconds', 'read_files') if key in participation}
     if type(participation.get('interrupted')) is bool:
         result['interrupted'] = participation['interrupted']
+    if participation.get('status') == 'succeeded' and 'source_review' in participation:
+        result['source_review'] = participation['source_review']
     if participation.get('provider') == 'zai':
         telemetry = imp.agent_telemetry.sanitize(participation.get('telemetry'))
         if telemetry is not None:
@@ -757,11 +795,18 @@ def _save_proposals(store, report, preserve_review=False):
         store.write(name, {'proposal': record, 'scan_id': report['scan_id'],
                           'date': report['date'], 'review_complete': report['review_complete'],
                           'status': report['status'],
-                          'discovery_fingerprint': authorization_context(report)})
+                          'discovery_fingerprint': (authorization_context(report)
+                                                    if report['review_complete'] else None)})
 
 
 def _persist_round(store, state, config, now):
     report = state['round']['report']
+    if report['review_complete']:
+        try:
+            coverage.validate(report)
+        except ValueError:
+            report['review_complete'] = False
+            report['errors'].append('source_review_unverified')
     all_ok = all(a['status'] == 'succeeded' for a in report['agents'])
     any_ok = any(a['status'] == 'succeeded' for a in report['agents'])
     report['status'] = ('scanned' if all_ok and report['review_complete'] else
@@ -1018,11 +1063,11 @@ def _morning_summary(state, agents, start, end, current_review, later_attempts=F
     succeeded = sum(a['status'] == 'succeeded' for a in agents)
     failed = sum(a['status'] in ('failed', 'unavailable') for a in agents)
     completed = any(start <= _stamp(e['at']) < end for e in state['completed'])
-    assessment = ('현재 소스에 유효한 최신 완료 검토의 제안을 정리했습니다.' if current_review else
+    assessment = ('현재 소스에 유효한 검증된 회차별 제안을 보존했습니다.' if current_review else
                   '고정 소스 검토는 완료됐지만 현재 소스에 유효한 완료 검토 제안이 없습니다.' if completed else
                   '독립 검토가 완료되지 않아 현재 소스에 유효한 제안이 없습니다.')
     if later_attempts:
-        assessment += ' 선택한 완료 검토 뒤의 별도 회차 참여는 해당 제안의 검토에 포함되지 않았습니다.'
+        assessment += ' 이후 별도 회차 참여 상태와 보존 제안의 원래 독립 검토는 별개입니다.'
     return ('이전 오전 9시부터 오늘 오전 9시까지 역할별 마지막 실제 시도: 성공 {}개, '
             '실패·준비 실패 {}개, 미호출 {}개. {} 사용자 승인을 대신하지 않습니다.').format(
                 succeeded, failed, 5 - succeeded - failed, assessment)
@@ -1031,6 +1076,49 @@ def _morning_summary(state, agents, start, end, current_review, later_attempts=F
 def _window_locals(report, start, end):
     return [copy.deepcopy(item) for item in report['local_participation']
             if start <= _stamp(item.get('finished_at', item['started_at'])) < end]
+
+
+def _validate_morning_origins(store, report):
+    """A morning projection is never a new independent review or authority.
+
+    Each card binds the immutable original scan, whole scope/control contract,
+    exact verdict and receipt binding. At most eight original pointers are read.
+    This does not compare live inputs: a prepared/frozen journal stays frozen.
+    Approval/execute always revalidate current inputs from the original record.
+    """
+    basis = report['reviewed_source']
+    scan_id = basis.get('scan_id')
+    if not isinstance(scan_id, str) or not storage.RUN_ID.fullmatch(scan_id):
+        raise LoopError('retained_provenance_invalid')
+    source = store.read('scans/' + scan_id + '.json')
+    coverage.validate(source)
+    if (basis != {'scan_id': source['scan_id'], 'source_review_binding': source['source_review_binding'],
+                  'discovery_fingerprint': authorization_context(source)} or
+            source['loop_dependencies'] != report['loop_dependencies']):
+        raise LoopError('retained_provenance_invalid')
+    origins = report['retained_provenance']
+    if (len(report['proposals']) > contract.MAX_CANDIDATES or
+            len({r['id'] for r in report['proposals']}) != len(report['proposals']) or
+            set(origins) != {r['id'] for r in report['proposals']}):
+        raise LoopError('retained_provenance_invalid')
+    for record in report['proposals']:
+        origin = origins[record['id']]
+        scan_id = origin.get('scan_id')
+        if not isinstance(scan_id, str) or not storage.RUN_ID.fullmatch(scan_id):
+            raise LoopError('retained_provenance_invalid')
+        original = store.read('scans/' + scan_id + '.json')
+        coverage.validate(original)
+        expected = _origin(original, record)
+        if (origin != expected or original['loop_dependencies'] != report['loop_dependencies'] or
+                [r for r in original['proposals'] if r['id'] == record['id']] != [record]):
+            raise LoopError('retained_provenance_invalid')
+
+
+def _origin(scan, record):
+    return {'scan_id': scan['scan_id'], 'review_digest': contract.digest(record['review']),
+            'scope_fingerprint': scan['scope_fingerprint'], 'protocol': coverage.VERSION,
+            'source_review_binding': scan['source_review_binding'],
+            'discovery_fingerprint': authorization_context(scan)}
 
 
 def _freeze_morning(store, state, now, discovery, dependencies):
@@ -1048,25 +1136,68 @@ def _freeze_morning(store, state, now, discovery, dependencies):
                    'status': 'legacy_preserved', 'at': now.isoformat(), 'digest': None}
         store.write(journal_name, journal)
         return journal
+    if not isinstance(state['completed'], list) or len(state['completed']) > 32:
+        raise LoopError('completed_index_invalid')
     chosen = None
+    retained, origins = {}, {}
     chosen_completed_at = None
     dependency_digest = contract.digest(dependencies)
     eligible = [entry for entry in state['completed'] if
                 entry['dependency_digest'] == dependency_digest and
                 start <= _stamp(entry['at']) < end]
-    for entry in sorted(eligible, key=lambda item: (_stamp(item['at']), item['scan_id']), reverse=True):
-        candidate = store.read('scans/' + entry['scan_id'] + '.json')
-        if candidate.get('review_complete') and candidate.get('loop_dependencies') == dependencies:
-            # Revalidate all verdict coverage instead of trusting a stored flag.
-            contract.validate_review({'reviews': [dict(record['review'], candidate_id=record['id'])
-                for record in candidate['proposals']], 'documentation': candidate['documentation']},
-                candidate['proposals'], candidate['approved_files'], private=True)
-            if any(a['role'] == 'reviewer' and a['status'] == 'succeeded' for a in candidate['agents']):
-                chosen = copy.deepcopy(candidate)
-                chosen_completed_at = _stamp(entry['at'])
-                break
+    seen_scans = set()
+    for entry in sorted(eligible, key=lambda item: (_stamp(item['at']), item['scan_id'])):
+        if entry['scan_id'] in seen_scans:
+            continue
+        seen_scans.add(entry['scan_id'])
+        try:
+            candidate = store.read('scans/' + entry['scan_id'] + '.json')
+            if (candidate.get('scan_id') != entry['scan_id'] or
+                    candidate.get('review_completed_at') != entry['at'] or
+                    candidate.get('loop_dependencies') != dependencies):
+                continue
+            coverage.validate(candidate)
+            # Ascending completion order: only a newer explicit, verified
+            # verdict replaces the earlier verdict for this exact identity.
+            for record in candidate['proposals']:
+                retained[record['id']] = copy.deepcopy(record)
+                origins[record['id']] = _origin(candidate, record)
+            chosen = copy.deepcopy(candidate)
+            chosen_completed_at = _stamp(entry['at'])
+        except (ValueError, OSError, KeyError, TypeError):
+            # Corrupt/unverifiable index entries cannot certify a review.
+            continue
     later_attempts = False
     if chosen is not None:
+        chosen['reviewed_source'] = {'scan_id': chosen['scan_id'],
+            'source_review_binding': chosen['source_review_binding'],
+            'discovery_fingerprint': authorization_context(chosen)}
+        # A newer stored explicit review must never be hidden by selecting an
+        # older pointer, even when a corrupt index entry was skipped above.
+        usable = []
+        for record in retained.values():
+            name = 'proposals/' + record['id'] + '.json'
+            if store.exists(name):
+                saved = store.read(name)
+                if (saved.get('review_complete') and saved.get('proposal') == record and
+                        saved.get('scan_id') == origins[record['id']]['scan_id']):
+                    usable.append(record)
+        chosen['proposals'] = sorted(usable, key=lambda r: (
+            {'high': 0, 'medium': 1, 'low': 2}[r['candidate']['priority']], r['id']))[:8]
+        if len(usable) != len(retained):
+            chosen['status'] = 'partial'
+            chosen['errors'].append('proposal_provenance_unavailable')
+        chosen['retained_provenance'] = {r['id']: origins[r['id']] for r in chosen['proposals']}
+        # Documentation belongs to each original verdict; do not let the
+        # latest empty review's global judgment erase earlier required docs.
+        docs = sorted({p for r in chosen['proposals'] for p in r['review']['documentation']['files']})
+        missing = any(r['review']['documentation']['status'] == 'missing' for r in chosen['proposals'])
+        chosen['documentation'] = {'status': 'required' if docs and not missing else 'not_required',
+            'files': docs[:12] if not missing else [],
+            'reason': '회차별 원래 문서 판단을 각 제안에 보존합니다. 실제 구현 시 최종 코드와 문서를 새로 의미 검토해야 합니다.'}
+        chosen['morning_aggregate'] = coverage.VERSION
+        chosen.pop('source_review', None)
+        chosen.pop('source_review_binding', None)
         # A quota/downtime pause may stretch one round beyond the window.
         # Keep complete private provenance, but never present its old owners as
         # today's successful participation. Its fresh reviewer remains genuine.
@@ -1104,6 +1235,24 @@ def _freeze_morning(store, state, now, discovery, dependencies):
                   report_window={'start': start.isoformat(), 'end': end.isoformat()},
                   summary=_morning_summary(state, chosen['agents'], start, end,
                                            chosen['review_complete'], later_attempts))
+    if chosen.get('morning_aggregate'):
+        _validate_morning_origins(store, chosen)
+        if retained and not chosen['proposals']:
+            chosen['status'] = 'partial'
+            chosen['errors'].append('proposal_provenance_unavailable')
+        complete_empty = (not chosen['proposals'] and chosen['status'] == 'scanned')
+        has_eligible = any(r['review']['verdict'] == 'eligible' for r in chosen['proposals'])
+        chosen['headline'] = ('점검 완료 · 확인한 범위에서 제안 없음' if complete_empty else
+                              '점검 미완료 · 유효 제안 보존' if chosen['status'] != 'scanned' and has_eligible else
+                              '점검 미완료 · 검토 결과 보존' if chosen['status'] != 'scanned' and chosen['proposals'] else
+                              '점검 미완료 · 제안 없음으로 판단할 수 없음' if chosen['status'] != 'scanned' else
+                              '점검 완료 · 검토된 제안')
+        if complete_empty:
+            chosen['summary'] = ('점검 완료 · 확인한 범위에서 제안 없음. 각 owner의 연속 코드 표본(최대96줄)과 '
+                                 'shared 문서 근거를 독립 확인했습니다. 전체 파일·저장소 완독이 아니며 '
+                                 '표본 밖의 결함 여부는 판단하지 않습니다.')
+    else:
+        chosen['headline'] = '점검 미완료 · 제안 없음으로 판단할 수 없음'
     payload = contract.build_web_report(chosen, discovery['limits']['max_reported_proposals'])
     journal = {'version': 'improvement-publication-v1', 'date': date, 'status': 'prepared',
                'at': now.isoformat(), 'digest': payload['digest'], 'report': chosen, 'payload': payload}
@@ -1141,6 +1290,7 @@ def _freeze_unavailable_morning(store, state, now, reason):
               'proposals': [], 'agents': agents, 'local_participation': locals_,
               'documentation': dict(imp.NO_DOCUMENT_EDITS), 'approved_files': [],
               'review_complete': False, 'errors': ['current_dependencies_unavailable'],
+              'headline': '점검 미완료 · 개선점 없음으로 판단할 수 없음',
               'readiness_reason': reason,
               'participation_basis': 'admission-v1',
               'report_window': {'start': start.isoformat(), 'end': end.isoformat()},
@@ -1158,6 +1308,8 @@ def _materialize_morning(store, journal, discovery):
     if journal['status'] != 'prepared':
         return journal
     date, report, payload = journal['date'], journal['report'], journal['payload']
+    if report.get('morning_aggregate'):
+        _validate_morning_origins(store, report)
     limit = journal.get('projection_limit')
     if type(limit) is not int or not 1 <= limit <= contract.MAX_PROPOSALS:
         raise LoopError('publication_digest_changed')
@@ -1172,8 +1324,8 @@ def _materialize_morning(store, journal, discovery):
             store.write(_publication_name(date), journal)
             return journal
     store.write('scans/' + report['scan_id'] + '.json', report)
-    if report['review_complete']:
-        _save_proposals(store, report, preserve_review=True)
+    # Projection (including recovery of a legacy prepared journal) never
+    # creates or rebinds proposal authority. Original rounds own those records.
     if not store.exists('days/' + date + '.json'):
         store.write('days/' + date + '.json', report)
     for extension, value in (('json', payload), ('html', contract.render_html(payload)),
@@ -1586,6 +1738,9 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                 for record in report['proposals']:
                     record['review'] = {key: value for key, value in verdicts[record['id']].items()
                                         if key != 'candidate_id'}
+                coverage.attach(report, participation['source_review'])
+                coverage.validate(report, snapshots, {r: imp.role_scope(r, paths, discovery)
+                                  for r in contract.SPECIALIST_ROLES}, discovery['shared_files'])
             estimate = participation.get('cost')
             if _number(estimate):
                 day['slots'][slot].update(actual_estimated_usd=estimate, cost_status='cli_estimated_usd')

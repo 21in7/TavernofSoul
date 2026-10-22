@@ -1,5 +1,14 @@
 # 프로젝트 지도와 데이터 경계
 
+현재 source 검증/집계/승인 경계는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
+`review_coverage.py`가 discovery 전용 parent transport의 Read pairing·원래 bytes/range hash를 검증하고,
+`improvement_loop.py`가 bounded 완료 index의 ID별 최신 verdict와 원본 provenance를 보존한다.
+`improvements.py`는 원본 검토와 현재 전체 의존성을 approve/execute에서 재검증한다. 합성 morning은
+검토·승인 원본이 아니다. 최신 참여 실패와 보존 eligible은 병존하며 Sites 화면은 parent 책임이다.
+빈 후보의 source 확인은 owner membership 안의 프로그램 본문 연속 최대96줄과 별도 shared
+문서 Read다. 안내/설정만 읽거나 선택 코드가 없고 비었거나 확인 불가이면 coverage는 미완료다.
+표본은 전체 파일·저장소 완독이 아니다. 호출·scope·격리·publication 경계는 확대하지 않는다.
+
 2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 연구 입력·참여·보고를
 분리한다. `improvement_snapshot.py`가 승인37개 source만 두 private bank의 파일별 bounded record와
 마지막 atomic manifest로 고정하고 `improvement_loop.py`가 state seal을 매 호출 전 검증한다.
@@ -8,7 +17,7 @@ control과 snapshot이 유효한 active 회차의 진행을 지우지 않는다.
 capture가 필요하다. snapshot review_complete는 현재 freshness와 별개이며 stale/unknown 후보의
 public eligible·approve·execute는 기존 전체 dependency/서명 검증으로 차단한다.
 최근192개 cloud 시도 history는 회차·무효화·재시작을 넘어 보존하며 오전 window의 마지막 시도를
-표시한다. 후보는 현재 dependencies 일치 최신 완료 review 하나만 선택하고 선택 후 별도 회차의
+표시한다. 후보는 현재 dependencies 일치 검증된 완료 회차에서 ID별 최신 verdict를 선택하고 선택 후 별도 회차의
 참여를 그 제안 검토로 합치지 않는다. local 실패/빈 pool에도 cloud는 각 정규 slot에서 독립 점검한다.
 private snapshot·trace·local·cost·진단은 public/결과 archive에 포함하지 않는다. 새 의미 검토와
 full make check·실제 hourly 관측은 대기이며 메인 제공 오늘 frozen 보고는 재작성하지 않는다.
@@ -167,7 +176,7 @@ finite numeric0%(bool 제외)에만 absent/null reset을 idle로 허용하며 pr
 실패 envelope는 거부한다. TIME_LIMIT 단독·model limit 부재·HTTP 실패를0%로 해석하지 않는다.
 명목20% 개발 여유이며 진행 중 소모까지 보장하지 않는다. 새 cloud/balance fallback은 없다.
 
-보고는 `[전날09:00, 당일09:00)`의 현재 fingerprint 일치 최신 완료 review 하나만 선택해
+보고는 `[전날09:00, 당일09:00)`의 현재 fingerprint 일치 검증된 완료 회차에서 ID별 최신 verdict를 선택해
 09:00 이후 첫 tick에 불변 확정한다. 최대8 distinct 후보를 priority/ID순 최대3카드로 projection하며
 eligible 우선은 아니다. 유효 review 없으면0카드 partial/failed이고 옛 참여를 오늘 성공으로
 표시하지 않는다. journal prepared→publication_pending→sending→delivered를 사용하며

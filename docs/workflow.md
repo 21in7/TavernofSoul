@@ -1,5 +1,17 @@
 # 개발 작업 자동 배정과 실행
 
+2026-10-22 source 검증과 제안 보존 수리는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
+이번 정확한 승인 파일만 coordinator 작업 하나로 구현한다. 아래32개/21개는 과거 이력이다.
+discovery 전용 Read proof와 원본 review/scope/protocol은 approve/execute freshness에 결합한다.
+합성 오전 집계는 새로운 검토·사람의 서명·실행 claim이 아니며 일반 workflow 계약을 바꾸지 않는다.
+최종 코드/문서의 새 Claude 의미 검토(documentation 포함)→full make check/기존 publisher 회귀→
+scoped apply→기존 Git 역할→parent GitHub CI/merge/cleanup이 남는다. worker는 이를 실행하지 않는다.
+이번 stream 안내 호환도 최종 baseline→candidate 전체의 세 동작과 문서를 새 reviewer가
+독립 판단하고 `documentation={status,files,reason}`을 다시 반환해야 한다. 이전 approved/5097개
+통과나 초안 준비·복원을 새 성공으로 재사용하지 않는다. 새 PR은 미병합 종료된 PR63을 대체하며
+세 동작과 실제 CLI metadata 호환을 제목/본문에 포함한다. 필수CI3종 success 확인·merge·cleanup은
+parent/native 책임이고 실제 hourly9단계 완주는 미관측이다.
+
 이번 2026-10-21 연구 진행 보존 복구는 승인32개를 coordinator 작업 정확히 하나로 배정한다.
 직전 run `1792547845263535412-a3f550`은900초 종료·applied=[]로 미검토/미검증 상태다.
 trusted parent의 baseline/checkpoint 확인과 첫 실제 쓰기 직전 초안 준비는 작업 준비다.
@@ -132,6 +144,9 @@ Git 역할·앱 게시·CI 3개 success·SHA 고정 squash merge·cleanup comple
 merged SHA/done, CI 3종 success, head/merge SHA가 일치하는 verified cleanup proof/CI와
 cleanup_complete가 필수다. 완료 시 `_authorization`/`_fresh`를 재호출하지 않고 현재 소스·만료로
 승인이나 실행을 재소비하지 않는다. 여러 signed run claim은 각각 검증하며 일반 bundle 권한은 없다.
+도입 전 loop·non-loop 완료는 원래 독립 검토·서명 context를 보존한다. 이전 loop context는
+`digest(scan['loop_dependencies'])`이며 Read proof/binding 또는 새 protocol 표식이 있는 기록은
+현대 검증을 요구한다. 이 완료 호환은 새 승인/execute의 Read gate를 면제하지 않는다.
 claim 없는 일반 작업은 키/credential/HTTP 없는 no-op이다. child/discovery/unattended·
 read_only/simulated/GIT=0/local-only에는 전송하지 않는다.
 
@@ -212,7 +227,7 @@ TIME_LIMIT 단독·HTTP 실패를0%로 해석하지 않는다.
 양일 보수적 count/charge/중단으로 allowance 우회를 막는다. legacy 같은날 비용/호출은
 scan_id로 중복 제거 carry-in하고 unknown을 보수적으로 소비 처리한다.
 
-보고는 이전09:00~현재09:00의 현재 fingerprint 일치 최신 완료 review 하나로 모델 없이
+보고는 이전09:00~현재09:00의 현재 fingerprint 일치 검증된 완료 회차의 ID별 최신 verdict로 모델 없이
 09:00 이후 첫 tick에 불변 확정한다. distinct 최대8후보를 priority/ID순 최대3카드로 표시하고
 유효 review 부재는0카드 partial/failed다. 옛날 참여를 오늘 성공으로 표시하지 않는다.
 prepared publication journal에서 crash 복구하고 CLI가 두 state lock 밖에서 기존 Sites

@@ -16,7 +16,9 @@ import pytest
 
 from harness import agent_models, git_publish as github, improvement_completion as completion
 from harness import improvement_report as contract, improvements as imp, storage, workflow, workspace
-from harness.test_improvements import candidate
+from harness import review_coverage as coverage
+from harness import improvement_loop as loop
+from harness.test_review_coverage import candidate, read_events, stdout
 
 RUN = '123456789-abcdef'
 OTHER_RUN = '123456790-abcdef'
@@ -30,6 +32,41 @@ CFG = {'version': 'github-v1', 'enabled': True, 'repository': '21in7/TavernofSou
 
 def forbidden(*args, **kwargs):
     pytest.fail('Completion crossed an offline/authority boundary')
+
+
+def completion_sources():
+    return {'harness/example.py': dict(exists=True, mode=0o644, content=b'before\n'),
+            'AGENTS.md': dict(exists=True, mode=0o644, content=b'Completion fixture document\n')}
+
+
+def completion_scan(proposals, scan_id=OTHER_RUN):
+    """Real receipt parsing of independent literal synthetic Claude Read fields."""
+    snapshots = completion_sources()
+    paths = list(snapshots)
+    scan = dict(scan_id=scan_id, proposals=proposals, review_complete=True,
+                agents=[dict(role='reviewer', provider='claude', status='succeeded')],
+                documentation=DOC, approved_files=paths,
+                source_fingerprints=contract.fingerprint_sources(snapshots),
+                scope_fingerprint=dict(paths=paths, mode=0o644, sha256='1' * 64),
+                config_fingerprint='2' * 64)
+    windows = coverage.plan(paths, snapshots, proposals, {}, ['AGENTS.md'])
+    capture = coverage.Capture('/synthetic-completion', snapshots, windows)
+    # Do not generate Read expectations using production projection helpers.
+    files = [dict(content='Completion fixture document' if w['path'] == 'AGENTS.md' else 'before',
+                  numLines=1, startLine=1, totalLines=2) for w in windows]
+    capture.accept(stdout(read_events(capture, files=files)))
+    review = {'reviews': [dict(r['review'], candidate_id=r['id']) for r in proposals],
+              'documentation': DOC}
+    coverage.attach(scan, dict(version=coverage.VERSION, plan=windows, reads=capture.receipts,
+        assessments=[dict(window=i, assessment='Synthetic body and document boundaries were read; no whole-file conclusion.')
+                     for i in range(len(windows))],
+        fingerprints_digest=contract.digest(scan['source_fingerprints']), review_digest=contract.digest(review)))
+    return scan
+
+
+def completion_context(scan):
+    return contract.digest({'protocol': coverage.VERSION, 'scan_id': scan['scan_id'],
+                            'source_review_binding': scan['source_review_binding']})
 
 
 @pytest.fixture
@@ -48,6 +85,7 @@ def completed(tmp_path, monkeypatch):
     monkeypatch.setattr(github, 'origin_matches', lambda where, repo: where == root and repo == CFG['repository'])
     monkeypatch.setattr(github, 'storage_policy', lambda: selected)
     monkeypatch.setattr(imp, 'load_config', lambda: {'limits': {'delivery_timeout_seconds': 12}})
+    authorization = imp._authorization
     monkeypatch.setattr(imp, '_authorization', forbidden)
     monkeypatch.setattr(imp, '_fresh', forbidden)
     monkeypatch.setattr(agent_models, 'run', forbidden)
@@ -66,9 +104,12 @@ def completed(tmp_path, monkeypatch):
         target.parent.mkdir(parents=True, mode=0o700)
         target.write_bytes(data)
         target.chmod(0o644)
-    fingerprints = contract.fingerprint_sources({path: {'exists': True, 'mode': 0o644, 'content': b'before\n'}})
-    proposal = contract.proposal_record(candidate(), fingerprints)
+    fingerprints = contract.fingerprint_sources(completion_sources())
+    item = candidate()
+    item['evidence'][0]['end_line'] = 1
+    proposal = contract.proposal_record(item, fingerprints)
     proposal['review'] = {'verdict': 'eligible', 'reason': 'Independent synthetic review.', 'documentation': DOC}
+    scan = completion_scan([proposal])
     pid = proposal['id']
     approval = {'version': 'improvement-approval-v1', 'authority': 'trusted-parent',
                 'proposal_id': pid, 'proposal_digest': proposal['digest'],
@@ -77,7 +118,8 @@ def completed(tmp_path, monkeypatch):
                 'instruction': 'Private original instruction must never cross the wire.',
                 'issued_at': (NOW - dt.timedelta(days=20)).isoformat(),
                 'expires_at': (NOW - dt.timedelta(days=13)).isoformat(),
-                'authorization_id': 'a' * 48, 'consumption': 'unconsumed'}
+                'authorization_id': 'a' * 48, 'consumption': 'unconsumed',
+                'discovery_fingerprint': completion_context(scan)}
     task = imp._task(proposal, approval)
     task_digest = hashlib.sha256(task.encode('utf-8')).hexdigest()
     report_task_digest = workflow.triage.digest(task)
@@ -89,9 +131,7 @@ def completed(tmp_path, monkeypatch):
     with store.lock():
         store.write('proposals/' + pid + '.json', {'proposal': proposal, 'scan_id': OTHER_RUN,
                     'review_complete': True, 'status': 'scanned'})
-        store.write('scans/' + OTHER_RUN + '.json', {'proposals': [proposal], 'review_complete': True,
-                    'agents': [{'role': 'reviewer', 'status': 'succeeded'}],
-                    'documentation': DOC, 'approved_files': [path]})
+        store.write('scans/' + OTHER_RUN + '.json', scan)
         store.write('approvals/' + pid + '.json', store.sign(approval, create=True))
         store.write('claims/' + pid + '.json', store.sign(claim))
         store.write('decisions/' + pid + '.json', {'status': 'approved', 'authorization_id': 'a' * 48})
@@ -128,7 +168,7 @@ def completed(tmp_path, monkeypatch):
     agent_models.private_json(inbox, {'origin': 'https://fixture.invalid', 'token': 'fixture-secret'})
     return SimpleNamespace(root=root, selected=selected, directory=directory, store=store,
                            pid=pid, claim=claim, approval=approval, proposal=proposal,
-                           ledger=ledger, report=report, inbox=inbox)
+                           ledger=ledger, report=report, inbox=inbox, authorization=authorization)
 
 
 def run(lab, transport=forbidden, **kwargs):
@@ -480,12 +520,13 @@ def test_multiple_signed_claims_each_verified(completed, tamper_second):
                                       lab.proposal['source_fingerprints'])
     second['review'] = lab.proposal['review']
     pid = second['id']
-    scan = lab.store.read('scans/' + OTHER_RUN + '.json')
-    scan['proposals'].append(second)
-    lab.store.write('scans/' + OTHER_RUN + '.json', scan)
-    lab.store.write('proposals/' + pid + '.json', {'proposal': second, 'scan_id': OTHER_RUN,
+    second_scan_id = '123456791-abcdef'
+    scan = completion_scan([second], second_scan_id)
+    lab.store.write('scans/' + second_scan_id + '.json', scan)
+    lab.store.write('proposals/' + pid + '.json', {'proposal': second, 'scan_id': second_scan_id,
                     'review_complete': True, 'status': 'scanned'})
-    approval = dict(lab.approval, proposal_id=pid, proposal_digest=second['digest'], authorization_id='e' * 48)
+    approval = dict(lab.approval, proposal_id=pid, proposal_digest=second['digest'], authorization_id='e' * 48,
+                    discovery_fingerprint=completion_context(scan))
     claim = dict(lab.claim, proposal_id=pid, proposal_digest=second['digest'],
                  authorization_id='e' * 48, claim_id='f' * 48)
     lab.store.write('approvals/' + pid + '.json', lab.store.sign(approval))
@@ -643,3 +684,162 @@ def test_terminal_archive_preserves_completion_hook_and_runs_after_both_locks(co
     assert output['github']['cleanup']['status'] == 'complete'
     assert output['archive']['status'] == 'pending'
     assert imp._json_file(lab.directory / 'report.json')['status'] == 'passed'
+
+
+def bind_loop_completion(lab, scan, *, modern):
+    """Independently specified old/new signed loop contexts, no live configs."""
+    dependencies = dict(scope_fingerprint=scan['scope_fingerprint'],
+                        source_fingerprints=scan['source_fingerprints'],
+                        config_fingerprint=scan['config_fingerprint'],
+                        loop_config_fingerprint='3' * 64, local_config_fingerprint='4' * 64,
+                        agent_config_fingerprint='5' * 64, workflow_config_fingerprint='6' * 64,
+                        ownership_fingerprint='7' * 64)
+    scan['loop_engine'] = True
+    scan['loop_dependencies'] = dependencies
+    if modern:
+        dependencies['review_protocol'] = coverage.VERSION
+        # The existing literal Read receipts are unchanged; only controls change.
+        scan['source_review_binding'] = coverage.binding(scan)
+        context = contract.digest(dict(dependencies=dependencies, scan_id=scan['scan_id'],
+                                       source_review_binding=scan['source_review_binding']))
+    else:
+        context = contract.digest(dependencies)
+    saved = lab.store.read('proposals/' + lab.pid + '.json')
+    saved['discovery_fingerprint'] = context
+    lab.store.write('proposals/' + lab.pid + '.json', saved)
+    approval = dict(lab.approval, discovery_fingerprint=context)
+    lab.store.write('approvals/' + lab.pid + '.json', lab.store.sign(approval))
+    return context
+
+
+@pytest.mark.parametrize('discovery', ['nonloop', 'loop'])
+def test_preprotocol_signed_claim_keeps_original_completion_authority(completed, monkeypatch, discovery):
+    lab = completed
+    scan = lab.store.read('scans/' + OTHER_RUN + '.json')
+    for key in ('source_review', 'source_review_binding'):
+        scan.pop(key)
+    if discovery == 'loop':
+        expected = bind_loop_completion(lab, scan, modern=False)
+        assert expected == contract.digest(scan['loop_dependencies'])
+    else:
+        approval = dict(lab.approval)
+        approval.pop('discovery_fingerprint')
+        lab.store.write('approvals/' + lab.pid + '.json', lab.store.sign(approval))
+    lab.store.write('scans/' + OTHER_RUN + '.json', scan)
+    original = {name: lab.store.path(name).read_bytes() for name in (
+        'scans/' + OTHER_RUN + '.json', 'proposals/' + lab.pid + '.json',
+        'approvals/' + lab.pid + '.json', 'claims/' + lab.pid + '.json',
+        'decisions/' + lab.pid + '.json', 'web/2026-10-19.json',
+        'days/2026-10-19.json', 'publication/2026-10-19.json')}
+    # No new authorization or freshness/expiry test after implementation.
+    monkeypatch.setattr(imp, '_fresh', forbidden)
+    monkeypatch.setattr(imp, '_authorization', forbidden)
+    assert run(lab, Sites(lab))['status'] == 'delivered'
+    assert all(lab.store.path(name).read_bytes() == body for name, body in original.items())
+    # The same legacy review cannot pass the current approval/execution gate.
+    with pytest.raises((imp.ImprovementError, ValueError), match='source Read evidence|source_review_unverified'):
+        imp._eligible(lab.store, lab.pid)
+    monkeypatch.setattr(imp, '_parent', lambda **kwargs: None)
+    monkeypatch.setattr(imp, '_authorization', lab.authorization)
+    # Both public authority entry points must fail at the Read gate, before
+    # instruction/freshness/expiry/claim reuse or any workflow execution.
+    with pytest.raises((imp.ImprovementError, ValueError), match='source Read evidence|source_review_unverified'):
+        imp.approve(lab.pid, lab.root / 'unread-instruction', selected=lab.selected, now=NOW)
+    with pytest.raises((imp.ImprovementError, ValueError), match='source Read evidence|source_review_unverified'):
+        imp.execute(lab.pid, selected=lab.selected, now=NOW, executor=forbidden)
+    assert all(lab.store.path(name).read_bytes() == body for name, body in original.items())
+
+
+def test_modern_loop_completion_keeps_original_receipts_and_new_signed_context(completed):
+    lab = completed
+    scan = lab.store.read('scans/' + OTHER_RUN + '.json')
+    expected = bind_loop_completion(lab, scan, modern=True)
+    lab.store.write('scans/' + OTHER_RUN + '.json', scan)
+    assert expected != contract.digest(scan['loop_dependencies'])
+    assert loop.authorization_context(scan) == expected
+    assert run(lab, Sites(lab))['status'] == 'delivered'
+
+
+def test_modern_loop_cannot_complete_with_old_signature_context(completed):
+    lab = completed
+    scan = lab.store.read('scans/' + OTHER_RUN + '.json')
+    bind_loop_completion(lab, scan, modern=True)
+    old_context = contract.digest(scan['loop_dependencies'])
+    saved = lab.store.read('proposals/' + lab.pid + '.json')
+    saved['discovery_fingerprint'] = old_context
+    lab.store.write('proposals/' + lab.pid + '.json', saved)
+    approval = dict(lab.approval, discovery_fingerprint=old_context)
+    lab.store.write('approvals/' + lab.pid + '.json', lab.store.sign(approval))
+    lab.store.write('scans/' + OTHER_RUN + '.json', scan)
+    assert run(lab, forbidden)['status'] == 'blocked'
+    assert not lab.store.path('completions').exists()
+
+
+@pytest.mark.parametrize('marker', ['source_review', 'source_review_binding', 'review_protocol', 'dependency_protocol'])
+@pytest.mark.parametrize('marker_value', [None, 'invalid'])
+def test_loop_protocol_marker_cannot_downgrade_to_old_signed_completion(completed, marker, marker_value):
+    lab = completed
+    scan = lab.store.read('scans/' + OTHER_RUN + '.json')
+    scan.pop('source_review')
+    scan.pop('source_review_binding')
+    bind_loop_completion(lab, scan, modern=False)
+    if marker == 'dependency_protocol':
+        scan['loop_dependencies']['review_protocol'] = marker_value
+    else:
+        scan[marker] = marker_value
+    with pytest.raises(loop.LoopError, match='legacy_completion_forbidden'):
+        loop.legacy_completion_context(scan)
+    lab.store.write('scans/' + OTHER_RUN + '.json', scan)
+    assert run(lab, forbidden)['status'] == 'blocked'
+    assert not lab.store.path('completions').exists()
+
+
+@pytest.mark.parametrize('damage', ['approval_context', 'proposal_context', 'dependencies',
+                                  'source_fingerprints', 'review', 'missing_dependencies'])
+def test_old_loop_completion_still_requires_original_signed_provenance(completed, damage):
+    lab = completed
+    scan = lab.store.read('scans/' + OTHER_RUN + '.json')
+    scan.pop('source_review')
+    scan.pop('source_review_binding')
+    bind_loop_completion(lab, scan, modern=False)
+    if damage == 'approval_context':
+        approval = lab.store.verify(lab.store.read('approvals/' + lab.pid + '.json'))
+        approval['discovery_fingerprint'] = '0' * 64
+        lab.store.write('approvals/' + lab.pid + '.json', lab.store.sign(approval))
+    elif damage == 'proposal_context':
+        saved = lab.store.read('proposals/' + lab.pid + '.json')
+        saved['discovery_fingerprint'] = '0' * 64
+        lab.store.write('proposals/' + lab.pid + '.json', saved)
+    elif damage == 'dependencies':
+        scan['loop_dependencies']['local_config_fingerprint'] = '0' * 64
+    elif damage == 'source_fingerprints':
+        scan['loop_dependencies']['source_fingerprints'] = {}
+    elif damage == 'review':
+        scan['agents'][0]['status'] = 'failed'
+    else:
+        scan.pop('loop_dependencies')
+    lab.store.write('scans/' + OTHER_RUN + '.json', scan)
+    assert run(lab, forbidden)['status'] == 'blocked'
+    assert not lab.store.path('completions').exists()
+
+
+@pytest.mark.parametrize('damage', ['missing_reads', 'wrong_read_hash', 'binding', 'downgrade'])
+@pytest.mark.parametrize('discovery', ['nonloop', 'loop'])
+def test_modern_completion_requires_original_read_proof_and_signed_binding(completed, damage, discovery):
+    lab = completed
+    scan = lab.store.read('scans/' + OTHER_RUN + '.json')
+    if discovery == 'loop':
+        bind_loop_completion(lab, scan, modern=True)
+    if damage == 'missing_reads':
+        scan['source_review']['reads'] = []
+    elif damage == 'wrong_read_hash':
+        scan['source_review']['reads'][0]['window']['sha256'] = '0' * 64
+    elif damage == 'binding':
+        scan['source_review_binding'] = '0' * 64
+    else:
+        approval = dict(lab.approval)
+        approval.pop('discovery_fingerprint')
+        lab.store.write('approvals/' + lab.pid + '.json', lab.store.sign(approval))
+    lab.store.write('scans/' + OTHER_RUN + '.json', scan)
+    assert run(lab, forbidden)['status'] == 'blocked'
+    assert not lab.store.path('completions').exists()
