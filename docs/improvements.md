@@ -1,5 +1,47 @@
 # 승인 대기 시간별 연구와 오전 개선 보고
 
+2026-10-22 현재 계약은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
+parent가 discovery reviewer의 실제 성공 Read를 bytes/줄 범위에 묶어 검증한다. 빈 pool은 각 승인
+owner의 non-shared Python 프로그램을 테스트보다 우선 선택한다. AGENTS·안내 문서·설정만으로
+코드 점검을 인증하지 않는다. 함수 본문 우선(없으면 script 실행문)의 앞 문맥 최대8줄을 포함한
+연속 최대96줄 표본과 별도 shared 문서 최대12줄 Read·구체적 assessment가 필요하다. 선택 프로그램
+부재/빈 파일/읽기·파싱 불가/header-only와 기존32KiB/32window 초과는 coverage 미완료다.
+표본은 전체 파일·저장소 완독이 아니며 후보의 모든 evidence/benefit.evidence·필요 문서 Read는 유지한다.
+원래 proof/검토/전체 scope와 protocol을
+private에 보존하고 완료·오전 선택·approve/execute에서 재검증한다. legacy 자기 보고는 권한이 아니다.
+loop 승인 context의 proof 거절도 API에서 `ImprovementError`와 고정 메시지
+`Independent source Read evidence is required.`로 정제한다. 외부 예외 원문을 노출하지 않으며
+거절 시 instruction 파일 접근·권한 생성을 하지 않는다. 별도 review prose 검증의 `ValidationError` 계약은 유지한다.
+Read content는 원본 UTF-8의 최초 BOM 한 번 제외·LF split·각 줄 끝 CR 하나 제거 후 선택 줄의 LF join과
+정확히 같아야 하며 LF를 임의로 덧붙이지 않는다. totalLines는 끝 LF 뒤 빈 줄도 포함한 전체 split 길이다.
+마지막 빈 줄만 읽으면 content는 빈 문자열이다. 원본 bytes/hash/POSIX mode·evidence 줄 번호는 유지하고
+range bytes/hash와 CLI 표현은 별도로 계산한다.
+Claude Code2.1.294 headless stdout의 `rate_limit_event`는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)의
+정확한 envelope·세 status·줄8192bytes/JSON value256개/깊이8(root=0) 한도 안에서만 버리는 안내다.
+uuid/session_id는 각각 UTF-8 1~128bytes다. Read 전·사이·유일한 정상 result 뒤에도 허용하지만
+metadata는 Read/성공/비용·예산/provider identity/진단의 권위가 아니며 원문을 보존하지 않는다.
+응답과 비용은 실제 result에서만 가져오며 Read/안내 검증 실패에도 기존 비용 정산을 보존한다.
+실제 실패·미완료 pairing·result 뒤 assistant/user/tool·중복 result·unknown/malformed/과대 안내는
+성공으로 바뀌지 않는다. receipt/저장 보고/public payload에는 안내를 추가하지 않는다.
+오전은 현재 전체 의존성 일치 완료 회차의 ID별 최신 명시 verdict를 보존한다. 뒤 빈/실패 회차는 앞
+eligible을 지우지 않고 후속 rejected/needs_evidence는 이전 eligible을 대체한다. 원본 scan pointer로
+승인하며 합성 morning은 새 검토/서명/claim을 만들지 않는다. 최신 참여 실패는 별도로 표시한다.
+검증된 정상 0개만 `점검 완료 · 확인한 범위에서 제안 없음`이다. 표본 밖 무결함은 주장하지 않는다.
+web-v1과 frozen 과거 digest, runtime37개/owner/shared/예산/slot은 유지한다. Sites는 parent 소유다.
+아래32개/21개 승인·관측·미실행 인계는 당시 이력이며 이번 범위를 대체하지 않는다.
+
+이번 최종 baseline→candidate는 새 reviewer가 실제 source Read 증빙, 이전 유효 제안 보존,
+실패·미완료·확인한 범위 제안 없음의 구분과 CLI metadata 호환을 모두 독립 검토해야 한다.
+매 검토의 `documentation={status,files,reason}`도 최종 코드와 문서 전체의 의미를 다시 판단한다.
+이전 approved/5097개 통과·checkpoint 준비/복원은 새 성공 근거가 아니다. worker는 검사를 실행하지
+않았으며 실제 hourly9단계 완주는 미관측이다. Sites 배포·검증은 parent의 별도 관측이다.
+parent/native가 새 Claude 검토→full make check→scoped apply→기존 Git 역할→GitHub 필수CI3종
+success 확인→merge·cleanup을 수행한다. 미병합 종료(merged=false)된 PR63 대신 새 PR을 준비한다.
+Git 역할에 전달할 제목 초안은 “개선 검토의 소스 읽기 검증·유효 제안 보존·결과 구분과 Claude CLI metadata 호환”이다.
+본문은 실제 Read pairing/원본 proof·승인 gate, 뒤 빈/실패 회차에도 ID별 최신 명시 verdict와
+원본 provenance 보존, 실패·미완료·확인한 범위 제안 없음 구분, bounded rate_limit_event 무동작
+처리와 실제 result 권위 보존을 설명하고 PR63 대체 관계 및 이번 최종본의 실제 검토/검사 결과만 적는다.
+
 자동 점검은 정비사의 점검표처럼 개선 후보를 발견하고 서로 검토하여 한국어 비유를 담은
 한 장 보고서를 제공한다. 실제 수리는 차주가 특정 항목을 승인한 뒤에 시작한다.
 기반 기능 구현과 그 setup의 후속 검증 보정 및 GitHub 전달은 명시적으로 승인되었지만
@@ -28,7 +70,7 @@ reviewer skip이다. 09시 새 회차 이후 잘못된 not_called/failed/0카드
 loop state는 최근192개 cloud 시도와 최대32개 완료 pointer를 별도로 보존한다. admission 시각의
 반개방 오전 window에서 역할별 마지막 실제 시도를 표시하고 scan_id/slot/stage로 중복을 없앤다.
 완료·실패·무효화·재시작에도 참여를 지우지 않으며 최신 실패가 옛 성공에 가려지지 않는다.
-후보는 현재 전체 dependency 일치 최신 완료 review 하나만 선택한다. 그 완료 뒤 별도 회차의
+후보는 현재 전체 dependency 일치 검증된 완료 회차의 ID별 최신 명시 verdict를 선택한다. 그 완료 뒤 별도 회차의
 성공 시도가 있어도 전체 scanned로 합치지 않고 partial과 summary로 provenance 차이를 표시한다.
 history에는 source/local/진단/cost를 추가하지 않는다. 최초 최대4096개 scan 이름의 bounded 이행 후
 directory 재탐색 없이 index/current/completed/day pointer를 사용한다. 이후 정확한 legacy day
@@ -589,14 +631,14 @@ daily/discover를 hourly와 병행 예약하지 않는다. 기존 호환 테스�
 ## 불변 오전 보고와 후보 선택
 
 window는 `[이전09:00, 현재09:00)` KST다. 09:00 이후 첫 tick은 모델 admission보다 먼저,
-현재 fingerprints가 모두 일치하는 완료 independent review pool 중 완료시각·scan_id 내림차순으로
-하나를 선택한다. 09:00 정각 완료는 다음 window에 포함된다. 여러 round를 합치거나 오래된
-성공을 오늘 참여로 만들지 않는다. 최대8개 distinct ID를 priority high/medium/low, 그 다음
+현재 전체 의존성이 일치하고 실제 source Read가 검증된 완료 회차를 bounded index에서 모은다.
+완료시각·scan_id 오름차순으로 ID별 최신 명시 verdict를 적용한다. 09:00 정각 완료는 다음 window에
+포함된다. 오래된 성공을 오늘 참여로 만들지 않는다. 최대8개 distinct ID를 priority high/medium/low, 그 다음
 exact ID 오름차순으로 정렬해 최대3카드만 projection한다. eligible 우선정렬은 없으므로 rejected나
 needs_evidence도 카드에 포함될 수 있다. counts.eligible은 표시 밖을 포함한 전체 적격 수다.
 
-선택한 review의 모든 원본 참여는 private reviewed_agents/reviewed_local_participation에
-보존한다. 공개 agents는 선택 회차와 독립된 durable history에서 window 안 역할별 마지막
+각 카드의 원래 scan/검토/전체 scope/protocol은 private retained_provenance에 결합한다.
+최신 완료 회차의 원본 참여와 카드별 원본 scan을 분리한다. 공개 agents는 durable history에서 window 안 역할별 마지막
 실제 시도를 집계하며 window 밖 역할만 있으면 not_called로 남긴다. 전원 성공 조건을 못 채우면
 partial이다. 유효 review 부재·미완료·budget/quota/모델 실패에는 그 window의 실제 참여만 담은
 0카드 partial/failed로 확정한다. config/source 유효성을 확인할 수 없어도 storage와 lock이
@@ -605,7 +647,7 @@ partial이다. 유효 review 부재·미완료·budget/quota/모델 실패에는
 같은 KST 날짜여야 하고 projection validator가 window·참여 시각·schema·digest를 검사한다.
 
 `loop/publications/<date>.json`에 frozen report/payload/digest/projection_limit를 prepared로
-먼저 저장한 뒤 days/scans/proposals/web/latest를 materialize하고 publication_pending으로
+먼저 저장한 뒤 days/scans/web/latest를 materialize하고 publication_pending으로
 전환한다. crash 후에는 journal의 같은 bytes 의미/digest만 복구한다. 기존 days/<date>.json이
 있으면 legacy_preserved로 덮어쓰기/자동 재전달하지 않는다. 다른 내용의 day 충돌은
 existing_day_conflict로 보존한다. 그날 후속 tick의 연구는 frozen 보고를 재생성하지 않는다.
@@ -750,6 +792,13 @@ redaction을 재현하거나 비교를 생략하거나 승인 기록을 재작�
 `_authorization`/`_fresh`를 완료 단계에서 재호출하지 않는다. 실행 전에 수행한 freshness와
 완료 증거는 별개다. claim 당시 issued_at≤claim.at<expires_at 및 최대 7일 구간을 확인하되
 작업 후 source 변경이나 현재 승인 만료 때문에 승인/실행을 다시 소비하지 않는다.
+현 protocol의 완료는 원래 Read proof와 signed discovery binding을 검증한다. 도입 전 loop·non-loop
+서명 claim은 원래 완전한 독립 verdict·서명 approval/claim·source/review/task/scope 및 실제 실행
+증거로 완료만 확인할 수 있다. 이전 loop approval에도 `discovery_fingerprint`가 있으며 원래 정의인
+`digest(scan['loop_dependencies'])`를 approval과 persisted proposal provenance에 대조한다. non-loop의
+원래 context는 없다. `source_review`·`source_review_binding` 또는 scan/loop dependencies의
+`review_protocol` 표식은 값이 잘못됐거나 null이어도 modern 경로를 요구한다. proof/binding 누락을
+호환 경로로 낮추거나 기록을 변환하지 않으며 새 승인/execute의 source Read 요구도 면제하지 않는다.
 연결 claim 없는 일반 run은 키/credential/HTTP 없는 no-op이다. child/discovery/unattended,
 READ_ONLY=1·GIT=0, read_only/simulated/no_git·local-only 승인에는 전송하지 않는다.
 

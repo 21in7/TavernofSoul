@@ -169,10 +169,20 @@ def _evidence(store, run_id, claims):
     authorized = set()
     for claim in claims:
         pid = imp._proposal_id(claim['proposal_id'])
-        record = imp._eligible(store, pid)  # persisted review only; NEVER _fresh/_authorization
         approval = store.verify(store.read('approvals/' + pid + '.json'))
         decision = store.read('decisions/' + pid + '.json')
-        context = imp._discovery_context(store, record)
+        from harness import improvement_loop
+        saved = store.read('proposals/' + pid + '.json')
+        scan = store.read('scans/' + saved['scan_id'] + '.json')
+        if improvement_loop.has_source_review_protocol(scan):
+            record = imp._eligible(store, pid)
+            context = imp._discovery_context(store, record)
+        else:
+            # Pre-protocol non-loop AND loop claims retain their original review
+            # contract for completion only. This cannot approve/execute a new
+            # proposal, downgrade a modern receipt, or renew an old authority.
+            record = imp._persisted_review(store, pid, legacy_completion=True)
+            context = improvement_loop.legacy_completion_context(scan)
         fields = {'version', 'authority', 'proposal_id', 'proposal_digest', 'review_digest',
                   'source_fingerprints', 'allowed_edit_files', 'publication', 'instruction',
                   'issued_at', 'expires_at', 'authorization_id', 'consumption'}

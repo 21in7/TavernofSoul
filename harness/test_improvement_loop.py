@@ -27,6 +27,9 @@ import pytest
 from harness import agent_models, improvement_loop as loop
 from harness import improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
+from harness import review_coverage as coverage
+from harness.test_review_coverage import (
+    add_assessments, capture_result, read_events, stdout, with_rate_limit_events)
 
 
 START = dt.datetime(2026, 10, 15, tzinfo=contract.KST)
@@ -426,6 +429,7 @@ class Lab:
             response = {'reviews': [dict(candidate_id=r['id'], verdict='eligible',
                                         reason=REVIEW_REASON, documentation=copy.deepcopy(DOC))
                                     for r in prior], 'documentation': copy.deepcopy(DOC)}
+            add_assessments(response, options['discovery_review'])
         else:
             assert 'max_budget_usd' not in options
             context = json.loads(prompt.rsplit('\n', 1)[1])
@@ -438,7 +442,16 @@ class Lab:
                       diagnostics=RAW)
         if role == 'reviewer':
             result['cli_estimated_cost_usd'] = .04
-        return self.cloud_transform(role, result, response, options) if self.cloud_transform else result
+        result = self.cloud_transform(role, result, response, options) if self.cloud_transform else result
+        if role == 'reviewer':
+            capture = options['discovery_review']
+            if getattr(self, 'review_no_read', False):
+                pass  # explicitly model an otherwise successful CLI without reads
+            elif getattr(self, 'review_trace_transform', None):
+                capture.accept(stdout(self.review_trace_transform(read_events(capture, result['response']))))
+            else:
+                capture_result(capture, result)
+        return result
 
     def tick(self, hour=None, minutes=0, seconds=0, **options):
         if hour is not None:
@@ -1415,6 +1428,256 @@ def test_all_empty_locals_allow_independent_specialists_and_empty_pool_review(la
     assert lab.events[-1] == ('local_explorer', 'coordinator')
 
 
+@pytest.mark.parametrize('metadata', [False, True])
+def test_rate_limit_metadata_is_absent_from_persisted_proof_and_public_report(lab, metadata):
+    lab.local_transform = lambda user, cs: []
+    if metadata:
+        lab.review_trace_transform = with_rate_limit_events
+    lab.hours()
+    scan = lab.state()['round']['report']
+    assert scan['review_complete'] is True and coverage.validate(scan)
+    assert len(lab.cloud_requests) == 5 and len(lab.events) == 9
+    lab.store = imp.Store(lab.selected)
+    persisted = lab.store.read('scans/' + scan['scan_id'] + '.json')
+    assert persisted['source_review'] == scan['source_review']
+    lab.tick(9)
+    report = lab.store.read('days/2026-10-15.json')
+    public = lab.store.read('web/2026-10-15.json')
+    assert public['status'] == 'scanned'
+    assert public['headline'] == '점검 완료 · 확인한 범위에서 제안 없음'
+    assert public['counts']['eligible'] == 0
+    for value in (scan, persisted, report, public):
+        encoded = json.dumps(value)
+        assert all(private not in encoded for private in (
+            'PRIVATE_RATE_METADATA', 'private-session', 'notice-uuid', 'rate_limit_info', 'errorCode'))
+    for rendered in (contract.render_html(public), contract.render_markdown(public)):
+        assert 'PRIVATE_RATE_METADATA' not in rendered and 'private-session' not in rendered
+
+
+@pytest.mark.parametrize('mode', [
+    'no_read', 'self_claim', 'read_failed', 'wrong_range', 'trailing_lf', 'wrong_total', 'verified'])
+def test_empty_pool_requires_real_bounded_owner_and_document_reads_after_restart(lab, mode):
+    lab.local_transform = lambda user, cs: []
+    lab.review_no_read = mode in ('no_read', 'self_claim')
+    if mode == 'self_claim':
+        def claim(role, result, response, options):
+            if role == 'reviewer':
+                result.update(read_files=list(FILES), source_review={'verified': True})
+                response['documentation']['reason'] = '모든 파일을 읽었다는 모델의 자기 주장만 담은 설명입니다.'
+                result['response'] = json.dumps(response)
+            return result
+        lab.cloud_transform = claim
+    if mode in ('read_failed', 'wrong_range', 'trailing_lf', 'wrong_total', 'verified'):
+        def damage(events):
+            files = [event['tool_use_result']['file'] for event in events if event['type'] == 'user']
+            assert files
+            for file in files:
+                # Fixed Lab source: six LF-terminated lines plus a terminal
+                # empty CLI line. No production line/range helper is used.
+                assert file['content'] == (
+                    'value_1 = 1\nvalue_2 = 2\nvalue_3 = 3\n'
+                    'value_4 = 4\nvalue_5 = 5\nvalue_6 = 6')
+                assert (file['startLine'], file['numLines'], file['totalLines']) == (1, 6, 7)
+            if mode == 'read_failed':
+                events[1]['message']['content'][0]['is_error'] = True
+            elif mode == 'wrong_range':
+                files[0]['startLine'] += 1
+            elif mode == 'trailing_lf':
+                files[0]['content'] += '\n'
+            elif mode == 'wrong_total':
+                files[0]['totalLines'] -= 1
+            return events
+        lab.review_trace_transform = damage
+    lab.hours()
+    scan = lab.state()['round']['report']
+    assert scan['review_complete'] is (mode == 'verified')
+    assert len(lab.cloud_requests) == 5 and len(lab.events) == 9
+    lab.store = imp.Store(lab.selected)
+    lab.tick(9)
+    report = lab.store.read('days/2026-10-15.json')
+    public = lab.store.read('web/2026-10-15.json')
+    assert public['counts']['eligible'] == 0 and public['proposals'] == []
+    if mode == 'verified':
+        assert coverage.validate(scan)
+        purposes = {p for w in scan['source_review']['plan'] for p in w['purposes']}
+        assert set(contract.SPECIALIST_ROLES) | {'documentation'} <= purposes
+        assert sum(w['size'] for w in scan['source_review']['plan']) <= coverage.MAX_SOURCE
+        assert public['status'] == 'scanned'
+        assert public['headline'] == '점검 완료 · 확인한 범위에서 제안 없음'
+        assert '표본' in public['summary']
+    else:
+        assert public['status'] in ('partial', 'failed')
+        assert '점검 미완료' in public['headline']
+        assert report['review_complete'] is False
+    for rendered in (contract.render_html(public), contract.render_markdown(public)):
+        assert ('점검 미완료' in rendered) is (mode != 'verified')
+    assert 'source_review' not in json.dumps(public)
+
+
+@pytest.mark.parametrize('later', ['empty', 'failure', 'review_failure'])
+def test_two_eligible_survive_later_round_zero_or_failure_with_original_authority(lab, later):
+    def two(user, candidates):
+        return [dict(candidates[0], title='다운로더 제안 ' + str(i)) for i in range(2)] if user['owner_role'] == 'downloader' else []
+    lab.local_transform = two
+    lab.hours(start=8)
+    original = copy.deepcopy(lab.state()['round']['report'])
+    assert len(original['proposals']) == 2
+    lab.local_transform = lambda user, candidates: []
+    if later != 'empty':
+        def fail(role, result, response, options):
+            if role == ('reviewer' if later == 'review_failure' else 'downloader'):
+                result['status'] = 'failed'
+            return result
+        lab.cloud_transform = fail
+    lab.hours(start=17)
+    lab.store = imp.Store(lab.selected)
+    lab.tick(33)
+    report = lab.store.read('days/2026-10-16.json')
+    public = lab.store.read('web/2026-10-16.json')
+    assert public['counts']['eligible'] == 2 and len(public['proposals']) == 2
+    assert {r['id'] for r in report['proposals']} == {r['id'] for r in original['proposals']}
+    assert report['morning_aggregate'] == coverage.VERSION
+    assert 'source_review' not in report and 'source_review_binding' not in report
+    for record in report['proposals']:
+        origin = report['retained_provenance'][record['id']]
+        assert origin['scan_id'] == original['scan_id']
+        assert origin['source_review_binding'] == original['source_review_binding']
+        saved = lab.store.read('proposals/' + record['id'] + '.json')
+        assert saved['scan_id'] == original['scan_id']
+        assert imp._eligible(lab.store, record['id']) == record
+        instruction = lab.root / 'explicit-instruction.txt'
+        instruction.write_text('제안 ' + record['id'] + ' 승인', encoding='utf-8')
+        instruction.chmod(0o600)
+        imp.approve(record['id'], instruction, now=lab.clock(), selected=lab.selected)
+        imp._authorization(lab.store, record['id'], lab.clock())
+    if later != 'empty':
+        assert public['status'] == 'partial'
+        assert any(a['status'] == 'failed' for a in public['agents'])
+    assert SECRET not in json.dumps(public) and RAW not in json.dumps(public)
+    assert all(k not in json.dumps(public) for k in ('source_review', 'retained_provenance', 'diagnostic', 'local_participation'))
+    before = lab.store.path('web/2026-10-16.json').read_bytes()
+    lab.tick(34)
+    assert lab.store.path('web/2026-10-16.json').read_bytes() == before
+
+
+@pytest.mark.parametrize('verdict', ['rejected', 'needs_evidence'])
+def test_newer_explicit_verdict_overrides_eligible_and_never_rebinds_approval(lab, verdict):
+    # Specialists rediscover identical candidates; local cursor changes must not
+    # create different candidate identities for this latest-verdict regression.
+    def stable(role, result, response, options):
+        if role != 'reviewer':
+            for candidate in response['candidates']:
+                for item in candidate['evidence'] + candidate['benefit']['evidence']:
+                    item.update(start_line=1, end_line=2)
+            result['response'] = json.dumps(response)
+        return result
+    lab.cloud_transform = stable
+    lab.hours(start=8)
+    first = lab.state()['round']['report']
+    pid = first['proposals'][0]['id']
+    instruction = lab.root / 'explicit-instruction.txt'
+    instruction.write_text('제안 ' + pid + ' 승인', encoding='utf-8')
+    instruction.chmod(0o600)
+    imp.approve(pid, instruction, now=lab.clock(), selected=lab.selected)
+    approval_bytes = lab.store.path('approvals/' + pid + '.json').read_bytes()
+    def reject(role, result, response, options):
+        stable(role, result, response, options)
+        if role == 'reviewer':
+            for item in response['reviews']:
+                item['verdict'] = verdict
+                item['reason'] = '후속 독립 확인에서 효과 근거가 성립하지 않아 명시적으로 거절합니다.'
+            result['response'] = json.dumps(response)
+        return result
+    lab.cloud_transform = reject
+    lab.hours(start=17)
+    lab.store = imp.Store(lab.selected)
+    lab.tick(33)
+    report = lab.store.read('days/2026-10-16.json')
+    assert pid in {r['id'] for r in report['proposals']}
+    assert all(r['review']['verdict'] == verdict for r in report['proposals'])
+    assert lab.store.read('web/2026-10-16.json')['counts']['eligible'] == 0
+    with pytest.raises(imp.ImprovementError):
+        imp._authorization(lab.store, pid, lab.clock())
+    assert lab.store.path('approvals/' + pid + '.json').read_bytes() == approval_bytes
+    assert not lab.store.exists('claims/' + pid + '.json')
+
+
+@pytest.mark.parametrize('damage', ['legacy', 'range', 'source_binding', 'scope_binding', 'protocol'])
+def test_persisted_read_proof_is_revalidated_for_approve_and_morning(lab, damage):
+    lab.hours()
+    scan = lab.state()['round']['report']
+    pid = scan['proposals'][0]['id']
+    if damage == 'legacy':
+        scan.pop('source_review')
+    elif damage == 'range':
+        scan['source_review']['plan'][0]['start_line'] += 1
+    elif damage == 'source_binding':
+        scan['source_review']['fingerprints_digest'] = '0' * 64
+    elif damage == 'scope_binding':
+        scan['scope_fingerprint']['sha256'] = '0' * 64
+    elif damage == 'protocol':
+        scan['source_review']['version'] = 'legacy-self-report'
+    lab.store.write('scans/' + scan['scan_id'] + '.json', scan)
+    lab.store = imp.Store(lab.selected)
+    with pytest.raises(imp.ImprovementError,
+                       match=r'^Independent source Read evidence is required\.$'):
+        imp.approve(pid, lab.root / 'must-not-open.txt', now=lab.clock(), selected=lab.selected)
+    lab.tick(9)
+    assert lab.store.read('web/2026-10-15.json')['counts']['eligible'] == 0
+    assert not lab.store.exists('approvals/' + pid + '.json')
+
+
+def test_completed_index_duplicate_is_deduplicated_without_directory_discovery(lab, monkeypatch):
+    lab.hours()
+    state = lab.state()
+    state['completed'] *= 2
+    lab.store.write(loop.STATE_FILE, state)
+    # The migration has already occurred; selection only follows bounded exact
+    # pointers. No recursive/unbounded scan inventory is needed after restart.
+    monkeypatch.setattr(Path, 'iterdir', forbidden)
+    lab.tick(9)
+    public = lab.store.read('web/2026-10-15.json')
+    assert public['counts']['eligible'] == 4
+    assert len({r['id'] for r in public['proposals']}) == len(public['proposals']) == 3
+
+
+def test_completed_index_over_bound_fails_before_any_source_scan_read(lab, monkeypatch):
+    lab.hours()
+    state = lab.state()
+    state['completed'] *= 33
+    names = []
+    original = lab.store.read
+    def bounded(name):
+        names.append(name)
+        return original(name)
+    monkeypatch.setattr(lab.store, 'read', bounded)
+    report = state['round']['report']
+    with lab.store.lock(), lab.store.lock(project=True):
+        with pytest.raises(loop.LoopError, match='completed_index_invalid'):
+            loop._freeze_morning(lab.store, state, START.replace(hour=9), lab.discovery,
+                                 report['loop_dependencies'])
+    assert not any(n.startswith('scans/') for n in names)
+
+
+@pytest.mark.parametrize('changed', ['source', 'control', 'unknown'])
+def test_retained_candidates_never_become_public_eligible_under_changed_dependencies(lab, changed):
+    lab.hours()
+    pid = lab.state()['round']['report']['proposals'][0]['id']
+    if changed == 'source':
+        (lab.root / 'AGENTS.md').write_text('changed source\n')
+    elif changed == 'control':
+        lab.config['daily_budget_usd'] = .9
+        lab.save_loop()
+    else:
+        lab.local_path.write_text('{broken private configuration')
+    lab.store = imp.Store(lab.selected)
+    lab.tick(9)
+    public = lab.store.read('web/2026-10-15.json')
+    assert public['counts']['eligible'] == 0 and public['status'] != 'scanned'
+    with pytest.raises((imp.ImprovementError, ValueError)):
+        imp.approve(pid, lab.root / 'must-not-open.txt', now=lab.clock(), selected=lab.selected)
+
+
 def test_refined_issue_same_draft_digest_and_review_reason_reach_next_actual_http_prompt(lab):
     lab.hours()
     report = lab.state()['round']['report']
@@ -1917,7 +2180,9 @@ def test_original_approval_api_rejects_changed_loop_dependencies(lab, dependency
 def test_loop_authorization_context_binds_controls_and_legacy_stays_unbound(lab):
     lab.hours()
     report = lab.state()['round']['report']
-    assert loop.authorization_context(report) == contract.digest(report['loop_dependencies'])
+    assert loop.authorization_context(report) == contract.digest({
+        'dependencies': report['loop_dependencies'], 'scan_id': report['scan_id'],
+        'source_review_binding': report['source_review_binding']})
     assert loop.authorization_context({'scan_id': 'legacy'}) is None
     with pytest.raises(loop.LoopError, match='loop_dependencies_missing'):
         loop.authorization_context({'loop_engine': loop.STATE_VERSION})
@@ -1964,6 +2229,7 @@ def test_v2_migration_invalidates_legacy_loop_fingerprint_and_authorization_cont
     old = state['round']['report']
     legacy = dict(lab.local_config, version='local-model-config-v1', provider='mlx-lm', api_model='default_model')
     old['loop_dependencies']['local_config_fingerprint'] = contract.digest(legacy)
+    coverage.attach(old, old['source_review'])
     old_context = loop.authorization_context(old)
     state['dependency_digest'] = contract.digest(old['loop_dependencies'])
     lab.store.write(loop.STATE_FILE, state)
@@ -1972,7 +2238,8 @@ def test_v2_migration_invalidates_legacy_loop_fingerprint_and_authorization_cont
     lab.tick(9)
     current = lab.state()['round']['report']
     assert current['scan_id'] != old['scan_id']
-    assert loop.authorization_context(current) != old_context
+    with pytest.raises(ValueError, match='source_review_unverified'):
+        loop.authorization_context(current)
     assert current['loop_dependencies']['local_config_fingerprint'] == local_model.config_digest(lab.local_config)
     assert current['proposals'] == [] and current['review_complete'] is False
     assert lab.local_requests[-1]['sources'][0]['start_line'] == 1

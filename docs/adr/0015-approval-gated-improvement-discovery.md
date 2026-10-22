@@ -1,5 +1,10 @@
 # 0015. 사람의 개별 승인을 기다리는 일일 개선 발견
 
+2026-10-22 대체 범위: [ADR0026](0026-source-verified-retained-improvement-reports.md)은 source 확인을
+parent의 실제 성공 Read 증거로 검증하고, 최신 단일 완료 회차 선택/최신 reviewer 실패의 일괄
+eligible 강등을 ID별 최신 명시 verdict 보존과 원본 provenance 재검증으로 대체한다. 아래의
+해당 규칙과 당시 관측은 역사적 기록이다. sealed snapshot/참여 history·개별 승인/claim·예산은 유지한다.
+
 - 상태: 제안(proposed), 기반 구현·전달은 사용자 승인됨; 최종 의미 검토·전체 검증·GitHub 전달 대기
 - 기록일: 2026-10-15
 - 기록 성격: 새 결정
