@@ -85,6 +85,8 @@ import re
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from harness import improvement_diagnostics as diagnostics
+
 
 CONFIG_VERSION = "improvement-config-v1"
 PROPOSAL_VERSION = "improvement-proposal-v1"
@@ -145,48 +147,71 @@ class ValidationError(ValueError):
         super().__init__(message)
 
 
-def _object(value: Any, required: Iterable[str], optional: Iterable[str] = ()) -> dict:
+def _invalid(message, field, rule, reason=None):
+    if field == 'edit_files' and reason is None:
+        reason = 'candidate_edit_files_invalid'
+    error = ValidationError(message, reason=reason)
+    if field is not None:
+        try:
+            diagnostics.attach(error, diagnostics.detail(error.reason or 'candidate_invalid',
+                'validation', phase='candidate', field=field, rule=rule))
+        except (Exception, KeyboardInterrupt):
+            pass  # Keep this exact validation failure if diagnostics fail.
+    return error
+
+
+def _object(value: Any, required: Iterable[str], optional: Iterable[str] = (), *, field=None) -> dict:
     if not isinstance(value, dict):
-        raise ValidationError("expected JSON object")
+        raise _invalid("expected JSON object", field, 'type')
     required, optional = set(required), set(optional)
     if not required.issubset(value) or set(value) - required - optional:
-        raise ValidationError("missing or unknown object fields")
+        raise _invalid("missing or unknown object fields", field, 'fields')
     return value
 
 
-def _text(value: Any, limit: int) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > limit:
-        raise ValidationError("empty or oversized text")
+def _text(value: Any, limit: int, *, field=None) -> str:
+    if not isinstance(value, str):
+        raise _invalid("empty or oversized text", field, 'type')
+    if not value.strip():
+        raise _invalid("empty or oversized text", field, 'empty')
+    if len(value) > limit:
+        raise _invalid("empty or oversized text", field, 'length')
     if any(ord(c) < 32 and c not in "\n\t\r" for c in value):
-        raise ValidationError("control character in text")
+        raise _invalid("control character in text", field, 'control')
     try:
         value.encode("utf-8", "strict")
     except UnicodeError:
-        raise ValidationError("invalid UTF-8 text") from None
+        raise _invalid("invalid UTF-8 text", field, 'encoding') from None
     return value.strip()
 
 
-def _integer(value: Any, minimum: int, maximum: int) -> int:
-    if type(value) is not int or not minimum <= value <= maximum:
-        raise ValidationError("integer outside permitted range")
+def _integer(value: Any, minimum: int, maximum: int, *, field=None) -> int:
+    if type(value) is not int:
+        raise _invalid("integer outside permitted range", field, 'type')
+    if not minimum <= value <= maximum:
+        raise _invalid("integer outside permitted range", field, 'range')
     return value
 
 
-def _candidate_text(value: Any, field: str, private: bool = True) -> str:
+def _candidate_text(value: Any, field: str, private: bool = True, *, diagnostic_field=None) -> str:
     """Validate retained prose without shortening; keep existing outer trim."""
     limit = CANDIDATE_DISPLAY_LIMITS[field]
-    return _text(value, limit * PRIVATE_PROSE_MULTIPLIER if private else limit)
+    return _text(value, limit * PRIVATE_PROSE_MULTIPLIER if private else limit, field=diagnostic_field)
 
 
-def _list(value: Any, maximum: int, minimum: int = 0) -> list:
-    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
-        raise ValidationError("collection outside permitted range")
+def _list(value: Any, maximum: int, minimum: int = 0, *, field=None) -> list:
+    if not isinstance(value, list):
+        raise _invalid("collection outside permitted range", field, 'type')
+    if not minimum <= len(value) <= maximum:
+        raise _invalid("collection outside permitted range", field, 'length')
     return value
 
 
-def _enum(value: Any, choices: Sequence[str]) -> str:
-    if not isinstance(value, str) or value not in choices:
-        raise ValidationError("unknown enumerated value")
+def _enum(value: Any, choices: Sequence[str], *, field=None) -> str:
+    if not isinstance(value, str):
+        raise _invalid("unknown enumerated value", field, 'type')
+    if value not in choices:
+        raise _invalid("unknown enumerated value", field, 'allowlist')
     return value
 
 
@@ -240,33 +265,33 @@ def parse_json(value: Any, max_bytes: int = MAX_RESPONSE_BYTES) -> Any:
         raise ValidationError("invalid JSON response") from None
 
 
-def validate_path(value: Any) -> str:
+def validate_path(value: Any, *, field=None) -> str:
     """Repository-relative individual file, no glob, traversal or host path."""
     original = value
-    value = _text(value, 240)
+    value = _text(value, 240, field=field)
     path = PurePosixPath(value)
     if (value != original or path.is_absolute() or str(path) != value or
             any(part in ("", ".", "..") or part.startswith(".") for part in value.split("/")) or
             re.search(r"[\\:*?\[\]{}\s\x00-\x1f]", value) or
             re.match(r"(?i)^(logs|keys|credentials|secrets|private)(/|$)", value)):
-        raise ValidationError("unsafe individual file path")
+        raise _invalid("unsafe individual file path", field, 'path')
     return value
 
 
-def validate_scope_paths(paths: Iterable[str], max_files: int = 64) -> list:
+def validate_scope_paths(paths: Iterable[str], max_files: int = 64, *, field=None) -> list:
     _integer(max_files, 1, 64)
     if isinstance(paths, (str, bytes)):
-        raise ValidationError("scope must be a collection of individual paths")
+        raise _invalid("scope must be a collection of individual paths", field, 'type')
     result = []
     for item in paths:
         if len(result) >= max_files:
-            raise ValidationError("too many scope files")
-        path = validate_path(item)
+            raise _invalid("too many scope files", field, 'length')
+        path = validate_path(item, field=field)
         if path in result:
-            raise ValidationError("duplicate scope file")
+            raise _invalid("duplicate scope file", field, 'duplicate')
         result.append(path)
     if not result:
-        raise ValidationError("empty scope")
+        raise _invalid("empty scope", field, 'empty')
     return result
 
 
@@ -342,17 +367,18 @@ def _fingerprints(value: Mapping[str, dict]) -> dict:
 def _paths(value: Any, allowed: Iterable[str], maximum: int = 12,
            minimum: int = 0, *, edit_targets: bool = False) -> list:
     allowed = set(allowed)
+    field = 'edit_files' if edit_targets else None
     try:
-        paths = [validate_path(x) for x in _list(value, maximum, minimum)]
+        paths = [validate_path(x, field=field) for x in _list(value, maximum, minimum, field=field)]
     except ValidationError as exc:
         if edit_targets:
             exc.reason = 'candidate_edit_files_invalid'
         raise
     if len(set(paths)) != len(paths):
-        raise ValidationError("duplicate or out-of-scope file", reason=(
+        raise _invalid("duplicate or out-of-scope file", field, 'duplicate', reason=(
             'candidate_edit_files_duplicate' if edit_targets else None))
     if not set(paths).issubset(allowed):
-        raise ValidationError("duplicate or out-of-scope file", reason=(
+        raise _invalid("duplicate or out-of-scope file", field, 'outside_scope', reason=(
             'candidate_edit_files_outside_scope' if edit_targets else None))
     return paths
 
@@ -373,81 +399,95 @@ def validate_documentation(value: Any, allowed_files: Iterable[str], private: bo
 
 
 def _evidence(value: Any, sources: Mapping[str, Optional[str]],
-              allowed: Iterable[str], minimum: int = 1) -> list:
+              allowed: Iterable[str], minimum: int = 1, *, field=None) -> list:
     allowed = set(allowed)
+    # All nested fields are literals, never candidate keys, indices or paths.
+    path_field, start_field, end_field, summary_field = {
+        'evidence': ('evidence.path', 'evidence.start_line', 'evidence.end_line', 'evidence.summary'),
+        'benefit.evidence': ('benefit.evidence.path', 'benefit.evidence.start_line',
+                             'benefit.evidence.end_line', 'benefit.evidence.summary'),
+    }.get(field, (None, None, None, None))
     result = []
-    for item in _list(value, 6, minimum):
-        item = _object(item, ("path", "start_line", "end_line", "summary"))
-        path = validate_path(item["path"])
+    for item in _list(value, 6, minimum, field=field):
+        item = _object(item, ("path", "start_line", "end_line", "summary"), field=field)
+        path = validate_path(item["path"], field=path_field)
         if path not in allowed or not isinstance(sources.get(path), str):
-            raise ValidationError("evidence needs an available approved source")
-        start = _integer(item["start_line"], 1, 1000000)
-        end = _integer(item["end_line"], start, 1000000)
+            raise _invalid("evidence needs an available approved source", path_field,
+                           'outside_scope' if path not in allowed else 'source_unavailable')
+        start = _integer(item["start_line"], 1, 1000000, field=start_field)
+        end = _integer(item["end_line"], start, 1000000, field=end_field)
         if end > len(sources[path].splitlines()):
-            raise ValidationError("evidence line range exceeds source")
+            raise _invalid("evidence line range exceeds source", end_field, 'range')
         result.append({"path": path, "start_line": start, "end_line": end,
-                       "summary": _candidate_text(item["summary"], "evidence_summary")})
+                       "summary": _candidate_text(item["summary"], "evidence_summary",
+                                                  diagnostic_field=summary_field)})
     return result
 
 
 def validate_candidate(value: Any, sources: Mapping[str, Optional[str]],
                        allowed_files: Optional[Iterable[str]] = None) -> dict:
-    """Structural and line-existence checks only; reviewer assesses semantics."""
-    value = _object(value, CANDIDATE_FIELDS)
-    allowed = validate_scope_paths(sources if allowed_files is None else allowed_files)
+    """Structural/line checks; reviewer assesses semantics.
+
+    Rejections carry diagnostics.exception_detail(error) from their occurrence
+    boundary. Adapters must preserve that link, not revalidate or parse messages.
+    """
+    value = _object(value, CANDIDATE_FIELDS, field='schema')
+    allowed = validate_scope_paths(sources if allowed_files is None else allowed_files, field='scope')
     # Sources are caller-owned snapshots, never paths to open. Missing files are
     # represented by None so that evidence cannot cite invented source lines.
     total_bytes = 0
-    for path in validate_scope_paths(sources):
+    for path in validate_scope_paths(sources, field='sources'):
         source = sources[path]
         if source is None:
             continue
         if not isinstance(source, str):
-            raise ValidationError("source must be UTF-8 text or missing")
+            raise _invalid("source must be UTF-8 text or missing", 'sources', 'type')
         try:
             source_size = len(source.encode("utf-8", "strict"))
         except UnicodeError:
-            raise ValidationError("source must be valid UTF-8") from None
+            raise _invalid("source must be valid UTF-8", 'sources', 'encoding') from None
         total_bytes += source_size
         if source_size > LIMIT_CEILINGS["max_file_bytes"] or total_bytes > LIMIT_CEILINGS["max_source_bytes"]:
-            raise ValidationError("source text exceeds byte bounds")
-    title = _candidate_text(value["title"], "title")
-    analogy = _candidate_text(value["analogy"], "analogy")
-    if not re.search(r"[가-힣]", title) or not re.search(r"[가-힣]", analogy):
-        raise ValidationError("title and everyday analogy must include Korean text")
+            raise _invalid("source text exceeds byte bounds", 'sources', 'byte_limit')
+    title = _candidate_text(value["title"], "title", diagnostic_field='title')
+    analogy = _candidate_text(value["analogy"], "analogy", diagnostic_field='analogy')
+    if not re.search(r"[가-힣]", title):
+        raise _invalid("title and everyday analogy must include Korean text", 'title', 'korean')
+    if not re.search(r"[가-힣]", analogy):
+        raise _invalid("title and everyday analogy must include Korean text", 'analogy', 'korean')
     edit_files = _paths(value["edit_files"], allowed, minimum=1, edit_targets=True)
     if sum(len(path) for path in edit_files) > 600:
-        raise ValidationError("edit file list exceeds one-page character budget",
-                              reason='candidate_edit_files_invalid')
-    benefit = _object(value["benefit"], ("kind", "text", "evidence"))
-    kind = _enum(benefit["kind"], ("estimated", "measured"))
+        raise _invalid("edit file list exceeds one-page character budget", 'edit_files', 'length')
+    benefit = _object(value["benefit"], ("kind", "text", "evidence"), field='benefit')
+    kind = _enum(benefit["kind"], ("estimated", "measured"), field='benefit.kind')
     return {
         "title": title,
-        "priority": _enum(value["priority"], ("high", "medium", "low")),
+        "priority": _enum(value["priority"], ("high", "medium", "low"), field='priority'),
         "analogy": analogy,
-        "issue": _candidate_text(value["issue"], "issue"),
-        "evidence": _evidence(value["evidence"], sources, allowed),
-        "benefit": {"kind": kind, "text": _candidate_text(benefit["text"], "benefit"),
+        "issue": _candidate_text(value["issue"], "issue", diagnostic_field='issue'),
+        "evidence": _evidence(value["evidence"], sources, allowed, field='evidence'),
+        "benefit": {"kind": kind, "text": _candidate_text(benefit["text"], "benefit", diagnostic_field='benefit.text'),
                     "evidence": _evidence(benefit["evidence"], sources, allowed,
-                                          1 if kind == "measured" else 0)},
-        "risk": _candidate_text(value["risk"], "risk"),
+                                          1 if kind == "measured" else 0, field='benefit.evidence')},
+        "risk": _candidate_text(value["risk"], "risk", diagnostic_field='risk'),
         "edit_files": edit_files,
-        "validation_plan": [_candidate_text(x, "validation_step")
-                            for x in _list(value["validation_plan"], 6, 1)],
-        "documentation_impact": _candidate_text(value["documentation_impact"], "documentation_impact"),
+        "validation_plan": [_candidate_text(x, "validation_step", diagnostic_field='validation_plan')
+                            for x in _list(value["validation_plan"], 6, 1, field='validation_plan')],
+        "documentation_impact": _candidate_text(value["documentation_impact"], "documentation_impact",
+                                                 diagnostic_field='documentation_impact'),
     }
 
 
 def validate_candidates(value: Any, sources: Mapping[str, Optional[str]],
                         allowed_files: Optional[Iterable[str]] = None,
                         max_candidates: int = 2) -> list:
-    value = _object(value, ("candidates",))
+    value = _object(value, ("candidates",), field='schema')
     _integer(max_candidates, 1, 2)
-    allowed = validate_scope_paths(sources if allowed_files is None else allowed_files)
+    allowed = validate_scope_paths(sources if allowed_files is None else allowed_files, field='scope')
     result = [validate_candidate(x, sources, allowed)
-              for x in _list(value["candidates"], max_candidates)]
+              for x in _list(value["candidates"], max_candidates, field='candidates')]
     if len({digest(x) for x in result}) != len(result):
-        raise ValidationError("duplicate specialist candidates")
+        raise _invalid("duplicate specialist candidates", 'candidates', 'duplicate')
     return result
 
 

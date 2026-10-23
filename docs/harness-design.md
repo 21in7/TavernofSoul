@@ -2,91 +2,26 @@
 
 ## 개발 실행과 읽기 점검의 잠금 격리
 
-[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)은 workflow 전체 source lock과
-공통 준비 실패 코드를 대체한다. workflow 전용 `.workflow-lock`은 실행 소유권을 최종 save까지
-보유한다. 기존 로컬 `workflows/.lock`은 source capture/apply/cleanup/current freshness의 mutex로
-유지한다. 모델·review·full check·repair는 두 격리 사본에서 진행하므로 그 시간에는 source 잠금이 없다.
-apply는 새 source 잠금 아래 전체 원래 파일 목록/bytes/mode/존재와 candidate를 대조하고 승인
-제안의 signed claim/freshness도 재검증한다. rollback은 자신의 validated 내용인 파일만 복구한다.
-review diff는 capture에서 분리한 승인 파일 original 사본을 기준으로 만든다. source 잠금 해제
-후 live 원본을 검토 입력으로 다시 읽지 않으며 이후 사용자 편집은 apply 충돌로 보존한다.
+잠금 획득·책임과 이행은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이
+정한다. workflow 전용 mutex는 실행 소유권, 기존 source inode는 capture/apply/cleanup/freshness를
+보호한다. 모델·review·검사는 격리 사본에서 진행하며 apply의 전체 baseline/승인 freshness와
+자신의 변경만 rollback하는 경계는 유지한다. tick은 discovery→artifact 아래 state를 보호하고
+source 판단 때만 source mutex를 보유한다. source busy는 no-call이다. freeze는 admission 전,
+publication은 state/source 잠금 밖의 sender 아래 frozen digest POST/GET이며 unknown 자동 POST는 없다.
+기존 inode/root binding·legacy/storage 전환은 명시 조정 대상이다. storage 단독 import는 무I/O이고
+이미 로드된 trace만 관측하여 원래 예외를 유지한다. 잠금 밖 state 쓰기·fallback 저장·retry는 없다.
 
-tick은 stable `.discovery-lock`→기존 Store artifact `.lock` 아래 state·slot·call·정산을 보호한다.
-이 상태 mutex는 연구 모델 중 유지하지만 source mutex는 controls/current capture·오전 freeze·
-seal 준비 및 호출 뒤 freshness 확인에만 사용한다. 기존 bank·Read proof·coverage·ID별 최신
-verdict 보존을 바꾸지 않는다. source mutex가 busy이면 controls도 확인할 수 없어 no-call이다.
-claimed slot에는 구체적 실패와 미완료 보고를 남기며 같은 slot을 재시도하지 않는다.
+[ADR0025](adr/0025-progress-preserving-improvement-reviews.md)의 두 private snapshot bank와
+bounded manifest/fingerprint/owner/mode/nlink/size 검증·source-only 진행/cursor 보존을 유지한다.
+seal이 유효해도 current freshness는 별개이며 새 capture/eligible/approve/execute는 현재 입력을 요구한다.
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)의 parent Read pairing·원래 bytes/
+range hash·owner 프로그램 표본과 shared 문서·bounded rate_limit_event 무동작 처리·coverage를 따른다.
+표본은 전체 완독 증거가 아니며 malformed/미완료/후속 tool은 거절한다. 완료 index의 ID별 최신
+verdict/provenance와 cloud admission history의 오전 window는 독립적이다. 현대 proof/binding 표식은
+legacy로 낮추지 않고 완료 outbox는 원래 검토·서명 증거를 보존하며 새 승인/만료 갱신을 하지 않는다.
 
-09시 freeze는 새 seal/admission보다 먼저다. publication은 stable sender와 기존 sender mutex로
-직렬화하고 frozen journal만 사용하며 HTTP callback은 state/source lock 밖이다. 동일 digest GET
-readback·prepared 복구·unknown 무자동 POST는 유지한다. 일반/READ_ONLY 모델·검증에 대한
-완료 의존성이 없다. 실제 source 변경·짧은 capture·completion 또는 storage 장애는 여전히 실패/
-보류가 가능하다. v1/v2/no-config/override는 같은 로컬 inode를 유지하며 discovery root hash가
-다른 ledger로의 자동 호출 재개를 막는다. 구버전 종료 확인과 예약/서명/게시의 명시 이행 없이는
-저장 위치를 전환하지 않는다. stale PID나 finished_at만으로 잠금을 삭제하지 않는다.
-
-고정 private `improvement-diagnostic-v1`은 실제 UTC 발생시각, boundary/reason, logical lock,
-allowlist stage/hour와 bounded 정수 errno/elapsed_ms, 미확인 holder_pid=null만 가진다. 외부 문자열·
-자유 예외 클래스·원문·절대 경로는 없다. 첫 실패는 후속 정산/오류 기록 실패로 교체하지 않는다.
-state 잠금 안에서 마지막 진단을 저장할 수 없으면 private CLI 결과만 보존하며 persistence 한계를
-별도 표시한다. fallback·자동 재시도·잠금 밖 state 쓰기와 public 필드 확장은 없다. 매 새 review는
-최종 코드/문서의 documentation 판단을 새로 해야 하며 offline 검토/검증과 실제 운영 성공은 별개다.
-
-storage의 단독 사용은 개선 orchestration에 의존하지 않는다. config/readiness wrapper는 호출 때
-이미 로드된 `harness.improvement_diagnostics`만 관측하며 해당 모듈을 import하지 않는다.
-active trace가 있는 실제 개선 호출은 기존 경계에서 실패를 기록하고 원래 예외를 전파한다.
-진단 모듈이 없는 최소 storage 패키지도 동일한 storage 오류로 실패하며 import 시 I/O가 없다.
-import 오류를 포괄적으로 숨기거나 저장소 fallback을 만드는 경로는 추가하지 않는다.
-
-[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이 source 읽기 확인과 오전 선택을 대체한다.
-parent 전용 Capture는 discovery Claude stream-json의 실제 성공 Read만 canonical 승인 bytes/줄 범위에
-결합한다. 최대32 window/각256줄/총32KiB와 stdout512KiB/stderr16KiB/256event를 제한한다.
-관측된 `rate_limit_event`만 정확한 envelope·status allowed/allowed_warning/rejected로 제한해 버린다.
-각 원래 줄8192bytes·JSON value256개·깊이8(root=0), uuid/session_id 각각 UTF-8 1~128bytes다.
-Read 전·사이·정상 result 뒤에도 안내는 증거/성공/비용·예산/identity/진단 권위가 아니며 원문을
-보존하지 않는다. 비용은 뒤 안내를 건너 실제 result에서만 추출하고 전체 Capture를 검증한다.
-unknown/malformed/과대 안내, result 뒤 assistant/user/tool/system, 중복 result와 pending tool은 거절한다.
-CLI content는 원본 UTF-8의 최초 BOM 한 번 제외 → LF split → 각 줄 끝 CR 하나 제거 → 선택 줄 LF join
-하나만 허용한다. LF를 덧붙이지 않으며 totalLines는 끝 LF 뒤 빈 줄까지 센 전체 split 길이다. 마지막
-빈 줄만 선택하면 content는 빈 문자열이다. 원본 bytes/hash/POSIX mode·evidence 줄 번호와 range
-bytes/hash는 CLI 표현과 별도로 보존한다. 이 bounded 표본은 표본 밖 무결함의 증거가 아니다.
-빈 pool은 승인 owner의 non-shared Python 프로그램을 테스트보다 우선하며 AGENTS·문서·설정을
-코드 확인으로 세지 않는다. 함수 본문 우선(없으면 script 실행문) 기준의 앞 문맥 최대8줄과
-연속 최대96줄을 명시한다. 선택 프로그램 부재/빈 파일/읽기·파싱 불가/header-only와 한도 초과는
-미완료다. shared 문서 최대12줄은 별도다. 이 표본은 전체 파일·저장소 완독이 아니며 후보가 있는
-회차의 전체 evidence/benefit.evidence·필요 문서 Read,32KiB/32window 한도는 유지한다.
-private proof·assessment·검토 binding은 완료/원본 freshness에서 재검증한다. 모델 자기 보고·legacy는
-증거가 아니다. ID별 최신 verdict를 보존하며 morning aggregate는 approval/proposal 원본을 만들지 않는다.
-web-v1의 latest agents와 원래 검토된 eligible은 병존할 수 있다. 공개 validator는 구조를 검사하고
-private parent만 원본 Read/provenance/freshness를 검증한다. 완료 outbox는 현대 claim의 원본 proof와
-서명 binding을 보존하며, 도입 전 loop·non-loop 서명 claim의 원래 독립 verdict/실행 증거는 별도로
-확인한다. 이전 loop의 서명 context는 원래 `digest(scan['loop_dependencies'])`로 approval과 persisted
-proposal provenance에 대조하고 non-loop는 원래 context 없음으로 검증한다. source_review·
-source_review_binding 또는 scan/dependencies의 review_protocol 표식이 있으면 null/오류여도
-현대 proof 검증을 요구하며 호환 경로로 낮추지 않는다. 새 승인·execute의 Read gate는 유지하고
-완료 후 freshness/만료를 다시 검사하거나 승인을 갱신하지 않는다.
-
-2026-10-21 진행 보존 계약은 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)를 따른다.
-loop는 cloud 예약/정산/복구와 최대192개 participation history를 같은 atomic state에 기록한다.
-identity는 scan_id/slot/stage이며 admission 시각의 `[전날09:00,당일09:00)`에 집계하고 최신 실패가
-옛 성공에 가려지지 않도록 마지막 시도를 표시한다. 최대32개 완료 index는 현재 dependency 일치
-검증된 회차의 ID별 최신 verdict 선택용이며 참여 집계와 독립적이다. 최초 legacy4096개 이름 상한 이행 후
-directory 재탐색 없이 정확한 index/current/day pointer만 사용한다. 과거 frozen/delivery는 보존한다.
-
-snapshot helper는 승인37개 UTF-8 source의 bytes/mode/존재만 private a/b bank에 저장한다.
-파일별 bounded record·manifest 마지막 atomic publication·state digest를 사용하고 매 호출 전
-no-follow/owner0700·0600/nlink1·파일128KiB/전체1.5MiB·manifest/fingerprint를 재검증한다.
-미완성 bank는 호출에 쓰지 않으며 model context/credential/범위 밖 파일·전체 repo는 저장하지 않는다.
-Store의 snapshot record 쓰기는 고정 staging 이름을 사용한다. 유효한 private bounded partial만
-회수하고 unsafe staging은 보존·no-call로 처리하여 반복 강제 종료에도 임시 source 수를 제한한다.
-source-only 변화는 pinned stage/pool/feedback/cursor를 보존한다. live source가 과대/비UTF-8 등으로
-읽히지 않아도 control 검증과 seal이 유효한 active 회차만 계속하며 current freshness는 unknown이다.
-control 변경은 진행 무효화, snapshot 손상은 no-call, snapshot 없는 legacy active는 과거 참여를
-보존한 뒤 종료한다. 새 회차 capture와 public eligible·approve·execute는 현재 읽기 검증을 요구한다.
-local 실패/빈 초안에도 specialist·빈 pool reviewer는 정규 slot에서 독립 평가한다. coverage 실패를
-scanned로 바꾸지 않는다. owner 비공유 파일 우선 순서는 membership/원문 줄 번호를 바꾸지 않고
-legacy cursor는 path로 한번 이행한다. 새 Claude는 매번 최종 코드·문서 의미를 평가하며 full make
-check·Git 역할/parent 게시와 실제 운영 관측은 실행기의 후속 책임이다. 합성 회귀는 실행하지 않았다.
+실제 실패의 고정 detail API와 private 보존 경계는 아래 hourly 절과 ADR0027에 둔다.
+새 reviewer는 최종 코드·문서의 의미를 다시 판단하며 offline 검증과 운영 성공은 별도 증거다.
 
 ## 로컬 실행·결과 보관과 실제 변경 검증
 
@@ -416,267 +351,129 @@ triage 단독 명령은 shadow 기록이며 `execution_allowed=false`다. 실제
 
 ## 승인 게이트 시간별 연구와 오전 보고
 
-2026-10-15 추가 결정은 [ADR 0015](adr/0015-approval-gated-improvement-discovery.md),
-최신 스케줄/예산/MLX 결정은 [ADR0017](adr/0017-budgeted-continuous-improvement.md),
-정확한 CLI·web schema·복구 절차는 [개선 연구 운영](improvements.md)에 둔다.
-이번 기반 기능 구현·전달은 승인되었지만 발견된 제안의 구현 권한은 각각 사람에게 남긴다.
-기존 직접 개발 요청의 일반 workflow와 모델/provider/effort/compaction 설정은 유지한다.
-새 cloud provider나 Cloudflare 자원·credential은 만들지 않으며 로컬 초안용 mlx-vlm만 추가한다.
+개별 승인 경계는 [ADR0015](adr/0015-approval-gated-improvement-discovery.md), hourly/예산은
+[ADR0017](adr/0017-budgeted-continuous-improvement.md), private 서술/public 표시는
+[architecture](architecture.md#기존-private-서술과-공개-projection-검증), 실제 CLI·schema·복구는
+[운영 계약](improvements.md)에 둔다. 기반 구현/직접 개발 요청의 전달 권한과 이후 발견 제안의
+개별 승인 권한은 구별한다. 모델/provider/effort/compaction·auth·읽기 scope를 넓히지 않는다.
 
-`improvement_report.py`는 I/O 없는 Python 3.8 schema·fingerprint·정제·렌더러다.
-`improvements.py`는 기존 storage/model/workspace API로 scope snapshot, 직렬 role 호출,
-private 기록·lock·승인·claim·HTTP를 담당한다. `workflow.execute`의 선택적
-`_improvement_guard(run_id)`는 project lock 안에서 쓰기 모델·소스 사본·검사 전에 재검증한다.
-일반 명시 요청에는 guard가 필수가 아니며 자율 제안은 반드시 guarded entrypoint를 사용한다.
+`improvement_report.py`는 I/O 없는 Python3.8 검증/정제/렌더러, `improvements.py`는 승인 scope·
+직렬 role 호출·private 기록·승인/claim/전달, `improvement_loop.py`는 bounded 예약/정산과 오전 선택을
+담당한다. 선택적 workflow `_improvement_guard(run_id)`는 project lock 안에서 쓰기 모델·사본·검사
+전에 재검증한다. 직접 요청과 달리 자율 제안은 guarded entrypoint가 필수다.
 
-legacy discover의 순서는 coordinator → downloader → parser → django → 독립 reviewer다.
-활성 자동 연구는 `improvement_loop.py`의 local(coordinator)→coordinator→local(downloader)→
-downloader→local(parser)→parser→local(django)→django→Claude independent reviewer다.
-각 hourly slot에 한 단계·모델 최대1회(로컬 포함), KST 하루24회로 제한한다.
-각 specialist는 `workflow.owner()`의 소유 파일과 `shared_files` 중 승인 scope에 있는 파일만 본다.
-`parser_tidy/tests/test_import_safety.py` 등 기존 owner 예외도 그대로 적용한다.
-각 역할은 앞선 정제 후보 요약만 공유하며 reviewer는 별도 context에서 전체 승인 파일을 본다.
-원본 읽기는 개별 경로만 사용하고 symlink·보호 파일·private config를 거부한다. 파일 사본은
-0400, 호출은 `write=False, scoped=True`; 원본 소스·검사·Git·workflow·운영 작업에 접근하지 않는다.
-이는 격리된 모델 도구와 신뢰한 parent에 의존하며 임의 host 프로세스를 막는 VM 경계는 아니다.
+legacy discover는 coordinator→downloader→parser→django→독립 reviewer, 활성 loop는 각 owner의
+local→specialist 네 쌍 뒤 Claude reviewer의9단계다. tick당 최대1모델·로컬 포함 KST 하루24회,
+마지막 stage 다음 slot에 새 round다. local 실패/빈 초안과 빈 pool도 정규 specialist/reviewer를
+생략하지 않는다. owner는 workflow.owner와 shared_files의 승인 교집합만, reviewer는 별도 context의
+전체 승인 scope를 본다. 기존 owner 예외를 유지한다. 0400 사본·write=False/scoped=True와 parent
+격리에 의존하며 VM이나 임의 in-process Python에 대한 보안 경계를 주장하지 않는다.
+원본 수정·검사·Git·workflow·운영 작업, symlink/보호 파일/private config는 모델 권한이 아니다.
 
-버전 고정 discovery 설정은 최대 보고3개, specialist당 후보2개(전체8개), legacy 단일 scan
-실제 role5회/호출600초/자동 retry0회다. hourly config는 tick600초/cloud480초/quota15초·
-기본 자정 guard600초·max completed round16이며 exact 필드·타입·finite/bounds/관계를 검증한다.
-파일128KiB·전체 소스1.5MiB(1572864 bytes)·
-context 2MiB(2097152 bytes, UTF-8 소스와 prompt 합)·응답 64KiB,
-scope 64개·편집 파일 12개·근거/검증 단계 각 6개의 상한을 둔다. 기존 provider 예산은 유지한다.
-호출 수/시간/bytes는 비용 통제 수단이며 달러 상한이나 실제 비용 측정이 아니다.
-실제 응답의 역할/provider/model/result·시각·경과시간과 제공된 CLI 비용 추정만 private에 보존한다.
-실패·unavailable을 성공 합의로 바꾸지 않으며 실제 비용이 없으면 unknown이다.
+기존 한도는 보고3개·specialist 후보2개/전체8개, legacy5호출/600초/retry0, hourly tick600초/
+cloud480초/quota15초·자정 guard600초·기본 완료 index16(최대32)이다. 파일128KiB·source1.5MiB,
+context2MiB(소스+prompt UTF-8)·응답64KiB·scope64·edit_files12·근거/검증 단계 각6을 유지한다.
+exact 필드/type/finite/bounds/관계 검증은 여전하며 호출 한도는 실제 달러 청구 보장이 아니다.
 
-local_model은 소스를 열지 않고 parent의 승인 snapshot에서 한 파일의 연속 window만 전송한다.
-request 전체24576bytes·max_tokens3072·timeout180초·response65536/header8192bytes,
-기본 window96줄/feedback4096bytes다. exact 상대path/원래 line 번호로 candidate와 benefit
-evidence를 제한한다. edit_files/문서도 owner 승인 범위 안이며 전체파일 근거를 주장하지 못한다.
-edit_files는 정확한 approved_files 문자열의 중복 없는 목록이다. 승인됐지만 미전송인 파일은
-편집 대상만 될 수 있다. 본문의 경로·지시는 비신뢰 데이터로 권한을 주지 않으며 전체 파일 줄
-참조도 전송 window 밖이면 candidate.evidence와 benefit.evidence에 인용할 수 없다.
-mlx-vlm0.7.8의 실제 요청에는 native `response_format.json_schema`의 strict canonical 후보
-전체 계약과 top-level enable_thinking=false를 넣는다. 객체는 필수 필드·타입과
-additionalProperties=false로 닫고 후보 최대2개, 기존 배열·private 문자 상한을 담는다.
-edit_files enum은 owner 승인 목록, 두 evidence의 경로·integer 범위는 실제 단일 window다.
-uniqueItems는 llguidance1.9.1 미지원이므로 요청하지 않는다. 중복·start<=end·총 문자량·
-공백/의미와 실제 window 검증은 공유 client validator·담당자/독립 검토의 최종 책임이다.
-전송 전 준비된 immutable bytes의 config/user digest와 재구성한 canonical schema를 검사해
-누락·완화·owner/scope/window/thinking 변조를 두 transport seam 전에 거절한다. 재조립한 plain
-bytes는 거절하며 같은 프로세스의 임의 Python 코드까지 격리하는 경계는 아니다.
-window 선택부터 schema 포함 전체 직렬화 request24576bytes를 계산하고 whole-line만 보낸다.
-고정 overhead만으로 넘으면 context_too_large no-call이다. source/feedback 뒤 approved_files를
-두는 순서와 엄격한 parser·prompt injection 경계를 유지한다. prompt는 schema 안내로 단순화한다. 검토·검증 계획·문서 영향은 향후 작업이며 실행·승인이 아니다. 사전 실행 없이
-미측정 예상 효과를 제안하고, 지원되는 실행 가능한 초안을 내되 없으면 빈 candidates를 요구한다.
-user JSON은 `owner_role,sources,feedback,candidate_limit,approved_files` 순서로 비신뢰 데이터 뒤에
-전체 편집 허용 목록을 둔다. 각 값은 canonical 직렬화를 유지해 순서 변경 자체의 bytes 증가는
-없다. system 변경은 기존 전체 byte ceiling 안에서 처리하며 전송 검증은 모든 구조·값에 적용한다.
-전역 canonical_json·서명·보고 직렬화와 기존 후보 수용·bytes/token 상한·단일 호출은 유지한다.
-cursor는 owner별 file_index/line을 durable 순환하며 긴 single line은 slice 없이 skip한다.
-호출 실패에도 cursor를 자동 replay하지 않는다. local 실패/빈 초안에도 관련 specialist와
-빈 pool의 reviewer가 각 정규 slot에서 독립 점검하며 round 종료 다음 slot에 새 round를 시작한다.
-정식 후보는 기존 specialist가 소스 확인 후 만들고 reviewer가 독립 검토한다. 이전 정제 issue·
-specialist 설명·review.reason을 candidate_id/draft_digest로 묶어 실제 다음 local prompt에 넣는다.
-feedback은 bytes/redaction으로 제한하며 담을 수 없으면 보류한다. private 원문을 자르지 않는다.
+local adapter는 파일을 열지 않고 parent의 승인 snapshot 한 파일의 연속 numbered whole-line
+window만 받는다. [로컬 계약](local-models.md)의 mlx-vlm0.7.8 native strict JSON Schema·
+enable_thinking=false·닫힌 객체·owner edit_files enum과 두 evidence의 실제 window를 요구한다.
+prepared immutable request의 config/user 결합과 canonical schema를 두 transport seam 전에
+재검증해 누락/완화/owner/scope/window/thinking 변조·재조립 plain bytes를 거절한다. user JSON의
+owner_role,sources,feedback,candidate_limit,approved_files 순서와 injection 경계는 유지한다.
+request24576bytes에 schema/system/user/feedback 모두 포함하고 고정 overhead 초과는 no-call이다.
+window96줄·feedback4096bytes·max_tokens3072·timeout180초·body65536/header8192bytes가 기본이다.
+client shared validator와 독립 검토가 최종 권위이며 schema 미지원 uniqueItems·중복/start<=end·
+총 문자량/의미·원문 줄 검증을 생략하지 않는다. 승인됐지만 미전송 파일은 편집 대상일 수만 있다.
+window 밖 근거·경로 보정·줄 clamp·근거 합성·retry/fallback은 없다. 긴 한 줄은 slice 없이 skip하며
+실패 cursor를 자동 replay하지 않는다. v2/mlx-vlm·api_model==model 상대 repository ID만 허용하고
+v1 자동 이행·default_model/절대 모델 경로·DNS/proxy/redirect/remote_code/도구는 거절한다.
+정상 assistant의 정확한 tool_calls:null/tool_call_id:null만 무동작 metadata다. 설치/서비스/private
+설정 전환·실추론은 parent 소유이며 Linux MLX 의존성·SSH/home/key·repo복사를 추가하지 않는다.
 
-hourly private 실패 진단의 생성 책임은 `improvements._call_role`에 있다. 호출 준비/실행,
-결과 envelope/identity, read-only 사본 검증, JSON 파싱, 후보/독립 검토 검증과 정상 결과 뒤
-context cleanup 경계에서 고정 reason을 선택한다. runner metadata·예외문·임의 클래스명에서
-진단을 만들지 않는다. 편집 목록 reason은 정확한 공유 ValidationError 타입과 내장 str/64자
-상한/고정 코드3개를 모두 검증해 유지하고 나머지 후보 오류는 candidate_invalid로 남긴다.
+실패 분류는 adapter의 실제 CLI/transport/응답, shared validator, `_call_role`의 identity/context/
+JSON/review/cleanup 경계 책임이다. ADR0027의 identity-bound 예외/result detail만 전달하며 runner
+JSON·예외문/자유 클래스명은 권위가 아니다. sanitize_detail은 저장/feedback 필터다. API/CLI 성공은
+후보/review 성공이 아니다. broad reason·구체 cause/phase/field/rule과 실제 bounded 관측 정수만
+scan_id/slot/9단계 index/stage/owner_role·admission started_at과 실제 call_started_at/call_finished_at에 연결한다.
+finished_at의 기존 보수적 회계 보정과 실제 종료 관측을 구분하며 시계 rollback에도 관측값을 보존한다.
+private cloud participation192건과 별도 local_history192건·scan/slot/status·bounded feedback으로 보존한다.
+성공 참여의 허위 진단은 버리고 legacy 상세는 unknown/unavailable로 조회 투영하며 과거 기록을 추정하지 않는다.
+후속 성공/재이행·정산 복구는 저장된 실패의 사유·초안 digest·호출 시각과 trace 첫 실패/원래 예외를 보존한다.
+source/원문/cost는 history에 넣지 않는다. CLI 경고와 모델/tool 오류 문구는 실제 실패 원인의 증거가 아니다.
 
-`improvement_loop._safe_participation`은 실패 reason을 내장 str/64자 고정 allowlist로 재검증해
-legacy/unknown/잘못된 타입·과대 입력을 role_failed로 만든다. 선택적 error_type은 내장
-str/32자 고정 목록만 유지하고 그 밖은 Exception이며, 누락 필드를 추정하지 않는다.
-정확한 bool interrupted=true는 role_interrupted로 보존하고 성공 참여의 허위 진단은 버린다.
-stage/field/type·중첩 진단·구문 위치·raw result는 hourly 참여로 복사하지 않는다.
-고정 reason만 기존 specialist_reason/review_reason을 통해 다음-round local feedback으로 잇고,
-exception.str·응답·prompt·credential·절대 경로·provider 자유 문자열을 신규 진단에 넣지 않는다.
-코드 목록과 회귀/인계는 [운영 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다.
-기존 telemetry·cost/budget·identity·scoped read-only·cleanup과 성공 판정을 유지하며
-API/CLI/telemetry 성공이 응답 검증 성공을 대신하지 않는다. web-v1은 기존 필드만 투영하므로
-진단은 공개 payload/digest에 포함되지 않는다. 기존 ADR0017의 private 정제 계약을 정밀화한다.
+slot claim은 config/source/quota/model I/O 전에 durable 기록하고 count/reservation/cursor/inflight는
+호출 직전 한 atomic write에 결합한다. discovery→artifact 아래 state, 필요한 짧은 source mutex만
+획득한다. 최초 config/Store/readiness 실패는 private 결과만 남을 수 있고 보고/모델/키 조회를 하지 않는다.
+source/config 미준비의 미완료 보고와 구별한다. interruption은 예약 소비 후 한 stage만 실패 진행한다.
+no-call gate/quota/budget/source-lock의 실제 보류 이유를 실행 실패로 꾸미지 않으며 같은 slot 재호출·
+잠금 밖 쓰기·fallback 저장·daemon/retry는 없다. source-only 변화는 pinned 진행/cursor를 유지하고
+current freshness만 따로 판정한다. control/scope/ownership/provider/model/protocol 변화는 진행을
+무효화해도 실제 참여/완료 index를 지우지 않는다. 호출 뒤 freshness도 확인한다.
 
-local은 provider=mlx-vlm/model identity/stage=local_explorer/owner_role과 read_windows/실패를
-bounded private 참여로 남기며 기존 web-v1의5역할 성공으로 위장하지 않는다. 숫자 loopback의
-고정 HTTP path만 허용하며 DNS localhost/외부host/0.0.0.0/userinfo/query/fragment/redirect/proxy와
-tools/remote_code를 거부한다. 정상 assistant의 정확한 tool_calls:null/tool_call_id:null만
-무동작 metadata로 받고 non-null·다른 도구 필드는 거절한다. private0600 model config는
-local-model-config-v2/provider=mlx-vlm이며 api_model은 검증된 model repository ID와 같아야 한다.
-default_model·절대 호스트 모델 경로는 요청하지 않는다. v1 mlx-lm은 config_invalid로 보류하고
-자동 이행하지 않는다. config digest 전환이 freshness/승인에 반영돼 옛 승인을 재사용하지 못한다.
-설치·상대 repository ID 모델 연결·서비스/private config 전환·실제 추론은 메인 책임이다.
-SSH/home/key·repo복사·전체1.5MiB 전송은 없으며 Linux MLX 의존성도 추가하지 않는다.
+Claude는 추정US$1/KST일, reviewer cap=min(0.20,잔액,기존한도)의 downward CLI override를 사전
+예약한다. 성공 finite estimate만 정산하고 failed/unknown/interrupted는 전액 소비하며 관측 초과는
+기록 후 당일 전체 중단이다. reviewer 예산 보류는 index를 유지해 후속 역할도 대기하지만 오전
+freeze는 독립적이다. 구현 workflow 비용은 별도다. legacy 당일 비용/호출은 scan_id로 중복 없이
+carry-in하며 unknown/incomplete를0으로 보지 않는다. rollback 거부·날짜 경계의 양일 count/charge/
+중단과 자정 guard를 유지한다. GLM Coding Lite 고정 endpoint/auth와 매 admission parent quota 조회,
+TOKENS_LIMIT/CREDIT_LIMIT5h·있으면weekly percentage/reset 검증·>=80%/unknown/실패 보류는
+[운영 quota 계약](improvements.md#claude-추정-ledgerglm-구독-quota)을 따른다. 정확한 finite numeric0%
+(bool 제외)의5h absent/null reset idle 예외만 유지하며 weekly/비영/잘못된 reset·실패 envelope·
+TIME_LIMIT 단독·model limit 부재를0%로 해석하지 않는다. 명목20% 여유이며 유료 fallback은 없다.
 
-공유 validate_candidates/validate_candidate는 계속 후보 수용의 권위다. 기존 edit_files 실패
-지점의 선택적 고정 메타데이터만 local adapter가 allowlist해 private 코드
-`candidate_edit_files_invalid`, `candidate_edit_files_duplicate`, `candidate_edit_files_outside_scope`로 전달한다.
-그 밖은 `candidate_invalid` fallback이며 이는 검증 제외가 아니라 후보 검증 거절이다.
-공유 검증 통과 뒤 두 evidence 배열의 실제 window 위반은 `evidence_outside_window`다.
-진단은 첫 실패의 분류만 제공하며 모델 값·임의 예외문·prompt/response를 보존하지 않는다.
-실패 응답은 계속 닫힌 상태로 거절하고 경로 보정·중복 제거·줄 clamp·범위 확대·retry·fallback은
-없다. 실패한 local의 진단은 유지하며 specialist는 독립 점검한다. public schema는 유지한다. 역사적 첫 거절 필드는
-원문 미보존으로 복구할 수 없다. 동일 입력의 편집 범위·근거 줄 위반 재현은 최초 실패의
-정확한 필드를 증명하지 않는다. prompt/order 수리 두 실행은 full check 중 중단/applied=[]이며
-복원 초안·검증 사본 재사용은 성공이나 fallback이 아니다. native schema 전환은 승인된 ADR0017에
-기록한다. 서버가 schema를 무시하거나 위반해도 client가 거절한다. 메인의 compiler/null metadata/
-실제입력·합성입력 사전 관측과 최종 bytes의 새 의미검토·full check·실추론을 구분한다.
-[로컬 문서](local-models.md)에 관측과 이행 한계를 둔다. NFS default·명시 daily local storage·
-단일 hourly cron·보고/예산/quota·37개 scope·승인·GitHub 게시 정책은 바꾸지 않는다.
+private 후보/review/documentation은 기존 outer trim 뒤 전체 본문을 보존하여 reviewer 입력·canonical
+ID/digest·저장/재검증·명시 승인/실행에 연결한다. public 상한4배의 수용 한도와 별도 표시 생략은
+architecture와 운영 계약을 따른다. suffix도 원본 identity에 반영하며 상한/타입/UTF-8/control/unknown
+key/scope/line 위반은 batch 거절이다. 모델 transport만 bare strict JSON 또는 전체 단일 소문자 json
+fence를 허용하며 원래 bytes cap 검사는 wrapper 제거 전이다. config/storage/public은 fence를 거절한다.
+LF/CRLF·바깥 whitespace/문자열 backtick 호환과 duplicate/NaN/overflow/invalid UTF-8/설명문/다중
+block/truncation 거절은 유지한다. 추출/보정/재호출하지 않는다. reviewer는 모든 후보를 한 번씩
+eligible/rejected/needs_evidence로 판단하고 후보별·전체 documentation={status,files,reason}을 낸다.
+제안 자문의 required/missing/not_required와 구현 검토의 updated는 구별한다. 필요 문서는 정확한
+edit_files에 있어야 하며 coverage/문서/검토 누락은 eligible을 만들지 않는다.
 
-durable slot claim을 config/source/quota/model I/O보다 먼저 남기고 호출 직전 count·reservation·
-cursor/inflight를 한 atomic write로 저장한다. 준비 실패면 호출하지 않고 같은 claimed slot은
-재시작/설정 변경 후에도 재호출하지 않는다. stable discovery→artifact lock으로 중복 예약을
-직렬화하며 source capture/freshness는 그 뒤 source mutex 아래 수행한다. tick의 loop 설정 로드·
-Store 생성·readiness 실패는 실제 경계별 고정 private 진단과 paused로 반환하며 모델·키 조회·보고 확정·publisher·저장소
-fallback을 실행하지 않는다. child/discovery 권한 거부는 이 처리 바깥에 유지하고 원문 예외는
-노출하지 않는다. storage/lock 준비 후 source/config 미준비의 실패 보고 확정과 구분한다.
-interruption은 소비된 예약을 유지하고 한 stage만 실패 진행한다. daemon/retry
-polling/fallback은 없다. source-only 변화는 pinned round의 진행·cursor를 보존하며 현재
-freshness를 별도 판정한다. scope/ownership/config/provider/model/protocol 변화는 진행을
-무효화한다. 실제 참여와 완료 review index는 지우지 않으며 호출 후 freshness도 확인한다.
+feedback은 candidate_id/draft_digest와 정제 issue·specialist/review 설명 및 선택적
+specialist_failure_detail/review_failure_detail을 기존 bytes/redaction/최대4요약 안에서 다음 실제 local
+prompt에 전달한다. 후속 의견에도 이전 실패 항목을 bounded 보존하고 전체 원본은 scan/history에 남긴다.
+담을 수 없으면 보류하며 private 원문을 자르지 않는다. feedback은 근거나 실행 권한이 아니다.
 
-Claude는 KST 하루 추정US$1, reviewer cap min(0.20, 잔액, 기존 role한도)을 사전 예약하며
-agent_models의 검증된 downward-only optional max_budget_usd로 실제 --max-budget-usd에 연결한다.
-성공 finite estimate만 정산하고 실패/unknown/중단은 전액 소비, estimate 초과는 기록 후 당일
-전체 중단한다. 일반 잔액 소진은 reviewer admission에서 판단한다. 그 차례 전 local/구독 역할은
-다른 gate와 call cap 내 진행할 수 있지만 reviewer 예산 보류는 stage_index를 진행시키지 않는다.
-새 slot에서도 같은 reviewer만 재판단하며 대기가 풀릴 때까지 다음 local/구독 역할도 호출하지
-않는다. 단계를 건너뛰지 않으며 09:00 보고 확정은 이 대기와 독립적이다.
-CLI cap은 실청구 강제상한 보장이 아니며 구현 workflow 비용은 이 ledger 밖이다. legacy 당일
-비용/호출은 scan_id 중복 제거 carry-in하고 unknown/incomplete를 보수적으로 소비 처리한다.
-자정600초 전 모든 provider admission을 막고 high-water rollback을 거부한다. 실행/복구 중
-날짜를 넘으면 양일 count/charge·중단으로 새 allowance 우회를 방지한다.
-GLM은 기존 Coding Lite endpoint/auth를 유지하고 trusted parent만 fixed quota HTTPS를 매번
-조회한다. TOKENS_LIMIT/CREDIT_LIMIT의5h와 있으면weekly percentage/reset을 검사하며>=80%,
-unknown/malformed/조회 실패는 보류한다. 두 type 모두5h(unit3/number5)의 정확한 finite numeric
-0%(bool 제외)에만 absent/null reset을 idle로 허용하고 private nextResetTime=null(미상·미활성)을
-유지한다. reset을 만들거나 갱신하지 않으며 비영 사용량의 누락·존재하는 잘못된 reset은
-거부한다. optional weekly(unit6/number1)는0%라도 미래 reset을 요구한다. envelope success/code가
-있으면 true/정수200을 요구하고 TIME_LIMIT 단독·model limit 부재·HTTP 실패를0%로 해석하지 않는다. 명목20% 여유는
-호출 도중 소모의 절대 보장이 아니며 quota 원문/키/비용을 모델/웹에 전달하지 않는다.
+trusted parent만 구체 ID와 nonsymlink0600 private 지시 파일로 승인한다. HMAC에는 proposal/review
+전체 digest·읽기 fingerprint/bytes/mode/존재·정확한 edit/게시 scope·만료 기본7일·고유 authorization을
+묶고 loop_dependencies digest도 provenance/discovery_fingerprint로 연결한다. _eligible/_fresh/
+_authorization 및 workflow guard가 live config와 원본을 재검증하여 같은 ID 재발견으로 옛 승인을
+새 설정에 결합하지 못하게 한다. claim은 실패/중단에도 일회성이며 원래 run 조정 뒤 새 명시 승인만
+가능하다. unattended는 approve/reject/execute, child/discovery는 orchestration을 거부한다.
+CLI/HMAC은 인간 신원을 증명하지 않으며 같은 OS 계정 탈취는 이 신뢰 경계 밖이다.
 
-후보 서술 수용과 표시의 분리는 [ADR 0016](adr/0016-bounded-private-improvement-text.md)에 둔다.
-PRIVATE hard ceiling은 title 320·analogy 800·issue 1600·근거 summary 960(benefit 근거 포함)·
-benefit text/risk 각 960·검증 단계당 800·documentation impact 1440자로 PUBLIC 상한의 4배다.
-specialist는 기존 PUBLIC 상한을 간결한 한국어 작성 목표로 삼는다. 기존 바깥 공백 정규화 이후
-수용 본문을 잘라 버리지 않으며 reviewer에는 표시 prefix 대신 전체 구조화 후보를 기존 민감 정보
-redaction만 거쳐 전달한다. 원본 canonical ID/digest·private 저장/재검증·명시 승인 후 task도 전체
-본문에 결합한다. 짧은 후보의 기존 identity는 유지되며 표시 밖 suffix도 원본 digest에 반영된다.
-private 상한 초과·invalid 타입/UTF-8/제어문자·unknown key·scope/line 위반은 해당 specialist
-출력 전체를 거부하여 기존 partial 상태를 유지한다.
-`review.reason`과 후보별·전체 `documentation.reason`도 PRIVATE 1440자 / PUBLIC 360자로
-분리한다. private validator/revalidation은 기존 outer trim 후 전체 텍스트를 보존한다.
-후보별 독립 review 전체는 scan/proposal·기존 승인 `review_digest`·eligibility/authorization·
-승인 후 task에 이어지며 전체 documentation 판단은 scan 원문으로 보존·재검증한다.
-짧은 review 표현/digest는 그대로다. reviewer prompt는 간결한 한국어 360자 목표와
-세 reason의 private hard maximum 1440자를 명시한다. review reason 비어 있지 않음·
-문서 reason 최소 12자·exact schema·scope/Markdown·status/files·coverage/verdict·
-eligible의 필수 문서 edit_files 포함 조건은 유지한다.
+오전은 기존 cloud admission history의 `[전날09:00,당일09:00)` 마지막 실제 역할 시도와 현재
+fingerprint 일치 완료 회차의 ID별 최신 명시 verdict/provenance를 독립 선택한다. distinct8후보의
+priority(high/medium/low)/exact ID순 최대3카드이며 eligible 우선정렬이 아니다. counts는 전체를 센다.
+latest 실패와 보존 eligible은 병존하며 검증된0개만 확인 범위 내 제안 없음이다. 표본 밖 무결함이나
+별도 회차 참여를 제안의 원래 검토로 표시하지 않는다. private reviewed_agents에 원본을 보존한다.
+09시 이후 첫 tick이 admission 전 모델 없이 한 번 freeze하고 그날 내용은 이후 연구로 바꾸지 않는다.
+public web-v1/completion-v1·payload/digest에 새 진단/local/cost/source/원문/credential을 추가하지 않는다.
 
-모델 전용 `_call_role` transport parser는 bare strict JSON과 전체 응답의 단일 소문자 `json`
-태그 3-backtick fence만 허용한다. 태그 직후/닫는 fence 직전은 각각 LF 또는 CRLF,
-바깥 공백은 space/tab/CR/LF다. 원래 UTF-8 bytes의 설정 ceiling 검사를 공백/wrapper 제거보다
-먼저 수행하고 내부는 기존 `parse_json`으로 검증한다. config/storage/public 입력은 여전히
-fence를 거부한다. 설명문·다중 block·unknown/untagged fence·truncation·duplicate key·
-NaN/Infinity/overflow·invalid UTF-8은 추출/복구/재호출 없이 기존 partial 경계를 따른다.
-JSON 문자열 backtick은 데이터로 보존한다. specialist/reviewer prompt는 bare JSON을 요청하며
-유일한 envelope 허용만 설명한다. private runner result는 redaction 후 wrapper까지 보존하고
-후보/검토 내용·ID/digest는 bare와 같아야 한다. authority/source/비용·자동 retry 0회는 불변이다.
+publication prepared에 report/payload/digest/limit를 먼저 고정한 뒤 day/scans/web/latest를 만들며
+proposal pointer는 원래 round만 쓴다. crash는 exact prepared만 복구하고 기존 day는
+legacy_preserved/existing_day_conflict로 보존한다. catchup은 오늘 하나, 과거 보고/모델 몰아호출은 없다.
+CLI는 state/source lock 해제 후 stable sender와 기존 sender mutex 아래 HTTPS/no-redirect·시간/bytes
+상한 POST→GET date/schema/canonical digest 확인을 한다. sending/attempt_id를 HTTP 전에 저장하며
+failure/crash/모호함은 unknown으로 남겨 일반 tick/legacy API로 재전송하지 않는다. parent만 실제
+결과 확인 후 같은 frozen digest를 명시 reconcile한다. 기존 성공 delivery는 HTTP 없이 정산한다.
+receiver 날짜/digest idempotency가 필요하며 네트워크 전체 exactly-once 도착을 주장하지 않는다.
+legacy daily는 failed/partial도 기존 day를 재사용하고 loop 뒤 새 daily는 loop_managed로 넘긴다.
+manual discover는 trusted 호환 경로이며 frozen day를 덮지 못하고 hourly와 병행 예약하지 않는다.
 
-`build_web_report`만 고정 `improvement-web-v1` allowlist로 정제·표시 공백 정규화 후
-기존 PUBLIC 문자 상한 내 `…` 생략을 적용한다. `validate_web_report`는 public 상한을 별도로
-검사하여 정상 digest가 있는 과대 입력도 거부한다. 세 reviewer reason 위치에 public 모드를
-명시하여 361자를 거부하며 top-level documentation도 빠뜨리지 않는다. private 입력을 먼저
-자르거나 eligibility를 합성하지 않는다. HTML/Markdown은 제한된 payload를 검증하고
-escape하여 기존 최대 3카드 한 장 요약을 만든다. 이 표시 변경 자체에는 Sites/API/auth 변경이나
-추가 모델 호출이 없다. 별도 completion-v1 API는 ADR0020에 따라 메인이 구현·배포한다.
-합성 오프라인 회귀는 419자/279자 두 후보 보존·전체 reviewer 입력·private 재검증/명시 승인
-handoff·모든 서술 상한의 정확/초과·suffix identity·정상 digest의 과대 public 거부를 대상으로 한다.
-추가 합성 명세는 bare/fenced 후보·review·proposal identity/digest, fenced 419자 전체 review와
-bounded web, fenced reviewer, LF/CRLF·문자열 backtick, malformed envelope/strict JSON의 partial,
-공백/wrapper 포함 원래 byte cap, config/public/storage strict parser를 다룬다.
-기존 daily idempotency·수동 same-day 재점검·human 기록·authority guard 회귀도 유지한다.
-추가 합성 명세는 416자 review의 specialist 4회+reviewer 1회 scan 완료·전체 private reasons
-보존·무승인/무claim/무실행 발견·소스 불변, 명시 합성 승인 뒤 mocked task 전달과 표시 밖
-suffix의 기존 approval review_digest 무효화를 다룬다. 세 reason 위치의 private 1440/1441,
-저장 후 eligibility/authorization 재검증, public 360/361 및 재계산 digest/render 거부와
-짧은 review 표현/digest를 다룬다. raw 실제 모델 응답은 fixture로 사용하지 않는다.
-메인 제공 최신 scan `1792065346555306548-d8a875`에서는 GLM 포함 specialist 전원과
-Claude runner는 성공했으나 416자 review reason이 기존 360자 검증에서 실패했다.
-이전 3215 passed는 이번 변경의 검증 근거가 아니다. 새 실제 scan 통과를 주장하지 않는다.
-worker는 실행하지 않으며 새 Claude review와 필수 full check는 오케스트레이터,
-당시 `GIT=0`의 local apply 뒤 승인된 실제 수동 재점검·정제 private 보고함 전달은 메인 책임이었다.
-GitHub create_tree의 automatic approval review 거부(명시적 공개 동의 부족)를 유지하며
-Git 쓰기·journal 변경·공개 재요청은 하지 않는다. 메인이 별도 공개 승인을 요청하기 전
-영향 없는 local 수리/보고 전달을 완료한다. 이 문서는 새 실제 재점검 성공을 주장하지 않는다.
-
-근거는 승인 소스와 실제 line range로 검사하되 의미적 타당성은 reviewer가 판단한다.
-review는 모든 후보를 한 번씩 `eligible|rejected|needs_evidence`로 판단하고 후보별·전체
-`documentation={status,files,reason}`을 요구한다. 자문 schema의 상태는
-`required|missing|not_required`로, 구현 검토의 `updated`와 구분한다. 분석만 했다는 구체적
-`not_required`는 가능하다. 적격 제안의 필요 문서는 정확한 edit_files에 있어야 한다.
-누락/실패/잘못된 검토는 실행 가능 제안을 만들지 않는다. 추가 필요 파일은 읽지 않고
-승인 파일 finding과 함께 보고하여 메인이 새 scope/run을 준비한다.
-
-legacy 날짜는 KST이며 `daily`는 failed/partial도 같은 날 기존 결과를 재사용한다. loop state
-이후 새 daily 분석/전달은 거부하거나 loop_managed로 넘긴다. manual discover는 trusted 수동
-호환 경로로만 남고 frozen day를 덮어쓰지 못한다. hourly와 병행 스케줄하지 않는다.
-pending 제안은 내용과 전체 읽기
-의존성 bytes/mode/존재 기반 ID로 중복을 피하며 human 결정은 별도 보존한다.
-discovery→artifact lock은 발견/승인/claim 경쟁을 막고 기존 source mutex는 capture/freshness와
-workflow apply/cleanup을 직렬화한다. 일반/READ_ONLY 모델·검증 중에는 source mutex를 해제한다.
-
-신뢰한 메인은 구체적 ID·private 지시 파일로 승인한다. HMAC private 승인에는 proposal/review
-digest·모든 원본 fingerprint·정확한 편집 범위·고정 게시 범위·만료(기본 7일)·고유 authorization을 묶는다.
-loop scan은 loop_dependencies digest를 proposal과 signed approval의 discovery_fingerprint로
-추가 결합한다. `_eligible/_fresh/_authorization`와 workflow guard가 live config 및 저장
-provenance를 비교한다. 동일 ID 재발견 후에도 옛 승인으로 설정 변경을 우회하지 못한다.
-`execute`는 승인과 원본을 검증하고 lock 안에서 claim을 기록하며 workflow lock 안에서 다시
-검증한다. claim은 실패·중단에도 자동 재사용하지 않는다. 기존 run 조정 후 새 명시 승인으로만
-갱신하며 `awaiting_github`는 메인의 journal 처리가 남은 상태다. 새 Claude 의미 검토와 필수
-checks·범위 반영·기존 Git 역할·세 CI·squash merge·증거 기반 cleanup 게이트는 생략하지 않는다.
-
-웹은 보고 전달 경계이며 승인 실행 경로가 아니다. 메인만 nonsymlink 0600 `{origin,token}`을
-관리하고 HTTPS/no-redirect/시간·bytes 상한으로 POST 뒤 GET의 날짜·canonical SHA256을 확인한다.
-전달 failure는 immutable 보고서와 별도 delivery 기록에 남긴다. loop의 unknown은 아래처럼
-자동 retry하지 않으며 legacy 재전달 API로 우회하지 않는다.
-unattended 환경은 승인/reject/execute를 거부하고 child/discovery 환경은 orchestration을 거부한다.
-CLI나 HMAC은 인간 신원을 증명하지 못한다. 동일 OS 계정 탈취와 신뢰한 메인의 오용은 별도 위협이다.
-오전 보고는 `[전날09:00, 당일09:00)`의 현재 fingerprints 일치 검증된 완료 회차를 모아
-ID별 최신 명시 verdict를 선택한다(ADR0026). distinct 최대8후보를 high/medium/low 다음 exact ID순
-최대3카드로 투영한다. eligible 우선정렬은 아니며 counts는 전체를 센다. window 밖 실제 참여는
-public 성공으로 표시하지 않고 private reviewed_agents 등에 전체 provenance를 남긴다.
-완료 review가 없으면0카드 partial/failed다. 09:00 이후 첫 tick은 모델 admission 전 보고를
-확정하며 별도 보고용 모델을 호출하지 않는다. date/generated_at KST 일치·window와 실제
-참여 시각을 projection validator가 검사한다. 그날 확정 내용은 이후 연구로 바뀌지 않는다.
-
-publication journal의 prepared에 report/payload/digest/limit를 먼저 고정한 뒤 day/scans/
-web/latest를 materialize한다. proposal pointer는 원래 round만 기록한다. crash는 같은 prepared journal만 복구한다. 기존 day는
-legacy_preserved·내용충돌은 existing_day_conflict로 남겨 덮어쓰기/자동 재전달하지 않는다.
-다운타임 catchup은 오늘 하나만이며 과거 보고/모델 몰아호출은 없다. CLI tick은 deliver 기본으로
-두 state locks를 풀고 기존 deliver_report를 호출한다. sender mutex가 callback/reconcile을
-직렬화하며 callback 자신의 Store.lock과 중첩하지 않는다. sending/attempt_id를 HTTP 전에
-저장하고 기존 Sites POST→GET date/schema/digest readback만 delivered로 인정한다. failure/
-crash/모호함은 publication_unknown이고 일반 tick은 재전송하지 않는다. 메인이 실제 상태 확인
-후 publish --reconcile로 같은 frozen digest만 조정한다. 성공 delivery 기록은 HTTP 없이 정산한다.
-네트워크 전체의 절대 exactly-once 도착은 보장하지 않으며 receiver의 날짜/digest idempotency가 필요하다.
-
-메인은 새 검토/full check/scoped apply와 최종 adapter 실추론 후 신규 서비스/private config를
-명시 전환한다. 단일 hourly marked block·게임 jobs·명시 daily local storage·persistent NFS
-기본값을 보존한다. status는 한국어 추정 잔액/보류/다음 역할/마지막 검토/다음 보고 시각과
-journal을 보이며 모델/키/quota를 호출하지 않는다. 마지막 tick freshness의 표시일 뿐이다.
-메인의 기존 합성 추론·native compiler/null metadata·실제입력 prototype·미검토 초안 사전
-추론 관측은 최종 bytes 검토/full check/실제9단계 성공과 구분하며 [로컬 관측](local-models.md)을 따른다.
-기존 hourly wrapper 활성·2026-10-16 09:00 partial/제안0개 한 번 전달은 메인 제공 상태이며
-확정 보고는 보존한다. 신규 프로토콜 실추론·새 전체 검증·첫9단계·다음 아침 게시·GitHub 전달은
-후속 확인 대상이다. worker는 검사/실모델/네트워크/Git/cron을 실행하지 않았다.
-새 Claude 의미검토/full make check·두 umask077/022 fixture 검증/scoped apply는 하네스 책임이다.
-위 GIT=0·공개 자동승인 거부는 과거 수리 이력이다. 이번 직접 요청은 기존 Git 역할/검증된 요청을
-메인에 인계하되 원격 baseline 불일치·명시 승인 거부 시 중단한다. 각 review는 실제 changed
-Markdown과 의미 완전성을 documentation={status,files,reason}으로 평가하며 확장자 검사로 대체하지 않는다.
+과거 scan1792065346555306548-d8a875의416자 review 실패·이전3215passed, 두 prompt/order 수리의
+full check 중단/applied=[]·복원 초안,2026-10-16 09시 partial/0개 전달과 사전 MLX 관측은 역사적
+근거다. 기존 GIT=0/local apply와 create_tree 자동 승인 거부(공개 동의 부족)도 당시 이력이며
+현재 승인·검증·운영 성공이 아니다. 원격 baseline 불일치·명시 승인 거부 시 중단한다.
+최종 source의 새 Claude 의미 검토/documentation 판단·GIT=1 full make check(umask077/022 포함)·
+scoped apply·기존 Git 역할 및 parent 게시/CI3/merge/cleanup은 필수다. status는 모델/키/quota 없이
+마지막 tick의 추정 잔액·보류·다음 단계/보고·journal과 재정제 history만 보여 실청구/실시간 freshness
+증거가 아니다. 스케줄/게임 jobs/private config·서비스 전환과 실제 hourly/오전 전달 확인은 parent 소유다.
+worker는 검사를 실행하지 않으며 합성 회귀·문서 존재/확장자만으로 의미적 완결성이나 운영 성공을 주장하지 않는다.
 
 ## 역할 모델과 압축
 

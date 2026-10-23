@@ -8,59 +8,21 @@ CLI/환경을 인간 신원 증명으로 쓰지 않는다. 모델·검사·Git·
 44개 승인과 runtime 연구37개 scope·128KiB/전체1.5MiB 상한은 별개다. 최종 새 Claude 의미 검토·
 기본 GIT=1 full make check·scoped apply·기존 Git 역할과 실제 보관/readback은 parent 책임이다.
 
-2026-10-22 잠금·실패 복구의 최신 계약은 [ADR0027](docs/adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
-workflow 실행 소유권은 고정 `.workflow-lock`, source capture/apply/cleanup/freshness는 기존
-`logs/harness/workflows/.lock` inode로 분리한다. 일반/READ_ONLY 모델·검토·검증은 격리 사본에서
-진행하여 source 잠금을 보유하지 않는다. tick은 stable discovery→기존 artifact lock으로 state/
-slot/call 예약을 직렬화하며 source 판단 때만 source mutex를 사용한다. 전체 baseline 충돌 검사와
-signed claim의 시작/apply freshness는 유지한다. source busy면 현재 읽기를 우회하지 않고
-no-call·구체적 실패/미완료 보고를 남긴다. sealed 검토 완료는 live 승인 권한이 아니다.
-review diff는 capture에서 분리한 승인 파일 original 사본만 기준으로 한다. apply 중 interruption도
-자신의 partial 변경을 rollback하며 외부 사용자 편집을 복원으로 덮지 않는다.
-오전 freeze는 새 seal/admission보다 먼저, publication은 state/source lock 해제 후 stable sender와
-기존 sender mutex 아래 동일 frozen digest POST/GET으로 진행한다. unknown 자동 POST는 없다.
-v1/v2/legacy의 기존 inode를 삭제하지 않으며 storage root hash binding 변경은 명시 조정 대상이다.
-실제 경계별 고정 private 진단은 가능한 경우 state lock 안의 마지막 record와 private CLI JSON에
-남긴다. 최초 lock/storage/config 실패에는 결과만 보존 가능하며 fallback/재시도/잠금 밖 state 쓰기는 없다.
-holder 증거가 없으므로 PID는 null이다. 과거 충돌의 정확한 예외/holder는 미확정이다.
-runtime37개·9단계·예산/auth·승인/실행 scope, 과거 frozen 보고, 매시00분 hourly와2026-10-23
-09:00 보고 목표·09:20 같은 채팅 job1 예약을 유지한다. 새 독립 Claude 검토와 full make check·
-scoped apply·Git 역할 및 parent GitHub/CI3/merge/cleanup·실제 운영 관측은 별도다. worker는
-검사하지 않았다. 아직 나머지 DAG/reviewer 완주와 내일 보고·알림 성공을 주장하지 않는다.
-
-후속 호환성 수리의 원인·회귀·검증 이력은 ADR0027에 둔다. storage 단독 import의 무I/O,
-active trace의 첫 실패/원래 예외, 임시 storage의 실제 source flock과 signed claim replay 거절을
-유지한다. 승인40개 안의 수정이며 공유 offline guard와 운영 storage·모델·네트워크·검사 차단은 그대로다.
-
-2026-10-22 현재 개선 연구 계약은 [ADR0026](docs/adr/0026-source-verified-retained-improvement-reports.md)이다.
-discovery reviewer만 parent의 실제 Claude Read 성공 pairing과 bounded owner/evidence/문서 coverage를
-검증한다. 자기 보고나 legacy 기록은 읽기 증거가 아니다.
-빈 후보 점검은 owner의 non-shared 프로그램 본문 연속 최대96줄과 shared 문서를 별도로 읽는다.
-안내·설정만 읽거나 대상이 없고 비었거나 읽기 불가이면 미완료이며 전체 파일·저장소 완독을 뜻하지 않는다.
-오전은 bounded completed index의 현재 전체 의존성 일치 회차를 모아 ID별 최신 명시 verdict를
-보존하고, 원래 scan/검토/protocol에 승인 freshness를
-결합한다. 최신 실패와 앞선 유효 제안을 함께 표시한다. 검증된 정상 0개만 확인 범위 내 제안 없음이다.
-runtime37개·owner/shared·예산·slot과 과거 frozen 보고는 보존한다. 아래32개/21개 승인·관측은
-당시 이력이며 구현은 이번 정확한 승인 목록에 한정한다. Sites 변경은 parent의 별도 책임이다.
-
-완료 outbox는 도입 전 loop·non-loop signed claim의 원래 독립 검토와 서명·실행 증거를 보존한다.
-이전 loop의 context는 원래 `digest(scan['loop_dependencies'])`로 대조하며 새 승인으로 재사용하지 않는다.
-`source_review`·`source_review_binding`·`review_protocol` 표식이 있으면 현대 proof/binding 검증을
-낮추지 않는다. 완료 단계에서 실행 전 freshness·현재 만료를 소급 검사하거나 승인을 갱신하지 않는다.
-
-2026-10-21 연구 진행·보고 수리는 [ADR0025](docs/adr/0025-progress-preserving-improvement-reviews.md)를
-따른다. 이번 승인32개는 coordinator 작업 정확히 하나이며 runtime 읽기 승인37개를 늘리지 않는다.
-보존 초안 준비는 구현 성공·검토·검증·적용이 아니다. 아래 이전21개 프로토콜 수리 기록은 당시 이력이다.
-local 실패/빈 초안과 빈 pool은 정규 specialist/reviewer slot을 생략할 근거가 아니다.
-private 두 bank의 sealed source snapshot을 매 호출 전 검증하고, source-only 변화에는 회차 진행과
-cursor를 보존한다. live source를 읽을 수 없어도 control 검증과 seal이 유효한 active 회차만
-독립 검토를 마칠 수 있으며 현재 freshness·public eligible·approve·execute 권한은 얻지 않는다.
-scope/ownership/config/provider/model/protocol 변화는 기존대로 진행을 무효화한다.
-오전 cloud 참여는 회차와 독립된 bounded durable history의 window 내 마지막 실제 시도다.
-현재 dependencies 일치 검증된 완료 회차들의 ID별 최신 verdict 선택과 분리하며, 뒤의 별도 회차 참여를
-선택한 제안의 검토로 표시하지 않는다. private trace·local·cost·진단은 public에 추가하지 않는다.
-메인이 전달한 2026-10-21 09시 failed/0카드 보고는 실제 전달 관측이며 불변 보존한다.
-새 검토·검증·전달과 실제 hourly 성공은 각각 별도 증거가 필요하다.
+잠금·진단은 [ADR0027](docs/adr/0027-inspection-lock-isolation-and-diagnostics.md),
+진행 보존은 [ADR0025](docs/adr/0025-progress-preserving-improvement-reviews.md), 실제 Read와
+제안 보존은 [ADR0026](docs/adr/0026-source-verified-retained-improvement-reports.md)을 따른다.
+각 ADR의 과거 실행·관측과 실패 기록은 보존하며 새 성공 증거로 재사용하지 않는다.
+workflow 실행 소유권과 source capture/apply/cleanup 잠금을 분리하고 모델·검증은 격리한다.
+source busy는 no-call이며 sealed 검토는 live 승인 권한이 아니다. 원본 baseline 전체 충돌·
+signed claim freshness·rollback의 외부 사용자 편집 보존, 기존 lock inode/ownership을 유지한다.
+오전 freeze는 admission 전, publication은 state/source 잠금 밖에서 frozen digest POST/GET을 쓴다.
+unknown 자동 POST·fallback 저장·잠금 밖 state 쓰기·추가 scan/자동 retry는 없다.
+private 최초 실패의 정제 detail은 scan/slot/9단계 owner·call_started_at/call_finished_at에 연결해 참여·history·
+status·bounded feedback에 보존한다. cloud192건과 별도 local192건은 같은 state 트랜잭션에 있다.
+후속 성공은 이전 실패를 지우지 않는다. legacy 상세는 unknown/unavailable이며 과거 원인을 추정하지 않는다.
+runtime37개·128KiB/1.5MiB·9단계·예산/auth·승인/실행 scope와 스케줄·frozen 보고는 유지한다.
+전체 diff의 새 Claude 의미 검토·GIT=1 full make check·scoped apply·기존 Git 역할 및 parent의
+GitHub 게시/CI3/merge/cleanup·실제 hourly 관측은 별도 필수다. worker는 검사하지 않는다.
 
 이 저장소는 Tree of Savior 게임 데이터를 수집·파싱하고 Django로 제공한다.
 전체 흐름과 책임 경계는 [docs/architecture.md](docs/architecture.md),
@@ -177,25 +139,16 @@ whole-line window를 선택하며 스키마만으로 넘으면 `context_too_larg
 편집 목록의 고정 진단 `candidate_edit_files_invalid`, `candidate_edit_files_duplicate`,
 `candidate_edit_files_outside_scope`를 유지한다. 노출은 allowlist 코드만 허용하고 원문·프롬프트·소스·절대 호스트 경로를
 로그·보고서·public web-v1에 넣지 않는다. 상세 요청·배포 계약은 [로컬 모델 문서](docs/local-models.md)를 따른다.
-hourly 실패 진단 수리는 기존 private 정제 계약의 정밀화다. 호출 준비·실행, 결과 envelope·identity,
-read-only context 확인, JSON 파싱, 후보·독립 검토 검증의 실제 실패 위치에서 신뢰한 고정
-allowlist 코드만 만들고 bounded private 참여와 기존 다음-round local feedback까지 보존한다.
-API/CLI·telemetry 성공은 후보·검토 검증 성공을 뜻하지 않는다. 외부 reason·단계·필드·타입이나
-예외 클래스 이름을 동적 진단 코드로 신뢰하지 않는다. `ValidationError.reason`은 위 편집 목록
-고정 코드 3개만 검증된 allowlist로 유지하며 그 밖의 값·잘못된 타입·과대 입력은 고정 fallback으로
-정제한다. 구문 위치를 남기면 bool을 제외한 엄격한 정수 타입과 고정 상·하한을 요구한다.
-신규 진단에는 exception.str·원문 응답·프롬프트·credential·절대 경로·provider 자유 문자열을
-전달하지 않는다. 신규 진단은 private에만 두고 공개 web-v1 필드·payload·digest 계약은 유지한다.
-KeyboardInterrupt·telemetry·cost/budget·identity 검증·scoped read-only·context cleanup과 기존
-성공 판정을 보존한다. legacy 참여에 진단이 없으면 원인을 추정하지 않고 고정 fallback을 쓴다.
-회귀는 API/CLI 성공 뒤 malformed JSON, 승인 밖·중복·잘못된 타입 edit_files, 독립 검토 invalid,
-context mutation, identity mismatch·실행 실패, 비밀 포함 예외·결과 정제, 허위 진단·과대 입력·bool,
-legacy 참여를 다룬다. 기존 Lab의 실제 engine tick 경로로 다음-round local feedback 전달과
-공개 payload의 진단·비밀 배제를 확인하도록 검사를 작성하며 작업자·검토자는 실행하지 않는다.
-설계·운영 문서는 최종 코드와 함께 갱신한다. 기존 JSON fence 호환 수리를 다시 변경하거나
-과거 원문 없는 실패 필드·값을 추정하지 않는다. retry/fallback·스케줄·호출·예산·승인·GitHub 정책은
-유지한다. 이 문단의 과거 pending 판단은 아래 ADR0025의 2026-10-21 전달 관측으로 정정한다.
-이번 변경 후 실제 hourly·최종9단계·새 오전 보고 성공은 아직 관측하지 않았다.
+hourly 실패 진단의 API·allowlist·provenance와 저장/복구 계약은 ADR0027을 따른다.
+신뢰한 실제 adapter/validator 발생 경계에서만 원인을 만들고 allowlist에 속한 runner reason도 표식 없이 믿지 않는다.
+runner diagnostic/예외문이나
+stdout의 인증/readonly/401 문구를 실패 근거로 삼지 않는다. CLI 경고와 실제 실패를 구별하며
+명확한 증거가 없으면 cli_failed/unavailable이다. 공유 후보 검증의 field/rule과 기존 편집 목록
+세 reason을 유지하고 원문·소스·prompt·credential·절대 경로·provider 자유 문자열을 새 진단에 넣지 않는다.
+private 참여/slot/history/status/다음-round feedback만 상세를 전달하고 public web-v1/completion-v1·
+digest·journal·과거 frozen 보고는 그대로다. 최초 예외/진단·identity/context/비용/중단 의미와 기존
+후보·review·한국어/근거 검증을 보존한다. fake/Lab 회귀는 작성만 하며 실제 hourly 성공은 미관측이다.
+
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
 대기가 풀릴 때까지 멈춘다. 09:00 보고 확정은 이 대기와 독립적이다.

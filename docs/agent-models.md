@@ -199,11 +199,27 @@ score level이 `0, 1, 2`인 경우
 Codex 실패의 `diagnostic`은 `stage`(`runtime`, `authentication`, `execution`)와 고정 `category`만 포함한다.
 인증 문제는 `authentication_failed`, 생성·정리 문제는 `runtime_unavailable`이다.
 그 밖에 `missing_cli`, `auth_file_unavailable`, `timeout`, `cli_failed`, `invalid_response`,
-`probe_mismatch`로 구분하며 고정된 오류 설명을 제공한다. nonzero exit에서 PATH aliases 읽기 전용
-메시지가 있으면 실패 진단을 `path_aliases_read_only`로 분류할 수 있다. exit0여도 응답 검증이 실패하면
-경고로 구제하지 않고 `invalid_response`(인증 오류가 확인되면 `authentication_failed`)로 실패한다.
+`probe_mismatch`로 구분한다. nonzero exit의 PATH aliases 경고는 실패 원인을 증명하지 않는다.
+원인이 불명확하면 `cli_failed`로 남긴다. exit0의 응답 검증 실패는 `invalid_response`이며 모델 설명·
+도구 출력·읽은 소스의 readonly/401/인증/quota 문구로 재분류하지 않는다. 실행 인증 분류는
+정수 exit1..255와 모델·도구 stdout이 없는 CLI stderr의 단일 인증 오류 형식만 허용한다.
+주변에는 알려진 PATH aliases 경고만 허용하며 설명·소스·도구 출력이 섞이면 원인을 확정하지 않는다.
+로그인 전용 명령의 상태 검증은 별도이며 API 키 로그인·불명확한 상태는 계속 거절한다.
+낯선 형식이나 출력이 섞인 실패의 구체 원인은 unavailable/cli_failed다. 경고는 원인과 별개다.
 CLI stdout/stderr 원문, 원격 오류 응답·인증 내용은 진단 보고서에 저장하지 않는다.
 모든 검증을 통과한 정상 모델 최종 응답만 기존 private 보고서에 저장한다.
+
+새 private `improvement-failure-v1`은 reason/cause/phase와 허용된 field/rule, 실제 경계의
+exit_code(0..255)/errno(0..4095)/http_status(100..599)만 가진다. bool·비정수·상한 밖 값은 null이다.
+`detail/attach/inherit`, `attach_result/result_detail`의 객체 identity에 결합된 링크만 전달하며
+runner의 dict/예외 속성/자유 문자열은 권위가 아니다. `_call_role`은 role/provider/model 확인 뒤
+링크를 받고 `exception_detail`을 참여에 남긴다. runner의 failure_detail은 보존 result에서 제외한다.
+기존 private result와 새 정제 진단은 별개다. 실제 validator의 field/rule과 편집 목록 reason 세 코드를
+재검증·메시지 추정 없이 이어받으며 저장·feedback에는 `sanitize_detail`을 적용한다.
+legacy 원인은 unknown/unavailable다. CLI·telemetry 성공은 후보/검토 성공이 아니다.
+최초 실패는 cleanup이 덮지 않는다. loop의 원인 보존 계약은
+[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)과
+[Hourly private 실패 진단과 인계](improvements.md#hourly-private-실패-진단과-인계)를 따른다.
 
 Codex 보고서의 `warnings`는 원문·경로·비밀 없는 고정 metadata 목록이다. 현재 항목은
 `{"stage":"authentication","category":"path_aliases_read_only"}` 또는

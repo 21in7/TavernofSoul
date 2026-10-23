@@ -1,18 +1,6 @@
-"""Offline behavioral contracts for hourly research and immutable KST reports.
+"""Offline Lab contracts; parent runs checks and semantic review."""
 
-Only synthetic sources, an aware fake clock, modeled CLI results, injected HTTP
-and isolated temporary storage are used. No model, subprocess, check, scheduler,
-credential lookup or operating pipeline is permitted. Tests are specifications,
-not evidence of execution or host/model readiness.
-
-Documentation review: these tests preserve the engine API and authority boundary;
-they add no production policy. docs/local-models.md, docs/improvements.md,
-docs/harness-design.md and docs/architecture.md describe grounding, allowlisted
-private diagnostics, independent owners and durable public participation. ADR 0025
-replaces local gating and source-only resets; historical parent observations are not test execution proof.
-"""
-
-import copy
+from copy import deepcopy
 import datetime as dt
 import http.client
 import json
@@ -23,14 +11,16 @@ import socket
 import subprocess
 
 import pytest
+from pytest import approx
 
 from harness import agent_models, improvement_loop as loop
 from harness import improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import review_coverage as coverage
+from harness import improvement_diagnostics as diag
+from harness.test_agent_models import run_synthetic_loop_adapter
 from harness.test_review_coverage import (
     add_assessments, capture_result, read_events, stdout, with_rate_limit_events)
-
 
 START = dt.datetime(2026, 10, 15, tzinfo=contract.KST)
 FILES = ('harness/example.py', 'downloader/example.py', 'parser_tidy/example.py',
@@ -41,15 +31,15 @@ SECRET = 'sk-synthetic-loop-secret123456'
 RAW = 'SYNTHETIC_RAW_PROVIDER_DIAGNOSTIC'
 REVIEW_REASON = '독립 검토에서 동일 초안의 누락 조건을 확인하고 담당자의 근거 보완을 요청합니다.'
 
-
 def encode(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False).encode('utf-8')
 
+def assert_private(value):
+    encoded = json.dumps(value)
+    assert SECRET not in encoded and RAW not in encoded
 
 def shipped(name):
-    # Exact approved configuration inputs only; never resolve private host policy.
     return json.loads(Path(__file__).with_name(name).read_text(encoding='utf-8'))
-
 
 def draft(path, start=1, end=2, title='합성 점검 후보'):
     return {'title': title, 'priority': 'medium',
@@ -64,10 +54,8 @@ def draft(path, start=1, end=2, title='합성 점검 후보'):
             'validation_plan': ['독립적인 두 값을 가진 합성 사례로 조건을 비교합니다.'],
             'documentation_impact': '지역 동작 보존 제안이며 구조 및 권한 변경을 포함하지 않습니다.'}
 
-
 @pytest.fixture
 def local_example_case():
-    # In-memory inputs only; these regressions need no shipped/private config.
     config = {'version': 'local-model-config-v2', 'provider': 'mlx-vlm',
               'endpoint': 'http://127.0.0.1:12345/v1/chat/completions',
               'model': 'synthetic/Qwen3.5-9B-4bit',
@@ -78,9 +66,7 @@ def local_example_case():
                  for path in FILES}
     return config, snapshots
 
-
 def edit_field_examples(system):
-    # Parse JSON objects in the transmitted guide, not a copied prompt string.
     examples = []
     for line in system.splitlines():
         if line.startswith('{'):
@@ -90,7 +76,6 @@ def edit_field_examples(system):
                 examples.append(value['edit_files'])
     return examples
 
-
 def local_draft_response(config, candidates):
     return {'status': 200, 'headers': [('Content-Type', 'application/json')],
             'body': encode({'model': config['model'], 'choices': [
@@ -98,15 +83,12 @@ def local_draft_response(config, candidates):
                              'content': json.dumps({'candidates': candidates}, ensure_ascii=False)},
                  'finish_reason': 'stop'}]})}
 
-
 @pytest.mark.parametrize('role,owned', list(zip(
     ('coordinator', 'downloader', 'parser', 'django'), FILES[:4])))
 @pytest.mark.parametrize('scope_size', [1, 3])
 def test_local_examples_use_exact_prepared_owner_scope_and_accept_valid_lists(
         local_example_case, role, owned, scope_size):
     config, snapshots = local_example_case
-    # Parent supplies the ownership/shared intersection; other owners' snapshots
-    # must not leak into examples, authorization or the native edit enum.
     paths = [owned] if scope_size == 1 else [owned, FILES[4], FILES[5]]
     prepared = local_model.prepare_request(role, paths, snapshots, config=config)
     request = json.loads(prepared['request'])
@@ -125,15 +107,13 @@ def test_local_examples_use_exact_prepared_owner_scope_and_accept_valid_lists(
     assert fields['evidence']['items']['properties']['path']['enum'] == [owned]
     for branch in fields['benefit']['anyOf']:
         assert branch['properties']['evidence']['items']['properties']['path']['enum'] == [owned]
-    # The examples are not mandatory edit targets: an untransmitted approved
-    # document, alone or with the source, remains a legitimate edit selection.
     valid_lists = examples + ([[paths[-1]], [owned, paths[-1]]] if scope_size > 1 else [])
     for edits in valid_lists:
         assert len(edits) == len(set(edits)) and set(edits) <= set(paths)
         assert sum(map(len, edits)) <= 600
         candidate = draft(owned, 1, 1)
         candidate['evidence'].append(dict(candidate['evidence'][0], start_line=2, end_line=2))
-        candidate['benefit']['evidence'] = [copy.deepcopy(candidate['evidence'][1])]
+        candidate['benefit']['evidence'] = [deepcopy(candidate['evidence'][1])]
         candidate['edit_files'] = edits
         calls = []
 
@@ -147,7 +127,6 @@ def test_local_examples_use_exact_prepared_owner_scope_and_accept_valid_lists(
         assert len(calls) == 1 and result['called'] is True and result['reason'] == 'ok'
         assert result['candidates'][0]['edit_files'] == edits
         assert len(result['candidates'][0]['evidence']) == 2
-
 
 @pytest.mark.parametrize('failure,reason', [
     ('duplicate', 'candidate_edit_files_duplicate'),
@@ -180,7 +159,6 @@ def test_local_examples_preserve_duplicate_and_both_evidence_boundaries(
     assert len(calls) == 1 and result['called'] is True and result['reason'] == reason
     assert result['candidates'] == []
     assert result['status'] == ('skipped' if failure == 'empty' else 'failed')
-
 
 @pytest.mark.parametrize('mutation', [
     'system', 'example_path', 'owner', 'scope', 'window', 'schema', 'thinking',
@@ -224,8 +202,6 @@ def test_local_example_request_tampering_never_reaches_transport(
                                  'review_reason': '별도 검토 요청'}]
         else:
             user['candidate_limit'] = 1
-        # Even internally consistent system/schema mutations cannot rebind the
-        # original trusted preparation digest to a different owner/scope/window.
         wire = json.loads(local_model._encode_request(config, user))
     changed = contract.canonical_json(wire)
     if mutation != 'plain_bytes':
@@ -244,7 +220,6 @@ def test_local_example_request_tampering_never_reaches_transport(
     with pytest.raises(AttributeError):
         sealed._binding = 'changed'
 
-
 def test_local_example_full_request_budget_keeps_whole_original_lines(local_example_case):
     config, snapshots = local_example_case
     paths = [FILES[0], FILES[4]]
@@ -260,7 +235,7 @@ def test_local_example_full_request_budget_keeps_whole_original_lines(local_exam
     assert size <= 24576 and prepared['sources'][0]['end_line'] == 3
     original_lines = snapshots[paths[0]]['content'].decode('utf-8').splitlines()
     for budget, end in ((size, 3), (size - 1, 2)):
-        bounded = copy.deepcopy(config)
+        bounded = deepcopy(config)
         bounded['limits']['max_context_bytes'] = budget
         selected = local_model.prepare_request('coordinator', paths, snapshots, config=bounded,
                                               cursor=cursor, feedback=feedback)
@@ -272,20 +247,16 @@ def test_local_example_full_request_budget_keeps_whole_original_lines(local_exam
         assert user['sources'][0]['numbered_lines'] == [
             {'line': i, 'text': original_lines[i - 1]} for i in range(2, end + 1)]
         assert selected['next_cursor'] == {'file_index': 0, 'line': end + 1}
-    # Fixed system/examples/schema overhead still fails closed without a call.
-    tiny = copy.deepcopy(config)
+    tiny = deepcopy(config)
     tiny['limits'].update(max_context_bytes=32, max_feedback_bytes=2)
     result = local_model.run('coordinator', paths, snapshots, config=tiny, transport=forbidden)
     assert result['reason'] == 'context_too_large' and result['called'] is False
 
-
 def forbidden(*args, **kwargs):
     pytest.fail('Offline loop test crossed a model/network/check/workflow boundary')
 
-
 class PowerLoss(BaseException):
     """Bypass normal exception handlers, like termination before the next fsync."""
-
 
 class FakeClock:
     def __init__(self, value=START):
@@ -298,7 +269,6 @@ class FakeClock:
         self.value = START + dt.timedelta(hours=hours, minutes=minutes, seconds=seconds)
         return self.value
 
-
 class FixtureFS(storage.FileSystem):
     def __init__(self, mount):
         self.mount = mount
@@ -309,7 +279,6 @@ class FixtureFS(storage.FileSystem):
     def free_bytes(self, path):
         assert path == self.mount
         return 2 ** 40
-
 
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
@@ -327,8 +296,25 @@ def offline(monkeypatch):
                       (socket, 'getaddrinfo'), (local_model, 'http_transport')):
         monkeypatch.setattr(obj, name, forbidden)
 
-
 class Lab:
+    def instruction(self, record):
+        path = self.root.parent / 'synthetic-user-instruction.txt'
+        path.write_text('제안 ' + record['id'] + ' 승인', encoding='utf-8')
+        path.chmod(0o600)
+        return path
+
+    def spent(self):
+        return self.ledger()['claude_spent_usd']
+
+    def slots(self):
+        return self.ledger()['slots']
+
+    def calls(self):
+        return self.ledger()['calls']
+
+    def report(self):
+        return self.state()['round']['report']
+
     def state(self):
         return self.store.read(loop.STATE_FILE)
 
@@ -344,7 +330,6 @@ class Lab:
 
     def quota(self, key, timeout, max_bytes):
         assert key == SECRET and 0 < timeout <= 20 and max_bytes <= 65536
-        # The caller has claimed the slot before contacting the quota endpoint.
         state = self.state()
         slot = self.clock().strftime('%Y-%m-%dT%H')
         assert state['days'][self.clock().date().isoformat()]['slots'][slot]['status'] == 'claimed'
@@ -376,7 +361,7 @@ class Lab:
         fields = schema['schema']['properties']['candidates']['items']['properties']
         assert fields['edit_files']['items']['enum'] == user['approved_files']
         assert fields['evidence']['items']['properties']['path']['enum'] == [user['sources'][0]['path']]
-        self.local_requests.append(copy.deepcopy(user))
+        self.local_requests.append(deepcopy(user))
         self.wire_requests.append(body)
         source = user['sources'][0]
         candidates = [draft(source['path'], source['start_line'], source['end_line'],
@@ -427,13 +412,13 @@ class Lab:
             assert 0 < options['max_budget_usd'] <= .2
             prior = json.loads(prompt.split('\nPrior candidates: ', 1)[1])
             response = {'reviews': [dict(candidate_id=r['id'], verdict='eligible',
-                                        reason=REVIEW_REASON, documentation=copy.deepcopy(DOC))
-                                    for r in prior], 'documentation': copy.deepcopy(DOC)}
+                                        reason=REVIEW_REASON, documentation=deepcopy(DOC))
+                                    for r in prior], 'documentation': deepcopy(DOC)}
             add_assessments(response, options['discovery_review'])
         else:
             assert 'max_budget_usd' not in options
             context = json.loads(prompt.rsplit('\n', 1)[1])
-            candidates = copy.deepcopy(context['local_drafts'])
+            candidates = deepcopy(context['local_drafts'])
             for c in candidates:
                 c['issue'] = '담당자 보완: ' + c['issue']
             response = {'candidates': candidates}
@@ -446,7 +431,7 @@ class Lab:
         if role == 'reviewer':
             capture = options['discovery_review']
             if getattr(self, 'review_no_read', False):
-                pass  # explicitly model an otherwise successful CLI without reads
+                pass
             elif getattr(self, 'review_trace_transform', None):
                 capture.accept(stdout(self.review_trace_transform(read_events(capture, result['response']))))
             else:
@@ -463,7 +448,6 @@ class Lab:
 
     def hours(self, start=0, count=9):
         return [self.tick(hour) for hour in range(start, start + count)]
-
 
 @pytest.fixture
 def lab(tmp_path, monkeypatch):
@@ -499,8 +483,8 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.setattr(imp, 'REPORTS', lab.root / 'logs/harness/improvements')
     monkeypatch.setattr(local_model, 'ROOT', lab.root)
     monkeypatch.setattr(loop, 'CONFIG', lab.loop_path)
-    monkeypatch.setattr(agent_models, 'load_config', lambda: copy.deepcopy(lab.models))
-    monkeypatch.setattr(workflow, 'load_policy', lambda: copy.deepcopy(lab.policy))
+    monkeypatch.setattr(agent_models, 'load_config', lambda: deepcopy(lab.models))
+    monkeypatch.setattr(workflow, 'load_policy', lambda: deepcopy(lab.policy))
     lab.clock = FakeClock()
     real_now = imp._now
     monkeypatch.setattr(imp, '_now', lambda now=None: real_now(lab.clock() if now is None else now))
@@ -508,7 +492,6 @@ def lab(tmp_path, monkeypatch):
     lab.events, lab.cloud_requests, lab.local_requests, lab.wire_requests, lab.quotas = [], [], [], [], []
     lab.cloud_transform = lab.local_transform = None
     return lab
-
 
 def quota_body(now=START, kind='TOKENS_LIMIT', percentage=1, weekly=None):
     reset = int((now + dt.timedelta(hours=5)).timestamp() * 1000)
@@ -519,7 +502,6 @@ def quota_body(now=START, kind='TOKENS_LIMIT', percentage=1, weekly=None):
         limits.append({'type': kind, 'unit': 6, 'number': 1, 'percentage': weekly,
                        'nextResetTime': int((now + dt.timedelta(days=7)).timestamp() * 1000)})
     return {'data': {'level': 'lite', 'limits': limits}}
-
 
 def test_nine_stages_real_validation_and_private_local_provenance(lab):
     results = lab.hours()
@@ -545,7 +527,7 @@ def test_nine_stages_real_validation_and_private_local_provenance(lab):
         saved = lab.store.read('proposals/' + record['id'] + '.json')
         assert saved['proposal'] == record and saved['scan_id'] == report['scan_id']
         assert imp._eligible(lab.store, record['id']) == record
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.04)
+    assert lab.spent() == approx(.04)
     assert lab.quotas == ['2026-10-15T03']
     assert 'TAVERN_IMPROVEMENT_DISCOVERY' not in os.environ
     for entry in lab.cloud_requests:
@@ -553,11 +535,10 @@ def test_nine_stages_real_validation_and_private_local_provenance(lab):
     for directory in ('decisions', 'approvals', 'claims', 'executions'):
         assert not lab.store.path(directory).exists()
 
-
 def test_same_slot_restart_and_clock_rollback_never_replay(lab):
     lab.tick(0)
     first = lab.store.path(loop.STATE_FILE).read_bytes()
-    lab.store = imp.Store(lab.selected)  # discard all in-memory handles
+    lab.store = imp.Store(lab.selected)
     for minute in (0, 1, 59):
         assert lab.tick(0, minute)['reason'] == 'slot_already_claimed'
         assert lab.store.path(loop.STATE_FILE).read_bytes() == first
@@ -565,25 +546,22 @@ def test_same_slot_restart_and_clock_rollback_never_replay(lab):
     after = lab.store.path(loop.STATE_FILE).read_bytes()
     assert lab.tick(0, 59)['reason'] == 'clock_rollback'
     assert lab.store.path(loop.STATE_FILE).read_bytes() == after
-    assert len(lab.events) == 2 and lab.ledger()['calls'] == 2
-
+    assert len(lab.events) == 2 and lab.calls() == 2
 
 def test_hourly_opportunities_never_exceed_twenty_four_in_kst_day(lab):
-    # Two candidates per owner exercise the full eight-record pool as well.
-    lab.local_transform = lambda user, cs: cs + [dict(copy.deepcopy(cs[0]), title=cs[0]['title'] + ' 두번째')]
+    lab.local_transform = lambda user, cs: cs + [dict(deepcopy(cs[0]), title=cs[0]['title'] + ' 두번째')]
     for hour in range(24):
         before = len(lab.events)
         lab.tick(hour)
         assert len(lab.events) - before == 1
         assert lab.tick(hour, 59)['reason'] == 'slot_already_claimed'
-    assert len(lab.events) == lab.ledger()['calls'] == 24
-    assert len(lab.ledger()['slots']) == 24
+    assert len(lab.events) == lab.calls() == 24
+    assert len(lab.slots()) == 24
     for entry in lab.state()['completed']:
         report = lab.store.read('scans/' + entry['scan_id'] + '.json')
         assert len(report['proposals']) == 8
     lab.tick(24)
-    assert lab.ledger()['calls'] == 1 and len(lab.events) == 25
-
+    assert lab.calls() == 1 and len(lab.events) == 25
 
 def test_lower_day_cap_blocks_new_slot_but_morning_still_finalizes(lab):
     lab.config['max_calls_per_day'] = 1
@@ -594,11 +572,9 @@ def test_lower_day_cap_blocks_new_slot_but_morning_still_finalizes(lab):
     assert result['reason'] == 'daily_call_limit' and len(lab.events) == 1
     report = lab.store.read('days/2026-10-15.json')
     assert report['review_complete'] is False and report['proposals'] == []
-    # Local-only activity is private and cannot imply actual cloud coverage.
     assert report['status'] == 'failed'
     assert all(a['status'] == 'not_called' for a in report['agents'])
     assert '미호출 5개' in report['summary']
-
 
 @pytest.mark.parametrize('project', [False, True])
 def test_contending_lock_does_not_claim_or_report_a_scan(lab, project):
@@ -608,9 +584,7 @@ def test_contending_lock_does_not_claim_or_report_a_scan(lab, project):
     assert result['reason'] == ('project_lock_busy' if project else 'discovery_lock_busy')
     assert lab.events == []
     if project:
-        # State is independent of source: the opportunity is durably claimed,
-        # failure is frozen honestly, and this slot cannot become another call.
-        assert lab.ledger()['calls'] == 0
+        assert lab.calls() == 0
         assert lab.store.read('days/2026-10-15.json')['review_complete'] is False
         assert lab.tick(9)['reason'] == 'slot_already_claimed'
         assert lab.tick(10)['calls_today'] == 1
@@ -618,7 +592,6 @@ def test_contending_lock_does_not_claim_or_report_a_scan(lab, project):
         assert not lab.store.exists(loop.STATE_FILE)
         assert not lab.store.exists('days/2026-10-15.json')
         assert lab.tick(9)['calls_today'] == 1
-
 
 def test_reentrant_tick_inside_model_cannot_double_admit(lab):
     actual = lab.local
@@ -630,8 +603,7 @@ def test_reentrant_tick_inside_model_cannot_double_admit(lab):
 
     lab.tick(0, local_runner=local)
     assert reentered[0]['reason'] == 'discovery_lock_busy'
-    assert len(lab.events) == 1 and lab.ledger()['calls'] == 1
-
+    assert len(lab.events) == 1 and lab.calls() == 1
 
 def test_project_lock_is_shared_even_with_different_artifact_policy(lab):
     other = storage.Storage(root=lab.root,
@@ -642,7 +614,6 @@ def test_project_lock_is_shared_even_with_different_artifact_policy(lab):
         result = lab.tick(9, selected=other)
     assert result['reason'] == 'project_lock_busy'
     assert lab.events == [] and imp.Store(other).read(loop.STATE_FILE)['days']['2026-10-15']['calls'] == 0
-
 
 @pytest.mark.parametrize('failure', ['readiness', 'storage_config', 'loop_config'])
 def test_storage_unready_never_falls_back_or_loads_credentials(lab, monkeypatch, failure):
@@ -676,7 +647,6 @@ def test_storage_unready_never_falls_back_or_loads_credentials(lab, monkeypatch,
     serialized = json.dumps(result)
     assert len(serialized) < 1024 and SECRET not in serialized and RAW not in serialized
 
-
 @pytest.mark.parametrize('minute,second,admitted', [(49, 59, True), (50, 0, False), (59, 59, False)])
 def test_midnight_guard_covers_entire_tick_deadline(lab, minute, second, admitted):
     result = lab.tick(23, minute, second)
@@ -685,7 +655,6 @@ def test_midnight_guard_covers_entire_tick_deadline(lab, minute, second, admitte
     if not admitted:
         assert result['reason'] == 'midnight_guard'
     assert lab.tick(23, 59, 59)['reason'] == 'slot_already_claimed'
-
 
 @pytest.mark.parametrize('finish_hour,reason', [(24, 'clock_crossed_accounting_day'),
                                                 (22, 'clock_rollback_during_call')])
@@ -699,22 +668,25 @@ def test_wall_clock_jump_during_call_stops_instead_of_resetting_allowance(lab, f
 
     result = lab.tick(23, local_runner=jumping)
     assert result['reason'] == reason and len(lab.events) == 1
-    assert lab.state()['round']['report']['review_complete'] is False
+    assert lab.report()['review_complete'] is False
+    entry = lab.state()['local_history'][0]
+    assert entry['call_finished_at'] == lab.clock().isoformat()
+    assert entry['finished_at'] >= entry['started_at']
+    slots = lab.ledger(entry['slot'][:10])['slots']
+    assert slots[entry['slot']]['call_finished_at'] == entry['call_finished_at']
     if finish_hour == 24:
         for date in ('2026-10-15', '2026-10-16'):
             assert lab.ledger(date)['calls'] == 1 and lab.ledger(date)['stopped']
         assert lab.tick(25)['reason'] == reason and len(lab.events) == 1
 
-
 def test_slot_claim_precedes_configuration_failure_and_is_not_retried(lab):
     lab.local_path.unlink()
     result = lab.tick(0)
     assert result['reason'] == 'config_unavailable'
-    assert lab.ledger()['calls'] == 0 and lab.events == []
+    assert lab.calls() == 0 and lab.events == []
     lab.save_local()
     assert lab.tick(0, 1)['reason'] == 'slot_already_claimed'
     assert lab.tick(1)['calls_today'] == 1
-
 
 def test_invalid_config_at_report_time_still_freezes_truthful_report(lab):
     lab.local_path.unlink()
@@ -725,7 +697,6 @@ def test_invalid_config_at_report_time_still_freezes_truthful_report(lab):
     payload = lab.store.read('web/2026-10-15.json')
     contract.validate_web_report(payload)
     assert all(a['status'] == 'not_called' for a in payload['agents'])
-
 
 @pytest.mark.parametrize('name,value', [
     ('daily_budget_usd', True), ('daily_budget_usd', float('nan')),
@@ -738,14 +709,13 @@ def test_invalid_config_at_report_time_still_freezes_truthful_report(lab):
     ('quota_timeout_seconds', 21), ('quota_pause_percentage', 81),
     ('timezone', 'UTC'), ('unexpected', 'field')])
 def test_configuration_rejects_nonfinite_bool_unknown_and_policy_expansion(lab, name, value):
-    config = copy.deepcopy(lab.config)
+    config = deepcopy(lab.config)
     config[name] = value
     with pytest.raises(loop.LoopError):
         loop.validate_config(config)
 
-
 def test_configuration_requires_explicit_fields_and_cross_field_bounds(lab):
-    config = copy.deepcopy(lab.config)
+    config = deepcopy(lab.config)
     del config['daily_budget_usd']
     with pytest.raises(loop.LoopError):
         loop.validate_config(config)
@@ -753,7 +723,6 @@ def test_configuration_requires_explicit_fields_and_cross_field_bounds(lab):
                     {'max_candidates_per_specialist': 1, 'max_candidates': 8}):
         with pytest.raises(loop.LoopError):
             loop.validate_config(dict(lab.config, **changes))
-
 
 @pytest.mark.parametrize('kind', ['TOKENS_LIMIT', 'CREDIT_LIMIT'])
 @pytest.mark.parametrize('percentage,weekly,ready', [(0, None, True), (79.999, 20, True),
@@ -763,7 +732,6 @@ def test_glm_legacy_credit_and_optional_weekly_headroom(kind, percentage, weekly
     assert result['status'] == ('ready' if ready else 'paused')
     assert result['reason'] == ('quota_ready' if ready else 'quota_headroom')
     assert len(result['limits']) == (1 if weekly is None else 2)
-
 
 @pytest.mark.parametrize('kind', ['TOKENS_LIMIT', 'CREDIT_LIMIT'])
 @pytest.mark.parametrize('percentage', [0, 0.0])
@@ -779,9 +747,7 @@ def test_glm_zero_idle_five_hour_reset_stays_unknown(kind, percentage, missing):
     assert result == {'status': 'ready', 'reason': 'quota_ready', 'limits': [
         {'type': kind, 'unit': 3, 'number': 5, 'percentage': percentage,
          'nextResetTime': None}]}
-    # A later query must not invent or refresh an inactive window's reset.
     assert loop.validate_quota(body, START + dt.timedelta(hours=1)) == result
-
 
 @pytest.mark.parametrize('kind', ['TOKENS_LIMIT', 'CREDIT_LIMIT'])
 @pytest.mark.parametrize('missing', [False, True])
@@ -795,7 +761,6 @@ def test_glm_missing_reset_does_not_excuse_nonzero_or_invalid_usage(kind, missin
         del model['nextResetTime']
     assert loop.validate_quota(body, START)['reason'] == 'quota_malformed'
 
-
 @pytest.mark.parametrize('reset', [True, False, 0, -1, '', 'unknown', 1.5,
                                   float('nan'), float('inf'),
                                   int(START.timestamp() * 1000),
@@ -804,7 +769,6 @@ def test_glm_zero_idle_never_accepts_a_present_invalid_reset(reset):
     body = quota_body(percentage=0)
     body['data']['limits'][1]['nextResetTime'] = reset
     assert loop.validate_quota(body, START)['reason'] == 'quota_malformed'
-
 
 @pytest.mark.parametrize('envelope', [
     {'success': False}, {'success': None}, {'success': 1}, {'success': 'true'},
@@ -816,7 +780,6 @@ def test_glm_failure_or_malformed_envelope_is_not_zero_idle(envelope):
     body.update(envelope)
     assert loop.validate_quota(body, START)['reason'] == 'quota_malformed'
 
-
 @pytest.mark.parametrize('kind', ['TOKENS_LIMIT', 'CREDIT_LIMIT'])
 @pytest.mark.parametrize('weekly,ready', [(0, True), (79.999, True), (80, False)])
 def test_glm_zero_idle_keeps_optional_weekly_headroom(kind, weekly, ready):
@@ -827,7 +790,6 @@ def test_glm_zero_idle_keeps_optional_weekly_headroom(kind, weekly, ready):
     assert result['reason'] == ('quota_ready' if ready else 'quota_headroom')
     assert result['limits'][0]['nextResetTime'] is None
     assert result['limits'][1] == body['data']['limits'][2]
-
 
 @pytest.mark.parametrize('kind', ['TOKENS_LIMIT', 'CREDIT_LIMIT'])
 @pytest.mark.parametrize('changes', [{}, {'nextResetTime': None}, {'nextResetTime': False},
@@ -841,15 +803,13 @@ def test_glm_zero_idle_does_not_allow_missing_or_invalid_weekly_reset(kind, chan
     weekly.update(changes)
     assert loop.validate_quota(body, START)['reason'] == 'quota_malformed'
 
-
 @pytest.mark.parametrize('kind', ['TOKENS_LIMIT', 'CREDIT_LIMIT'])
 def test_glm_duplicate_idle_window_is_still_malformed(kind):
     body = quota_body(kind=kind, percentage=0)
     model = body['data']['limits'][1]
     model['nextResetTime'] = None
-    body['data']['limits'].append(copy.deepcopy(model))
+    body['data']['limits'].append(deepcopy(model))
     assert loop.validate_quota(body, START)['reason'] == 'quota_malformed'
-
 
 @pytest.mark.parametrize('kind', ['TOKENS_LIMIT', 'CREDIT_LIMIT'])
 def test_glm_zero_idle_admits_only_the_current_specialist_and_keeps_unknown_reset(lab, kind):
@@ -859,7 +819,7 @@ def test_glm_zero_idle_admits_only_the_current_specialist_and_keeps_unknown_rese
     def transport(key, timeout, max_bytes):
         assert key == SECRET
         requests.append(lab.clock())
-        assert lab.ledger()['slots']['2026-10-15T03']['status'] == 'claimed'
+        assert lab.slots()['2026-10-15T03']['status'] == 'claimed'
         body = quota_body(lab.clock(), kind=kind, percentage=0)
         body.update(code=200, success=True)
         body['data']['limits'][1]['nextResetTime'] = None
@@ -868,11 +828,10 @@ def test_glm_zero_idle_admits_only_the_current_specialist_and_keeps_unknown_rese
     result = lab.tick(3, quota_transport=transport)
     assert result['calls_today'] == 4 and lab.state()['stage_index'] == 4
     assert lab.events[-1] == ('specialist', 'downloader') and len(lab.events) == 4
-    quota = lab.ledger()['slots']['2026-10-15T03']['quota']
+    quota = lab.slots()['2026-10-15T03']['quota']
     assert quota['status'] == 'ready' and quota['limits'][0]['nextResetTime'] is None
     assert lab.tick(3, 59, quota_transport=transport)['reason'] == 'slot_already_claimed'
     assert requests == [START + dt.timedelta(hours=3)]
-
 
 @pytest.mark.parametrize('changes', [
     {'type': 'UNKNOWN_LIMIT'}, {'unit': 6, 'number': 2}, {'unit': True},
@@ -885,16 +844,14 @@ def test_glm_unknown_malformed_percentage_or_reset_fails_closed(changes):
     body['data']['limits'][1].update(changes)
     assert loop.validate_quota(body, START)['status'] == 'paused'
 
-
 def test_glm_time_limit_alone_duplicate_and_weekly_without_model_window_are_not_ready():
     body = quota_body()
     model = body['data']['limits'].pop()
     assert loop.validate_quota(body, START)['reason'] == 'quota_model_limit_missing'
     body['data']['limits'].append(dict(model, unit=6, number=1))
     assert loop.validate_quota(body, START)['status'] == 'paused'
-    body['data']['limits'] = [model, copy.deepcopy(model)]
+    body['data']['limits'] = [model, deepcopy(model)]
     assert loop.validate_quota(body, START)['reason'] == 'quota_malformed'
-
 
 @pytest.mark.parametrize('failure', ['redirect', 'http_error', 'exception', 'oversize',
                                      'malformed', 'missing_key'])
@@ -914,15 +871,13 @@ def test_quota_failure_preserves_slot_and_never_calls_glm_or_leaks_raw(lab, fail
     keys = {} if failure == 'missing_key' else {'ZAI_API_KEY': SECRET}
     result = lab.tick(3, quota_transport=transport, keys=keys)
     assert result['status'] == 'paused' and len(lab.events) == 3
-    assert lab.ledger()['calls'] == 3
+    assert lab.calls() == 3
     assert lab.tick(3, 59)['reason'] == 'slot_already_claimed'
     assert len(calls) == (0 if failure == 'missing_key' else 1)
     retained = json.dumps(lab.state(), ensure_ascii=False) + json.dumps(result)
     assert SECRET not in retained and RAW not in retained
-    # Next distinct slot re-queries current usage; the old 1% is not cached.
     assert lab.tick(4)['calls_today'] == 4
     assert lab.quotas[-1] == '2026-10-15T04'
-
 
 def test_glm_eighty_percent_pauses_actual_stage_until_new_slot_has_headroom(lab):
     lab.hours(count=3)
@@ -931,7 +886,6 @@ def test_glm_eighty_percent_pauses_actual_stage_until_new_slot_has_headroom(lab)
     assert lab.state()['stage_index'] == 3
     assert lab.tick(4)['calls_today'] == 4
     assert lab.events[-1] == ('specialist', 'downloader')
-
 
 @pytest.mark.parametrize('code', [200, 302])
 def test_real_quota_transport_uses_only_fixed_https_get_without_following_redirects(monkeypatch, code):
@@ -952,7 +906,7 @@ def test_real_quota_transport_uses_only_fixed_https_get_without_following_redire
             return str(len(body))
 
         def read1(self, size):
-            assert code == 200  # redirect bodies are never followed or read
+            assert code == 200
             part, self.remaining = self.remaining[:size], self.remaining[size:]
             return part
 
@@ -986,7 +940,6 @@ def test_real_quota_transport_uses_only_fixed_https_get_without_following_redire
     assert bool(timeouts) is (code == 200)
     assert SECRET not in json.dumps(result)
 
-
 @pytest.mark.parametrize('mode', ['unknown', 'timeout', 'failed_known', 'invalid_cost', 'negative_cost'])
 def test_reviewer_failure_or_unknown_cost_conservatively_consumes_reservation(lab, mode):
     lab.hours(count=8)
@@ -1005,18 +958,17 @@ def test_reviewer_failure_or_unknown_cost_conservatively_consumes_reservation(la
 
     lab.cloud_transform = transform
     lab.tick(8)
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2)
-    slot = lab.ledger()['slots']['2026-10-15T08']
+    assert lab.spent() == approx(.2)
+    slot = lab.slots()['2026-10-15T08']
     assert slot['cost_status'] in ('reservation_consumed_unknown', 'reservation_consumed_failed')
-    reviewer = lab.state()['round']['report']['agents'][-1]
+    reviewer = lab.report()['agents'][-1]
     if mode != 'failed_known':
         assert reviewer['cost'] is None and reviewer['cost_status'] == 'unknown'
-    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+    assert_private(lab.state())
     assert lab.tick(8, 1)['reason'] == 'slot_already_claimed'
     lab.store = imp.Store(lab.selected)
     lab.tick(9)
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2)
-
+    assert lab.spent() == approx(.2)
 
 def test_remaining_budget_is_passed_as_downward_override_and_settled(lab):
     lab.hours(count=8)
@@ -1025,17 +977,15 @@ def test_remaining_budget_is_passed_as_downward_override_and_settled(lab):
     lab.store.write(loop.STATE_FILE, state)
     lab.tick(8)
     request = lab.cloud_requests[-1]
-    assert request['options']['max_budget_usd'] == pytest.approx(.07)
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.97)
+    assert request['options']['max_budget_usd'] == approx(.07)
+    assert lab.spent() == approx(.97)
     assert lab.models['roles']['reviewer']['max_budget_usd'] == 2
-
 
 def test_loop_cap_never_increases_smaller_existing_reviewer_budget(lab):
     lab.models['roles']['reviewer']['max_budget_usd'] = .05
     lab.hours()
     assert lab.cloud_requests[-1]['options']['max_budget_usd'] == .05
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.04)
-
+    assert lab.spent() == approx(.04)
 
 def test_exhausted_budget_holds_reviewer_and_later_stages_but_not_morning(lab):
     lab.hours(count=8)
@@ -1046,28 +996,30 @@ def test_exhausted_budget_holds_reviewer_and_later_stages_but_not_morning(lab):
     for hour in (9, 10, 11):
         assert lab.tick(hour)['reason'] == 'daily_budget_limit'
         assert lab.state()['stage_index'] == 8
-    assert len(lab.events) == 8 and lab.ledger()['calls'] == 8
+    assert len(lab.events) == 8 and lab.calls() == 8
     assert len(lab.local_requests) == 4 and len(lab.cloud_requests) == 4
     assert lab.state()['inflight'] is None
     assert lab.store.read('days/2026-10-15.json')['status'] == 'partial'
     assert lab.store.read('days/2026-10-15.json')['proposals'] == []
 
-
-def test_actual_cost_over_reservation_is_recorded_and_stops_day(lab):
+@pytest.mark.parametrize('invalid', [False, True])
+def test_actual_cost_over_reservation_is_recorded_and_stops_day(lab, invalid):
     lab.hours(count=8)
-    lab.cloud_transform = lambda role, result, response, options: dict(result, cli_estimated_cost_usd=.27)
+    lab.cloud_transform = lambda role, result, response, options: dict(result, cli_estimated_cost_usd=.27,
+        **({'response': '{broken'} if invalid else {}))
     result = lab.tick(8)
     assert result['reason'] == 'daily_budget_overrun'
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.27)
-    assert lab.ledger()['slots']['2026-10-15T08']['budget_overrun'] is True
+    assert lab.spent() == approx(.27)
+    assert lab.slots()['2026-10-15T08']['budget_overrun'] is True
     lab.tick(9)
-    assert len(lab.events) == 9 and lab.ledger()['calls'] == 9
+    assert len(lab.events) == 9 and lab.calls() == 9
     assert lab.store.exists('days/2026-10-15.json')
 
-
-def test_overrun_persisted_before_interruption_is_never_reduced_to_reservation(lab, monkeypatch):
+@pytest.mark.parametrize('invalid', [False, True])
+def test_overrun_persisted_before_interruption_is_never_reduced_to_reservation(lab, monkeypatch, invalid):
     lab.hours(count=8)
-    lab.cloud_transform = lambda role, result, response, options: dict(result, cli_estimated_cost_usd=.27)
+    lab.cloud_transform = lambda role, result, response, options: dict(result, cli_estimated_cost_usd=.27,
+        **({'response': '{broken'} if invalid else {}))
     actual = imp.Store.write
 
     def crash_after_estimate(store, name, value):
@@ -1081,14 +1033,17 @@ def test_overrun_persisted_before_interruption_is_never_reduced_to_reservation(l
         patch.setattr(imp.Store, 'write', crash_after_estimate)
         with pytest.raises(PowerLoss):
             lab.tick(8)
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.27)
+    assert lab.spent() == approx(.27)
     lab.tick(8, 1)
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.27)
-    reviewer = lab.state()['round']['report']['agents'][-1]
-    assert reviewer['cost'] == pytest.approx(.27) and reviewer['status'] == 'failed'
+    assert lab.spent() == approx(.27)
+    reviewer = lab.report()['agents'][-1]
+    assert reviewer['cost'] == approx(.27) and reviewer['status'] == 'failed'
+    if invalid:
+        assert reviewer['reason'] == 'role_json_invalid'
+        assert reviewer['failure_detail']['cause'] == 'json_invalid'
+        assert lab.state()['participation'][-1]['failure_detail'] == reviewer['failure_detail']
     assert lab.tick(9)['reason'] == 'daily_budget_overrun'
     assert len(lab.events) == 9
-
 
 def test_failed_durable_reservation_never_starts_reviewer_or_retries_slot(lab, monkeypatch):
     lab.hours(count=8)
@@ -1103,11 +1058,10 @@ def test_failed_durable_reservation_never_starts_reviewer_or_retries_slot(lab, m
         patch.setattr(imp.Store, 'write', disk_full)
         lab.tick(8)
     assert len(lab.events) == 8
-    assert lab.ledger()['calls'] == 8 and lab.ledger()['claude_spent_usd'] == 0
+    assert lab.calls() == 8 and lab.spent() == 0
     assert lab.state()['inflight'] is None
     assert lab.tick(8, 1)['reason'] == 'slot_already_claimed'
     assert len(lab.events) == 8
-
 
 @pytest.mark.parametrize('when', ['before_runner', 'during_runner'])
 def test_power_loss_keeps_reservation_and_recovers_stage_once(lab, monkeypatch, when):
@@ -1130,7 +1084,7 @@ def test_power_loss_keeps_reservation_and_recovers_stage_once(lab, monkeypatch, 
         with pytest.raises(PowerLoss):
             lab.tick(8, runner=interrupted_runner if when == 'during_runner' else lab.cloud)
     assert lab.state()['inflight']['reservation_usd'] == .2
-    assert lab.ledger()['calls'] == 9 and lab.ledger()['claude_spent_usd'] == pytest.approx(.2)
+    assert lab.calls() == 9 and lab.spent() == approx(.2)
     lab.store = imp.Store(lab.selected)
     assert lab.tick(8, 1)['reason'] == 'slot_already_claimed'
     recovered = lab.state()
@@ -1138,10 +1092,9 @@ def test_power_loss_keeps_reservation_and_recovers_stage_once(lab, monkeypatch, 
     assert recovered['round']['report']['agents'][-1]['reason'] == 'interrupted_unknown'
     assert recovered['round']['report']['agents'][-1]['cost'] is None
     lab.tick(9)
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2)
-    assert lab.ledger()['calls'] == 10
+    assert lab.spent() == approx(.2)
+    assert lab.calls() == 10
     assert all(c['role'] != 'reviewer' for c in lab.cloud_requests)
-
 
 def test_cross_midnight_recovery_charges_both_days_without_double_refund(lab):
     lab.hours(count=8)
@@ -1155,11 +1108,10 @@ def test_cross_midnight_recovery_charges_both_days_without_double_refund(lab):
     assert result['reason'] == 'clock_crossed_accounting_day'
     for date, count in (('2026-10-15', 9), ('2026-10-16', 1)):
         assert lab.ledger(date)['calls'] == count
-        assert lab.ledger(date)['claude_spent_usd'] == pytest.approx(.2)
+        assert lab.ledger(date)['claude_spent_usd'] == approx(.2)
         assert lab.ledger(date)['stopped'] is True
     lab.tick(25)
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2) and lab.ledger()['calls'] == 1
-
+    assert lab.spent() == approx(.2) and lab.calls() == 1
 
 def test_interrupted_local_cursor_is_durable_and_paired_owner_runs_independently(lab):
     def crash(*args, **kwargs):
@@ -1175,8 +1127,8 @@ def test_interrupted_local_cursor_is_durable_and_paired_owner_runs_independently
     context = json.loads(lab.cloud_requests[-1]['prompt'].rsplit('\n', 1)[1])
     assert context['local_drafts'] == []
     assert context['feedback'][0]['specialist_reason'] == 'local_interrupted_unknown'
-    assert lab.ledger()['calls'] == 2
-    local = lab.state()['round']['report']['local_participation'][0]
+    assert lab.calls() == 2
+    local = lab.report()['local_participation'][0]
     assert local['status'] == 'failed' and local['reason'] == 'interrupted_unknown'
     lab.hours(start=2, count=8)
     request = lab.local_requests[-1]
@@ -1184,7 +1136,6 @@ def test_interrupted_local_cursor_is_durable_and_paired_owner_runs_independently
     assert request['sources'][0]['start_line'] == 3
     assert request['feedback'][0]['specialist_reason'] == 'local_interrupted_unknown'
     assert request['feedback'][1]['specialist_reason'] == 'specialist_empty_candidates'
-
 
 @pytest.mark.parametrize('crash', [False, True])
 def test_empty_local_feedback_survives_failed_or_interrupted_independent_owner(lab, crash):
@@ -1204,13 +1155,13 @@ def test_empty_local_feedback_survives_failed_or_interrupted_independent_owner(l
         lab.tick(1, runner=unavailable)
     lab.store = imp.Store(lab.selected)
     assert lab.tick(1, 1)['reason'] == 'slot_already_claimed'
-    assert lab.ledger()['calls'] == 2 and lab.state()['stage_index'] == 2
+    assert lab.calls() == 2 and lab.state()['stage_index'] == 2
     lab.hours(start=2, count=7)
-    report = lab.state()['round']['report']
+    report = lab.report()
     assert report['review_complete'] is True and report['status'] == 'partial'
     assert report['agents'][0]['status'] in ('failed', 'unavailable')
     assert report['agents'][-1]['status'] == 'succeeded'
-    assert report['proposals'] == [] and lab.ledger()['calls'] == 9
+    assert report['proposals'] == [] and lab.calls() == 9
     lab.tick(9)
     request = lab.local_requests[-1]
     assert request['owner_role'] == 'coordinator'
@@ -1218,7 +1169,6 @@ def test_empty_local_feedback_survives_failed_or_interrupted_independent_owner(l
     assert [entry['specialist_reason'] for entry in request['feedback']] == [
         'empty_draft', 'specialist_interrupted_unknown' if crash else 'role_execution_failed']
     assert RAW not in json.dumps(request)
-
 
 def test_settlement_survives_crash_before_derived_scan_and_does_not_repeat_review(lab, monkeypatch):
     lab.hours(count=8)
@@ -1234,11 +1184,10 @@ def test_settlement_survives_crash_before_derived_scan_and_does_not_repeat_revie
         with pytest.raises(PowerLoss):
             lab.tick(8)
     assert lab.state()['inflight'] is None and lab.state()['stage_index'] == 9
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.04)
+    assert lab.spent() == approx(.04)
     lab.tick(9)
     assert sum(c['role'] == 'reviewer' for c in lab.cloud_requests) == 1
     assert lab.store.read('days/2026-10-15.json')['review_complete'] is True
-
 
 def legacy(lab, complete=True, cost=.0434664, cost_status='cli_estimated_usd'):
     report = {'scan_id': '123456789-abcdef', 'date': '2026-10-15',
@@ -1251,43 +1200,39 @@ def legacy(lab, complete=True, cost=.0434664, cost_status='cli_estimated_usd'):
     lab.store.write('scans/' + report['scan_id'] + '.json', report)
     return report
 
-
 @pytest.mark.parametrize('cost', [.0434664, .07125])
 def test_legacy_day_and_scan_are_carried_once_without_hardcoded_cost_or_redelivery(lab, cost):
     old = legacy(lab, cost=cost)
     body = lab.store.path('days/2026-10-15.json').read_bytes()
     lab.tick(9, publisher=forbidden)
-    assert lab.ledger()['calls'] == 6
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(cost)
+    assert lab.calls() == 6
+    assert lab.spent() == approx(cost)
     assert lab.ledger()['legacy_seen'] == [old['scan_id']]
     lab.store = imp.Store(lab.selected)
     lab.tick(10, publisher=forbidden)
-    assert lab.ledger()['calls'] == 7
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(cost)
+    assert lab.calls() == 7
+    assert lab.spent() == approx(cost)
     assert lab.store.path('days/2026-10-15.json').read_bytes() == body
     assert lab.store.read(loop._publication_name('2026-10-15'))['status'] == 'legacy_preserved'
-
 
 def test_indexed_legacy_and_exact_day_pointer_carry_in_without_rescanning(lab):
     first = legacy(lab, cost=.03)
     lab.tick(0)
-    second = copy.deepcopy(first)
+    second = deepcopy(first)
     second['scan_id'] = '123456790-abcdef'
     second['agents'][-1]['cost'] = .02
     lab.store.write('scans/' + second['scan_id'] + '.json', second)
-    # After one-time migration, only explicit day pointers add legacy activity.
     lab.store.write('days/2026-10-15.json', second)
-    already_accounted = dict(copy.deepcopy(second), scan_id='123456791-abcdef',
+    already_accounted = dict(deepcopy(second), scan_id='123456791-abcdef',
                              loop_engine=loop.STATE_VERSION)
     lab.store.write('scans/' + already_accounted['scan_id'] + '.json', already_accounted)
     lab.tick(1)
-    assert lab.ledger()['calls'] == 12  # two real legacy groups of five plus two tick calls
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.05)
+    assert lab.calls() == 12
+    assert lab.spent() == approx(.05)
     assert lab.ledger()['legacy_seen'] == [first['scan_id'], second['scan_id']]
     lab.store = imp.Store(lab.selected)
     lab.tick(2)
-    assert lab.ledger()['calls'] == 13 and lab.ledger()['claude_spent_usd'] == pytest.approx(.05)
-
+    assert lab.calls() == 13 and lab.spent() == approx(.05)
 
 @pytest.mark.parametrize('complete,cost,status', [(False, .0434664, 'cli_estimated_usd'),
                                                (True, None, 'unknown')])
@@ -1295,14 +1240,13 @@ def test_unknown_legacy_activity_consumes_day_budget_conservatively(lab, complet
     legacy(lab, complete, cost, status)
     lab.tick(0)
     day = lab.ledger()
-    assert day['claude_spent_usd'] == pytest.approx(1)
+    assert day['claude_spent_usd'] == approx(1)
     assert day['legacy_cost_status'] == 'unknown_consumed'
     if not complete:
         assert day['calls'] >= 24 and lab.events == []
 
-
 def test_owner_cursor_rotates_contiguous_original_line_windows_across_restarts(lab):
-    lab.hours(count=10)  # next round coordinator sees original lines 3..4
+    lab.hours(count=10)
     requests = [r for r in lab.local_requests if r['owner_role'] == 'coordinator']
     assert [(r['sources'][0]['start_line'], r['sources'][0]['end_line']) for r in requests] == [(1, 2), (3, 4)]
     lab.store = imp.Store(lab.selected)
@@ -1315,20 +1259,18 @@ def test_owner_cursor_rotates_contiguous_original_line_windows_across_restarts(l
         assert [line['line'] for line in window['numbered_lines']] == list(range(window['start_line'], window['end_line'] + 1))
         assert all(line['text'] == 'value_{} = {}'.format(line['line'], line['line']) for line in window['numbered_lines'])
 
-
 def test_long_single_line_is_explicit_skip_and_specialist_still_runs(lab):
     (lab.root / FILES[0]).write_text('x' * 30000 + '\nvalue = 2\n', encoding='utf-8')
     result = lab.tick(0)
     assert result['reason'] == 'line_too_long' and lab.local_requests == []
-    assert lab.ledger()['calls'] == 0
-    participation = lab.state()['round']['report']['local_participation'][0]
+    assert lab.calls() == 0
+    participation = lab.report()['local_participation'][0]
     assert participation['called'] is False and participation['status'] == 'skipped'
     assert participation['skipped_lines'] == [{'path': FILES[0], 'start_line': 1, 'end_line': 1,
                                               'reason': 'line_too_long'}]
     assert lab.state()['cursors']['coordinator'] == {'file_index': 0, 'line': 2}
     lab.tick(1)
     assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
-
 
 @pytest.mark.parametrize('failure,reason', [
     ('empty', 'empty_draft'), ('timeout', 'timeout'),
@@ -1347,7 +1289,7 @@ def test_failed_local_draft_keeps_regular_owner_slot_and_truthful_diagnostic(lab
         if failure == 'empty':
             return []
         if failure == 'too_many':
-            return [dict(copy.deepcopy(cs[0]), title='합성 후보 ' + str(i)) for i in range(3)]
+            return [dict(deepcopy(cs[0]), title='합성 후보 ' + str(i)) for i in range(3)]
         if failure == 'outside_evidence':
             cs[0]['evidence'][0]['end_line'] = 3
         elif failure == 'outside_benefit':
@@ -1364,47 +1306,57 @@ def test_failed_local_draft_keeps_regular_owner_slot_and_truthful_diagnostic(lab
 
     lab.local_transform = transform
     lab.tick(0)
-    failed = lab.state()['round']['report']['local_participation'][0]
+    failed = lab.report()['local_participation'][0]
     assert failed['status'] == 'failed' and failed['called'] is True
     assert failed['reason'] == reason
+    original_detail = failed['failure_detail']
+    entry = lab.state()['local_history'][0]
+    assert entry['failure_detail'] == original_detail
+    assert entry['stage_index'] == 0 and entry['owner_role'] == 'coordinator'
+    assert entry['scan_id'] == failed['scan_id'] and entry['slot'] == failed['slot']
+    assert lab.slots()[entry['slot']]['failure_detail'] == original_detail
     assert lab.state()['round']['drafts']['coordinator']['reason'] == reason
     assert lab.state()['feedback']['coordinator'][0]['specialist_reason'] == reason
     assert len(lab.local_requests) == 1
     result = lab.tick(1)
-    owner = lab.state()['round']['report']['agents'][0]
+    owner = lab.report()['agents'][0]
     assert owner['status'] == 'succeeded' and owner['provider'] == lab.models['roles']['coordinator']['provider']
-    assert len(lab.cloud_requests) == 1 and lab.ledger()['calls'] == 2
+    assert len(lab.cloud_requests) == 1 and lab.calls() == 2
     assert 'Independently inspect' in lab.cloud_requests[0]['prompt']
     lab.hours(start=2, count=7)
-    assert lab.state()['round']['report']['status'] == 'scanned'
+    assert lab.report()['status'] == 'scanned'
     assert [c['role'] for c in lab.cloud_requests] == list(contract.ROLES)
     lab.tick(9)
-    # The original failure remains private even after an independent empty result.
     assert failed['reason'] == reason
+    assert entry in lab.state()['local_history']
+    assert lab.local_requests[-1]['feedback'][0]['specialist_failure_detail'] == original_detail
+    assert loop.status(now=lab.clock(), selected=lab.selected)['local_history'][0] == entry
     public = lab.store.read('web/2026-10-15.json')
     assert public['agents'][0]['status'] == 'succeeded'
     assert public['status'] == 'scanned' and public['counts']['candidates'] == 3
     assert all(a['provider'] != 'mlx-vlm' for a in public['agents'])
-    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+    assert_private(lab.state())
     assert 'harness/unapproved.py' not in json.dumps(lab.state())
     assert 'local_participation' not in public and reason not in json.dumps(public)
 
-
-@pytest.mark.parametrize('reason', [RAW + SECRET, {'raw': SECRET}, 'candidate_edit_files_typo'])
-def test_private_local_reason_propagation_accepts_only_allowlisted_codes(lab, reason):
+@pytest.mark.parametrize('reason', [RAW + SECRET, {'raw': SECRET}, 'candidate_edit_files_typo',
+                                 'timeout', 'config_permissions', True])
+def test_private_local_reason_requires_adapter_provenance(lab, reason):
     def forged(role, paths, snapshots, **options):
         return {'provider': 'mlx-vlm', 'model': lab.local_config['model'],
                 'stage': 'local_explorer', 'owner_role': role, 'status': 'failed',
-                'called': True, 'reason': reason, 'candidates': []}
+                'called': True, 'reason': reason, 'candidates': [],
+                'failure_detail': dict(diag.sanitize_detail(None), reason='timeout', cause='timeout',
+                                       errno=True, exit_code=10 ** 100, http_status=SECRET)}
 
     lab.tick(0, local_runner=forged)
-    failed = lab.state()['round']['report']['local_participation'][0]
+    failed = lab.report()['local_participation'][0]
     assert failed['reason'] == 'transport_failed'
+    assert failed['failure_detail'] == diag.sanitize_detail(None)
     lab.tick(1)
     assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
-    assert lab.ledger()['calls'] == 2
-    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
-
+    assert lab.calls() == 2
+    assert_private(lab.state())
 
 def test_engine_revalidates_evidence_against_prepared_window_even_if_injected_runner_lies(lab):
     def forged(role, paths, snapshots, **options):
@@ -1415,18 +1367,17 @@ def test_engine_revalidates_evidence_against_prepared_window_even_if_injected_ru
                 'candidates': [draft(FILES[0], 3, 4)]}
 
     lab.tick(0, local_runner=forged)
-    local = lab.state()['round']['report']['local_participation'][0]
+    local = lab.report()['local_participation'][0]
     assert local['status'] == 'failed'
     assert local['read_windows'] == [{'path': FILES[0], 'start_line': 1, 'end_line': 2}]
     assert lab.state()['round']['drafts']['coordinator']['candidates'] == []
     lab.tick(1)
     assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
 
-
 def test_all_empty_locals_allow_independent_specialists_and_empty_pool_review(lab):
     lab.local_transform = lambda user, cs: []
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     assert len(lab.events) == 9 and len(lab.cloud_requests) == 5
     assert report['review_complete'] is True and report['status'] == 'scanned'
     assert all(a['status'] == 'succeeded' for a in report['agents'])
@@ -1435,14 +1386,13 @@ def test_all_empty_locals_allow_independent_specialists_and_empty_pool_review(la
     lab.tick(9)
     assert lab.events[-1] == ('local_explorer', 'coordinator')
 
-
 @pytest.mark.parametrize('metadata', [False, True])
 def test_rate_limit_metadata_is_absent_from_persisted_proof_and_public_report(lab, metadata):
     lab.local_transform = lambda user, cs: []
     if metadata:
         lab.review_trace_transform = with_rate_limit_events
     lab.hours()
-    scan = lab.state()['round']['report']
+    scan = lab.report()
     assert scan['review_complete'] is True and coverage.validate(scan)
     assert len(lab.cloud_requests) == 5 and len(lab.events) == 9
     lab.store = imp.Store(lab.selected)
@@ -1460,7 +1410,6 @@ def test_rate_limit_metadata_is_absent_from_persisted_proof_and_public_report(la
             'PRIVATE_RATE_METADATA', 'private-session', 'notice-uuid', 'rate_limit_info', 'errorCode'))
     for rendered in (contract.render_html(public), contract.render_markdown(public)):
         assert 'PRIVATE_RATE_METADATA' not in rendered and 'private-session' not in rendered
-
 
 @pytest.mark.parametrize('mode', [
     'no_read', 'self_claim', 'read_failed', 'wrong_range', 'trailing_lf', 'wrong_total', 'verified'])
@@ -1480,8 +1429,6 @@ def test_empty_pool_requires_real_bounded_owner_and_document_reads_after_restart
             files = [event['tool_use_result']['file'] for event in events if event['type'] == 'user']
             assert files
             for file in files:
-                # Fixed Lab source: six LF-terminated lines plus a terminal
-                # empty CLI line. No production line/range helper is used.
                 assert file['content'] == (
                     'value_1 = 1\nvalue_2 = 2\nvalue_3 = 3\n'
                     'value_4 = 4\nvalue_5 = 5\nvalue_6 = 6')
@@ -1497,7 +1444,7 @@ def test_empty_pool_requires_real_bounded_owner_and_document_reads_after_restart
             return events
         lab.review_trace_transform = damage
     lab.hours()
-    scan = lab.state()['round']['report']
+    scan = lab.report()
     assert scan['review_complete'] is (mode == 'verified')
     assert len(lab.cloud_requests) == 5 and len(lab.events) == 9
     lab.store = imp.Store(lab.selected)
@@ -1521,14 +1468,13 @@ def test_empty_pool_requires_real_bounded_owner_and_document_reads_after_restart
         assert ('점검 미완료' in rendered) is (mode != 'verified')
     assert 'source_review' not in json.dumps(public)
 
-
 @pytest.mark.parametrize('later', ['empty', 'failure', 'review_failure'])
 def test_two_eligible_survive_later_round_zero_or_failure_with_original_authority(lab, later):
     def two(user, candidates):
         return [dict(candidates[0], title='다운로더 제안 ' + str(i)) for i in range(2)] if user['owner_role'] == 'downloader' else []
     lab.local_transform = two
     lab.hours(start=8)
-    original = copy.deepcopy(lab.state()['round']['report'])
+    original = deepcopy(lab.report())
     assert len(original['proposals']) == 2
     lab.local_transform = lambda user, candidates: []
     if later != 'empty':
@@ -1561,17 +1507,14 @@ def test_two_eligible_survive_later_round_zero_or_failure_with_original_authorit
     if later != 'empty':
         assert public['status'] == 'partial'
         assert any(a['status'] == 'failed' for a in public['agents'])
-    assert SECRET not in json.dumps(public) and RAW not in json.dumps(public)
+    assert_private(public)
     assert all(k not in json.dumps(public) for k in ('source_review', 'retained_provenance', 'diagnostic', 'local_participation'))
     before = lab.store.path('web/2026-10-16.json').read_bytes()
     lab.tick(34)
     assert lab.store.path('web/2026-10-16.json').read_bytes() == before
 
-
 @pytest.mark.parametrize('verdict', ['rejected', 'needs_evidence'])
 def test_newer_explicit_verdict_overrides_eligible_and_never_rebinds_approval(lab, verdict):
-    # Specialists rediscover identical candidates; local cursor changes must not
-    # create different candidate identities for this latest-verdict regression.
     def stable(role, result, response, options):
         if role != 'reviewer':
             for candidate in response['candidates']:
@@ -1581,7 +1524,7 @@ def test_newer_explicit_verdict_overrides_eligible_and_never_rebinds_approval(la
         return result
     lab.cloud_transform = stable
     lab.hours(start=8)
-    first = lab.state()['round']['report']
+    first = lab.report()
     pid = first['proposals'][0]['id']
     instruction = lab.root / 'explicit-instruction.txt'
     instruction.write_text('제안 ' + pid + ' 승인', encoding='utf-8')
@@ -1609,11 +1552,10 @@ def test_newer_explicit_verdict_overrides_eligible_and_never_rebinds_approval(la
     assert lab.store.path('approvals/' + pid + '.json').read_bytes() == approval_bytes
     assert not lab.store.exists('claims/' + pid + '.json')
 
-
 @pytest.mark.parametrize('damage', ['legacy', 'range', 'source_binding', 'scope_binding', 'protocol'])
 def test_persisted_read_proof_is_revalidated_for_approve_and_morning(lab, damage):
     lab.hours()
-    scan = lab.state()['round']['report']
+    scan = lab.report()
     pid = scan['proposals'][0]['id']
     if damage == 'legacy':
         scan.pop('source_review')
@@ -1634,20 +1576,16 @@ def test_persisted_read_proof_is_revalidated_for_approve_and_morning(lab, damage
     assert lab.store.read('web/2026-10-15.json')['counts']['eligible'] == 0
     assert not lab.store.exists('approvals/' + pid + '.json')
 
-
 def test_completed_index_duplicate_is_deduplicated_without_directory_discovery(lab, monkeypatch):
     lab.hours()
     state = lab.state()
     state['completed'] *= 2
     lab.store.write(loop.STATE_FILE, state)
-    # The migration has already occurred; selection only follows bounded exact
-    # pointers. No recursive/unbounded scan inventory is needed after restart.
     monkeypatch.setattr(Path, 'iterdir', forbidden)
     lab.tick(9)
     public = lab.store.read('web/2026-10-15.json')
     assert public['counts']['eligible'] == 4
     assert len({r['id'] for r in public['proposals']}) == len(public['proposals']) == 3
-
 
 def test_completed_index_over_bound_fails_before_any_source_scan_read(lab, monkeypatch):
     lab.hours()
@@ -1666,11 +1604,10 @@ def test_completed_index_over_bound_fails_before_any_source_scan_read(lab, monke
                                  report['loop_dependencies'])
     assert not any(n.startswith('scans/') for n in names)
 
-
 @pytest.mark.parametrize('changed', ['source', 'control', 'unknown'])
 def test_retained_candidates_never_become_public_eligible_under_changed_dependencies(lab, changed):
     lab.hours()
-    pid = lab.state()['round']['report']['proposals'][0]['id']
+    pid = lab.report()['proposals'][0]['id']
     if changed == 'source':
         (lab.root / 'AGENTS.md').write_text('changed source\n')
     elif changed == 'control':
@@ -1685,10 +1622,9 @@ def test_retained_candidates_never_become_public_eligible_under_changed_dependen
     with pytest.raises((imp.ImprovementError, ValueError)):
         imp.approve(pid, lab.root / 'must-not-open.txt', now=lab.clock(), selected=lab.selected)
 
-
 def test_refined_issue_same_draft_digest_and_review_reason_reach_next_actual_http_prompt(lab):
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     coordinator = report['proposals'][0]
     digest = lab.state()['round']['drafts']['coordinator']['draft_digest']
     assert coordinator['candidate']['issue'].startswith('담당자 보완: ')
@@ -1702,7 +1638,6 @@ def test_refined_issue_same_draft_digest_and_review_reason_reach_next_actual_htt
     assert feedback['specialist_reason'] == coordinator['candidate']['issue']
     assert feedback['review_reason'] == REVIEW_REASON
     assert sent['sources'][0]['start_line'] == 3
-
 
 def test_same_rejected_draft_error_is_sent_back_in_next_cycle(lab):
     def reject_owner(role, result, response, options):
@@ -1718,8 +1653,7 @@ def test_same_rejected_draft_error_is_sent_back_in_next_cycle(lab):
     assert feedback['specialist_reason'] == 'role_json_invalid'
     assert feedback['title'] == '로컬 coordinator 점검 후보'
     assert 'candidate_id' not in feedback
-    assert RAW not in json.dumps(feedback) and SECRET not in json.dumps(feedback)
-
+    assert_private(feedback)
 
 def test_feedback_and_public_projection_redact_secrets_from_accepted_prose(lab):
     def sensitive_prose(role, result, response, options):
@@ -1739,7 +1673,6 @@ def test_feedback_and_public_projection_redact_secrets_from_accepted_prose(lab):
     assert SECRET not in json.dumps(payload) and 'https://synthetic.invalid' not in json.dumps(payload)
     contract.validate_web_report(payload)
 
-
 @pytest.mark.parametrize('invalid', ['coverage', 'documentation'])
 def test_incomplete_independent_review_never_leaves_any_eligible_proposal(lab, invalid):
     def corrupt(role, result, response, options):
@@ -1753,7 +1686,7 @@ def test_incomplete_independent_review_never_leaves_any_eligible_proposal(lab, i
 
     lab.cloud_transform = corrupt
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     assert report['review_complete'] is False and report['status'] == 'partial'
     for record in report['proposals']:
         assert 'review' not in record
@@ -1761,7 +1694,6 @@ def test_incomplete_independent_review_never_leaves_any_eligible_proposal(lab, i
             imp._eligible(lab.store, record['id'])
     lab.tick(9)
     assert lab.store.read('web/2026-10-15.json')['counts']['eligible'] == 0
-
 
 def test_independently_rejected_candidate_is_reportable_but_never_approvable(lab):
     def reject(role, result, response, options):
@@ -1773,19 +1705,18 @@ def test_independently_rejected_candidate_is_reportable_but_never_approvable(lab
 
     lab.cloud_transform = reject
     lab.hours()
-    assert lab.state()['round']['report']['review_complete'] is True
-    for record in lab.state()['round']['report']['proposals']:
+    assert lab.report()['review_complete'] is True
+    for record in lab.report()['proposals']:
         with pytest.raises(imp.ImprovementError):
             imp._eligible(lab.store, record['id'])
     lab.tick(9)
     public = lab.store.read('web/2026-10-15.json')
     assert public['counts']['candidates'] == 4 and public['counts']['eligible'] == 0
 
-
 @pytest.mark.parametrize('change', ['scope', 'loop_config', 'local_config', 'agent_config', 'workflow_config'])
 def test_control_change_invalidates_progress_but_preserves_completed_history(lab, change):
     lab.hours()
-    old = copy.deepcopy(lab.state()['round']['report'])
+    old = deepcopy(lab.report())
     if change == 'scope':
         lab.scope.write_text('\n'.join(FILES[:-1]) + '\n', encoding='utf-8')
     elif change == 'loop_config':
@@ -1798,7 +1729,6 @@ def test_control_change_invalidates_progress_but_preserves_completed_history(lab
         lab.models['roles']['coordinator']['effort'] = 'medium'
     else:
         lab.policy['max_rounds'] = 1
-    # Scope mutation intentionally bypasses the runner's fixed-fixture assertion.
     local_runner = lab.local
     if change == 'scope':
         def local_runner(role, paths, snapshots, **options):
@@ -1819,7 +1749,6 @@ def test_control_change_invalidates_progress_but_preserves_completed_history(lab
     morning = lab.store.read('days/2026-10-15.json')
     assert morning['proposals'] == [] and morning['review_complete'] is False
 
-
 def test_source_change_during_call_completes_snapshot_review_but_is_stale(lab):
     lab.hours(count=8)
     def mutate(role, result, response, options):
@@ -1827,14 +1756,13 @@ def test_source_change_during_call_completes_snapshot_review_but_is_stale(lab):
         return result
     lab.cloud_transform = mutate
     lab.tick(8)
-    report = lab.state()['round']['report']
+    report = lab.report()
     assert report['review_complete'] is True
     assert report['current_fresh_at_last_tick'] is False
     assert all('review' in r for r in report['proposals'])
     assert lab.state()['completed'][-1]['scan_id'] == report['scan_id']
     with pytest.raises(loop.LoopError, match='loop_dependencies_changed'):
         loop.validate_scan_freshness(report, selected=lab.selected)
-
 
 def test_morning_boundary_freezes_once_then_later_research_cannot_regenerate(lab):
     priority = {'coordinator': 'low', 'downloader': 'high', 'parser': 'medium', 'django': 'high'}
@@ -1865,7 +1793,6 @@ def test_morning_boundary_freezes_once_then_later_research_cannot_regenerate(lab
         assert lab.store.path(name).read_bytes() == body
     assert len(lab.state()['completed']) == 2
 
-
 def test_catchup_freezes_only_current_date_without_historical_models_or_reports(lab):
     lab.tick(0)
     before = len(lab.events)
@@ -1876,13 +1803,12 @@ def test_catchup_freezes_only_current_date_without_historical_models_or_reports(
     report = lab.store.read('days/2026-10-19.json')
     assert report['status'] == 'failed' and report['proposals'] == []
     assert all(a['status'] == 'not_called' for a in report['agents'])
-    assert report['local_participation'] == []  # old local success is outside window
-
+    assert report['local_participation'] == []
 
 def test_latest_review_in_half_open_window_selected_and_priority_projection_is_bounded(lab):
-    lab.hours(start=8, count=9)  # complete at 16:00; first day's 09:00 is partial
+    lab.hours(start=8, count=9)
     first = lab.state()['completed'][-1]['scan_id']
-    lab.hours(start=17, count=9)  # second review at next day's 01:00
+    lab.hours(start=17, count=9)
     second = lab.state()['completed'][-1]['scan_id']
     assert second != first
     lab.tick(33)
@@ -1891,19 +1817,16 @@ def test_latest_review_in_half_open_window_selected_and_priority_projection_is_b
     assert report['date'] == '2026-10-16' and report['review_complete'] is True
     assert len({r['id'] for r in report['proposals']}) == len(report['proposals']) <= 8
 
-
 def test_review_finishing_exactly_nine_is_excluded_from_that_mornings_report(lab):
-    lab.hours(start=1, count=9)  # reviewer is called at 09:00 AFTER the freeze
+    lab.hours(start=1, count=9)
     report = lab.store.read('days/2026-10-15.json')
     assert report['review_complete'] is False and report['proposals'] == []
-    assert lab.state()['round']['report']['review_complete'] is True
+    assert lab.report()['review_complete'] is True
     lab.tick(10)
     assert lab.store.read('days/2026-10-15.json') == report
 
-
 def test_prior_window_owners_not_presented_as_current_success(lab):
     lab.hours(count=8)
-    # This review completes in tomorrow's report window; its owners do not.
     lab.tick(24 + 8)
     lab.tick(24 + 9)
     report = lab.store.read('days/2026-10-16.json')
@@ -1913,7 +1836,6 @@ def test_prior_window_owners_not_presented_as_current_success(lab):
     assert all(a['status'] == 'succeeded' for a in report['reviewed_agents'])
     assert report['local_participation'] == []
 
-
 def delivered(lab):
     def publisher(date, *, selected):
         assert selected is lab.selected
@@ -1922,7 +1844,6 @@ def delivered(lab):
         return {'status': 'delivered', 'date': date, 'digest': payload['digest']}
     return publisher
 
-
 def test_before_nine_tick_and_explicit_publish_cannot_deliver(lab):
     result = lab.tick(8, 59, 59, publisher=forbidden)
     assert result['publication']['status'] == 'before_report_time'
@@ -1930,7 +1851,6 @@ def test_before_nine_tick_and_explicit_publish_cannot_deliver(lab):
     before = len(lab.events)
     result = loop.publish(now=lab.clock(), selected=lab.selected, publisher=forbidden, reconcile=True)
     assert result['status'] == 'before_report_time' and len(lab.events) == before
-
 
 def test_publisher_outside_both_locks_and_success_never_sent_twice(lab):
     lab.hours()
@@ -1944,7 +1864,6 @@ def test_publisher_outside_both_locks_and_success_never_sent_twice(lab):
     lab.tick(10, publisher=send)
     loop.publish(now=lab.clock(), selected=lab.selected, publisher=send, reconcile=True)
     assert attempts == ['2026-10-15']
-
 
 @pytest.mark.parametrize('failure', ['failed_result', 'exception', 'wrong_digest', 'power_loss'])
 def test_unknown_delivery_never_auto_retries_and_explicit_reconcile_uses_same_digest(lab, failure):
@@ -1977,7 +1896,6 @@ def test_unknown_delivery_never_auto_retries_and_explicit_reconcile_uses_same_di
     assert lab.store.path('web/2026-10-15.json').read_bytes() == payload
     assert SECRET not in json.dumps(lab.store.read(loop._publication_name('2026-10-15')))
 
-
 def test_nested_reconciliation_while_sender_active_cannot_duplicate_callback(lab):
     lab.tick(9)
     nested = []
@@ -1988,7 +1906,6 @@ def test_nested_reconciliation_while_sender_active_cannot_duplicate_callback(lab
         return delivered(lab)(date, **options)
     assert loop.publish(now=lab.clock(), selected=lab.selected, publisher=publisher)['status'] == 'delivered'
     assert nested == []
-
 
 def test_delivery_success_journal_repairs_sender_crash_without_second_http(lab):
     lab.tick(9)
@@ -2001,7 +1918,6 @@ def test_delivery_success_journal_repairs_sender_crash_without_second_http(lab):
         loop.publish(now=lab.clock(), selected=lab.selected, publisher=sent_then_crashed)
     result = loop.publish(now=lab.clock(), selected=lab.selected, publisher=forbidden, reconcile=True)
     assert result['status'] == 'delivered' and result['digest'] == digest
-
 
 def test_prepared_report_recovers_after_crash_using_frozen_journal_without_models(lab, monkeypatch):
     lab.hours()
@@ -2022,7 +1938,6 @@ def test_prepared_report_recovers_after_crash_using_frozen_journal_without_model
     assert lab.store.read('days/2026-10-15.json') == journal['report']
     assert len(lab.events) == before
 
-
 def test_reconciliation_refuses_mutated_digest_instead_of_sending_new_report(lab):
     lab.tick(9)
     payload = lab.store.read('web/2026-10-15.json')
@@ -2032,7 +1947,6 @@ def test_reconciliation_refuses_mutated_digest_instead_of_sending_new_report(lab
     lab.store.write('web/2026-10-15.json', payload)
     with pytest.raises(loop.LoopError, match='publication_digest_changed'):
         loop.publish(now=lab.clock(), selected=lab.selected, publisher=forbidden, reconcile=True)
-
 
 def test_actual_delivery_api_can_acquire_its_lock_and_posts_only_public_schema(lab, monkeypatch):
     calls = []
@@ -2049,7 +1963,6 @@ def test_actual_delivery_api_can_acquire_its_lock_and_posts_only_public_schema(l
             return 200, b'{}'
         return 200, encode(payloads[-1])
     def publisher(date, *, selected):
-        # The real implementation obtains Store.lock; an outer held lock fails.
         return actual_delivery(date, selected=selected, transport=http)
     lab.hours()
     result = lab.tick(9, publisher=publisher)
@@ -2063,7 +1976,6 @@ def test_actual_delivery_api_can_acquire_its_lock_and_posts_only_public_schema(l
                       'loop_dependencies', 'value_1 = 1'):
         assert sensitive not in public
     assert all(set(a) == {'role', 'provider', 'model', 'status'} for a in payloads[0]['agents'])
-
 
 def test_operating_cli_tick_reaches_default_publisher_and_no_deliver_is_explicit(lab, monkeypatch, capsys):
     actual_tick, actual_delivery = loop.tick, imp.deliver_report
@@ -2091,7 +2003,6 @@ def test_operating_cli_tick_reaches_default_publisher_and_no_deliver_is_explicit
     result = json.loads(capsys.readouterr().out)
     assert 'publication' not in result and calls == ['POST', 'GET']
 
-
 def test_status_is_read_only_and_korean_status_explains_next_role_budget_and_report(lab):
     result = loop.status(now=START, selected=lab.selected)
     assert not lab.store.exists(loop.STATE_FILE) and lab.events == []
@@ -2099,14 +2010,13 @@ def test_status_is_read_only_and_korean_status_explains_next_role_budget_and_rep
     lab.hours()
     before = lab.store.path(loop.STATE_FILE).read_bytes()
     result = loop.status(now=lab.clock(), selected=lab.selected)
-    assert result['claude_remaining_estimated_usd'] == pytest.approx(.96)
+    assert result['claude_remaining_estimated_usd'] == approx(.96)
     assert result['next_role'] == 'coordinator' and result['next_stage'] == 'local_explorer'
     assert result['last_review_at'] == lab.clock().isoformat()
     assert result['next_report_at'] == '2026-10-15T09:00:00+09:00'
     for word in ('추정', '보류', '다음', '검토', '보고'):
         assert word in result['message_ko']
     assert lab.store.path(loop.STATE_FILE).read_bytes() == before
-
 
 @pytest.mark.parametrize('guard', ['TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY'])
 def test_leaf_guard_denies_every_loop_entrypoint(lab, monkeypatch, guard):
@@ -2118,10 +2028,9 @@ def test_leaf_guard_denies_every_loop_entrypoint(lab, monkeypatch, guard):
             action(now=START, selected=lab.selected)
     assert lab.events == [] and not lab.store.exists(loop.STATE_FILE)
 
-
 def test_tick_preserves_existing_human_state_and_never_grants_unattended_authority(lab, monkeypatch):
     lab.hours()
-    pid = lab.state()['round']['report']['proposals'][0]['id']
+    pid = lab.report()['proposals'][0]['id']
     originals = {}
     for directory in ('decisions', 'approvals', 'claims', 'executions'):
         name = directory + '/' + pid + '.json'
@@ -2136,7 +2045,6 @@ def test_tick_preserves_existing_human_state_and_never_grants_unattended_authori
         with pytest.raises(imp.ImprovementError, match='Unattended'):
             action()
 
-
 def test_reported_proposal_remains_eligible_through_original_api_but_execute_needs_approval(lab):
     lab.hours()
     lab.tick(9)
@@ -2148,46 +2056,39 @@ def test_reported_proposal_remains_eligible_through_original_api_but_execute_nee
             imp.execute(record['id'], now=lab.clock(), selected=lab.selected, executor=forbidden)
         assert not lab.store.exists('claims/' + record['id'] + '.json')
 
-
 def test_exploration_budget_stop_does_not_gate_explicit_human_approval(lab):
     lab.hours()
-    record = lab.state()['round']['report']['proposals'][0]
+    record = lab.report()['proposals'][0]
     state = lab.state()
     state['days']['2026-10-15'].update(claude_spent_usd=1, stopped=True,
                                       stop_reason='daily_budget_overrun')
     lab.store.write(loop.STATE_FILE, state)
-    instruction = lab.root.parent / 'synthetic-user-instruction.txt'
-    instruction.write_text('제안 ' + record['id'] + ' 승인', encoding='utf-8')
-    instruction.chmod(0o600)
+    instruction = lab.instruction(record)
     result = imp.approve(record['id'], instruction, now=lab.clock(), selected=lab.selected)
     assert result['status'] == 'approved'
     checked, approval = imp._authorization(lab.store, record['id'], lab.clock())
     assert checked == record and approval['consumption'] == 'unconsumed'
-    assert lab.ledger()['claude_spent_usd'] == 1 and len(lab.events) == 9
-
+    assert lab.spent() == 1 and len(lab.events) == 9
 
 @pytest.mark.parametrize('dependency', ['loop', 'local'])
 def test_original_approval_api_rejects_changed_loop_dependencies(lab, dependency):
     """Task 6 integration contract: ordinary approval must invoke loop freshness."""
     lab.hours()
-    record = lab.state()['round']['report']['proposals'][0]
+    record = lab.report()['proposals'][0]
     if dependency == 'loop':
         lab.config['daily_budget_usd'] = .9
         lab.save_loop()
     else:
         lab.local_config['temperature'] = .1
         lab.save_local()
-    instruction = lab.root.parent / 'synthetic-user-instruction.txt'
-    instruction.write_text('제안 ' + record['id'] + ' 승인', encoding='utf-8')
-    instruction.chmod(0o600)
+    instruction = lab.instruction(record)
     with pytest.raises(imp.ImprovementError):
         imp.approve(record['id'], instruction, now=lab.clock(), selected=lab.selected)
     assert not lab.store.exists('approvals/' + record['id'] + '.json')
 
-
 def test_loop_authorization_context_binds_controls_and_legacy_stays_unbound(lab):
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     assert loop.authorization_context(report) == contract.digest({
         'dependencies': report['loop_dependencies'], 'scan_id': report['scan_id'],
         'source_review_binding': report['source_review_binding']})
@@ -2200,26 +2101,22 @@ def test_loop_authorization_context_binds_controls_and_legacy_stays_unbound(lab)
     with pytest.raises(loop.LoopError, match='loop_dependencies_changed'):
         loop.validate_scan_freshness(report, selected=lab.selected)
 
-
 def test_old_signed_approval_cannot_rebind_identical_proposal_after_control_change(lab):
     """Fresh rediscovery alone must not silently renew an older authorization."""
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     record = report['proposals'][0]
-    instruction = lab.root.parent / 'synthetic-user-instruction.txt'
-    instruction.write_text('제안 ' + record['id'] + ' 승인', encoding='utf-8')
-    instruction.chmod(0o600)
+    instruction = lab.instruction(record)
     imp.approve(record['id'], instruction, now=lab.clock(), selected=lab.selected)
     saved_approval = lab.store.path('approvals/' + record['id'] + '.json').read_bytes()
     lab.config['daily_budget_usd'] = .9
     lab.save_loop()
-    lab.hours(start=9, count=9)  # fingerprint reset repeats SAME lines and candidates
+    lab.hours(start=9, count=9)
     new = lab.store.read('proposals/' + record['id'] + '.json')
     assert new['proposal'] == record and new['scan_id'] != report['scan_id']
     assert lab.store.path('approvals/' + record['id'] + '.json').read_bytes() == saved_approval
     with pytest.raises(imp.ImprovementError):
         imp._authorization(lab.store, record['id'], lab.clock())
-
 
 def test_v1_runtime_config_pauses_without_conversion_or_model_call(lab):
     lab.local_config.update(version='local-model-config-v1', provider='mlx-lm', api_model='default_model')
@@ -2227,9 +2124,8 @@ def test_v1_runtime_config_pauses_without_conversion_or_model_call(lab):
     original = lab.local_path.read_bytes()
     result = lab.tick(0, local_runner=forbidden, runner=forbidden, quota_transport=forbidden)
     assert result['status'] == 'paused' and result['reason'] == 'config_invalid'
-    assert lab.ledger()['calls'] == 0 and lab.events == []
+    assert lab.calls() == 0 and lab.events == []
     assert lab.local_path.read_bytes() == original
-
 
 def test_v2_migration_invalidates_legacy_loop_fingerprint_and_authorization_context(lab):
     lab.hours()
@@ -2244,7 +2140,7 @@ def test_v2_migration_invalidates_legacy_loop_fingerprint_and_authorization_cont
     with pytest.raises(loop.LoopError, match='loop_dependencies_changed'):
         loop.validate_scan_freshness(old, selected=lab.selected)
     lab.tick(9)
-    current = lab.state()['round']['report']
+    current = lab.report()
     assert current['scan_id'] != old['scan_id']
     with pytest.raises(ValueError, match='source_review_unverified'):
         loop.authorization_context(current)
@@ -2254,22 +2150,20 @@ def test_v2_migration_invalidates_legacy_loop_fingerprint_and_authorization_cont
     assert lab.local_requests[-1]['feedback'] == []
     assert lab.store.exists('loop/invalidated/' + old['scan_id'] + '.json')
 
-
 def test_interrupted_pre_v2_attempt_keeps_journaled_provider_without_replay(lab):
     def crash(*args, **kwargs):
         raise PowerLoss()
     with pytest.raises(PowerLoss):
         lab.tick(0, local_runner=crash)
     state = lab.state()
-    state['inflight']['provider'] = 'mlx-lm'  # synthetic pre-migration crash journal
+    state['inflight']['provider'] = 'mlx-lm'
     lab.store.write(loop.STATE_FILE, state)
     lab.tick(1)
-    entry = lab.state()['round']['report']['local_participation'][0]
+    entry = lab.report()['local_participation'][0]
     assert entry['provider'] == 'mlx-lm' and entry['reason'] == 'interrupted_unknown'
-    assert lab.ledger()['calls'] == 2 and lab.local_requests == []
+    assert lab.calls() == 2 and lab.local_requests == []
     assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
     assert lab.state()['stage_index'] == 2
-
 
 @pytest.mark.parametrize('provider', ['mlx-lm', 'other-provider'])
 def test_loop_refuses_local_runner_with_non_native_provider(lab, provider):
@@ -2278,12 +2172,33 @@ def test_loop_refuses_local_runner_with_non_native_provider(lab, provider):
                 'stage': 'local_explorer', 'owner_role': role, 'status': 'succeeded',
                 'called': True, 'reason': RAW + SECRET, 'candidates': [draft(FILES[0], 1, 2)]}
     lab.tick(0, local_runner=forged)
-    entry = lab.state()['round']['report']['local_participation'][0]
+    entry = lab.report()['local_participation'][0]
     assert entry['provider'] == 'mlx-vlm' and entry['reason'] == 'local_response_invalid'
     lab.tick(1)
     assert [r['role'] for r in lab.cloud_requests] == ['coordinator']
-    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+    assert_private(lab.state())
 
+def test_saved_local_failure_survives_recovery(lab):
+    pending = {}
+    def invalid(user, candidates):
+        pending.update(lab.state()['inflight'])
+        candidates[0]['evidence'][0]['start_line'] = True
+        return candidates
+    lab.local_transform = invalid
+    lab.tick(0)
+    state = lab.state()
+    failed = state['round']['report']['local_participation'][0]
+    saved = deepcopy(state['round']['drafts']['coordinator'])
+    state.update(inflight=pending, stage_index=0)
+    lab.store.write(loop.STATE_FILE, state)  # Saved-result checkpoint.
+    lab.store = imp.Store(lab.selected)
+    assert lab.tick(0, 1)['reason'] == 'slot_already_claimed'
+    state = lab.state()
+    assert lab.calls() == 1 and len(lab.events) == 1
+    assert state['round']['drafts']['coordinator'] == saved
+    assert state['feedback']['coordinator'][0]['specialist_reason'] == failed['reason']
+    for key in ('reason', 'failure_detail', 'call_started_at', 'call_finished_at', 'finished_at'):
+        assert state['local_history'][0][key] == lab.slots()[failed['slot']][key] == failed[key]
 
 def test_loop_telemetry_boundary_is_strict_bounded_and_backward_compatible():
     from harness.test_agent_telemetry import sample
@@ -2295,12 +2210,11 @@ def test_loop_telemetry_boundary_is_strict_bounded_and_backward_compatible():
     injected['request_work'] = {'raw': SECRET}
     safe = loop._safe_participation(dict(prior, telemetry=injected))
     assert safe['telemetry']['logical_requests_observed'] == 1
-    assert SECRET not in json.dumps(safe) and RAW not in json.dumps(safe)
+    assert_private(safe)
     assert 'telemetry' not in loop._safe_participation(dict(prior, telemetry={'version': 'unknown'}))
     assert 'telemetry' not in loop._safe_participation(dict(prior, provider='codex', telemetry=injected))
     injected['tools'] = [{'category': SECRET}]
     assert 'telemetry' not in loop._safe_participation(dict(prior, telemetry=injected))
-
 
 @pytest.mark.parametrize('failure', ['none', 'cli', 'contract', 'malformed', 'truncated'])
 def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, failure):
@@ -2323,7 +2237,7 @@ def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, fa
         return result
     lab.cloud_transform = transform
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     agent = next(a for a in report['agents'] if a['role'] == 'downloader')
     assert agent['status'] == ('succeeded' if failure == 'none' else 'failed')
     assert agent['telemetry']['logical_requests_observed'] == 1
@@ -2338,12 +2252,11 @@ def test_hourly_scan_retains_partial_glm_telemetry_without_public_change(lab, fa
     assert SECRET not in json.dumps(agent) and 'result' not in agent
     saved = lab.store.read('scans/' + report['scan_id'] + '.json')
     assert saved['agents'][1]['telemetry'] == agent['telemetry']
-    without = copy.deepcopy(report)
+    without = deepcopy(report)
     for item in without['agents']:
         item.pop('telemetry', None)
     assert contract.canonical_json(contract.build_web_report(report)) == contract.canonical_json(
         contract.build_web_report(without))
-
 
 @pytest.mark.parametrize('role,failure,reason', [
     ('coordinator', 'malformed', 'role_json_invalid'),
@@ -2419,6 +2332,23 @@ def test_actual_ticks_keep_private_failure_through_next_round_without_public_dig
     report = state['round']['report']
     agent = next(item for item in report['agents'] if item['role'] == role)
     assert agent['status'] != 'succeeded' and agent['reason'] == reason
+    detail = agent['failure_detail']
+    index = 8 if role == 'reviewer' else 2 * contract.SPECIALIST_ROLES.index(role) + 1
+    attempt = next(e for e in state['participation'] if e['stage_index'] == index)
+    slot = state['days']['2026-10-15']['slots'][attempt['slot']]
+    assert slot['failure_detail'] == attempt['failure_detail'] == detail
+    assert attempt['scan_id'] == agent['scan_id'] == report['scan_id']
+    assert slot['owner_role'] == agent['owner_role'] == role
+    assert attempt['started_at'] == agent['started_at']
+    assert attempt['finished_at'] == agent['finished_at']
+    status = loop.status(now=lab.clock(), selected=lab.selected)
+    assert next(e for e in status['participation'] if e['stage_index'] == index) == attempt
+    if failure == 'candidate':
+        assert (detail['field'], detail['rule']) == ('evidence.start_line', 'type')
+    if failure == 'identity':
+        assert detail['cause'] == 'identity_mismatch'
+    if failure == 'execution_exception':
+        assert detail['cause'] == 'unavailable'
     assert 'error_type' in agent and 'result' not in agent
     if failure == 'execution_exception':
         assert agent['error_type'] == 'Exception'
@@ -2433,10 +2363,10 @@ def test_actual_ticks_keep_private_failure_through_next_round_without_public_dig
         assert all(record['candidate']['edit_files'] != [FILES[contract.SPECIALIST_ROLES.index(role)]]
                    for record in report['proposals'])
     assert state['stage_index'] == 9 and state['inflight'] is None
-    assert lab.ledger()['calls'] == 9 and len(lab.events) == 9
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2 if role == 'reviewer' else .04)
+    assert lab.calls() == 9 and len(lab.events) == 9
+    assert lab.spent() == approx(.2 if role == 'reviewer' else .04)
     if role == 'reviewer':
-        assert lab.ledger()['slots']['2026-10-15T08']['cost_status'] in (
+        assert lab.slots()['2026-10-15T08']['cost_status'] in (
             'reservation_consumed_failed', 'reservation_consumed_unknown')
     assert all(not entry['options']['workspace'].exists() for entry in lab.cloud_requests)
     assert 'TAVERN_IMPROVEMENT_DISCOVERY' not in os.environ
@@ -2444,7 +2374,6 @@ def test_actual_ticks_keep_private_failure_through_next_round_without_public_dig
     for sensitive in (SECRET, RAW, private_path, 'harness/unapproved.py'):
         assert sensitive not in json.dumps(state)
 
-    # Reopen storage, then enter the next round through the real engine and HTTP seam.
     lab.store = imp.Store(lab.selected)
     next_hour = 11 if role == 'downloader' else 9
     lab.hours(start=9, count=next_hour - 8)
@@ -2452,19 +2381,21 @@ def test_actual_ticks_keep_private_failure_through_next_round_without_public_dig
     request = next(item for item in reversed(lab.local_requests) if item['owner_role'] == owner)
     key = 'review_reason' if role == 'reviewer' else 'specialist_reason'
     assert request['feedback'][0][key] == reason
+    detail_key = 'review_failure_detail' if role == 'reviewer' else 'specialist_failure_detail'
+    assert request['feedback'][0][detail_key] == detail
+    assert attempt in lab.state()['participation']
     assert 'draft_digest' in request['feedback'][0]
-    assert lab.ledger()['claude_spent_usd'] == pytest.approx(.2 if role == 'reviewer' else .04)
+    assert lab.spent() == approx(.2 if role == 'reviewer' else .04)
     public = lab.store.read('web/2026-10-15.json')
     contract.validate_web_report(public)
     assert all(set(item) == {'role', 'provider', 'model', 'status'} for item in public['agents'])
     assert public['counts']['eligible'] == (0 if role == 'reviewer' else 3)
     day = lab.store.read('days/2026-10-15.json')
-    stripped = copy.deepcopy(day)
+    stripped = deepcopy(day)
     for collection in ('agents', 'reviewed_agents'):
         for item in stripped.get(collection, []):
-            for field in ('reason', 'error_type', 'interrupted', 'telemetry'):
+            for field in ('reason', 'error_type', 'interrupted', 'telemetry', 'failure_detail'):
                 item.pop(field, None)
-    # This compares the complete payload, including the preexisting canonical digest.
     assert contract.canonical_json(public) == contract.canonical_json(contract.build_web_report(stripped))
     for sensitive in (reason, SECRET, RAW, private_path, 'local_participation', 'error_type'):
         assert sensitive not in json.dumps(public)
@@ -2472,25 +2403,25 @@ def test_actual_ticks_keep_private_failure_through_next_round_without_public_dig
     lab.tick(next_hour, 1, runner=forbidden, local_runner=forbidden)
     assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
 
-
 def test_false_remote_failure_diagnostics_do_not_change_success_or_cost_settlement(lab):
     def forge(role, result, response, options):
         result.update(reason='role_interrupted', error_type=RAW + SECRET,
                       stage='role_json_invalid', field=RAW + SECRET, interrupted=True,
-                      diagnostic={'reason': 'candidate_edit_files_duplicate', 'raw': SECRET})
+                      diagnostic={'reason': 'candidate_edit_files_duplicate', 'raw': SECRET},
+                      failure_detail=dict(diag.sanitize_detail(None), cause='authentication_failed',
+                                          errno=True, http_status=10 ** 100))
         return result
 
     lab.cloud_transform = forge
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     assert report['status'] == 'scanned' and report['review_complete'] is True
     assert len(report['proposals']) == 4
     assert all(agent['status'] == 'succeeded' and 'reason' not in agent and
-               'error_type' not in agent and not agent.get('interrupted') for agent in report['agents'])
-    assert lab.ledger()['calls'] == 9 and lab.ledger()['claude_spent_usd'] == pytest.approx(.04)
-    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
+               'error_type' not in agent and 'failure_detail' not in agent and not agent.get('interrupted') for agent in report['agents'])
+    assert lab.calls() == 9 and lab.spent() == approx(.04)
+    assert_private(lab.state())
     assert all(not entry['options']['workspace'].exists() for entry in lab.cloud_requests)
-
 
 @pytest.mark.parametrize('diagnostic', ['missing', 'forged'])
 def test_legacy_cloud_participation_uses_fallback_in_actual_next_round_feedback(lab, monkeypatch, diagnostic):
@@ -2510,9 +2441,10 @@ def test_legacy_cloud_participation_uses_fallback_in_actual_next_round_feedback(
 
     monkeypatch.setattr(imp, '_call_role', legacy_call)
     lab.hours()
-    report = lab.state()['round']['report']
+    report = lab.report()
     agent = report['agents'][0]
     assert agent['reason'] == 'role_failed'
+    assert agent['failure_detail'] == diag.sanitize_detail(None)
     if diagnostic == 'missing':
         assert 'error_type' not in agent
     else:
@@ -2524,12 +2456,10 @@ def test_legacy_cloud_participation_uses_fallback_in_actual_next_round_feedback(
     public = lab.store.read('web/2026-10-15.json')
     contract.validate_web_report(public)
     assert 'role_failed' not in json.dumps(public)
-    assert SECRET not in json.dumps(lab.state()) and RAW not in json.dumps(lab.state())
-
+    assert_private(lab.state())
 
 class UntrustedDiagnosticString(str):
     pass
-
 
 @pytest.mark.parametrize('value', [
     None, True, False, 0, 1, -1, 1.5, [], {}, ['role_json_invalid'],
@@ -2537,25 +2467,23 @@ class UntrustedDiagnosticString(str):
     'role_json_invalid' + 'x' * 65536,
     UntrustedDiagnosticString('role_json_invalid'),
     UntrustedDiagnosticString('ValidationError'),
-], ids=['null', 'true', 'false', 'zero', 'one', 'negative', 'float', 'list', 'mapping',
-        'nested', 'unknown', 'typo', 'secret', 'oversized', 'reason_subclass', 'type_subclass'])
+], ids=lambda value: type(value).__name__)
 def test_private_participation_unknown_reason_and_exception_type_have_fixed_fallback(value):
     participation = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic',
                      'status': 'failed', 'reason': value, 'error_type': value}
-    original = copy.deepcopy(participation)
+    original = deepcopy(participation)
     safe = loop._safe_participation(participation)
     assert safe['reason'] == 'role_failed' and safe['error_type'] == 'Exception'
     assert set(safe) == {'role', 'provider', 'model', 'status', 'reason', 'error_type',
-                         'cost', 'cost_status'}
+                         'cost', 'cost_status', 'failure_detail'}
+    assert safe['failure_detail'] == diag.sanitize_detail(None)
     assert participation == original
-
 
 @pytest.mark.parametrize('reason', [None, 'role_json_invalid'])
 @pytest.mark.parametrize('position', [
     True, False, -1, 0, 1, 65536, 65537, 2 ** 256, 1.5, '1',
     None, [], {'raw': SECRET}, RAW + SECRET, 'x' * 65537,
-], ids=['true', 'false', 'negative', 'zero', 'one', 'response_bound', 'above_bound',
-        'huge_integer', 'float', 'string', 'null', 'list', 'mapping', 'secret', 'oversized'])
+], ids=lambda value: type(value).__name__)
 def test_untrusted_diagnostic_stage_field_type_and_syntax_positions_are_not_retained(position, reason):
     legacy = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic',
               'status': 'failed', 'reason': reason}
@@ -2563,21 +2491,87 @@ def test_untrusted_diagnostic_stage_field_type_and_syntax_positions_are_not_reta
                   'field': RAW + SECRET, 'type': RAW + SECRET,
                   'line': position, 'column': position, 'offset': position}
     forged = dict(legacy, diagnostic=diagnostic, diagnostics=diagnostic,
-                  stage=RAW + SECRET, field=RAW + SECRET, type=RAW + SECRET,
-                  line=position, column=position, offset=position, lineno=position,
-                  colno=position, pos=position, json_position=position,
-                  response=RAW + SECRET, prompt=RAW + SECRET,
+                  **dict.fromkeys(('stage', 'field', 'type', 'response', 'prompt'), RAW + SECRET),
+                  **dict.fromkeys(('line', 'column', 'offset', 'lineno', 'colno', 'pos', 'json_position'), position),
                   result={'reason': 'role_json_invalid', 'raw': SECRET})
     assert loop._safe_participation(forged) == loop._safe_participation(legacy)
     assert loop._safe_participation(forged)['reason'] == (reason or 'role_failed')
-
 
 @pytest.mark.parametrize('status', ['failed', 'unavailable', 'not_called', 'succeeded'])
 def test_legacy_participation_without_diagnostics_remains_compatible(status):
     legacy = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic', 'status': status}
     safe = loop._safe_participation(legacy)
     assert safe == dict(legacy, cost=None, cost_status='unknown',
-                        **({} if status == 'succeeded' else {'reason': 'role_failed'}))
+                        **({} if status == 'succeeded' else {'reason': 'role_failed',
+                           'failure_detail': diag.sanitize_detail(None)}))
     assert 'error_type' not in safe
     assert 'reason' not in loop._safe_participation(dict(legacy, status='succeeded',
                                                        reason='role_json_invalid', error_type=RAW + SECRET))
+
+@pytest.mark.parametrize('role,mode,cause', [
+    ('coordinator', 'words', 'cli_failed'), ('coordinator', 'auth', 'authentication_failed'),
+    ('coordinator', 'warning', 'cli_failed'), ('coordinator', 'timeout', 'timeout'),
+    ('coordinator', 'settlement', 'cli_failed'),
+    ('reviewer', 'exit', 'cli_failed'), ('reviewer', 'spawn', 'spawn_failed'),
+])
+def test_native_adapter_failure_survives_tick_restart_feedback_and_later_success(lab, monkeypatch, role, mode, cause):
+    lab.models['roles']['coordinator']['provider'] = 'codex'
+    hour = 8 if role == 'reviewer' else 1
+    lab.hours(count=hour)
+    cli_calls = []
+    def cli(command, **options):
+        cli_calls.append('login' if 'login' in command else 'execution')
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        lab.clock.at(hour, seconds=7)
+        if mode == 'timeout':
+            raise subprocess.TimeoutExpired(command, 1, output=RAW + SECRET)
+        if mode == 'spawn':
+            raise OSError(13, RAW + SECRET)
+        return subprocess.CompletedProcess(command, 7,
+            RAW + SECRET + ' authentication readonly 401 quota' if mode == 'words' else '',
+            'PATH aliases: Read-only file system (os error 30)' if mode == 'warning' else
+            'Authentication failed: unauthorized 401' if mode == 'auth' else
+            '' if mode == 'words' else RAW + SECRET)
+    def adapter(actual_role, prompt, keys, **options):
+        assert actual_role == role
+        return run_synthetic_loop_adapter(lab, monkeypatch, forbidden, cli,
+                                          actual_role, prompt, keys, **options)
+    write = imp.Store.write
+    def settle(store, name, value):
+        if mode == 'settlement' and name.startswith('scans/'):
+            raise OSError(28, RAW + SECRET)
+        return write(store, name, value)
+    with monkeypatch.context() as patch:
+        patch.setattr(imp.Store, 'write', settle)
+        outcome = lab.tick(hour, runner=adapter)
+    assert cli_calls == (['login', 'execution'] if role == 'coordinator' else ['execution'])
+    state = lab.state()
+    agent = next(a for a in state['round']['report']['agents'] if a['role'] == role)
+    detail = agent['failure_detail']
+    assert detail['cause'] == cause and detail['phase'] == 'execution'
+    assert detail['exit_code'] == (None if mode in ('timeout', 'spawn') else 7)
+    assert detail['errno'] == (13 if mode == 'spawn' else None)
+    assert outcome['diagnostic']['detail'] == detail
+    entry = next(e for e in state['participation'] if e['role'] == role)
+    assert entry['failure_detail'] == detail
+    assert all(entry[k] == lab.slots()[entry['slot']][k]
+               for k in ('failure_detail', 'reason', 'stage_index', 'status'))
+    assert entry['finished_at'].endswith('07+09:00')
+    assert entry['call_started_at'].endswith('00+09:00')
+    assert entry['call_finished_at'] == entry['finished_at']
+    lab.store = imp.Store(lab.selected)
+    lab.hours(start=hour + 1, count=9 - hour)
+    key = 'review_failure_detail' if role == 'reviewer' else 'specialist_failure_detail'
+    assert lab.local_requests[-1]['feedback'][0][key] == detail
+    assert entry in loop.status(now=lab.clock(), selected=lab.selected)['participation']
+    frozen = lab.store.path('web/2026-10-15.json').read_bytes()
+    lab.cloud_transform = None
+    lab.hours(start=10, count=9)
+    assert entry in lab.state()['participation']
+    assert any(e['role'] == role and e['status'] == 'succeeded'
+               and e['started_at'] > entry['finished_at'] for e in lab.state()['participation'])
+    saved = lab.store.read('scans/' + entry['scan_id'] + '.json')
+    assert next(a for a in saved['agents'] if a['role'] == role)['failure_detail'] == detail
+    assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
+    assert_private(lab.state())

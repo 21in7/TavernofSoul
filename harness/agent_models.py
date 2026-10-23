@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 
-from harness import agent_telemetry, storage
+from harness import agent_telemetry, storage, improvement_diagnostics as diagnostics
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'harness' / 'agent-models.json'
@@ -175,9 +175,46 @@ class CodexFailure(ValueError):
         'probe_mismatch': 'Model response did not match the connection probe.',
     }
 
-    def __init__(self, stage, category):
+    def __init__(self, stage, category, *, source=None, exit_code=None, errno=None):
         self.diagnostic = {'stage': stage, 'category': category}
         super().__init__(self.REASONS[category])
+        if source is not None:
+            diagnostics.inherit(self, source)
+        diagnostics.attach(self, diagnostics.detail('role_execution_failed', category,
+            phase=stage if stage in ('runtime', 'authentication', 'execution') else 'execution',
+            exit_code=exit_code, errno=errno))
+
+
+def _failure(message, cause, phase, **numbers):
+    return diagnostics.attach(ValueError(message), diagnostics.detail(
+        'role_execution_failed', cause, phase=phase, **numbers))
+
+
+def _os_errno(exc):
+    # Read the native OS observation, never a provider's property or attribute.
+    return OSError.errno.__get__(exc) if isinstance(exc, OSError) else None
+
+
+@contextmanager
+def _preserve_failure(manager, observe=None):
+    """Cleanup may fail, but must not replace the body's first exception."""
+    first = None
+    try:
+        with manager as value:
+            try:
+                yield value
+            except (Exception, KeyboardInterrupt) as exc:
+                first = exc
+                if observe is not None:
+                    try:
+                        observe(exc)
+                    except (Exception, KeyboardInterrupt):
+                        pass
+                raise
+    except (Exception, KeyboardInterrupt):
+        if first is not None:
+            raise first
+        raise
 
 
 def codex_paths(cli):
@@ -208,8 +245,8 @@ def copy_codex_auth(home, source_home):
         with os.fdopen(fd, 'wb') as target:
             os.fchmod(target.fileno(), 0o600)
             target.write(content)
-    except OSError:
-        raise CodexFailure('authentication', 'auth_file_unavailable') from None
+    except OSError as exc:
+        raise CodexFailure('authentication', 'auth_file_unavailable', errno=_os_errno(exc)) from None
 
 
 @contextmanager
@@ -225,8 +262,8 @@ def codex_runtime(keys, cli, compaction=False):
         policy.check_ready()
         executable, shell = codex_paths(cli)
         source_home = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').resolve()
-        with tempfile.TemporaryDirectory(prefix='tavern-codex-runtime-',
-                                         dir=str(policy.credential_temp_root)) as name:
+        with _preserve_failure(tempfile.TemporaryDirectory(prefix='tavern-codex-runtime-',
+                                         dir=str(policy.credential_temp_root))) as name:
             root = Path(name)
             root.chmod(0o700)
             env = child_environment('codex', keys, compaction=compaction)
@@ -245,8 +282,8 @@ def codex_runtime(keys, cli, compaction=False):
             copy_codex_auth(Path(env['CODEX_HOME']), source_home)
             yield {'cli': executable, 'shell': shell, 'root': root, 'env': env,
                    'source_home': source_home}
-    except OSError:
-        raise CodexFailure('runtime', 'runtime_unavailable') from None
+    except OSError as exc:
+        raise CodexFailure('runtime', 'runtime_unavailable', errno=_os_errno(exc)) from None
 
 
 def codex_subprocess(command, env, stage, **options):
@@ -254,28 +291,51 @@ def codex_subprocess(command, env, stage, **options):
         return subprocess.run(command, env=env, capture_output=True, text=True, **options)
     except subprocess.TimeoutExpired:
         raise CodexFailure(stage, 'timeout') from None
-    except (OSError, UnicodeError, subprocess.SubprocessError):
+    except OSError as exc:
+        # Legacy diagnostic stays cli_failed; the observed boundary is spawn.
+        return_error = _failure('Codex CLI could not start.', 'spawn_failed', stage,
+                                errno=_os_errno(exc))
+        raise CodexFailure(stage, 'cli_failed', source=return_error) from None
+    except (UnicodeError, subprocess.SubprocessError):
         raise CodexFailure(stage, 'cli_failed') from None
 
 
-def codex_failure_category(output, stage):
-    """Inspect locally; never return excerpts, paths, credentials or remote bodies."""
-    output = output.lower()
-    if 'path aliases' in output and any(marker in output for marker in (
-            'read-only file system', 'read-only filesystem', 'os error 30')):
-        return 'path_aliases_read_only'
-    if any(marker in output for marker in ('unexpected argument', 'unrecognized', 'unknown variant')):
+def codex_failure_category(stderr, stage, *, exit_code=None, has_output=False):
+    """Classify only a nonzero CLI exit with unambiguous stderr evidence.
+
+    Never search model/tool stdout. Execution output makes stderr provenance
+    ambiguous too: tools may echo errors there. Warnings and unfamiliar formats
+    prove no cause. The login-status command has no model/tools.
+    """
+    if (type(exit_code) is not int or not 1 <= exit_code <= 255 or
+            stage not in ('authentication', 'execution') or
+            type(stderr) is not str or (stage != 'authentication' and has_output)):
         return 'cli_failed'
-    if stage == 'authentication' or any(marker in output for marker in (
-            'unauthorized', 'authentication', 'not logged in', '401', 'token expired')):
+    # Accept one CLI error with only recognized advisory lines around it.
+    # A narrative/source dump containing a matching line is not a CLI envelope.
+    lines = [line.strip().lower() for line in stderr.splitlines() if line.strip()]
+    errors = [line for line in lines if not codex_warnings(line, stage)]
+    if len(errors) != 1:
+        return 'cli_failed'
+    line = errors[0]
+    if line.startswith(('authentication failed:', 'error: authentication failed:',
+                        'error: unexpected status 401 unauthorized')):
+        return 'authentication_failed'
+    if stage == 'authentication' and (line == 'not logged in' or
+                                      line.startswith('not logged in:')):
         return 'authentication_failed'
     return 'cli_failed'
 
 
 def codex_warnings(output, stage):
     """Fixed metadata only; warnings never establish authentication or completion."""
-    if codex_failure_category(output, stage) == 'path_aliases_read_only':
-        return [{'stage': stage, 'category': 'path_aliases_read_only'}]
+    # Advisory even when the CLI subsequently fails. Quoted source and JSON
+    # envelopes, or words appearing on different lines, are not this warning.
+    for line in output.splitlines():
+        line = line.strip().lower()
+        if line.startswith('path aliases:') and any(marker in line for marker in (
+                'read-only file system', 'read-only filesystem', 'os error 30')):
+            return [{'stage': stage, 'category': 'path_aliases_read_only'}]
     return []
 
 
@@ -285,7 +345,11 @@ def codex_login_status(runtime):
     auth = codex_subprocess(command, runtime['env'], 'authentication', timeout=20)
     output = auth.stdout + '\n' + auth.stderr
     if auth.returncode:
-        raise CodexFailure('authentication', codex_failure_category(output, 'authentication'))
+        category = codex_failure_category(auth.stderr, 'authentication', exit_code=auth.returncode)
+        # This stdout is exclusively login status, never model/tool content.
+        if any(line.strip().lower() == 'not logged in' for line in auth.stdout.splitlines()):
+            category = 'authentication_failed'
+        raise CodexFailure('authentication', category, exit_code=auth.returncode)
     lines = [line.strip().lower() for line in output.splitlines()]
     subscribed = 'logged in using chatgpt' in lines and not any(
         line.startswith('logged in using api key') for line in lines)
@@ -480,26 +544,35 @@ def task_prompt(role, task, workspace=None, scoped=False):
 
 
 def response_text(provider, output):
+    def parse(value):
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError, RecursionError) as exc:
+            diagnostics.attach(exc, diagnostics.detail('role_execution_failed',
+                               'json_invalid', phase='json'))
+            raise
     if provider != 'codex':
-        data = json.loads(output)
+        data = parse(output)
+        if not isinstance(data, dict):
+            raise _failure('Model CLI returned an invalid envelope.', 'envelope_invalid', 'response')
         if data.get('is_error') or data.get('subtype', 'success') != 'success':
-            raise ValueError('Model CLI reported an unsuccessful run.')
+            raise _failure('Model CLI reported an unsuccessful run.', 'envelope_invalid', 'response')
         if not isinstance(data.get('result'), str) or not data['result'].strip():
-            raise ValueError('Model CLI returned no final response.')
+            raise _failure('Model CLI returned no final response.', 'empty_response', 'response')
         # Claude Code's estimated dollar cost is not Z.ai Coding Lite credit usage.
         return data['result'], data.get('total_cost_usd') if provider == 'claude' else None
-    events = [json.loads(line) for line in output.splitlines() if line.strip()]
+    events = [parse(line) for line in output.splitlines() if line.strip()]
     if any(not isinstance(event, dict) for event in events):
-        raise ValueError('Codex returned an invalid event.')
+        raise _failure('Codex returned an invalid event.', 'envelope_invalid', 'response')
     if any(event.get('type') in ('turn.failed', 'error') for event in events):
-        raise ValueError('Codex reported an unsuccessful turn.')
+        raise _failure('Codex reported an unsuccessful turn.', 'envelope_invalid', 'response')
     messages = [event['item'].get('text') for event in events
                 if event.get('type') == 'item.completed'
                 and isinstance(event.get('item'), dict)
                 and event['item'].get('type') == 'agent_message']
     if (not messages or not isinstance(messages[-1], str) or not messages[-1].strip()
             or not any(event.get('type') == 'turn.completed' for event in events)):
-        raise ValueError('Codex returned no completed turn with a final response.')
+        raise _failure('Codex returned no completed turn with a final response.', 'response_incomplete', 'response')
     return messages[-1], None
 
 
@@ -515,6 +588,7 @@ def _review_subprocess(command, prompt, cwd, env, timeout):
     output, errors = bytearray(), bytearray()
     body, offset = prompt.encode('utf-8'), 0
     deadline = time.monotonic() + timeout
+    first = None
     try:
         with selectors.DefaultSelector() as selector:
             for pipe, event in ((process.stdin, selectors.EVENT_WRITE),
@@ -525,7 +599,7 @@ def _review_subprocess(command, prompt, cwd, env, timeout):
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ValueError('source_review_transport_failed')
+                    raise _failure('source_review_transport_failed', 'timeout', 'transport')
                 for key, _ in selector.select(min(remaining, .25)):
                     pipe = key.fileobj
                     if pipe is process.stdin:
@@ -543,16 +617,33 @@ def _review_subprocess(command, prompt, cwd, env, timeout):
                         target = output if pipe is process.stdout else errors
                         target.extend(chunk)
                         if len(target) > (coverage.MAX_STDOUT if pipe is process.stdout else coverage.MAX_STDERR):
-                            raise ValueError('source_review_transport_failed')
+                            raise _failure('source_review_transport_failed', 'response_too_large', 'transport')
             process.wait(timeout=max(.001, deadline - time.monotonic()))
         return subprocess.CompletedProcess(command, process.returncode, output.decode('utf-8', 'strict'),
                                            errors.decode('utf-8', 'replace'))
+    except (Exception, KeyboardInterrupt) as exc:
+        first = exc
+        if isinstance(exc, subprocess.TimeoutExpired):
+            diagnostics.attach(exc, diagnostics.detail('role_execution_failed', 'timeout', phase='transport'))
+        elif isinstance(exc, OSError):
+            diagnostics.attach(exc, diagnostics.detail('role_execution_failed', 'transport_failed',
+                                                       phase='transport', errno=_os_errno(exc)))
+        elif isinstance(exc, UnicodeError):
+            diagnostics.attach(exc, diagnostics.detail('role_execution_failed', 'invalid_response',
+                                                       phase='response'))
+        raise
     finally:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-        for pipe in (process.stdin, process.stdout, process.stderr):
-            pipe.close()
+        try:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+        finally:
+            try:
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    pipe.close()
+            finally:
+                if first is not None:
+                    raise first
 
 
 def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None, workspace=None,
@@ -599,7 +690,7 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             verify_vendor()
         context = codex_runtime(keys, load_config()['providers']['codex']['cli'], enabled) \
             if provider == 'codex' else nullcontext(None)
-        with context as runtime:
+        with _preserve_failure(context) as runtime:
             if runtime is not None:
                 status = codex_login_status(runtime)
                 report['warnings'].extend(status['warnings'])
@@ -611,7 +702,9 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             else:
                 status = connection_status(provider, keys)
                 if status['status'] != 'ready':
-                    raise ValueError(status['reason'])
+                    raise _failure(status['reason'],
+                        'missing_cli' if status.get('cli') is None else 'authentication_failed',
+                        'runtime' if status.get('cli') is None else 'authentication')
                 env = child_environment(provider, keys, compaction=enabled)
             env['TAVERN_WORKFLOW_CHILD'] = '1'
             if scoped:
@@ -637,6 +730,7 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                             collector.finish('spawn_failed')
                         collector = None
                         report['telemetry'] = agent_telemetry.unavailable()
+                execution_error = None
                 try:
                     if discovery_review is not None:
                         result = _review_subprocess(command, prompt, str(work_root), env, timeout)
@@ -662,19 +756,37 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                                     })
                         except (ValueError, TypeError, RecursionError):
                             pass
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
+                    execution_error = exc
                     telemetry_outcome = 'timeout'
+                    diagnostics.attach(exc, diagnostics.detail('role_execution_failed', 'timeout',
+                                                               phase='execution'))
                     raise
-                except KeyboardInterrupt:
+                except OSError as exc:
+                    execution_error = exc
+                    diagnostics.attach(exc, diagnostics.detail('role_execution_failed', 'spawn_failed',
+                        phase='execution', errno=_os_errno(exc)))
+                    raise
+                except KeyboardInterrupt as exc:
+                    execution_error = exc
                     telemetry_outcome = 'interrupted'
+                    diagnostics.attach(exc, diagnostics.detail('role_interrupted', 'interrupted',
+                                                               phase='execution'))
+                    raise
+                except Exception as exc:
+                    execution_error = exc
                     raise
                 finally:
-                    if collector is not None:
-                        if collector.wall_ms is None:
-                            collector.wall_ms = (time.monotonic() - collector.started) * 1000
-                        report['telemetry'] = collector.finish(telemetry_outcome, telemetry_cli)
-                    elif provider == 'zai':
-                        report['telemetry'] = agent_telemetry.unavailable(telemetry_outcome)
+                    try:
+                        if collector is not None:
+                            if collector.wall_ms is None:
+                                collector.wall_ms = (time.monotonic() - collector.started) * 1000
+                            report['telemetry'] = collector.finish(telemetry_outcome, telemetry_cli)
+                        elif provider == 'zai':
+                            report['telemetry'] = agent_telemetry.unavailable(telemetry_outcome)
+                    finally:
+                        if execution_error is not None:
+                            raise execution_error
             report['exit_code'] = result.returncode
             if provider != 'codex':
                 report['stderr'] = '' if discovery_review is not None else redact(result.stderr, keys)
@@ -686,10 +798,12 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
             if result.returncode:
                 if provider == 'codex':
                     raise CodexFailure('execution', codex_failure_category(
-                        result.stdout + '\n' + result.stderr, 'execution'))
+                        result.stderr, 'execution', exit_code=result.returncode,
+                        has_output=bool(result.stdout.strip())), exit_code=result.returncode)
                 if discovery_review is None:
                     report['diagnostic'] = redact(result.stdout, keys)
-                raise ValueError('Model CLI exited with code {}.'.format(result.returncode))
+                raise _failure('Model CLI exited with code {}.'.format(result.returncode),
+                               'cli_failed', 'execution', exit_code=result.returncode)
             try:
                 response_output = result.stdout
                 if discovery_review is not None:
@@ -707,44 +821,56 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                         final = event
                         break
                     if not isinstance(final, dict) or final.get('type') != 'result':
-                        raise ValueError('source_review_transport_failed')
+                        raise _failure('source_review_transport_failed', 'envelope_invalid', 'response')
                     response_output = json.dumps(final)
                     if 'total_cost_usd' in final:
                         report['cli_estimated_cost_usd'] = final['total_cost_usd']
                 response, cost = response_text(provider, response_output)
                 if discovery_review is not None:
-                    discovery_review.accept(result.stdout)
-            except (ValueError, KeyError, TypeError):
+                    try:
+                        discovery_review.accept(result.stdout)
+                    except (ValueError, KeyError, TypeError) as exc:
+                        diagnostics.attach(exc, diagnostics.detail('source_review_unverified',
+                            'source_review_unverified', phase='review'))
+                        raise
+            except (ValueError, KeyError, TypeError) as exc:
                 if provider == 'codex':
-                    category = codex_failure_category(result.stdout + '\n' + result.stderr, 'execution')
-                    if category in ('cli_failed', 'path_aliases_read_only'):
-                        category = 'invalid_response'
-                    raise CodexFailure('execution', category) from None
+                    # exit0 is a response-validation failure, not evidence that
+                    # words in model/tool output describe an authentication error.
+                    raise CodexFailure('execution', 'invalid_response', source=exc) from None
+                diagnostics.attach(exc, diagnostics.detail('role_execution_failed',
+                                   'envelope_invalid', phase='response'))
                 raise
             if smoke and response.strip() != nonce:
                 if provider == 'codex':
                     raise CodexFailure('execution', 'probe_mismatch')
-                raise ValueError('Model response did not match the connection probe.')
+                raise _failure('Model response did not match the connection probe.', 'probe_mismatch', 'response')
             report['response'] = redact(response, keys)
             if cost is not None:
                 report['cli_estimated_cost_usd'] = cost
             report['status'] = 'passed'
     except storage.StorageError as exc:
+        report = diagnostics.attach_result(report, source=exc)
         report['status'] = 'failed'
         report.pop('response', None)
         report['diagnostic'] = {'stage': 'storage', 'category': 'storage_unavailable'}
         report['error'] = str(exc)
     except CodexFailure as exc:
+        report = diagnostics.attach_result(report, source=exc)
         report['status'] = 'failed'
         report.pop('response', None)
         report['diagnostic'] = exc.diagnostic
         report['error'] = str(exc)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        diagnostics.attach(exc, diagnostics.detail('role_interrupted', 'interrupted', phase='execution'))
         if provider != 'zai':
             raise
+        report = diagnostics.attach_result(report, source=exc)
         telemetry_outcome = 'interrupted'
         report['error'] = 'Model CLI interrupted.'
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        diagnostics.attach(exc, diagnostics.detail('role_execution_failed', 'unavailable', phase='execution'))
+        report = diagnostics.attach_result(report, source=exc)
         if provider == 'codex':
             report['status'] = 'failed'
             report.pop('response', None)
@@ -757,7 +883,12 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
         # Also owns interruption during collector setup or environment assembly,
         # before the inner subprocess finally has been entered.
         if collector is not None and 'telemetry' not in report:
-            report['telemetry'] = collector.finish(telemetry_outcome, telemetry_cli)
+            try:
+                report['telemetry'] = collector.finish(telemetry_outcome, telemetry_cli)
+            except (Exception, KeyboardInterrupt):
+                if report['status'] == 'passed':
+                    raise
+                report['telemetry'] = agent_telemetry.unavailable(telemetry_outcome)
     if report.get('telemetry') and report['status'] != 'passed':
         if report['telemetry']['outcome'] == 'success':
             report['telemetry']['outcome'] = 'invalid_response'

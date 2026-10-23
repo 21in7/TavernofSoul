@@ -1,5 +1,9 @@
 # 0026: 실제 source Read 검증과 유효 제안 보존 보고
 
+2026-10-23 진단 후속은 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
+기존 cloud history192건/오전 선택과 진행·검토·승인 결정은 유지하고 고정 실패 detail을 연결한다.
+별도 local history192건은 private 전용이며 과거 원인·기록·frozen 보고를 재구성하지 않는다.
+
 2026-10-22 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)은 source capture와
 freshness를 짧은 기존 source mutex 아래 수행하고 일반/READ_ONLY 모델·검증은 격리 사본에서
 진행하도록 잠금 계약을 대체한다. 아래 Read pairing·coverage·ID별 최신 verdict·retained provenance와

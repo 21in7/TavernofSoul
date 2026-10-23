@@ -1,37 +1,15 @@
 # 프로젝트 지도와 데이터 경계
 
-잠금 책임은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
-`project_lock.py`는 고정 로컬 workflow/discovery/sender 실행 소유권과 기존 source `.lock`을
-구분한다. `workflow.py`는 전체 검증 사본을 source 보호 아래 capture하고 승인 파일만 모델에
-제공한다. 긴 모델·검증은 source 잠금 밖이며 apply는 전체 baseline과 승인 freshness를 새로 대조한다.
-`improvement_loop.py`의 state/slot/예약은 discovery→artifact, 현재 source/control 판단은 그 뒤
-source mutex 순이다. cleanup은 source→Git journal로 refs/index/파일 변경을 보호한다. publication은
-frozen digest만 사용하며 callback은 state/source 잠금 밖이다. 실제 mutation 중 source 읽기는
-실패로 보류하고 정상0개로 바꾸지 않는다. `improvement_diagnostics.py`는 최초 실제 경계의
-고정 private metadata를 관측하며 web-v1/digest·Read proof·signed claim/completed outbox를 바꾸지 않는다.
-기존 inode·v1/v2/legacy 이행과 storage root binding, 진단 저장 한계는 ADR0027에 명시한다.
-
-현재 source 검증/집계/승인 경계는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
-`review_coverage.py`가 discovery 전용 parent transport의 Read pairing·원래 bytes/range hash를 검증하고,
-`improvement_loop.py`가 bounded 완료 index의 ID별 최신 verdict와 원본 provenance를 보존한다.
-`improvements.py`는 원본 검토와 현재 전체 의존성을 approve/execute에서 재검증한다. 합성 morning은
-검토·승인 원본이 아니다. 최신 참여 실패와 보존 eligible은 병존하며 Sites 화면은 parent 책임이다.
-빈 후보의 source 확인은 owner membership 안의 프로그램 본문 연속 최대96줄과 별도 shared
-문서 Read다. 안내/설정만 읽거나 선택 코드가 없고 비었거나 확인 불가이면 coverage는 미완료다.
-표본은 전체 파일·저장소 완독이 아니다. 호출·scope·격리·publication 경계는 확대하지 않는다.
-
-2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 연구 입력·참여·보고를
-분리한다. `improvement_snapshot.py`가 승인37개 source만 두 private bank의 파일별 bounded record와
-마지막 atomic manifest로 고정하고 `improvement_loop.py`가 state seal을 매 호출 전 검증한다.
-누락·변조·owner/mode/link·size 실패는 no-call이다. source-only 변화/안전한 live 읽기 불가는
-control과 snapshot이 유효한 active 회차의 진행을 지우지 않는다. 새 회차는 현재 source의 유효한
-capture가 필요하다. snapshot review_complete는 현재 freshness와 별개이며 stale/unknown 후보의
-public eligible·approve·execute는 기존 전체 dependency/서명 검증으로 차단한다.
-최근192개 cloud 시도 history는 회차·무효화·재시작을 넘어 보존하며 오전 window의 마지막 시도를
-표시한다. 후보는 현재 dependencies 일치 검증된 완료 회차에서 ID별 최신 verdict를 선택하고 선택 후 별도 회차의
-참여를 그 제안 검토로 합치지 않는다. local 실패/빈 pool에도 cloud는 각 정규 slot에서 독립 점검한다.
-private snapshot·trace·local·cost·진단은 public/결과 archive에 포함하지 않는다. 새 의미 검토와
-full make check·실제 hourly 관측은 대기이며 메인 제공 오늘 frozen 보고는 재작성하지 않는다.
+잠금·복구는 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
+workflow 소유권과 source capture/apply/cleanup/freshness mutex를 분리하고 격리 모델/검증 중에는
+source 잠금을 놓는다. 전체 baseline 충돌·외부 사용자 편집 보존과 signed claim은 유지한다.
+tick은 discovery→artifact 아래 예약/정산하고 source busy면 no-call이다. publication은 잠금 밖에서
+frozen digest만 전송한다. [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)의 sealed
+두 bank·source-only 진행/cursor와 current freshness 구분, [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)의
+실제 Read/프로그램 표본·coverage·ID별 verdict/provenance 및 기존 승인 gate를 유지한다.
+표본 밖 무결함과 과거 원인·운영 성공은 추정하지 않는다. 실제 참여 실패와 보존 eligible은 병존한다.
+private 진단·snapshot·local·cost는 공개/결과 archive에 넣지 않는다. 저장된 실패의 사유·호출 관측은
+복구에도 보존하며 실제 종료 시각과 보수적 회계 시각을 구분한다. Sites와 실제 운영 관측은 parent 소유다.
 
 ## 개발 작업 저장과 검증 선택
 
@@ -210,15 +188,12 @@ private 원본에는 모든 읽기 의존성의 SHA256·크기·POSIX mode·존�
 HTTPS POST와 날짜/digest GET 확인을 수행한다. 완료 전달은 아래 별도 계약을 쓴다.
 정상 제안 없음과 실패/미완료를 구분한다.
 
-hourly 실패 원인은 `improvements._call_role`이 호출 준비/실행·결과 envelope/identity·read-only
-context 검증·JSON·후보/독립 검토·context 종료의 실제 경계에서 고정 코드로 만든다.
-`improvement_loop._safe_participation`은 reason/error_type을 고정 allowlist로 재검증해
-private 참여에 보존하고 reason을 기존 다음-round local feedback으로 잇는다. 외부 reason/단계/필드/타입·예외문은
-진단의 권위가 아니며 legacy/unknown은 `role_failed`로 남긴다. 구문 위치는 보존하지 않는다.
-API/CLI·telemetry 성공과 후보/검토 검증 성공은 별개다. 신규 진단은 private에만 남고
-web-v1 필드·payload·digest에는 들어가지 않는다. 정확한 코드·타입/길이 상한·fallback·미실행
-인계는 [운영 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다. 이는 기존 private
-실패 정제의 정밀화이며 승인·예산·스케줄·저장·게시 경계의 새 결정은 아니다.
+hourly 원인은 신뢰한 실제 adapter/validator와 `_call_role` 경계에서 생성한 identity-bound detail만
+전달한다. loop는 broad reason·구체 cause/field/rule을 private scan/slot과 cloud192/local192 history,
+status·bounded feedback에 연결한다. admission window와 실제 call_started_at/finished_at은 구별한다.
+후속 성공·복구는 이전 실패를 지우지 않으며 legacy 상세는 unknown/unavailable이다. CLI 경고/모델·tool
+출력 문구는 실패 원인의 증거가 아니다. 코드·숫자 상한·privacy/저장 한계는 [운영 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다.
+web-v1/completion-v1·frozen payload/digest·journal·기존 스케줄/승인 정책은 유지한다.
 
 [ADR 0016](adr/0016-bounded-private-improvement-text.md)은 후보 서술의 PRIVATE 수용과
 PUBLIC 표시를 분리한다. title/analogy/issue/evidence summary/benefit text/risk/validation 단계/

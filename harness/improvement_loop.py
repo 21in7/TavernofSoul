@@ -408,7 +408,7 @@ def _new_state():
             'days': {}, 'inflight': None, 'round': None, 'stage_index': 0,
             'cursors': {}, 'feedback': {}, 'completed': [], 'last_review_at': None,
             'pause_reason': 'not_started', 'dependency_digest': None,
-            'participation': [], 'history_migrated': False, 'cursor_order': 0}
+            'participation': [], 'local_history': [], 'history_migrated': False, 'cursor_order': 0}
 
 
 @diagnostics.at('state_read')
@@ -418,7 +418,7 @@ def _read_state(store):
     state = store.read(STATE_FILE)
     # Only these additive fields may be missing from a legacy v1 record.
     if isinstance(state, dict):
-        for key in ('participation', 'history_migrated', 'cursor_order'):
+        for key in ('participation', 'local_history', 'history_migrated', 'cursor_order'):
             state.setdefault(key, copy.deepcopy(_new_state()[key]))
     expected = set(_new_state())
     if not isinstance(state, dict) or set(state) != expected or state['version'] != STATE_VERSION:
@@ -432,6 +432,15 @@ def _read_state(store):
             not isinstance(state['participation'], list) or
             len(state['participation']) > HISTORY_LIMIT):
         raise LoopError('state_invalid')
+    if type(state['local_history']) is not list or len(state['local_history']) > HISTORY_LIMIT:
+        raise LoopError('history_invalid')
+    local_ids = set()
+    for entry in state['local_history']:
+        _validate_history(entry, local=True)
+        identity = _history_identity(entry)
+        if identity in local_ids:
+            raise LoopError('history_invalid')
+        local_ids.add(identity)
     identities = set()
     for entry in state['participation']:
         _validate_history(entry)
@@ -465,15 +474,19 @@ def _write_state(store, state):
     store.write(STATE_FILE, state)
 
 
-def _validate_history(entry):
-    if (not isinstance(entry, dict) or set(entry) != {
+def _validate_history(entry, local=False):
+    required = {
             'scan_id', 'slot', 'stage_index', 'role', 'provider', 'model',
-            'status', 'started_at', 'finished_at'} or
+            'status', 'started_at', 'finished_at'}
+    optional = {'reason', 'failure_detail', 'stage', 'owner_role', 'call_started_at', 'call_finished_at'}
+    if (not isinstance(entry, dict) or not required <= set(entry) or
+            set(entry) - required - optional or
             not isinstance(entry['scan_id'], str) or not storage.RUN_ID.fullmatch(entry['scan_id']) or
             entry['role'] not in contract.ROLES or
             type(entry['stage_index']) is not int or
             entry['stage_index'] != (8 if entry['role'] == 'reviewer' else
-                                    2 * contract.SPECIALIST_ROLES.index(entry['role']) + 1) or
+                                    2 * contract.SPECIALIST_ROLES.index(entry['role']) + (0 if local else 1)) or
+            (local and entry['role'] == 'reviewer') or
             entry['status'] not in ('reserved', 'succeeded', 'failed', 'unavailable') or
             not isinstance(entry['provider'], str) or not 1 <= len(entry['provider']) <= 80 or
             not isinstance(entry['model'], str) or not 1 <= len(entry['model']) <= 120):
@@ -483,6 +496,12 @@ def _validate_history(entry):
         raise LoopError('history_invalid')
     if entry['finished_at'] is not None and _stamp(entry['finished_at']) < at:
         raise LoopError('history_invalid')
+    if ('stage' in entry and entry['stage'] != STAGES[entry['stage_index']][0] or
+            'owner_role' in entry and entry['owner_role'] != entry['role']):
+        raise LoopError('history_invalid')
+    for key in ('call_started_at', 'call_finished_at'):
+        if entry.get(key) is not None:
+            _stamp(entry[key])
 
 
 def _history_identity(entry):
@@ -493,29 +512,40 @@ def _history_order(entry):
     return (_stamp(entry['started_at']), entry['slot'], entry['stage_index'], entry['scan_id'])
 
 
-def _remember(state, scan_id, role, agent, pending=None):
+def _remember(state, scan_id, role, agent, pending=None, local=False):
     """Same atomic state transaction as reservation/settlement/recovery.
 
     Admission time defines participation's half-open window, including unknown
     interrupted attempts. Later recovery never moves an old call into today.
     Latest attempt per role wins; a failure cannot hide behind an older success.
     """
-    if agent.get('status') == 'not_called':
+    if agent.get('status') in ('not_called', 'skipped'):
         return
     stamp = pending['at'] if pending else agent.get('started_at', agent.get('finished_at'))
-    provider = agent.get('provider') or (pending or {}).get('provider')
-    model = agent.get('model') or (pending or {}).get('model')
+    provider = (pending or {}).get('provider') or agent.get('provider')
+    model = (pending or {}).get('model') or agent.get('model')
     if stamp is None or not provider or not model:
         return  # Legacy gaps are not invented participation.
-    role_index = 8 if role == 'reviewer' else 2 * contract.SPECIALIST_ROLES.index(role) + 1
+    role_index = 8 if role == 'reviewer' else 2 * contract.SPECIALIST_ROLES.index(role) + (0 if local else 1)
     entry = {'scan_id': scan_id, 'slot': _stamp(stamp).strftime('%Y-%m-%dT%H'),
              'stage_index': role_index, 'role': role,
              'provider': provider, 'model': model, 'status': agent['status'],
              'started_at': stamp, 'finished_at': agent.get('finished_at')}
-    _validate_history(entry)
+    entry.update(stage=STAGES[role_index][0], owner_role=role)
+    for key in ('call_started_at', 'call_finished_at'):
+        if agent.get(key) is not None:
+            entry[key] = agent[key]
+    if agent['status'] not in ('reserved', 'succeeded'):
+        entry.update(_failure_fields(agent, local=local))
+    _validate_history(entry, local=local)
     identity = _history_identity(entry)
-    previous = [e for e in state['participation'] if _history_identity(e) != identity]
-    state['participation'] = sorted(previous + [entry], key=_history_order)[-HISTORY_LIMIT:]
+    key = 'local_history' if local else 'participation'
+    old = next((e for e in state[key] if _history_identity(e) == identity), None)
+    if old is not None and old['status'] in ('failed', 'unavailable'):
+        # Re-import/settlement cannot replace this attempt's first observed failure.
+        return
+    previous = [e for e in state[key] if _history_identity(e) != identity]
+    state[key] = sorted(previous + [entry], key=_history_order)[-HISTORY_LIMIT:]
 
 
 def _import_participation(state, report):
@@ -717,7 +747,15 @@ def _role_agent(report, role, participation):
     report['agents'][contract.ROLES.index(role)] = participation
 
 
-def _feedback_entry(candidate=None, *, reason='', candidate_id=None, draft_digest=None):
+def _attempt_position(participation, scan_id, slot, index):
+    participation.update(scan_id=scan_id, slot=slot, stage_index=index,
+                         stage=STAGES[index][0], owner_role=STAGES[index][1])
+    if participation.get('status') not in ('succeeded', 'reserved', 'not_called'):
+        participation.update(_failure_fields(participation, local=index < 8 and index % 2 == 0))
+    return participation
+
+
+def _feedback_entry(candidate=None, *, reason='', candidate_id=None, draft_digest=None, failure=None):
     item = {'title': '로컬 탐색 보류', 'issue': '이전 탐색의 고정 진단을 확인하고 근거를 보완해야 합니다.',
             'edit_files': [], 'specialist_reason': contract.safe_text(reason, 1440) if reason else '',
             'review_reason': ''}
@@ -728,6 +766,8 @@ def _feedback_entry(candidate=None, *, reason='', candidate_id=None, draft_diges
         item['candidate_id'] = candidate_id
     if draft_digest is not None:
         item['draft_digest'] = draft_digest
+    if failure is not None:
+        item['specialist_failure_detail'] = diagnostics.sanitize_detail(failure)
     return item
 
 
@@ -762,8 +802,22 @@ def _bounded_feedback(entries, paths, local_config):
 
 
 def _record_feedback(state, role, entries):
+    # A later refinement can add advice without erasing an earlier local failure.
+    for old in state['feedback'].get(role, []):
+        if any(key in old for key in ('specialist_failure_detail', 'review_failure_detail')) and old not in entries:
+            entries = entries + [copy.deepcopy(old)]
     state['round']['feedback'][role] = entries[:4]
     state['feedback'][role] = copy.deepcopy(entries[:4])
+
+
+def _failure_fields(value, local=False):
+    reason = value.get('reason')
+    if local:
+        reason = reason if type(reason) is str and reason in local_model._REASONS | {
+            'local_response_invalid', 'interrupted_unknown'} else 'transport_failed'
+    else:
+        reason = 'interrupted_unknown' if reason == 'interrupted_unknown' else imp.sanitize_role_failure(reason)
+    return {'reason': reason, 'failure_detail': diagnostics.sanitize_detail(value.get('failure_detail'))}
 
 
 def _safe_participation(participation):
@@ -786,6 +840,7 @@ def _safe_participation(participation):
     result.update(cost=cost if known else None,
                   cost_status='cli_estimated_usd' if known else 'unknown')
     if result.get('status') != 'succeeded':
+        result.update(_failure_fields(participation))
         result['reason'] = ('role_interrupted' if result.get('interrupted') is True else
                             imp.sanitize_role_failure(participation.get('reason')))
         if 'error_type' in participation:
@@ -888,6 +943,11 @@ def _recover(store, state, config, now):
     report = state['round']['report']
     slot = state['days'][pending['date']]['slots'][pending['slot']]
     _account_cross_day(state, pending, now)
+    observed = next((a for a in (report['local_participation'] if stage == 'local_explorer' else
+        report['agents']) if a.get('slot') == pending['slot'] and
+        a.get('stage_index') == pending['stage_index'] and a.get('status') in ('failed', 'unavailable')), None)
+    if observed is not None:
+        _attempt_position(observed, report['scan_id'], pending['slot'], pending['stage_index'])
     if stage == 'local_explorer':
         # Recovery describes the journaled attempt, including a pre-v2 call;
         # it must not relabel that attempt as the newly configured provider.
@@ -896,32 +956,43 @@ def _recover(store, state, config, now):
                  'called': True, 'started_at': pending['at'], 'finished_at': now.isoformat(),
                  'read_windows': pending['read_windows'], 'skipped_lines': [],
                  'cost': None, 'cost_status': 'not_metered'}
-        report['local_participation'].append(local)
-        state['round']['drafts'][role] = {'candidates': [], 'reason': 'interrupted_unknown'}
+        if observed is not None:
+            local = observed
+        else:
+            report['local_participation'].append(local)
+        if observed is None or role not in state['round']['drafts']:
+            state['round']['drafts'][role] = {'candidates': [], 'reason': local['reason']}
         previous = state['feedback'].get(role, [])
-        _record_feedback(state, role, [_feedback_entry(reason='local_interrupted_unknown')] + previous[:2])
+        _record_feedback(state, role, [_feedback_entry(reason=local['reason'] if observed else 'local_interrupted_unknown',
+            failure=None if local.get('status') == 'succeeded' else local.get('failure_detail', {}))] + previous[:2])
     else:
         known_cost = slot.get('actual_estimated_usd')
-        _role_agent(report, role, {'role': role, 'provider': pending['provider'],
+        _role_agent(report, role, observed if observed is not None else {'role': role, 'provider': pending['provider'],
             'model': pending['model'], 'status': 'failed', 'reason': 'interrupted_unknown',
             'cost': known_cost if _number(known_cost) else None,
             'cost_status': 'cli_estimated_usd' if _number(known_cost) else 'unknown',
             'started_at': pending['at'],
             'finished_at': now.isoformat()})
-        _remember(state, report['scan_id'], role, report['agents'][contract.ROLES.index(role)], pending)
         if stage == 'specialist':
             drafts = state['round']['drafts'].get(role, {}).get('candidates', [])
-            entries = [_feedback_entry(c, reason='specialist_interrupted_unknown',
-                draft_digest=contract.digest(drafts)) for c in drafts][:2]
+            failure = report['agents'][contract.ROLES.index(role)]
+            entries = [_feedback_entry(c, reason=failure['reason'] if observed else 'specialist_interrupted_unknown',
+                draft_digest=contract.digest(drafts), failure=failure.get('failure_detail', {})) for c in drafts][:2]
             if not drafts:
                 entries = copy.deepcopy(state['feedback'].get(role, [])[:2]) + [
-                    _feedback_entry(reason='specialist_interrupted_unknown',
-                                    draft_digest=contract.digest(drafts))]
+                    _feedback_entry(reason=failure['reason'] if observed else 'specialist_interrupted_unknown',
+                        draft_digest=contract.digest(drafts), failure=failure.get('failure_detail', {}))]
             _record_feedback(state, role, entries)
         else:
             report['review_complete'] = False
-            _review_feedback(state, 'reviewer_interrupted_unknown')
-    slot['status'] = 'interrupted_unknown'
+            _review_feedback(state, observed['reason'] if observed else 'reviewer_interrupted_unknown',
+                             observed.get('failure_detail') if observed else diagnostics.sanitize_detail(None))
+    attempt = (local if stage == 'local_explorer' else report['agents'][contract.ROLES.index(role)])
+    _attempt_position(attempt, report['scan_id'], pending['slot'], pending['stage_index'])
+    _remember(state, report['scan_id'], role, attempt, pending, local=stage == 'local_explorer')
+    slot.update({key: attempt[key] for key in ('scan_id', 'stage_index', 'stage', 'owner_role',
+        'started_at', 'call_started_at', 'call_finished_at', 'finished_at', 'reason', 'failure_detail') if key in attempt})
+    slot['status'] = attempt['status'] if observed else 'interrupted_unknown'
     state['stage_index'] += 1
     state['inflight'] = None
     # Its reservation is already charged. No automatic refund or retry.
@@ -931,7 +1002,7 @@ def _recover(store, state, config, now):
     _write_state(store, state)
 
 
-def _review_feedback(state, failure=None):
+def _review_feedback(state, failure=None, detail=None):
     verdicts = {record['id']: record.get('review') for record in state['round']['report']['proposals']}
     for role, entries in state['round']['feedback'].items():
         updated = copy.deepcopy(entries)
@@ -939,10 +1010,12 @@ def _review_feedback(state, failure=None):
             review = verdicts.get(item.get('candidate_id'))
             if review is not None:
                 item['review_reason'] = contract.redact_text(review['reason'])
+                item.pop('review_failure_detail', None)
             elif failure:
                 item['review_reason'] = failure
-        state['feedback'][role] = updated
-        state['round']['feedback'][role] = updated
+                if detail is not None:
+                    item['review_failure_detail'] = diagnostics.sanitize_detail(detail)
+        _record_feedback(state, role, updated)
 
 
 @contextmanager
@@ -995,7 +1068,8 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
                        + contract.canonical_json({'coverage': coverage}).decode('utf-8') + '\n' + prompt)
         prompt = agent_models.redact(prompt + extra, runtime_keys)
         if source_bytes + len(prompt.encode('utf-8')) > discovery['limits']['max_context_bytes']:
-            raise LoopError('cloud_context_too_large')
+            raise diagnostics.attach(LoopError('cloud_context_too_large'), diagnostics.detail(
+                'role_preparation_failed', 'context_too_large', phase='preparation'))
         options['timeout'] = min(options['timeout'], config['model_timeout_seconds'])
         if actual_role == 'reviewer':
             options['max_budget_usd'] = budget
@@ -1012,45 +1086,66 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
 def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
                 prepared, runner, config, now):
     started = time.monotonic()
+    failure = diagnostics.detail('role_execution_failed', 'unavailable', phase='execution')
     try:
         result = runner(role, own_paths, snapshots, config=local_config, cursor=cursor,
                         feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
         if (not isinstance(result, dict) or result.get('provider') != 'mlx-vlm' or
                 result.get('model') != local_config['model'] or
                 result.get('stage') != 'local_explorer' or result.get('owner_role') != role):
-            raise LoopError('local_identity_invalid')
+            raise diagnostics.attach(LoopError('local_identity_invalid'), diagnostics.detail(
+                'role_identity_mismatch', 'identity_mismatch', phase='identity'))
         candidates = []
         windows = [{key: item[key] for key in ('path', 'start_line', 'end_line')}
                    for item in prepared['sources']]
-        reason = result.get('reason')
-        if not isinstance(reason, str) or reason not in local_model._REASONS:
-            reason = 'transport_failed'
+        # A JSON reason is not adapter provenance, even if it is allowlisted.
+        detail = diagnostics.result_detail(result)
+        reason = detail['reason'] if detail['reason'] in local_model._REASONS else 'transport_failed'
+        if (result.get('status') == 'skipped' and result.get('called') is True and
+                type(result.get('candidates')) is list and not result['candidates']):
+            reason = 'empty_draft'  # No-candidate outcome, not an inferred failure.
         succeeded = result.get('status') == 'succeeded' and result.get('called') is True
         if succeeded:
+            failure = diagnostics.detail('candidate_invalid', 'unavailable', phase='candidate')
             sources = {p: snapshots[p]['content'].decode('utf-8') if snapshots[p]['exists'] else None
                        for p in own_paths}
             candidates = contract.validate_candidates({'candidates': result.get('candidates')}, sources,
                 own_paths, config['max_candidates_per_specialist'])
+            if not candidates:
+                reason = 'empty_draft'
             for candidate in candidates:
                 for evidence in candidate['evidence'] + candidate['benefit']['evidence']:
                     if not any(evidence['path'] == window['path'] and
                                window['start_line'] <= evidence['start_line'] <=
                                evidence['end_line'] <= window['end_line'] for window in windows):
-                        raise LoopError('evidence_outside_window')
+                        raise diagnostics.attach(LoopError('evidence_outside_window'), diagnostics.detail(
+                            'evidence_outside_window', 'evidence_outside_window', phase='window'))
         status = 'succeeded' if candidates else 'failed'
-        return ({'provider': 'mlx-vlm', 'model': local_config['model'], 'stage': 'local_explorer',
+        participation = {'provider': 'mlx-vlm', 'model': local_config['model'], 'stage': 'local_explorer',
                  'owner_role': role, 'status': status,
                  'reason': 'ok' if candidates else reason, 'called': result.get('called') is True,
                  'read_windows': windows, 'skipped_lines': prepared['skipped_lines'],
-                 'started_at': now.isoformat(), 'cost': None, 'cost_status': 'not_metered'}, candidates)
+                 'started_at': now.isoformat(), 'cost': None, 'cost_status': 'not_metered'}
+        if status != 'succeeded':
+            # Result provenance is inspected only after provider/model/owner identity.
+            participation['failure_detail'] = detail
+            if participation['called'] and reason != 'empty_draft':
+                error = diagnostics.inherit(LoopError('local_response_invalid'), result)
+                diagnostics.record('stage', error, started)
+        return participation, candidates
     except (Exception, KeyboardInterrupt) as exc:
+        diagnostics.attach(exc, diagnostics.detail('role_interrupted', 'interrupted', phase='execution')
+                           if isinstance(exc, KeyboardInterrupt) else failure)
         diagnostics.record('stage', exc, started)
+        detail = diagnostics.exception_detail(exc)
         return ({'provider': 'mlx-vlm', 'model': local_config['model'], 'stage': 'local_explorer',
-                 'owner_role': role, 'status': 'failed', 'reason': 'local_response_invalid',
+                 'owner_role': role, 'status': 'failed',
+                 'reason': detail['reason'] if detail['reason'] in local_model._REASONS else 'local_response_invalid',
                  'called': True, 'read_windows': [{key: item[key] for key in
                      ('path', 'start_line', 'end_line')} for item in prepared['sources']],
                  'skipped_lines': prepared['skipped_lines'], 'started_at': now.isoformat(),
-                 'cost': None, 'cost_status': 'not_metered'}, [])
+                 'cost': None, 'cost_status': 'not_metered',
+                 'failure_detail': detail}, [])
 
 
 def _morning_window(now):
@@ -1075,9 +1170,10 @@ def _history_agents(state, start, end):
     agents = _empty_agents()
     for entry in sorted(state['participation'], key=_history_order):
         if start <= _stamp(entry['started_at']) < end:
-            agent = copy.deepcopy(entry)
+            agent = _status_attempt(entry)
             if agent['status'] == 'reserved':
                 agent['status'] = 'failed'  # uncertain attempt, never success
+                agent.update(_failure_fields(agent))
             _role_agent({'agents': agents}, agent['role'], agent)
     return agents
 
@@ -1526,6 +1622,9 @@ def _summary(state, now, config):
             'last_review_at': state['last_review_at'], 'next_report_at': report_time.isoformat(),
             'last_review_current_at_last_tick': current_review,
             'last_slot': state['last_slot'],
+            # Detached PRIVATE projections; legacy gaps are explicit, never written back.
+            'participation': [_status_attempt(e) for e in state['participation']],
+            'local_history': [_status_attempt(e) for e in state['local_history']],
             'message_ko': ('Claude 추정 잔액 {} · 오늘 호출 {}/{} · 보류 {} · 다음 {}({}) · '
                            '마지막 독립 검토 {} · 다음 보고 {}').format(
                                '${:.6f}'.format(remaining) if remaining is not None else '미초기화',
@@ -1534,6 +1633,15 @@ def _summary(state, now, config):
                                ((state['last_review_at'] + (' (현재 조건 무효)' if not current_review else ''))
                                 if state['last_review_at'] else '없음'),
                                report_time.isoformat())}
+
+
+def _status_attempt(entry):
+    result = copy.deepcopy({key: entry[key] for key in (
+        'scan_id', 'slot', 'stage_index', 'role', 'stage', 'owner_role', 'provider', 'model',
+        'status', 'started_at', 'call_started_at', 'call_finished_at', 'finished_at') if key in entry})
+    if entry['status'] not in ('succeeded', 'reserved'):
+        result.update(_failure_fields(entry, local=entry['stage_index'] < 8 and entry['stage_index'] % 2 == 0))
+    return result
 
 
 def status(*, now=None, selected=None):
@@ -1558,8 +1666,15 @@ def status(*, now=None, selected=None):
 def _pause(store, state, slot, reason, now, config):
     state['pause_reason'] = reason
     day = state['days'].get(now.date().isoformat())
-    if day and slot in day['slots']:
+    # A later settlement error pauses the controller, not the finished attempt.
+    # Its slot must retain that attempt's outcome and original stage identity.
+    if day and slot in day['slots'] and day['slots'][slot]['status'] not in (
+            'succeeded', 'failed', 'unavailable', 'skipped', 'interrupted_unknown'):
         day['slots'][slot].update(status='paused', reason=reason)
+        if state['round'] and state['stage_index'] < len(STAGES):
+            stage, role = STAGES[state['stage_index']]
+            day['slots'][slot].update(scan_id=state['round']['report']['scan_id'],
+                stage_index=state['stage_index'], stage=stage, owner_role=role)
     _write_state(store, state)
     return _summary(state, now, config)
 
@@ -1567,6 +1682,8 @@ def _pause(store, state, slot, reason, now, config):
 def _skip_stage(store, state, day, slot, now, config, reason):
     stage, role = STAGES[state['stage_index']]
     diagnostics.position(stage, now.hour)
+    day['slots'][slot].update(scan_id=state['round']['report']['scan_id'],
+        stage_index=state['stage_index'], stage=stage, owner_role=role)
     report = state['round']['report']
     if stage != 'local_explorer':
         _role_agent(report, role, {'role': role, 'provider': None, 'model': None,
@@ -1671,6 +1788,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     stage, role = STAGES[state['stage_index']]
     diagnostics.position(stage, now.hour)
     own_paths = imp.role_scope(role, paths, discovery)
+    day['slots'][slot].update(scan_id=state['round']['report']['scan_id'],
+        stage_index=state['stage_index'], stage=stage, owner_role=role)
     if not own_paths:
         return _skip_stage(store, state, day, slot, now, config, 'owner_scope_empty')
     budget, spec, feedback, prepared, cursor = None, None, [], None, None
@@ -1682,10 +1801,10 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                 cursor=cursor, feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
         except (Exception, KeyboardInterrupt) as exc:
             diagnostics.record('stage', exc)
-            reason = (exc.reason if isinstance(exc, local_model.LocalModelError) and
-                      exc.reason in local_model._REASONS else 'input_invalid')
+            detail = diagnostics.exception_detail(exc)
+            reason = detail['reason'] if detail['reason'] in local_model._REASONS else 'input_invalid'
             prepared = {'status': 'skipped', 'reason': reason, 'sources': [],
-                        'skipped_lines': [], 'next_cursor': cursor}
+                        'skipped_lines': [], 'next_cursor': cursor, 'failure_detail': detail}
         state['cursors'][role] = prepared['next_cursor']
         if prepared['status'] != 'ready':
             state['round']['drafts'][role] = {'candidates': [], 'reason': prepared['reason']}
@@ -1695,8 +1814,14 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                 'reason': prepared['reason'], 'read_windows': [], 'skipped_lines': prepared['skipped_lines'],
                 'started_at': now.isoformat(), 'finished_at': now.isoformat(),
                 'cost': None, 'cost_status': 'not_metered'})
+            local = report['local_participation'][-1]
+            _attempt_position(local, report['scan_id'], slot, state['stage_index'])
+            if 'failure_detail' in prepared:
+                local['failure_detail'] = diagnostics.sanitize_detail(prepared['failure_detail'])
+                day['slots'][slot]['failure_detail'] = local['failure_detail']
             previous = state['feedback'].get(role, [])
-            _record_feedback(state, role, [_feedback_entry(reason=prepared['reason'])] + previous[:2])
+            _record_feedback(state, role, [_feedback_entry(reason=prepared['reason'],
+                failure=local.get('failure_detail'))] + previous[:2])
             return _skip_stage(store, state, day, slot, now, config, prepared['reason'])
         provider, model = 'mlx-vlm', local_config['model']
     else:
@@ -1738,23 +1863,28 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                'read_windows': [{key: item[key] for key in ('path', 'start_line', 'end_line')}
                                 for item in prepared['sources']] if prepared else []}
     state['inflight'] = pending
-    if stage != 'local_explorer':
-        _remember(state, pending['round_id'], role,
-                  {'provider': provider, 'model': model, 'status': 'reserved'}, pending)
+    _remember(state, pending['round_id'], role,
+              {'provider': provider, 'model': model, 'status': 'reserved'}, pending,
+              local=stage == 'local_explorer')
     day['slots'][slot].update(status='calling', stage=stage, role=role,
                              reservation_usd=budget)
     _write_state(store, state)
     report = state['round']['report']
+    call_started_at = _clock(finish_clock()).isoformat()
     if stage == 'local_explorer':
         participation, candidates = _local_call(role, own_paths, snapshots, local_config, cursor,
             feedback, prepared, local_runner or local_model.run, config, now)
-        participation['finished_at'] = now.isoformat()
+        call_finished = _clock(finish_clock())
+        participation.update(finished_at=call_finished.isoformat(), call_started_at=call_started_at,
+                             call_finished_at=call_finished.isoformat())
+        _attempt_position(participation, pending['round_id'], slot, pending['stage_index'])
         report['local_participation'].append(participation)
         state['round']['drafts'][role] = {'candidates': candidates,
             'reason': participation['reason'], 'draft_digest': contract.digest(candidates)}
         if not candidates:
             prior = state['feedback'].get(role, [])
-            _record_feedback(state, role, [_feedback_entry(reason=participation['reason'])] + prior[:2])
+            _record_feedback(state, role, [_feedback_entry(reason=participation['reason'],
+                failure=participation.get('failure_detail'))] + prior[:2])
     else:
         drafts = state['round']['drafts'].get(role, {}).get('candidates', [])
         feedback = _bounded_feedback(state['feedback'].get(role, []), own_paths, local_config)
@@ -1763,8 +1893,11 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             store.policy, config, budget,
             coverage=[{'role': a['role'], 'status': a['status'],
                        'read_files': a.get('read_files', [])} for a in report['agents'][:-1]])
-        # Use the supplied trusted clock, not helper wall time, for window tests.
-        participation.update(started_at=now.isoformat(), finished_at=now.isoformat())
+        call_finished = _clock(finish_clock())
+        participation.update(provider=provider, model=model,
+                             started_at=now.isoformat(), finished_at=call_finished.isoformat(),
+                             call_started_at=call_started_at, call_finished_at=call_finished.isoformat())
+        _attempt_position(participation, pending['round_id'], slot, pending['stage_index'])
         _role_agent(report, role, participation)
         if stage == 'specialist':
             refined = []
@@ -1784,7 +1917,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             if not entries:
                 reason = ('specialist_empty_candidates' if parsed is not None else
                           imp.sanitize_role_failure(participation.get('reason')))
-                entries = [_feedback_entry(candidate, reason=reason, draft_digest=contract.digest(drafts))
+                entries = [_feedback_entry(candidate, reason=reason, draft_digest=contract.digest(drafts),
+                           failure=participation.get('failure_detail'))
                            for candidate in drafts][:2]
                 if not drafts:
                     # Independent inspection may legitimately yield no candidate.
@@ -1792,7 +1926,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                     # and record this distinct specialist outcome without inventing
                     # a candidate or relabeling either attempt as successful.
                     entries = copy.deepcopy(state['feedback'].get(role, [])[:2]) + [
-                        _feedback_entry(reason=reason, draft_digest=contract.digest(drafts))]
+                        _feedback_entry(reason=reason, draft_digest=contract.digest(drafts),
+                                        failure=participation.get('failure_detail'))]
             _record_feedback(state, role, entries)
         else:
             if parsed is not None:
@@ -1827,8 +1962,9 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             # cost or refund it on recovery.
             _write_state(store, state)
             _review_feedback(state, None if parsed is not None else
-                             imp.sanitize_role_failure(participation.get('reason')))
-    finished = _clock(finish_clock())
+                             imp.sanitize_role_failure(participation.get('reason')),
+                             participation.get('failure_detail'))
+    finished = call_finished
     if finished < now:
         # Keep the original day's reservation and stop; clock rollback must
         # never move a completed review into an earlier publication window.
@@ -1845,6 +1981,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
         # allowance to an execution that crossed its accounting boundary.
         _account_cross_day(state, pending, now)
     participation['finished_at'] = now.isoformat()
+    participation['call_started_at'] = call_started_at
+    _attempt_position(participation, pending['round_id'], slot, pending['stage_index'])
     state['high_water_at'] = max(_stamp(state['high_water_at']), now).isoformat()
     # Snapshot completion is independent of live source freshness. Control
     # changes remain fail-closed; next tick invalidates their progression.
@@ -1867,11 +2005,13 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
         report['errors'].append('freshness_unavailable_after_call')
         # Cannot establish whether controls changed; do not certify completion.
         report['review_complete'] = False
-    if stage != 'local_explorer':
-        _remember(state, pending['round_id'], role, participation, pending)
+    _remember(state, pending['round_id'], role, participation, pending, local=stage == 'local_explorer')
     state['stage_index'] += 1
     state['inflight'] = None
     day['slots'][slot]['status'] = participation['status']
+    day['slots'][slot].update({key: participation[key] for key in ('scan_id', 'stage_index',
+        'stage', 'owner_role', 'started_at', 'call_started_at', 'call_finished_at', 'finished_at', 'reason',
+        'failure_detail') if key in participation})
     state['pause_reason'] = (day.get('stop_reason', 'daily_budget_overrun') if day['stopped'] else
                              None if participation['status'] == 'succeeded' else
                              participation.get('reason', 'role_failed'))
@@ -1966,7 +2106,7 @@ def _failure_reason(exc, fallback):
         if type(value) is str and value in fixed:
             return value
     if isinstance(exc, local_model.LocalModelError):
-        value = exc.reason
+        value = diagnostics.exception_detail(exc)['reason']
         if type(value) is str and value in local_model._REASONS:
             return value
     return fallback

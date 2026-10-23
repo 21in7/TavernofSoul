@@ -17,7 +17,7 @@ journal만 사용하고 sending/unknown은 자동 재전송하지 않는다. 실
 state·storage가 불가하면 보고 확정도 불가할 수 있다. 과거 frozen 보고는 수정하지 않는다.
 
 private 결과의 `diagnostic`은 실제 UTC 발생시각·고정 boundary/reason·logical lock kind·allowlist
-stage/hour slot·bounded 정수 errno/elapsed_ms만 담고 holder_pid는 미확인 null이다. config, Store,
+stage/hour slot·bounded 정수 errno/elapsed_ms와 아래 고정 detail을 담고 holder_pid는 미확인 null이다. config, Store,
 storage readiness, 각 lock, state read/save, dependencies/snapshot/seal/stage, deadline/publication/
 정산을 구분한다. bool·과대/비정수·외부 reason/예외 문자열/원문/credential/절대 경로는 배제한다.
 가능하면 state 잠금 안에서 `loop/last-diagnostic.json` 마지막 한 건과 private 결과를 함께 남긴다
@@ -85,84 +85,35 @@ hourly 연구와 09:00 once 보고로 대체한다. 보고를 보고 고칠 항�
 
 ## 진행 보존 수리의 문서 영향과 실행기 인계
 
-2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 local 실패 gating·
-source-only 전체 reset·선택 회차에 종속된 오전 참여 집계를 대체한다. 이번32개는 coordinator 작업
-정확히 하나다. 직전 run `1792547845263535412-a3f550`의900초 종료/applied=[]와 trusted parent의
-baseline/checkpoint 확인·첫 쓰기 직전 보존 초안 준비는 구현 성공·검토·검증·적용이 아니다.
-worker는 준비된 코드·테스트·문서에서 누락과 오류만 마무리하고 private 기록/checkpoint를 읽지 않았다.
+2026-10-21 진행 보존 결정과 실제 local/cloud/09시 전달 관측은
+[ADR0025](adr/0025-progress-preserving-improvement-reviews.md), source Read/제안 보존의 후속 결정은
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)에 보존한다. 당시 승인32개/
+coordinator1작업과 run1792547845263535412-a3f550의900초 종료/applied=[]는 과거 이력이다.
+parent의 baseline/checkpoint 확인·초안 준비는 새 구현·검토·검증·적용 증거가 아니다.
+worker는 private 원문/운영 기록을 읽지 않았다. frozen 2026-10-21 failed/0카드 전달은 재작성하지 않는다.
 
-메인이 전달한 오늘 관측은 00/04/06시 local 성공, 02시 duplicate, 01/05/07시
-coordinator/parser/django 성공·정식 후보 없음, 03시 downloader 초안 부재 skip, 08시 빈 pool
-reviewer skip이다. 09시 새 회차 이후 잘못된 not_called/failed/0카드 보고가 전달됐고, 10시 source
-변경으로 회차가 다시 초기화됐다. 전날 downloader 후보2개도 문서 변경으로 무효화됐다.
-이는 parent 제공 사실이며 worker가 private 원문이나 실제 모델을 관측한 것이 아니다.
-기존 frozen 2026-10-21 보고는 수정·재생성하지 않는다. 아래 이전 보고 pending 문구와
-21개 프로토콜/진단 수리의 표는 당시 이력이며 이번 최종 코드의 성공 증거로 재사용하지 않는다.
+현재 loop는 cloud192건의 admission history와 완료 index32건 이내를 분리하고 ID별 최신 명시
+verdict/provenance를 유지한다. local history192건은 별도 private 배열이며 오전 cloud 집계에 합치지 않는다.
+진단 detail은 후속 ADR0027 정밀화에 따라 함께 저장하되 source/원문/cost는 history에 추가하지 않는다.
+legacy 최대4096개 scan 이름의 한 번 이행, 이후 exact pointer carry-in과 비용 중복 방지·미상 비용의
+보수적 소비는 그대로다. timestamp 없는 과거 활동과 local 원인은 복원하지 않는다.
 
-loop state는 최근192개 cloud 시도와 최대32개 완료 pointer를 별도로 보존한다. admission 시각의
-반개방 오전 window에서 역할별 마지막 실제 시도를 표시하고 scan_id/slot/stage로 중복을 없앤다.
-완료·실패·무효화·재시작에도 참여를 지우지 않으며 최신 실패가 옛 성공에 가려지지 않는다.
-후보는 현재 전체 dependency 일치 검증된 완료 회차의 ID별 최신 명시 verdict를 선택한다. 그 완료 뒤 별도 회차의
-성공 시도가 있어도 전체 scanned로 합치지 않고 partial과 summary로 provenance 차이를 표시한다.
-history에는 source/local/진단/cost를 추가하지 않는다. 최초 최대4096개 scan 이름의 bounded 이행 후
-directory 재탐색 없이 index/current/completed/day pointer를 사용한다. 이후 정확한 legacy day
-pointer는 실제 참여와 비용 모두 중복 없이 carry-in한다. timestamp 없는 활동은 추정하지 않는다.
+두 private bank의 승인37개 snapshot·manifest/fingerprint/no-follow/owner/mode/nlink와128KiB/1.5MiB
+검증, 고정 bounded staging·unsafe partial no-call·source-only stage/pool/feedback/cursor 보존은 ADR0025를 따른다.
+control 변경은 진행을 무효화하지만 참여를 지우지 않는다. legacy active에 현재 bytes를 붙이지 않는다.
+seal이 유효한 active 검토도 live freshness·eligible·approve·execute 권한은 아니다. source unavailable과
+source lock busy를 구별한다. local 실패/빈 초안·긴 줄/준비 skip은 정규 specialist와 빈 pool reviewer의
+독립 점검을 생략하지 않는다. 기존 strict validator/한국어/근거·예산/quota/guard·승인/Git 정책을 유지한다.
 
-`improvement_snapshot.py`는 runtime 기존37개만 a/b private bank의 파일별 bounded record에
-저장하고 manifest 마지막 atomic publication과 state digest로 결합한다. 매 호출 전 전체 seal과
-fingerprints·no-follow·owner/private mode·nlink·파일/총 bytes를 검증하며 손상·누락은 no-call이다.
-모델 context·credential·scope 밖 파일·전체 repo를 지속 저장하지 않으며 snapshot은 public/archive/
-diagnostic으로 전달하지 않는다. legacy active에는 현재 bytes를 붙이지 않고 참여 보존 후 종료한다.
-snapshot Store staging은 bank당 최대38개 고정 이름이다. 강제 종료의 유효한 owned0600/nonlinked
-bounded partial만 회수하며 unsafe staging은 삭제·수정하지 않고 no-call로 남긴다.
-source-only 변경은 pinned stage/pool/feedback/cursor를 유지한다. live source가 과대/비UTF-8/unsafe로
-읽히지 않아도 control이 유효한 active seal의 검토는 끝낼 수 있지만 current freshness는 unknown이다.
-새 round는 안전한 현재 capture가 필요하며 stale/unknown 후보의 public eligible·approve·execute는
-기존 strict 전체 read dependency·ID/digest·signed approval 검증으로 차단한다. scope/ownership/
-config/provider/model/protocol 변경은 진행을 무효화하며 실제 참여는 남긴다. owner 비공유 source
-우선 탐색은 승인 membership·canonical path/원문 줄 번호를 바꾸지 않고 legacy cursor를 path로 이행한다.
+당시 수리의 세 회귀 입력은 local만 호출된 날 cloud 전원 not_called/failed, 초안 없는 specialist
+결과 뒤 이전 local 진단 보존, parser provider를 기존 codex에서 서로 다른 zai로 변경하는 control
+무효화다. source-only9단계·stale 승인·snapshot tamper/crash/상한·legacy/window·frozen/privacy 회귀와
+현재 schema/diagnostic 회귀를 실행기가 full make check로 함께 검증한다. 작성은 통과 증거가 아니다.
 
-local duplicate/empty/exception/긴 줄·준비 실패는 해당 local slot만 소비한다. specialist는 자기
-승인 소스를 독립 점검하고 빈 pool reviewer도 최종 정규 slot에서 coverage·제안 유무를 평가한다.
-strict validator/diagnostic과 실패 상태는 보존하며 후보를 보정하지 않는다. 추가 call·retry·provider/
-model fallback은 없고 기존 예산/quota/readiness/child guard/slot·승인·Git 정책은 유지한다.
-
-시작과 최종 자체 읽기 검토의 문서 판단은 `documentation.status=updated`다. 구조·책임·입력/보고
-계약·격리·이행·복구가 바뀌므로 다음 승인 문서를 함께 갱신했다. 이는 독립 reviewer 승인이 아니다.
-
-| files | reason |
-| --- | --- |
-| AGENTS.md | 32개 coordinator1작업·37개 runtime scope·snapshot/current freshness·실제 참여와 역할 책임 |
-| docs/adr/0015-approval-gated-improvement-discovery.md | 기존 개별 승인 경계를 유지하고 현 스케줄 결정으로 연결 |
-| docs/adr/0017-budgeted-continuous-improvement.md | 구식 gating/reset·관측 pending·신규 ADR 불필요 기록을 현 결정과 구분 |
-| docs/adr/0025-progress-preserving-improvement-reviews.md | 새 결정·대안·bounded snapshot/history·이행·한계와 미실행 검증 |
-| docs/adr/README.md | ADR0025 등록과 이전 run 실패/초안 준비의 근거 수준 |
-| docs/agent-models.md | 선택적 local·독립 cloud slot·기존 provider/model/예산 경계 |
-| docs/architecture.md | snapshot helper·history/index·current freshness의 분리와 공개 경계 |
-| docs/harness-design.md | 저장/manifest·호출 전 검증·legacy 복구·무효화와 cursor 계약 |
-| docs/harness.md | Lab engine→Store 합성 회귀와 full 검증/운영 관측의 실행기 책임 |
-| docs/improvements.md | 실제 전달 관측과 현재 동작·문서 영향·실행기 인계 |
-| docs/local-models.md | local 실패/빈 pool 뒤 정규 독립 점검과 window/cursor·관측 한계 |
-| docs/workflow.md | 새 계획/실제 구현·새 의미 검토·full check·Git 역할/parent 전달 순서 |
-
-회귀는 Lab engine tick→Store 재개 경로로 source bytes/mode/존재 변화 속 동일 snapshot9단계,
-stale approve/execute 거부, live source 읽기 불가, local 실패 뒤 독립 근거 후보/빈 pool coverage,
-snapshot tamper/missing/size/owner/mode/link/crash no-call, control 변경, 최신 실패·09시 경계·
-bounded legacy·중복·frozen digest/privacy·호출 불변식을 작성·보완했다. 구식 skip/reset 기대값만
-바꾸고 기존 보안 회귀는 보존한다. 이 worker는 검사·Git·네트워크·workflow·cron·실모델을 실행하지
-않았다. 실행기는 최종 코드와 위 문서의 의미를 새 Claude와 매 repair review에서 다시 평가하고
-full make check, scoped apply, 기존 Git 역할과 parent GitHub/required CI·merge/cleanup을 잇는다.
-이번 최종 코드의 실제 hourly9단계·새 오전 보고 성공은 관측하지 않았으며 합성 회귀로 대신하지 않는다.
-legacy 기록 상한 초과는 fail-closed로 main 조정이 필요하고 timestamp 없는 과거 참여는 복원하지
-못한다. 같은 OS 계정의 state/payload 동시 재작성은 기존 Store 신뢰 경계 밖이다.
-
-이번 repair에 전달된 세 진단은 소스 읽기로 대조했다. local만 호출된 일일 한도 사례는
-cloud 전원 not_called와 failed를 기대하도록 수정했다. 초안 없는 specialist의 빈 결과·실패·
-중단이 local 복구 진단을 덮어쓰던 경로는 이전 요약 최대2개와 별도 specialist 결과를 남기도록
-고쳤고 다음 실제 local 요청까지 이어지는 합성 회귀를 보완했다. provider 변경 사례는 parser의
-기존 codex를 다시 지정하던 입력을 서로 다른 zai로 수정해 실제 control 무효화를 요구한다.
-이 진단 대조와 수정은 검사 재실행이나 통과 증거가 아니다. 새 의미 검토와 full make check는
-실행기가 담당하며 이 worker는 실행하지 않았다. 새 정책 결정은 ADR0025 안에서 유지한다.
+문서 영향과 매 reviewer의 의미적 완결성 판단은 `documentation={status,files,reason}`으로 남긴다.
+앞선 updated/approved/검사 결과를 재사용하지 않는다. 전체 diff 새 Claude 검토→GIT=1 full make check→
+scoped apply→기존 Git 역할→parent 전용 GitHub 게시/CI3/merge/cleanup이 필수다. 승인 밖 문서가 필요하면
+정확한 경로를 기존 승인 파일 finding에 귀속해 새 범위를 요청하며 leaf가 읽거나 생성하지 않는다.
 
 ## 구현 책임과 읽기 범위
 
@@ -423,88 +374,77 @@ parent는 raw/prompt/source를 저장하지 않고 고정 결과 코드·owner/w
 
 ## Hourly private 실패 진단과 인계
 
-이번 수리는 `_call_role`이 아는 실패 원인이 hourly `_safe_participation`에서 일괄
-`role_failed`로 사라지던 결함만 다룬다. API/CLI 또는 telemetry의 `outcome=success`는
-JSON·후보·독립 검토 검증 성공을 뜻하지 않는다. 보관 downloader 기록의 정확한 실패 필드·값은
-원문이 없어 추정하지 않는다. 기존 bare JSON/단일 json fence 호환 parser는 그대로 유지한다.
+[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)의 후속 정밀화다. broad reason과
+구체 cause/phase/field/rule을 구별하며 API/CLI·telemetry 성공은 후보·독립 검토 성공이 아니다.
+과거22시 coordinator/02시 parser의 role_execution_failed/ImprovementError·stage_invalid,01시 local의
+candidate_invalid는 제공된 관측일 뿐 구체 원인은 미확인이다. v3의 보존 path_aliases_read_only도
+원문이 없어 실제 근본 원인으로 확정하지 않는다. 과거 기록·frozen 보고를 고쳐 쓰거나 재전송하지 않는다.
 
-`improvements._call_role`이 실제 실행 중 도달한 경계에서 다음 고정 reason을 만든다.
-runner 결과의 reason/stage/field/type/diagnostic이나 예외문에서 코드를 추출하지 않는다.
+`improvement_diagnostics.detail`→`attach`/`inherit`→`exception_detail`은 실제 경계에서 생성한
+예외 identity-bound 표식만 전달한다. adapter 결과는 `attach_result`/`result_detail`로 연결하며
+`_call_role`과 local loop는 configured identity 확인 뒤에만 읽는다. runner의 JSON diagnostic/
+failure_detail/reason·예외 class/str/attributes는 신뢰하지 않는다. `sanitize_detail`은 이미 신뢰한
+private 저장/feedback 값의 재검증이며 provenance나 실행 권한을 만들지 않는다.
 
-| private reason | 발생 경계 |
+고정 `improvement-failure-v1`은 정확한 version/reason/cause/phase/field/rule/exit_code/errno/http_status
+아홉 키만 가진다. exact dict/str/int와 allowlist만 받고 bool/큰 값/잘못된 숫자는 null이다.
+exit_code0..255, errno0..4095, HTTP100..599는 실제 해당 경계에서 관측한 경우만 기록한다.
+최대512bytes의 고정 구조이며 validation 원인에는 허용 field와 rule 둘 다 필요하고 부족하면
+unavailable이다. 동적 field/path·구문 위치·후보 값·원문 stdout/stderr/응답·prompt·source·credential·
+절대 호스트 경로·provider 자유 문자열은 새 진단에 넣지 않는다. 기존 private result 보존과 별개다.
+
+| broad reason | 실제 경계와 상세 |
 | --- | --- |
-| `role_preparation_failed` | 역할 설정·읽기 전용 사본·prompt 등 호출/검증 입력 준비 |
-| `role_execution_failed` | runner 실행 예외 또는 결과 status가 passed가 아님 |
-| `role_result_invalid` | 결과 envelope 또는 보존할 결과 metadata 처리 |
-| `role_identity_mismatch` | configured role/provider/model과 반환 identity 불일치 |
-| `role_context_changed` | 호출 뒤 승인 사본의 bytes·0400 mode·존재 검증 실패 |
-| `role_json_invalid` | 응답 타입·bytes 상한·UTF-8·JSON/fence 계약 파싱 실패 |
-| `candidate_invalid` | 공유 후보 검증 또는 기존 후보 한도 위반의 기본 분류 |
-| `candidate_edit_files_invalid` | 공유 validator가 분류한 편집 목록 형식·개수·문자열 합 위반 |
-| `candidate_edit_files_duplicate` | 공유 validator가 분류한 편집 목록 중복 |
-| `candidate_edit_files_outside_scope` | 공유 validator가 분류한 승인 밖 편집 경로 |
-| `review_invalid` | 독립 검토 계약 검증 실패 |
-| `role_context_cleanup_failed` | 정상 결과 검증 뒤 임시 context 종료 실패 |
-| `role_interrupted` | KeyboardInterrupt; 기존 interrupted 처리 유지 |
-| `role_failed` | 원인 없는 legacy 참여 또는 허용되지 않은 진단의 fallback |
+| role_preparation_failed / role_execution_failed | 준비·CLI spawn/종료/timeout·transport; 명확한 증거만 cause로 전달 |
+| role_result_invalid / role_json_invalid | envelope·JSON parsing 실패 |
+| role_identity_mismatch / role_context_changed / role_context_cleanup_failed | configured identity·read-only 사본·정상 결과 뒤 cleanup |
+| candidate_invalid | shared validator의 실제 schema/title/analogy/evidence/benefit/validation_plan 등 field와 type/length/range/allowlist 등 rule |
+| candidate_edit_files_invalid / candidate_edit_files_duplicate / candidate_edit_files_outside_scope | 기존 세 reason·모든 거절 semantics 유지 |
+| review_invalid / source_review_unverified | 독립 review 계약·실제 Read 증거 검증 |
+| role_interrupted | 실제 interruption; 비용·원래 예외와 첫 실패 유지 |
+| role_failed / unknown | legacy broad fallback / 구체 cause unavailable; 원문 추정 없음 |
 
-편집 목록 세분화는 정확한 공유 `ValidationError` 타입의 reason에서 위 편집 목록 코드 3개만
-받는다. 정확한 내장 str 타입·최대64자·allowlist 일치를 다시 요구하며 다른 예외/하위 클래스,
-unknown·과대 값·bool·객체는 `candidate_invalid`다. 다른 실패 경계에서는 이 메타데이터를
-사용하지 않는다. 여러 오류가 있으면 기존 검증 순서에서 도달한 경계의 분류이며 모든 오류나
-실패 값을 복원하는 계약은 아니다.
+Codex 실패는 nonzero CLI 경계의 신뢰 가능한 명확한 stderr 인증 형식만 고정 분류한다.
+stdout의 모델 설명·tool 출력·읽은 소스에 authentication/readonly/401/quota 등이 있어도 증거가 아니다.
+실행 출력이 있으면 stderr provenance도 모호해 cli_failed다. PATH alias 경고는 경고이며 실패 원인을
+입증하지 않는다. 명확한 실제 증거가 없으면 cli_failed/unavailable를 남긴다. auth/permissions 정책과
+유효 경고·진짜 인증 실패·timeout·response 검증은 유지한다. generic 실패를 quota/lock으로 추정하지 않는다.
 
-hourly `_safe_participation`은 실패 참여의 reason을 같은 내장 str/64자 allowlist로 재검증하고
-누락·잘못된 타입·unknown·과대 값은 `role_failed`로 남긴다. 정확한 bool `interrupted=true`는
-`role_interrupted`로 보존한다. 기존 선택적 `error_type`은 내장 str/최대32자의 고정 목록
-`ImprovementError`, `ValidationError`, `KeyboardInterrupt`, `TimeoutError`, `FileNotFoundError`,
-`PermissionError`, `OSError`, `ValueError`, `TypeError`, `KeyError`, `UnicodeError`,
-`UnicodeDecodeError`, `UnicodeEncodeError`, `RecursionError`, `Exception`만 유지한다.
-임의 예외 클래스명은 `Exception`이며 legacy에 필드가 없으면 새로 추정하지 않는다.
-성공 참여에는 reason/error_type을 붙이지 않으며 runner의 허위 진단으로 성공 판정을 바꾸지 않는다.
+loop의 `_safe_participation`은 `_call_role`이 전달한 reason/detail을 재정제하고 raw result를 복사하지 않는다.
+reason은 내장 str/64자 allowlist, 선택적 error_type은 기존 내장 str/32자 고정 목록이며 그 밖은
+role_failed/Exception이다. local runner의 plain reason은 allowlist 코드여도 원인 증거가 아니다.
+adapter 표식은 identity 뒤에만 읽고 성공 응답도 기존 shared
+validator·prepared window로 검증한다. 두 evidence 배열의 window 위반은 evidence_outside_window다.
+legacy 상세는 unknown/unavailable이며 성공 참여의 허위 failure metadata는 버린다.
 
-stage/field/type·중첩 diagnostic·구문 line/column/offset은 보존하지 않는다. 따라서 구문 위치의
-정수 필드를 새로 만들지 않는다. 신규 진단에는 exception.str·원문 응답·prompt·credential·
-절대 경로·provider 자유 문자열을 전달하지 않는다. 기존 `_call_role`의 정제된 private result
-보존과 별개로 hourly 참여에는 result 자체를 복사하지 않는다. telemetry는 기존 계약으로 별도
-정제하며 cost/budget·identity·scoped read-only·context cleanup·성공 판정은 유지한다.
+private scan 참여·day.slots는 scan_id/slot/stage_index(0..8)/stage/owner_role과 broad reason/detail을
+남긴다. admission started_at은 기존 오전 `[전날09시,당일09시)` 기준이다. 신뢰한 clock의 실제
+call_started_at/call_finished_at은 시계 rollback에도 보존하고 finished_at의 기존 보수적 회계 보정과 구분한다.
+state.participation은 기존 cloud192건, local_history는 별도192건이며 `(scan_id,slot,stage_index)`로
+중복 제거한다. local은 실제 새 scan/slot의 예약·정산/복구에만 기록하며 과거 local을 새로 추정 이행하지 않는다.
+status는 detached 재정제 history를 반환하고 legacy 결손은 조회 투영에서만 unknown/unavailable로 표시한다.
+회차 교체·후속 성공·재이행은 기존 실패를 지우지 않는다. bounded history 밖의 원본 scan은 기존대로 남는다.
 
-정제 reason은 기존 private `loop/state.json`의 `round.report.agents`와 `scans/<scan_id>.json`에
-남는다. specialist 실패는 기존 초안의 `specialist_reason`, reviewer 실패는 기존 feedback의
-`review_reason`으로 이어져 다음 round의 실제 local 요청에 전달된다. candidate_id/draft_digest·
-feedback bytes/redaction·freshness 무효화 규칙은 그대로다. 공개 web-v1 agents는 기존
-role/provider/model/status만 투영하므로 진단을 추가하거나 제거해도 공개 payload/digest는 같다.
-기존 불변 오전 보고를 다시 만들지 않는다.
+정산 crash 뒤 이미 관측·저장된 실패의 사유·상세·초안 digest·실제 호출 시각은 복구와 feedback에도 유지한다. 실행 결과가 없는
+예약의 복구는 기존 interrupted_unknown과 상세 unknown/unavailable이며 추가 실행/환불이 아니다.
+trace의 첫 실패는 뒤 cleanup/정산/진단 저장 오류가 덮지 못한다. 가능한 기존 state lock 트랜잭션만
+사용하며 정산 보류도 완료된 slot의 원래 결과·사유·단계를 덮지 않는다. 최초 storage/lock/config 실패는
+private CLI 결과만 남을 수 있다. fallback·잠금 밖 쓰기·retry는 없다.
+no-call quota/budget/source-lock 보류는 기존 실제 reason을 유지하고 실행 실패 history로 만들지 않는다.
 
-승인된 `test_improvements.py`와 `test_improvement_loop.py`의 회귀는 malformed JSON,
-편집 목록 타입/중복/범위·독립 검토 invalid·context mutation·identity/실행 실패·준비/cleanup·
-KeyboardInterrupt·비밀 포함 예외/결과·허위/과대/bool 진단·legacy 호환을 다룬다.
-Lab의 실제 engine tick→저장소 재개→다음-round local feedback과 공개 payload/digest 비교도
-작성되어 있다. 이는 소스 검토이며 **검사는 미실행**이다. full make check·수리 검증·새 독립
-검토·PR·CI·머지는 메인과 실행기의 후속 작업이다. 실제 자동 연구9단계·정규 hourly 실모델·
-**2026-10-21 09:00 KST 보고 관측은 메인 확인 전까지 pending**이다.
+기존 bounded feedback에 specialist_failure_detail/review_failure_detail을 추가해 실제 다음 local
+요청까지 전달한다. candidate_id/draft_digest·redaction/bytes 상한은 유지한다. 후속 정제 의견은
+이전 실패 항목을 최대4개 요약 안에서 보존하며 상한 밖 전체 원본은 scan/history에 남는다.
+public improvement-web-v1/completion-v1·payload/digest·POST/GET journal·오전 선택·카드/제안 보존은
+그대로다. 새 진단은 private status/참여/slot/history/feedback에만 있다.
 
-시작 시 private 데이터 계약·실패 전달·공개 격리 설명에 문서 영향이 있다고 판단했다.
-최종 자체 리뷰는 다음과 같다.
-
-```json
-{"documentation": {
-  "status": "updated",
-  "files": [
-    "docs/adr/0017-budgeted-continuous-improvement.md",
-    "docs/architecture.md",
-    "docs/harness-design.md",
-    "docs/improvements.md",
-    "docs/local-models.md"
-  ],
-  "reason": "기존 private 실패 정제 계약의 발생 경계·고정 allowlist/fallback·feedback 전달·공개 격리와 미실행 인계를 최종 코드에 맞춰 정밀화했다. 기존 ADR 결정 범위를 유지하며 새 결정은 없다."
-}}
-```
-
-후속 fresh review도 최종 코드와 문서의 의미를 새로 판단한다. 아래 과거 수리의 문서 평가와
-검증 기록은 이번 실패 진단 수리의 결과가 아니다. 모델/역할/인증·37개 discovery scope·
-시간당1회/하루24회·Claude $1/day 및 $0.20/review·GLM80% gate·불변 오전 보고·서명 승인·
-Git/CI·local/NFS 정책과 retry/fallback은 변경하지 않는다.
+native Lab 회귀는 실제 adapter→_call_role→tick과 Store 재개→status/feedback의 동일 상세,
+모델/tool 문구와 실제 CLI 실패 구분·경고·인증·timeout/spawn·후보 field/rule·review 실패,
+local 뒤 정규 cloud·다음 회차 성공에도 이전 원인 보존·legacy unknown·원문/위조/큰 값/bool 배제와
+비용/중단/first failure·public/frozen 및 기존 제안/전달 보존을 명세한다. 검사는 실행하지 않았다.
+전체 diff 새 Claude 의미 검토·필수 documentation 판단→GIT=1 full make check→scoped apply→기존
+Git 역할→parent 전용 게시/CI3/merge/cleanup을 남긴다. parent는 스케줄·보호 파일·오늘 frozen digest를
+독립 확인한다. 향후 실제 hourly 진단 관측은 구현/합성 검증 완료와 별도다. 운영 실패를 인위적으로 만들지 않는다.
 
 ## Claude 추정 ledger·GLM 구독 quota
 

@@ -1,5 +1,9 @@
 # 0025. 진행을 보존하는 고정 소스 검토와 실제 참여 보고
 
+2026-10-23 진단 후속은 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
+기존 cloud history192건/오전 선택과 진행·검토·승인 결정은 유지하고 고정 실패 detail을 연결한다.
+별도 local history192건은 private 전용이며 과거 원인·기록·frozen 보고를 재구성하지 않는다.
+
 2026-10-22 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)은 잠금 책임과 private
 진단을 정밀화한다. live capture/freshness는 기존 source inode를 짧게 보유하고 sealed 모델
 검토는 해제 후 진행한다. controls를 확인할 수 없는 busy lock은 호출 보류다. 아래 snapshot/
@@ -31,7 +35,8 @@ docs/improvements.md 변경으로 회차 전체가 무효화됐다. 기존 froze
 `improvement_loop.py`는 slot·예약·정산과 함께 compact private participation history를 같은
 atomic state write에 결합한다. 최근 192개 cloud 시도를 유지하며 최대24회/일인 현재 정책에서
 최근 보고 window를 충분히 포함한다. 전체 후보·정제 실패·local 참여·telemetry·cost는 기존 private
-scan/ledger에 남고, history는 역할/provider/model/status/시각과 실행 identity만 가진다.
+scan/ledger에 남고, history는 역할/provider/model/status/시각과 실행 identity를 가진다.
+후속 ADR0027의 고정 reason/detail·실제 호출 시각만 추가하며 raw 응답·후보·비용을 history로 복사하지 않는다.
 완료 review index(최대 설정32개, 기본16개)는 후보 선택에만 사용한다. source/control 무효화로
 두 index를 지우지 않는다. 새 round·실패·process restart는 실제 시도를 삭제하지 않는다.
 

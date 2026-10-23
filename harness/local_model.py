@@ -23,7 +23,8 @@ Parent/engine integration contract; importing this module performs no I/O:
   either transport seam. Client candidate/window checks remain final authority.
 * feedback is a list (at most eight) of sanitized-summary inputs with EXACT
   title, issue, edit_files, specialist_reason, review_reason, and optional
-  candidate_id (IMP-...), draft_digest (64 lowercase hex). It carries actual
+  candidate_id (IMP-...), draft_digest (64 lowercase hex), specialist_failure_detail
+  and review_failure_detail (revalidated private detail). It carries actual
   prior refined issues and both review reasons, not authority or raw output.
   sanitize_feedback whitelists fields, redacts text and rejects byte overflow;
   the parent selects records that fit instead of silently dropping feedback.
@@ -60,7 +61,8 @@ import stat
 import time
 from urllib.parse import urlsplit
 
-from harness import improvement_report as contract, storage
+from harness import improvement_report as contract, storage, improvement_diagnostics as diagnostics
+from harness.agent_models import _preserve_failure
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -96,9 +98,30 @@ _REASONS = frozenset((
 class LocalModelError(ValueError):
     """Public diagnostic contains only an allowlisted code, never input text."""
 
-    def __init__(self, reason):
-        self.reason = reason if reason in _REASONS else 'input_invalid'
+    def __init__(self, reason, *, source=None, cause=None, phase=None, errno=None, http_status=None):
+        self.reason = reason if type(reason) is str and reason in _REASONS else 'input_invalid'
         super().__init__(self.reason)
+        if source is not None:
+            diagnostics.inherit(self, source)
+        default_cause, default_phase = {
+            'timeout': ('timeout', 'transport'),
+            'transport_failed': ('transport_failed', 'transport'),
+            'redirect_refused': ('http_failed', 'http'),
+            'http_failed': ('http_failed', 'http'),
+            'response_malformed': ('envelope_invalid', 'response'),
+            'response_too_large': ('response_too_large', 'response'),
+            'headers_too_large': ('response_too_large', 'response'),
+            'model_mismatch': ('identity_mismatch', 'identity'),
+            'tools_refused': ('tools_refused', 'response'),
+            'response_incomplete': ('response_incomplete', 'response'),
+            'empty_response': ('empty_response', 'response'),
+            'context_too_large': ('context_too_large', 'preparation'),
+            'evidence_outside_window': ('evidence_outside_window', 'window'),
+        }.get(self.reason, ('unavailable',
+            'candidate' if self.reason == 'candidate_invalid' or self.reason in _CANDIDATE_REASONS
+            else 'preparation'))
+        diagnostics.attach(self, diagnostics.detail(self.reason, cause or default_cause,
+            phase=phase or default_phase, errno=errno, http_status=http_status))
 
 
 def _integer(value, minimum, maximum, reason='input_invalid'):
@@ -227,7 +250,8 @@ def sanitize_feedback(feedback, approved_files, *, max_bytes=4096):
         fields = {'title', 'issue', 'edit_files', 'specialist_reason', 'review_reason'}
         for entry in feedback:
             if (not isinstance(entry, dict) or not fields.issubset(entry) or
-                    set(entry) - fields - {'candidate_id', 'draft_digest'}):
+                    set(entry) - fields - {'candidate_id', 'draft_digest',
+                        'specialist_failure_detail', 'review_failure_detail'}):
                 raise LocalModelError('feedback_invalid')
             item = {}
             for name, limit in (('title', 320), ('issue', 1600),
@@ -243,6 +267,11 @@ def sanitize_feedback(feedback, approved_files, *, max_bytes=4096):
                     any(path not in allowed for path in edit_files)):
                 raise LocalModelError('feedback_invalid')
             item['edit_files'] = list(edit_files)
+            for name in ('specialist_failure_detail', 'review_failure_detail'):
+                if name in entry:
+                    # Trusted private history only; this filter grants no runner
+                    # provenance and feedback never authorizes a candidate.
+                    item[name] = diagnostics.sanitize_detail(entry[name])
             for name, pattern in (('candidate_id', r'IMP-[0-9a-f]{16}'),
                                   ('draft_digest', r'[0-9a-f]{64}')):
                 if name in entry:
@@ -656,7 +685,7 @@ def http_transport(config, request_bytes):
     deadline = time.monotonic() + limits['timeout_seconds']
     family = socket.AF_INET6 if host == '::1' else socket.AF_INET
     try:
-        with socket.socket(family, socket.SOCK_STREAM) as connection:
+        with _preserve_failure(socket.socket(family, socket.SOCK_STREAM)) as connection:
             connection.settimeout(limits['timeout_seconds'])
             connection.connect((host, port))
             wire = ('POST /v1/chat/completions HTTP/1.1\r\nHost: {}\r\n'
@@ -680,11 +709,11 @@ def http_transport(config, request_bytes):
             match = re.fullmatch(rb'HTTP/1\.[01] ([0-9]{3}) [\x20-\x7e]*\r\n', status_line)
             if not match:
                 raise LocalModelError('response_malformed')
-            status_code = int(match.group(1))
+            status_code = _integer(int(match.group(1)), 100, 599, 'response_malformed')
             if 300 <= status_code <= 399:
-                raise LocalModelError('redirect_refused')
+                raise LocalModelError('redirect_refused', http_status=status_code)
             if status_code != 200:
-                raise LocalModelError('http_failed')
+                raise LocalModelError('http_failed', http_status=status_code)
             headers = []
             while True:
                 line = reader.line(header_budget)
@@ -736,7 +765,9 @@ def http_transport(config, request_bytes):
         raise
     except (socket.timeout, TimeoutError):
         raise LocalModelError('timeout') from None
-    except (OSError, ValueError, UnicodeError):
+    except OSError as exc:
+        raise LocalModelError('transport_failed', errno=OSError.errno.__get__(exc)) from None
+    except (ValueError, UnicodeError):
         raise LocalModelError('transport_failed') from None
 
 
@@ -749,9 +780,9 @@ def validate_response(response, *, config, snapshots, approved_files, windows, c
             raise LocalModelError('response_malformed')
         status_code = _integer(response['status'], 100, 599, 'response_malformed')
         if 300 <= status_code <= 399:
-            raise LocalModelError('redirect_refused')
+            raise LocalModelError('redirect_refused', http_status=status_code)
         if status_code != 200:
-            raise LocalModelError('http_failed')
+            raise LocalModelError('http_failed', http_status=status_code)
         headers = _headers(response['headers'], limits['max_header_bytes'])
         body = response['body']
         if not isinstance(body, bytes):
@@ -760,7 +791,10 @@ def validate_response(response, *, config, snapshots, approved_files, windows, c
             raise LocalModelError('response_too_large')
         if 'content-length' in headers and int(headers['content-length']) != len(body):
             raise LocalModelError('response_malformed')
-        data = contract.parse_json(body, limits['max_response_bytes'])
+        try:
+            data = contract.parse_json(body, limits['max_response_bytes'])
+        except ValueError:
+            raise LocalModelError('response_malformed', cause='json_invalid', phase='json') from None
         if not isinstance(data, dict):
             raise LocalModelError('response_malformed')
         if data.get('model', config['api_model']) != config['api_model']:
@@ -789,7 +823,7 @@ def validate_response(response, *, config, snapshots, approved_files, windows, c
         try:
             parsed = _parse_model_response(content, limits['max_response_bytes'])
         except ValueError:
-            raise LocalModelError('response_malformed') from None
+            raise LocalModelError('response_malformed', cause='json_invalid', phase='json') from None
         paths, sources = _sources(approved_files, snapshots)
         try:
             candidates = contract.validate_candidates(parsed, sources, paths, candidate_limit)
@@ -800,7 +834,7 @@ def validate_response(response, *, config, snapshots, approved_files, windows, c
             if (type(reason) is not str or len(reason) > 64 or
                     reason not in _CANDIDATE_REASONS):
                 reason = 'candidate_invalid'
-            raise LocalModelError(reason) from None
+            raise LocalModelError(reason, source=exc) from None
         for candidate in candidates:
             for evidence in candidate['evidence'] + candidate['benefit']['evidence']:
                 if not any(evidence['path'] == window['path'] and
@@ -862,11 +896,21 @@ def run(owner_role, approved_files, snapshots, *, config=None, cursor=None,
                                        candidate_limit=candidate_limit)
         result.update(candidates=candidates, status='succeeded' if candidates else 'skipped',
                       reason='ok' if candidates else 'empty_draft')
+    except KeyboardInterrupt as exc:
+        diagnostics.attach(exc, diagnostics.detail('role_interrupted', 'interrupted', phase='execution'))
+        raise
     except LocalModelError as exc:
-        result['reason'] = exc.reason
+        # Read only the identity-bound capability; mutable reason/diagnostic
+        # attributes on an injected exception cannot supply a classification.
+        failure = diagnostics.exception_detail(exc)
+        result['reason'] = failure['reason'] if failure['reason'] in _REASONS else 'transport_failed'
+        result = diagnostics.attach_result(result, source=exc)
     except (socket.timeout, TimeoutError):
         result['reason'] = 'timeout'
+        result = diagnostics.attach_result(result, diagnostics.detail('timeout', 'timeout', phase='transport'))
     except Exception:
         # Injected transports must not expose raw remote/OS exception strings.
         result['reason'] = 'transport_failed'
+        result = diagnostics.attach_result(result, diagnostics.detail(
+            'transport_failed', 'unavailable', phase='transport'))
     return result

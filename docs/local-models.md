@@ -148,7 +148,7 @@ called는 시도이며 서버 수신·읽기·성공의 증거가 아니다. 로
 | `candidate_edit_files_invalid` | 편집 목록 타입·개수·개별 경로 형식 또는 문자열 합600자 위반 |
 | `candidate_edit_files_duplicate` | 형식이 유효한 편집 목록의 중복; 중복과 범위 위반이 함께면 중복부터 분류 |
 | `candidate_edit_files_outside_scope` | 형식이 유효하고 중복 없는 목록에 정확한 승인 밖 경로가 있음 |
-| `candidate_invalid` | 위 고정 분류가 없는 후보 계약 오류; 특정 필드를 뜻하지 않음 |
+| `candidate_invalid` | 후보 계약 오류의 broad reason; 새 private detail은 실제 validator의 고정 field/rule을 전달 |
 | `evidence_outside_window` | 공통 후보/원본 줄 존재 검증은 통과했지만 실제 전송 window 밖 근거가 있음 |
 | `empty_draft` | 빈 배열을 정상 검증했으며 다음 specialist는 참고 초안 없이 독립 점검 |
 
@@ -160,11 +160,17 @@ public web-v1에 로컬 설정·진단·원문을 추가하지 않는다. 한 �
 후속 cloud specialist/독립 reviewer의 hourly 실패도 다음 round의 local feedback에 전달한다.
 `_call_role`이 호출 준비/실행·envelope/identity·read-only context·JSON·후보/검토·cleanup의
 실제 경계에서 고정 reason을 만들고 loop가 내장 str/64자 allowlist로 다시 검사한다.
-공유 ValidationError의 편집 목록 reason은 정확한 타입과 위3개 코드만 유지한다.
-legacy/unknown/잘못된 타입·과대 진단은 role_failed이며 원인을 추정하지 않는다.
-선택적 error_type도 내장 str/32자 고정 목록만 받고 그 밖은 Exception이다.
-stage/field/type·구문 위치·임의 진단 객체는 버리며 API/CLI·telemetry 성공을 후보 성공으로
-해석하지 않는다. 정제 reason은 기존 specialist_reason/review_reason과 draft_digest 연결을
+공유 ValidationError의 편집 목록 reason 세 코드와 거절 순서는 유지한다. 실제 validator가 붙인
+`improvement-failure-v1` 링크를 `LocalModelError(source=exc)`로 넘기며 재검증·메시지 추정을 하지 않는다.
+고정 reason/cause/phase/field/rule만 남기며 field/rule을 모르면 unavailable다. JSON/envelope,
+후보 검증, 전송 window 거절을 구분한다. HTTP status는 framing/주입 응답의 엄격한 정수100..599만
+기록한다. HTTP401/429를 본문 문구로 auth/quota로 확정하지 않는다. native socket errno는0..4095,
+bool·과대값은 null이다. 주입 transport의 임의 예외 속성은 관측값이 아니므로 복사하지 않는다.
+정상 후보의 인증/401/readonly/quota 설명 문구는 전송 실패나 인증 실패의 증거가 아니다.
+`attach_result/result_detail`이 in-process 원인을 전달하며 저장·feedback은 `sanitize_detail`로
+재검증한다. plain dict/JSON은 provenance가 아니며 legacy는 unknown/unavailable다.
+socket/context cleanup이 최초 실패를 덮지 않는다. API/CLI·telemetry 성공은 후보 성공이 아니다.
+정제 reason은 기존 specialist_reason/review_reason과 draft_digest 연결을
 사용하고 feedback은 계속 비신뢰 의견이다. 진단·비밀은 web-v1 payload/digest에 추가하지 않는다.
 세부 목록과 기존 result 보존의 구분은 [hourly private 계약](improvements.md#hourly-private-실패-진단과-인계)을 따른다.
 이번 회귀는 미실행이며 full make check·수리 검증·PR·CI·머지는 메인/실행기의 후속 작업이다.
@@ -201,7 +207,7 @@ raw/prompt/source를 저장하지 않고 고정 결과 코드·owner/window·해
 새 live 실패는 실제 fixed reason과 owner/window를 같은 coordinator 담당자에게 반환한다.
 GitHub·CI·머지·정리도 parent가 담당한다.
 
-이번 수정은 기존 편집 목록 계약의 생성 안내만 명확히 한다. 구조·책임·데이터 계약·격리·검증·
+당시 생성 지침 수정은 기존 편집 목록 계약의 안내만 명확히 했다. 구조·책임·데이터 계약·격리·검증·
 실패 복구·GitHub 게시 정책을 바꾸지 않아 설계서 수정이나 새 ADR은 필요하지 않다고 판단한다.
 기존 승인 경로만 설명하며 native schema·immutable binding·client 최종 검증·실패 시 무보정
 단1회 호출을 유지하고 새로운 역할·저장 필드·승인·공개 경로를 만들지 않기 때문이다.
@@ -271,3 +277,10 @@ worker는 실행하지 않았다. 앞선 검증 사본 재사용은 parent가 NF
 Jev→필요한 Codex 계획→coordinator 단일 작업→새 Claude 독립 의미검토→전체 make check→
 scoped apply→메인의 GitHub 게시/CI/머지/정리를 유지한다. 각 검토는 실제 최종 파일의
 `documentation={status,files,reason}`을 새로 판단한다. 확장자나 과거 승인만으로 완료하지 않는다.
+
+adapter의 private 상세는 결과 객체 identity에 결합되며 설정된 provider/model identity 확인 뒤에만
+전달한다. loop scan/slot/history/status/feedback의 원인 보존은
+[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)과
+[Hourly private 실패 진단과 인계](improvements.md#hourly-private-실패-진단과-인계)를 따른다.
+보존된 `path_aliases_read_only` 분류만으로 실제 근본 원인을 확정하지 않는다.
+과거 운영 실패·기록·frozen 보고를 소급 수정하지 않는다. runtime37의128KiB/1.5MiB 한도는 유지한다.
