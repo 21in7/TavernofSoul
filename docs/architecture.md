@@ -1,5 +1,16 @@
 # 프로젝트 지도와 데이터 경계
 
+잠금 책임은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
+`project_lock.py`는 고정 로컬 workflow/discovery/sender 실행 소유권과 기존 source `.lock`을
+구분한다. `workflow.py`는 전체 검증 사본을 source 보호 아래 capture하고 승인 파일만 모델에
+제공한다. 긴 모델·검증은 source 잠금 밖이며 apply는 전체 baseline과 승인 freshness를 새로 대조한다.
+`improvement_loop.py`의 state/slot/예약은 discovery→artifact, 현재 source/control 판단은 그 뒤
+source mutex 순이다. cleanup은 source→Git journal로 refs/index/파일 변경을 보호한다. publication은
+frozen digest만 사용하며 callback은 state/source 잠금 밖이다. 실제 mutation 중 source 읽기는
+실패로 보류하고 정상0개로 바꾸지 않는다. `improvement_diagnostics.py`는 최초 실제 경계의
+고정 private metadata를 관측하며 web-v1/digest·Read proof·signed claim/completed outbox를 바꾸지 않는다.
+기존 inode·v1/v2/legacy 이행과 storage root binding, 진단 저장 한계는 ADR0027에 명시한다.
+
 현재 source 검증/집계/승인 경계는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
 `review_coverage.py`가 discovery 전용 parent transport의 Read pairing·원래 bytes/range hash를 검증하고,
 `improvement_loop.py`가 bounded 완료 index의 ID별 최신 verdict와 원본 provenance를 보존한다.
@@ -119,7 +130,8 @@ cloud specialist는 `workflow.owner()`별 개별 승인 파일과 명시된 공�
 독립 검토한다. 다른 영역의 소스 대신 앞 역할의 정제된 후보 요약을 공유한다.
 디렉터리 탐색이나 모델에 의한 scope 확대는 없으며 테스트·문서가 부족하면 추가 승인 필요로 남긴다.
 점검은 소스 쓰기·검사·Git·workflow·운영 importAll을 호출하지 않는다. 기록·lock·격리 임시
-context/runtime만 쓰고, 기존 workflow/cleanup과 동일한 고정 project lock으로 중첩을 거부한다.
+context/runtime만 쓴다. discovery→artifact lock으로 예약을 직렬화하고 기존 source mutex로
+capture/freshness와 workflow apply/cleanup의 경쟁을 막는다. 개발 모델·검증은 source 잠금 밖이다.
 
 로컬 mlx-vlm0.7.8은 native JSON Schema constrained generation으로 초안을 생성한다.
 실제 HTTP `response_format.json_schema`는 strict한 기존 canonical 후보 전체 계약(최대2개,
@@ -154,7 +166,7 @@ metadata로 받고 non-null·다른 도구 필드는 거절한다. 모델/endpoi
 서버의 schema 무시·위반도 client가 거절한다. 메인의 서버 호환 사전 관측은 최종 bytes의
 검토·전체 검증·실제9단계·다음 아침 게시 성공과 구분하며 [관측 한계](local-models.md)를 따른다.
 
-호출 전에 improvement/project locks 아래 slot·호출 수·Claude reservation·cursor/inflight를
+호출 전에 discovery→artifact locks 아래 slot·호출 수·Claude reservation·cursor/inflight를
 durable 기록한다. 실패 slot 자동 재호출/daemon/fallback은 없다. source bytes/mode/존재 변화는
 회차의 sealed snapshot·pool·cursor를 유지하며 현재 freshness만 상실시킨다. scope/ownership·
 discovery/loop/local/agent/workflow/provider/model/protocol 변경은 진행을 무효화한다. loop context digest도 proposal provenance와 HMAC 승인에 결합하여 동일 ID가

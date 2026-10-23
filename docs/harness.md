@@ -1,10 +1,27 @@
 # 개발 하네스 사용법
 
+잠금/진단 회귀의 최신 인계는 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
+새 `harness/test_project_lock.py`와 `harness/test_improvement_diagnostics.py`는 기존 parser group의
+harness/test_*.py glob으로 full make check에 수집된다. 일반/READ_ONLY workflow의 model/check
+대기 중 실제 tick·09시 freeze·POST/동일 digest GET, 프로세스/독립 handle flock, apply/cleanup 중
+snapshot/freshness 차단, 전체 baseline/rollback 편집 보존, 중복 tick/call/post·legacy/root binding과
+config/readiness/lock/state/snapshot/deadline/publication/정산의 private 진단 정제를 명세한다.
+기존 publisher/completion/cleanup·sealed 회차·coverage 회귀와 test_improvements.py131072bytes
+상한을 유지한다. 테스트를 삭제/skip하거나 timeout/실패 gate를 완화하지 않는다.
+검토·전달 절차는 [workflow](workflow.md), 수리 이력은 ADR0027에 둔다. 진단 테스트는 Lab과
+offline autouse fixture를 함께 가져온다(Lab만 import하면 fixture는 따라오지 않는다).
+관측 테스트만 collection 때 보존한 실제 resolver로 구성 오류를 주입하며 공유 forbidden은 유지한다.
+잠금 통합 fixture는 합성 workflow·프로세스·flock만 허용하고 실모델·키·네트워크·기본 검사를 막는다.
+fork한 중복 controller만 자식의 discovery 표시를 지워 별도 parent를 모델링한다. 운영 leaf는
+진입 전 거절·state/진단 무쓰기를 요구한다. storage 단독 import/무I/O·active trace 오류 보존,
+상한 fixture의 임시 storage/실제 flock·크기/fingerprint/scope, signed claim의 정확한 replay
+거절/단일 handoff를 유지한다. 운영 storage 해석과 승인 밖 browser/MySQL 열람·수정은 금지다.
+worker는 실행하지 않았으며 최종본의 새 독립 검토·필수 full check와 운영 관측은 실행기 책임이다.
+
 2026-10-22 검증 인계는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다.
 새 offline 명세는 Read pairing/실패/자가 주장/위조/상한과 Lab tick→Store 재시작→morning→public→
 approve 원본 freshness를 다룬다. 앞 eligible 뒤0/실패와 후속 reject, 기존 publisher·frozen/privacy도
-실행기가 함께 검사한다. worker는 실행하지 않았다. parent의 새 Claude 문서 의미 판단·full make check·
-scoped apply·Git/CI 전달이 필요하며 실제 hourly/Sites 성공은 별도 관측이다.
+실행기가 함께 검사한다. offline 명세와 실제 hourly/Sites 성공은 별도다.
 이번 추가 회귀는 literal wire rate_limit_event의 Read 전/사이/result 뒤 호환·동일 증거/판정,
 metadata 위조 불가·실패 복구 불가·잘못된 envelope/status/JSON/상한·unknown event 거절과
 실제 result 비용 보존·private proof/저장 보고/public의 metadata 배제를 명세한다. 검사는 parent가 실행한다.
@@ -22,9 +39,7 @@ specialist와 빈 pool reviewer의 정규 독립 slot, sealed 입력9단계와 s
 durable cloud 참여·09시 경계·legacy bounded 이행·snapshot 변조/crash no-call을 Lab engine→
 Store 재개 경로의 합성 회귀로 작성했다. live source 읽기 불가와 control 무효화를 구분하며
 current freshness를 snapshot review_complete로 대신하지 않는다. 작성·읽기 검토는 검사 통과가 아니다.
-이 worker는 검사·실모델·Git·네트워크를 실행하지 않았다. 실행기가 새 Claude 의미 검토와 full
-make check를 수행하고 기존 Git 역할·parent GitHub/CI·merge/cleanup을 잇는다. 실제 hourly
-성공 관측은 별도다. 메인 제공 오늘09시 failed/0카드 보고는 불변 보존하며 복구 초안으로 고치지 않는다.
+메인 제공 오늘09시 failed/0카드 보고는 불변 보존하며 복구 초안으로 고치지 않는다.
 
 2026-10-19 현재 정책은 [ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2 local
 작업/검증 + remote terminal archive와 [ADR0022](adr/0022-documentation-only-validation.md)의
@@ -214,7 +229,7 @@ quota/budget은 자동 탐색용이며 승인 실행에 적용하지 않는다. 
 count/charge/중단한다. legacy 같은날 비용/호출은 scan_id로 중복 제거 carry-in하며 unknown을
 0으로 간주하지 않는다. 같은 slot은 실패·재시작 후에도 재호출하지 않는다. storage/lock/runtime
 실패는 paused이며 성공 scan이 아니다. tick의 설정 로드·Store 생성·readiness 준비 실패는
-bounded 정제 `lock_storage_or_runtime_unavailable`이며 모델·키 조회·보고 확정·publisher·
+실제 경계별 bounded typed private 진단을 반환하며 모델·키 조회·보고 확정·publisher·
 fallback을 실행하지 않는다. child/discovery 권한 거부는 이 처리 바깥에 유지하고 원문 예외를
 노출하지 않는다. daemon/무한 polling은 없다.
 
@@ -602,7 +617,7 @@ NFS4 directory rename EINVAL과 파일 link 성공은 프로토콜 선택 근거
 [ADR0021](adr/0021-local-work-and-result-archives.md#불변-payload와-원자-공개)에 둔다.
 
 지원 terminal은 passed/failed/interrupted/demonstrated다. Git이 awaiting_github/awaiting_ci/
-cleanup_pending 등 중간 상태이면 완료 archive를 거부한다. workflow는 최종 저장·project lock
+cleanup_pending 등 중간 상태이면 완료 archive를 거부한다. workflow는 최종 저장·workflow 실행 잠금
 해제 뒤, Git 경로는 최종 save·project/GitHub 두 lock 해제와 기존 completion hook 뒤 보관한다.
 GIT=0·실패/중단도 결과가 있으면 보관하지만 성공으로 바꾸지 않는다. standalone runner의 v2
 `check*`는 매번 `artifacts/checks/<run_id>`의 새 결과만 보관한다. workflow 검증 자식의 파생

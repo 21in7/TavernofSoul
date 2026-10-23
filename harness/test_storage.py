@@ -1,10 +1,13 @@
 """Offline storage regressions: fake mounts, real disposable private files only."""
 
+import builtins
+import io
 import json
 import os
 from pathlib import Path
 import stat
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -150,6 +153,50 @@ def test_defaults_are_lazy_local_and_do_not_create_directories(project):
     assert policy.status()['status'] == 'ready'
     assert fs.created == fs.probes == []
     assert not (project / 'logs').exists()
+
+
+def test_standalone_storage_import_needs_no_improvement_package_or_io(project, tmp_path, monkeypatch):
+    # Reproduce a wrapper's minimal package entirely in memory. Load the source
+    # before forbidding I/O, then import with no optional harness modules present.
+    source = compile(Path(storage.__file__).read_bytes(), storage.__file__, 'exec')
+    package = ModuleType('harness')
+    package.__path__ = []
+    standalone = ModuleType('harness.storage')
+    standalone.__file__ = storage.__file__
+    original_import = builtins.__import__
+
+    def imports(name, *args, **kwargs):
+        assert name != 'harness' and not name.startswith('harness.'), name
+        return original_import(name, *args, **kwargs)
+
+    def no_io(*args, **kwargs):
+        pytest.fail('Importing standalone storage performed filesystem I/O')
+
+    with monkeypatch.context() as isolated:
+        isolated.setitem(sys.modules, 'harness', package)
+        isolated.setitem(sys.modules, 'harness.storage', standalone)
+        isolated.delitem(sys.modules, 'harness.improvement_diagnostics', raising=False)
+        with isolated.context() as importing:
+            importing.setattr(builtins, '__import__', imports)
+            for target, name in ((builtins, 'open'), (io, 'open'), (os, 'open'),
+                                 (os, 'stat'), (os, 'lstat'), (os, 'mkdir'),
+                                 (os, 'listdir'), (os, 'scandir')):
+                importing.setattr(target, name, no_io)
+            exec(source, standalone.__dict__)
+        fs = FakeFS()
+        policy = standalone.resolve_storage(project, env={}, fs=fs)
+        assert policy.check_ready() is policy
+        assert not (project / 'logs').exists()
+        with pytest.raises(standalone.StorageError, match='absolute'):
+            standalone.resolve_storage(project, env={standalone.CONFIG_ENV: 'relative'}, fs=fs)
+        blocked = standalone.Storage(root=project,
+            artifacts=standalone.DirectorySpec(tmp_path / 'artifacts', tmp_path, 0),
+            temporary=standalone.DirectorySpec(tmp_path / 'temporary', tmp_path, 0),
+            config_path=tmp_path / 'synthetic-storage.json', env={}, fs=fs)
+        with pytest.raises(standalone.StorageError, match='required mount is absent'):
+            blocked.check_ready()
+        assert fs.created == fs.probes == []
+        assert 'harness.improvement_diagnostics' not in sys.modules
 
 
 def test_explicit_root_and_local_reports_never_consult_another_project(project, tmp_path):

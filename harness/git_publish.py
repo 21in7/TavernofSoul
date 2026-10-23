@@ -57,14 +57,15 @@ def open_lock(selected, path):
     selected.check_ready()
     parent = selected.fs.open_directory(path.parent)
     try:
-        fd = os.open(path.name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+        fd = os.open(path.name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
                      0o600, dir_fd=parent)
     finally:
         os.close(parent)
     handle = os.fdopen(fd, 'a')
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError('GitHub lock must be a regular file.')
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+            raise ValueError('GitHub lock must be an owned unlinked-alias-free regular file.')
         os.fchmod(fd, 0o600)
     except BaseException:
         handle.close()

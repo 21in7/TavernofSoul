@@ -431,7 +431,10 @@ def test_raw_size_event_count_and_duplicate_json_keys_are_bounded(capture):
 # test_improvements: its shared candidate/FixtureFS are re-exported from here.
 @pytest.fixture
 def offline_source_limits(monkeypatch):
-    """Read shipped config only; never resolve operational storage or credentials."""
+    """Read shipped config; snapshots use explicit offline storage and real locks.
+
+    Operational storage resolution, models, checks and credentials stay forbidden.
+    """
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setattr(imp, 'ROOT', root)
     monkeypatch.setattr(imp, 'CONFIG', root / 'harness/improvement-config.json')
@@ -457,7 +460,10 @@ def test_default_project_scope_fits_configured_source_limits(offline_source_limi
     paths = contract.validate_scope_paths(scope.decode('utf-8').splitlines(),
                                           config['limits']['max_scope_files'])
     assert len(paths) == 37
-    snapshots = imp.snapshot_sources(paths, config['limits'])
+    # The source mutex belongs to the full validation copy being read, while
+    # artifact/context storage is disposable and never resolves host config.
+    selected = source_limit_storage(imp.ROOT, tmp_path)
+    snapshots = imp.snapshot_sources(paths, config['limits'], selected=selected)
     fingerprints = contract.fingerprint_sources(snapshots)
     assert set(snapshots) == set(fingerprints) == set(paths)
     for path, snapshot in snapshots.items():
@@ -524,7 +530,8 @@ def test_large_source_snapshots_and_fingerprints_fit_new_ceiling(
         expected[name] = {'exists': True, 'mode': (root / name).stat().st_mode & 0o7777,
                           'content': content}
         remaining -= len(content)
-    snapshots = imp.snapshot_sources(list(expected), limits)
+    selected = source_limit_storage(root, tmp_path)
+    snapshots = imp.snapshot_sources(list(expected), limits, selected=selected)
     assert snapshots == expected and source_bytes > 1048576
     fingerprints = contract.fingerprint_sources(snapshots)
     assert sum(item['size'] for item in fingerprints.values()) == source_bytes
@@ -534,14 +541,14 @@ def test_large_source_snapshots_and_fingerprints_fit_new_ceiling(
     assert proposal['source_fingerprints'] == fingerprints
     lowered = dict(limits, max_source_bytes=1048576)
     with pytest.raises(imp.ImprovementError, match='total byte limit'):
-        imp.snapshot_sources(list(expected), lowered)
+        imp.snapshot_sources(list(expected), lowered, selected=selected)
 
     if source_bytes == limits['max_source_bytes']:
         extra = {'exists': True, 'mode': 0o644, 'content': b'x'}
         (root / 'overflow.txt').write_bytes(extra['content'])
         oversized = {**snapshots, 'overflow.txt': extra}
         with pytest.raises(imp.ImprovementError, match='total byte limit'):
-            imp.snapshot_sources(list(oversized), limits)
+            imp.snapshot_sources(list(oversized), limits, selected=selected)
         with pytest.raises(contract.ValidationError, match='total bound'):
             contract.fingerprint_sources(oversized)
         oversized_fingerprints = {**fingerprints, **contract.fingerprint_sources({'overflow.txt': extra})}

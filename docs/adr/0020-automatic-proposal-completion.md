@@ -1,5 +1,10 @@
 # ADR0020: 승인 제안의 증거 기반 자동 완료 전달
 
+2026-10-22 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)의 개발 workflow는
+모델·검증 동안 source/Store mutex를 해제하되 signed claim과 시작/apply freshness 검증을
+유지한다. Git의 최종 source/journal lock 해제 후 완료 hook이라는 순서는 같다. 이 ADR의 원래
+signed approval/claim·completed outbox·도입 전 provenance와 unknown 복구를 새 승인으로 재결합하지 않는다.
+
 날짜: 2026-10-19. 상태: 사용자 요청으로 계약/구현 방향 승인; 최종 독립 의미 검토·full make
 check·scoped apply·Git 전달 및 메인의 Sites API/UI 구현·배포/HTTP 관측은 별도 대기다.
 

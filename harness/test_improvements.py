@@ -1283,13 +1283,13 @@ def test_concurrent_claims_allow_only_one_workflow_handoff(lab):
         first = pool.submit(imp.execute, pid, now=NOW, selected=lab.selected, executor=executor)
         try:
             assert entered.wait(5), 'first execution must reach its guarded handoff'
-            with pytest.raises(ValueError, match='already running'):
+            with pytest.raises(ValueError, match=r'^Authorization has already been claimed; automatic replay is forbidden\.$'):
                 imp.execute(pid, now=NOW, selected=lab.selected, executor=forbidden)
         finally:
             finish.set()
         assert first.result(timeout=5)['status'] == 'awaiting_github'
     assert calls == [['harness/example.py']]
-    with pytest.raises(ValueError, match='claimed'):
+    with pytest.raises(ValueError, match=r'^Authorization has already been claimed; automatic replay is forbidden\.$'):
         imp.execute(pid, now=NOW, selected=lab.selected, executor=forbidden)
 
 

@@ -1,5 +1,12 @@
 # 0017. 예산 우선의 시간별 연구와 불변 오전 보고 분리
 
+2026-10-22 잠금/진단은 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)로 대체한다.
+workflow 모델·검증은 격리 사본에서 실행하고 source mutex는 capture/apply/cleanup과 현재
+freshness 판단에 사용한다. 공통 lock_storage_or_runtime_unavailable 대신 실제 실패 경계의
+고정 private reason/발생시각/typed metadata를 기록한다. 아래 예산·9단계·slot·무자동재호출과
+frozen 동일 digest/unknown 무자동재전송은 유지한다. storage 자체 장애에는 private CLI 결과만
+가능할 수 있으며 fallback 저장소를 만들지 않는다. 과거 실패의 정확한 holder/예외는 미확정이다.
+
 2026-10-22 대체 범위: [ADR0026](0026-source-verified-retained-improvement-reports.md)은 source 확인을
 parent의 실제 성공 Read 증거로 검증하고, 최신 단일 완료 회차 선택/최신 reviewer 실패의 일괄
 eligible 강등을 ID별 최신 명시 verdict 보존과 원본 provenance 재검증으로 대체한다. 아래의

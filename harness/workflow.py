@@ -13,6 +13,7 @@ import sys
 import time
 
 from harness import agent_models, archive, docs_check, failure_feedback, git_publish, storage, triage, workspace
+from harness import project_lock
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/workflow-config.json'
@@ -393,22 +394,23 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
     selected = storage_policy()
     reports = selected.workflow_root(local_default=local_reports())
     selected.ensure_directory(reports)
-    # Same historical local lock inode as GitHub cleanup, across config changes.
-    lock_path = selected.project_lock_path
-    selected.fs.create_directory(lock_path.parent)
-    parent = selected.fs.open_directory(lock_path.parent)
+    # Execution ownership is local and stable across storage v1/v2/overrides.
+    # Source protection uses the historical inode only during capture/apply.
+    lock = contextlib.ExitStack()
+    source_lock = contextlib.ExitStack()
     try:
-        fd = os.open(lock_path.name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
-                     0o600, dir_fd=parent)
-    finally:
-        os.close(parent)
-    lock = os.fdopen(fd, 'a')
-    os.fchmod(lock.fileno(), 0o600)
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.enter_context(project_lock.hold(selected, kind='workflow_lock', reentrant=False))
+        if _improvement_guard is not None and hasattr(_improvement_guard, 'state_lock'):
+            source_lock.enter_context(_improvement_guard.state_lock())
+        source_lock.enter_context(project_lock.hold(selected, reentrant=False))
     except BlockingIOError:
+        source_lock.close()
         lock.close()
         raise ValueError('Another workflow is running in this repository.') from None
+    except BaseException:
+        source_lock.close()
+        lock.close()
+        raise
     run_id = str(time.time_ns()) + '-' + secrets.token_hex(3)
     directory = reports / run_id
     try:
@@ -422,6 +424,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
         directory.chmod(0o700)
         selected.validate_run_directory(directory, local_default=local_reports())
     except BaseException:
+        source_lock.close()
         lock.close()
         raise
     candidate = directory / 'workspace'
@@ -439,10 +442,20 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
     context_dir = None
     try:
         progress.event('prepare', 'running', detail='승인 파일 모델 사본과 로컬 검증 사본을 분리해 생성')
+        # Policy is a source dependency too; use its value at the capture boundary.
+        policy = load_policy()
         selected.check_ready()
         baseline = workspace.copy_validation_sources(ROOT, candidate, scope, policy)
+        # Everything below reads isolated copies until the final apply section.
+        # A legacy long holder still blocks this capture; never bypass its inode.
+        source_lock.close()
         candidate.chmod(0o700)
         agent_models.private_json(directory / 'baseline.json', baseline, policy=selected)
+        # Review the captured input, even if the live repository changes during
+        # an unlocked model/check phase. Keep only approved original files.
+        original = directory / 'original'
+        workspace.copy_sources(candidate, original, scope, policy)
+        original.chmod(0o700)
         # Outside repository ancestry: native CLIs must not discover parent project
         # instructions. The local verification snapshot is never a model workspace.
         context_dir = context_cleanup.enter_context(selected.temporary_directory(
@@ -577,7 +590,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             workspace.sync_scope(model_context, candidate, model_baseline, scope, policy, read_only=read_only)
             candidate_manifest = workspace.manifest(candidate, policy)
             changes = workspace.enforce_scope(baseline, candidate_manifest, scope, read_only=read_only)
-            diff = workspace.diff_text(ROOT, candidate, changes, policy['max_diff_bytes'])
+            diff = workspace.diff_text(original, candidate, changes, policy['max_diff_bytes'])
             diff_path = directory / 'changes.diff'
             diff_path.write_text(agent_models.redact(diff, keys), encoding='utf-8')
             diff_path.chmod(0o600)
@@ -653,10 +666,15 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             report['delivery_validation'] = round_validation
             progress.event('apply', 'running', detail='읽기 전용/데모는 원본에 반영하지 않음' if read_only or simulated else '')
             if not read_only and not simulated:
-                selected.check_ready()
-                selected.ensure_directory(directory / 'backup')
-                report['applied'] = workspace.publish(ROOT, candidate, baseline, candidate_manifest, changes,
-                                                      scope, directory / 'backup', policy)
+                state_guard = getattr(_improvement_guard, 'state_lock', contextlib.nullcontext)
+                with state_guard(), project_lock.hold(selected, reentrant=False):
+                    validate_apply = getattr(_improvement_guard, 'validate_apply', None)
+                    if validate_apply is not None:
+                        validate_apply(run_id)
+                    selected.check_ready()
+                    selected.ensure_directory(directory / 'backup')
+                    report['applied'] = workspace.publish(ROOT, candidate, baseline, candidate_manifest, changes,
+                                                          scope, directory / 'backup', policy)
             report['status'] = ('running' if github_enabled and changes else
                                 ('demonstrated' if simulated else 'passed'))
             progress.event('apply', 'passed', detail='반영된 파일: ' + str(len(report['applied'])))
@@ -674,8 +692,9 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                                           for item in report['delivery_validation']]), diff)
                 response = model_step(progress, model_context, 'github', 'git', prompt, keys, policy, runner)
                 selected.check_ready()
-                report['github'] = git_publish.prepare(ROOT, directory, report, baseline, candidate_manifest,
-                                                       changes, policy, git_publish.metadata(response))
+                with project_lock.hold(selected, reentrant=False):
+                    report['github'] = git_publish.prepare(ROOT, directory, report, baseline, candidate_manifest,
+                                                           changes, policy, git_publish.metadata(response))
                 report['status'] = 'awaiting_github'
                 progress.event('github', 'awaiting_connector', detail='메인 /root가 GitHub 앱 요청을 이어 실행')
             else:
@@ -705,6 +724,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                 report['finished_at'] = datetime.now(timezone.utc).isoformat()
                 progress.save()
         finally:
+            source_lock.close()
             lock.close()
     if selected.version == 2 and report['status'] in archive.TERMINAL:
         try:

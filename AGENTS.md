@@ -1,5 +1,29 @@
 # TavernofSoul 작업 지도
 
+2026-10-22 잠금·실패 복구의 최신 계약은 [ADR0027](docs/adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
+workflow 실행 소유권은 고정 `.workflow-lock`, source capture/apply/cleanup/freshness는 기존
+`logs/harness/workflows/.lock` inode로 분리한다. 일반/READ_ONLY 모델·검토·검증은 격리 사본에서
+진행하여 source 잠금을 보유하지 않는다. tick은 stable discovery→기존 artifact lock으로 state/
+slot/call 예약을 직렬화하며 source 판단 때만 source mutex를 사용한다. 전체 baseline 충돌 검사와
+signed claim의 시작/apply freshness는 유지한다. source busy면 현재 읽기를 우회하지 않고
+no-call·구체적 실패/미완료 보고를 남긴다. sealed 검토 완료는 live 승인 권한이 아니다.
+review diff는 capture에서 분리한 승인 파일 original 사본만 기준으로 한다. apply 중 interruption도
+자신의 partial 변경을 rollback하며 외부 사용자 편집을 복원으로 덮지 않는다.
+오전 freeze는 새 seal/admission보다 먼저, publication은 state/source lock 해제 후 stable sender와
+기존 sender mutex 아래 동일 frozen digest POST/GET으로 진행한다. unknown 자동 POST는 없다.
+v1/v2/legacy의 기존 inode를 삭제하지 않으며 storage root hash binding 변경은 명시 조정 대상이다.
+실제 경계별 고정 private 진단은 가능한 경우 state lock 안의 마지막 record와 private CLI JSON에
+남긴다. 최초 lock/storage/config 실패에는 결과만 보존 가능하며 fallback/재시도/잠금 밖 state 쓰기는 없다.
+holder 증거가 없으므로 PID는 null이다. 과거 충돌의 정확한 예외/holder는 미확정이다.
+runtime37개·9단계·예산/auth·승인/실행 scope, 과거 frozen 보고, 매시00분 hourly와2026-10-23
+09:00 보고 목표·09:20 같은 채팅 job1 예약을 유지한다. 새 독립 Claude 검토와 full make check·
+scoped apply·Git 역할 및 parent GitHub/CI3/merge/cleanup·실제 운영 관측은 별도다. worker는
+검사하지 않았다. 아직 나머지 DAG/reviewer 완주와 내일 보고·알림 성공을 주장하지 않는다.
+
+후속 호환성 수리의 원인·회귀·검증 이력은 ADR0027에 둔다. storage 단독 import의 무I/O,
+active trace의 첫 실패/원래 예외, 임시 storage의 실제 source flock과 signed claim replay 거절을
+유지한다. 승인40개 안의 수정이며 공유 offline guard와 운영 storage·모델·네트워크·검사 차단은 그대로다.
+
 2026-10-22 현재 개선 연구 계약은 [ADR0026](docs/adr/0026-source-verified-retained-improvement-reports.md)이다.
 discovery reviewer만 parent의 실제 Claude Read 성공 pairing과 bounded owner/evidence/문서 coverage를
 검증한다. 자기 보고나 legacy 기록은 읽기 증거가 아니다.
@@ -8,9 +32,8 @@ discovery reviewer만 parent의 실제 Claude Read 성공 pairing과 bounded own
 오전은 bounded completed index의 현재 전체 의존성 일치 회차를 모아 ID별 최신 명시 verdict를
 보존하고, 원래 scan/검토/protocol에 승인 freshness를
 결합한다. 최신 실패와 앞선 유효 제안을 함께 표시한다. 검증된 정상 0개만 확인 범위 내 제안 없음이다.
-runtime37개·owner/shared·예산·slot은 그대로이며 과거 frozen 보고는 수정하지 않는다. 아래32개/21개
-승인과 실행 관측은 당시 이력이다. 이번 정확한 승인 목록만 구현 범위이며 parent의 새 의미 검토·전체
-검사·scoped apply·Git/CI 전달과 Sites 변경은 별도다. worker는 검사·모델·Git·네트워크를 실행하지 않는다.
+runtime37개·owner/shared·예산·slot과 과거 frozen 보고는 보존한다. 아래32개/21개 승인·관측은
+당시 이력이며 구현은 이번 정확한 승인 목록에 한정한다. Sites 변경은 parent의 별도 책임이다.
 
 완료 outbox는 도입 전 loop·non-loop signed claim의 원래 독립 검토와 서명·실행 증거를 보존한다.
 이전 loop의 context는 원래 `digest(scan['loop_dependencies'])`로 대조하며 새 승인으로 재사용하지 않는다.
@@ -29,8 +52,7 @@ scope/ownership/config/provider/model/protocol 변화는 기존대로 진행을 
 현재 dependencies 일치 검증된 완료 회차들의 ID별 최신 verdict 선택과 분리하며, 뒤의 별도 회차 참여를
 선택한 제안의 검토로 표시하지 않는다. private trace·local·cost·진단은 public에 추가하지 않는다.
 메인이 전달한 2026-10-21 09시 failed/0카드 보고는 실제 전달 관측이며 불변 보존한다.
-이번 최종 코드의 새 Claude 의미 검토·full make check·scoped apply·Git 역할과 parent GitHub/CI
-전달 및 실제 hourly 성공 관측은 별도 증거가 필요하다. worker/reviewer는 이를 실행하지 않는다.
+새 검토·검증·전달과 실제 hourly 성공은 각각 별도 증거가 필요하다.
 
 이 저장소는 Tree of Savior 게임 데이터를 수집·파싱하고 Django로 제공한다.
 전체 흐름과 책임 경계는 [docs/architecture.md](docs/architecture.md),

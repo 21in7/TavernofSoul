@@ -1,24 +1,27 @@
 # 개발 작업 자동 배정과 실행
 
+최신 잠금·격리·실패 복구 계약은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
+일반/READ_ONLY workflow는 실행 소유권만 최종 save까지 유지하고 source mutex는 capture와
+apply에 한정한다. review diff도 capture의 승인 파일 original 사본에서 만들며 live 원본을
+모델·검토 입력으로 다시 읽지 않는다. 긴 모델·검증 동안 실제 tick과 오전 freeze/publication은
+진행할 수 있다. apply는 전체 baseline과 signed claim/freshness를 새로 대조한다. 실제 source 변경이나
+storage 장애로 읽기 일관성을 확인할 수 없으면 고정 private 진단과 미완료 보고로 남긴다.
+수리·검증의 역사적 근거는 ADR0027에 둔다. 복원 초안·이전 승인은 완료/전달 권한이 아니다.
+매번 전체 baseline→최종 코드·문서의 새 Claude 검토(`documentation={status,files,reason}`)→
+native full make check→scoped apply→기존 Git 역할→parent GitHub/필수CI3종 success·merge/cleanup을
+요구한다. worker는 승인 파일 수정만 하며 검사·Git·모델·네트워크·재위임을 실행하지 않는다.
+실제 hourly9단계 완주·오전 보고는 미관측이며 hourly·09시·09:20 예약을 유지한다.
+
 2026-10-22 source 검증과 제안 보존 수리는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
-이번 정확한 승인 파일만 coordinator 작업 하나로 구현한다. 아래32개/21개는 과거 이력이다.
+이번 승인40개는 coordinator 작업 하나에 배정한다. 아래32개/21개는 과거 이력이다.
 discovery 전용 Read proof와 원본 review/scope/protocol은 approve/execute freshness에 결합한다.
 합성 오전 집계는 새로운 검토·사람의 서명·실행 claim이 아니며 일반 workflow 계약을 바꾸지 않는다.
-최종 코드/문서의 새 Claude 의미 검토(documentation 포함)→full make check/기존 publisher 회귀→
-scoped apply→기존 Git 역할→parent GitHub CI/merge/cleanup이 남는다. worker는 이를 실행하지 않는다.
-이번 stream 안내 호환도 최종 baseline→candidate 전체의 세 동작과 문서를 새 reviewer가
-독립 판단하고 `documentation={status,files,reason}`을 다시 반환해야 한다. 이전 approved/5097개
-통과나 초안 준비·복원을 새 성공으로 재사용하지 않는다. 새 PR은 미병합 종료된 PR63을 대체하며
-세 동작과 실제 CLI metadata 호환을 제목/본문에 포함한다. 필수CI3종 success 확인·merge·cleanup은
-parent/native 책임이고 실제 hourly9단계 완주는 미관측이다.
+앞선 approved/5097개 통과도 새 성공 근거가 아니다. 새 PR은 미병합 종료된 PR63을 대체하며
+실제 Read·제안 보존·결과 구분과 CLI metadata 호환을 제목/본문에 설명한다.
 
-이번 2026-10-21 연구 진행 보존 복구는 승인32개를 coordinator 작업 정확히 하나로 배정한다.
-직전 run `1792547845263535412-a3f550`은900초 종료·applied=[]로 미검토/미검증 상태다.
-trusted parent의 baseline/checkpoint 확인과 첫 실제 쓰기 직전 초안 준비는 작업 준비다.
-worker는 보존 초안을 이어 누락만 마무리하며 checkpoint/private 기록을 받지 않고 검사·Git·
-재위임·workflow·네트워크를 실행하지 않는다. 새 Jev/Codex 계획→실제 coordinator 마무리→
-새 Claude 의미 검토(documentation 포함)→full make check→scoped apply→기존 Git 역할→
-trusted parent GitHub/required CI·merge/cleanup의 실제 증거가 있어야 각 단계를 완료로 기록한다.
+2026-10-21 복구는 승인32개/coordinator1개였다. 직전 run `1792547845263535412-a3f550`의
+900초 종료·applied=[]는 미검토/미검증 이력이다. parent의 baseline/checkpoint 대조와 첫 쓰기 전
+초안 준비는 작업 준비이며 private 기록을 worker에 제공하거나 단계 완료를 증명하지 않는다.
 
 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)는 자동 연구의 local 실패 gating과
 source-only reset을 대체한다. 각 cloud 역할은 초안/빈 pool과 독립된 정규 slot에서 승인 snapshot을
@@ -36,7 +39,7 @@ Git journal은 local active artifacts, 비인증 임시는 local temporary다. a
 받고 파싱/status/find_run/progress에는 접근하지 않는다. v1/no-config와 옛 NFS journal은 보존하며
 원래 v1 설정으로 조회·재개한다. private 기본 설정 활성화는 검토·검증 후 main 책임이다.
 
-최종 report save와 project lock 해제 후 archive하며 Git request/accept/resume/cleanup은
+최종 report save와 workflow 실행 잠금 해제 후 archive하며 Git request/accept/resume/cleanup은
 최종 save → 두 lock 해제 → 기존 completion hook → archive 순서다. awaiting_github/awaiting_ci/
 cleanup_pending은 완료 archive 대상이 아니다. GIT=0·실패/중단과 standalone checks도 지원하며
 검증 자식의 파생 v1 설정은 nested archive를 하지 않는다. archive pending은 기존 outcome·merge/
@@ -117,9 +120,10 @@ squash merge/cleanup이고, 승인 시 `--local-only`로만 로컬 전용을 고
 loop 제안은 discovery/loop/local/agent/workflow 설정까지 freshness에 포함하며
 loop_dependencies digest를 proposal provenance와 signed approval의 discovery_fingerprint로
 묶는다. 동일 ID가 새 config에서 재발견되어도 기존 승인과 재결합하지 못한다.
-workflow가 고정 project lock을 잡으면 `_improvement_guard(run_id)`가 준비 사본·검사·쓰기
-모델 전에 재검증하고 run_id를 기록한다.
-발견/승인/claim과 workflow/cleanup은 같은 project lock을 사용해 중첩을 거부한다.
+workflow가 state→source mutex를 잡으면 `_improvement_guard(run_id)`가 준비 사본·검사·쓰기
+모델 전에 재검증하고 run_id를 기록한다. 모델·검증 중에는 두 잠금을 해제하고 apply 때 signed
+claim과 현재 freshness를 같은 순서로 재검증한다. discovery→artifact lock은 예약 경쟁을,
+기존 source mutex는 capture/freshness와 apply/cleanup의 경쟁을 막는다.
 guard 없는 일반 workflow는 직접 요청 권한을 유지하며 자동 제안의 우회 실행에 사용하지 않는다.
 
 claim 이후 실패·중단·`awaiting_github`에도 승인은 소비된다. 기존 run과 GitHub journal을 먼저
@@ -219,9 +223,9 @@ TIME_LIMIT 단독·HTTP 실패를0%로 해석하지 않는다.
 이 gate는 자동 탐색용이며 승인 실행을 제한하거나 허가하는 장치가 아니다.
 
 한 slot claim을 먼저 저장하고 호출 count/예약/cursor/inflight를 atomic 저장한다. failed slot
-자동 재호출·daemon·fallback은 없다. 동일 improvement/project lock을 쓰고 storage 미준비면
-모델을 실행하지 않는다. tick의 설정 로드·Store 생성·readiness 실패는 bounded 정제 paused
-(`lock_storage_or_runtime_unavailable`)로 반환하며 키 조회·보고 확정·publisher·fallback도 하지
+자동 재호출·daemon·fallback은 없다. discovery→artifact lock으로 예약을 보호하고 storage 미준비면
+모델을 실행하지 않는다. tick의 설정 로드·Store 생성·readiness 실패는 실제 경계별 고정 private
+진단과 paused로 반환하며 키 조회·보고 확정·publisher·fallback도 하지
 않는다. child/discovery 권한 거부는 이 처리 바깥에 유지하고 원문 예외는 노출하지 않는다.
 자정600초 전 admission 거부·high-water rollback 방지·날짜 초과 시
 양일 보수적 count/charge/중단으로 allowance 우회를 막는다. legacy 같은날 비용/호출은
@@ -585,8 +589,14 @@ Claude Code가 자동 생성하는 `harness/compaction/.claude-plugin/types/`는
 다른 편집이 있으면 새 내용을 보존하고 중단한다. 이전 내용은 private backup에 남기고,
 파일별 임시 쓰기·교체를 사용한다. 도중 실패하면 실행기가 이미 반영한 자신의 변경만 복구한다.
 여러 파일 교체는 파일별 원자 처리이며 저장소 전체의 원자 트랜잭션은 아니다.
-고정 로컬 `ROOT/logs/harness/workflows/.lock`으로 workflow와 GitHub cleanup을 직렬화한다.
-선택된 run의 journal lock은 그 옆에 유지한다. 외부 편집기는 hash 검사로 확인한다.
+고정 로컬 `ROOT/logs/harness/workflows/.workflow-lock`은 workflow 실행 소유권을 최종 save까지
+보유한다. 기존 `.lock` inode는 전체 source capture 후 해제하고 apply/Git publication 준비에
+재획득한다. 모델·검토·검증/repair는 격리 사본에서 실행한다. Git cleanup은 기존 source `.lock`
+→선택 journal `github.lock` 순으로 refs/index/파일 변경과 최종 save를 보호한다. 외부 편집기는
+전체 baseline 목록/bytes/mode/존재와 파일별 hash 검사로 확인하며 rollback에서도 보존한다.
+승인 제안은 signed claim 후 Store 잠금을 해제하고 시작/apply에 state→source 순으로 원래
+승인/claim/freshness를 재검증한다. 상세 이행과 실패 관측은
+[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
 
 작업 사본 자체는 별도 VM이나 컨테이너가 아니다. 모델의 원본 소스 읽기 제한은 위 CLI 권한 설정에
 의존하며, 인증과 신뢰한 CLI 런타임까지 격리하는 일반 목적 컨테이너를 제공하는 것은 아니다.

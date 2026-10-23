@@ -31,8 +31,14 @@
 | [0024](0024-immediate-batched-github-transport.md) | trusted-parent 단일 accept transport·사전 로드 Codex bridge·workflow 즉시 handoff, native 검증과 보수적 receipt 복구 유지 | 제안(proposed), 새 의미 검토/full check/실제 PR 관측 대기 | 2026-10-20 |
 | [0025](0025-progress-preserving-improvement-reviews.md) | 회차와 독립된 bounded 실제 참여 history·선택적 local·sealed source snapshot과 current freshness 분리 | 사용자 직접 요청 구현안, source 확인/단일 회차 선택은 0026으로 대체·검토/검증 대기 | 2026-10-21 |
 | [0026](0026-source-verified-retained-improvement-reports.md) | parent Read 증거·owner 코드 표본과 별도 문서 coverage·ID별 최신 verdict 보존·원본 승인 freshness | 사용자 요청 구현안, 새 Claude 의미 검토/full check/scoped apply/Git·CI 전달 대기 | 2026-10-22 |
+| [0027](0027-inspection-lock-isolation-and-diagnostics.md) | workflow 소유권과 짧은 source 보호·stable discovery/sender·경계별 private 진단 | 사용자 요청 구현안, 최종 새 Claude 의미 검토/full check/scoped apply·Git/CI·운영 관측 대기 | 2026-10-22 |
 
 ## 상태와 근거의 의미
+
+0027은 workflow 전체 project 잠금과0017의 공통 준비 실패 코드를 대체한다.0025/0026의
+sealed snapshot·진행·coverage·ID별 verdict 보존·승인 freshness는 유지한다. v1/v2/legacy의
+source/artifact/sender inode와 signed claim·completed outbox 증거를 보존하며 storage 전환은
+명시 조정을 요구한다. 새 독립 검토·full make check 전의 준비/초안은 승인·검증이 아니다.
 
 0025는 0017의 local 실패/빈 pool gating·source-only 전체 reset·선택 회차에 종속된 참여 집계를
 대체한다. 승인32개 coordinator 작업1개로 보존 초안을 마무리하며 runtime37개 scope와 기존
