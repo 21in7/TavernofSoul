@@ -9,6 +9,8 @@
     "550 accessory uses its own reinforcement table",
     "ordinary equipment keeps its existing calculator",
     "gem levels include bonuses and penalties",
-    "skill gem opens the related skill"
+    "skill gem opens the related skill",
+    "pvp calculator updates probabilities and level boundaries",
+    "pvp calculator rejects invalid inputs and resets accessibly"
   ]
 }

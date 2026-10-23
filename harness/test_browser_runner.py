@@ -23,10 +23,35 @@ def passing_report():
 
 
 def test_complete_browser_report_counts_both_viewports():
-    report = summarize_playwright(passing_report())
+    assert MANIFEST['projects'] == ['desktop', 'mobile']
+    assert len(MANIFEST['scenarios']) == len(set(MANIFEST['scenarios'])) == 11
+    expected = {(scenario, project) for scenario in MANIFEST['scenarios']
+                for project in ('desktop', 'mobile')}
+    raw = passing_report()
+    pairs = [(spec['title'], test['projectName'])
+             for spec in raw['suites'][0]['suites'][0]['specs'] for test in spec['tests']]
+    assert len(pairs) == len(expected) == 22
+    assert set(pairs) == expected
+    report = summarize_playwright(raw)
     assert report['status'] == 'passed'
-    assert report['passed'] == report['selected'] == 18
+    assert report['passed'] == report['selected'] == len(expected)
     assert report['errors'] == report['skipped'] == report['failures'] == []
+
+
+@pytest.mark.parametrize('scenario', MANIFEST['scenarios'])
+@pytest.mark.parametrize('project', ['desktop', 'mobile'])
+@pytest.mark.parametrize('replacement', [False, True], ids=['missing', 'duplicate-instead'])
+def test_every_registered_scenario_requires_each_viewport(scenario, project, replacement):
+    raw = passing_report()
+    specs = raw['suites'][0]['suites'][0]['specs']
+    spec = next(spec for spec in specs if spec['title'] == scenario)
+    spec['tests'] = [test for test in spec['tests'] if test['projectName'] != project]
+    if replacement:
+        # Keep the aggregate count green while losing one exact scenario/viewport pair.
+        spec['tests'].append(deepcopy(spec['tests'][0]))
+    else:
+        raw['stats']['expected'] -= 1
+    assert summarize_playwright(raw)['status'] == 'failed'
 
 
 @pytest.mark.parametrize('case', [

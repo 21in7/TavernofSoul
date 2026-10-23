@@ -3,6 +3,7 @@ import json
 import re
 from os.path import join
 
+from django.conf import settings
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -205,3 +206,58 @@ def getJob(request):
 
     payload = _serialize_job(job, skills_qs)
     return JsonResponse(payload)
+
+@require_GET
+def pvp(request):
+    """Render a client-only calculator; no model or importer access."""
+    korean = getattr(settings, 'REGION', '') in ('ktos', 'ktest')
+    en = {
+        'title': 'PvP Calculator',
+        'intro': 'Basic probabilities from your entered stats using the supplied revised PvP formulas. Separate card, buff and trait probability bonuses are not automatically added. This is not confirmation of a live game patch.',
+        'defaults': 'Defaults: both levels 500 and all stats 20,000. Equal levels and stats give 90% hit, 10% opponent evasion, 10% critical and 30% your block.',
+        'limits': 'Levels: integers from 0 to 10,000. Stats: 0 to 1,000,000,000,000 (decimals allowed). Use decimal numbers or scientific notation, without commas; at most 64 characters. Negative signs and values too small to represent are rejected. Inputs are never clamped.',
+        'inputs': 'Levels and stats', 'results': 'Basic probabilities',
+        'reset': 'Reset to defaults', 'factor': 'Level correction factor',
+        'formula': 'Formulas',
+        'note': 'Before level correction, probabilities vary smoothly with the stat ratio (including +10). Only a higher opponent level reduces hit: an opponent 50 or more levels above you makes hit 0%. A higher player level gives no bonus. Critical and block have no level correction. This tool does not calculate PvE or damage.',
+        'noscript': 'Enable JavaScript to calculate probabilities. Results remain unavailable until JavaScript runs.',
+        'invalid': 'Correct the marked inputs. All results are unavailable until every input is valid.',
+        'error': 'Enter a finite, non-negative decimal within the stated range; levels must be integers. Do not use a minus sign, commas or more than 64 characters.',
+    }
+    ko = {
+        'title': 'PvP 확률 계산기',
+        'intro': '제공된 PvP 개편 공식으로 입력 스탯의 기본 확률을 계산합니다. 별도 카드·버프·특성의 확률 보너스는 자동 합산하지 않습니다. 실제 게임 패치 적용 완료를 뜻하지 않습니다.',
+        'defaults': '기본값: 양쪽 레벨 500, 모든 스탯 20,000. 같은 레벨과 스탯이면 명중 90%, 상대 회피 10%, 치명타 10%, 내 블록 30%입니다.',
+        'limits': '레벨: 0~10,000 정수. 스탯: 0~1,000,000,000,000 (소수 허용). 쉼표 없이 십진수 또는 지수 표기를 사용하세요. 최대 64자이며 음수 부호나 표현할 수 없을 만큼 작은 값은 거부합니다. 입력을 임의 보정하지 않습니다.',
+        'inputs': '레벨 및 스탯', 'results': '기본 확률',
+        'reset': '기본값으로 초기화', 'factor': '레벨 보정 계수',
+        'formula': '사용 공식',
+        'note': '레벨 보정 전 확률은 +10을 포함한 스탯 비율에 따라 부드럽게 변합니다. 상대 레벨이 높을 때만 명중이 감소하며, 상대가 50레벨 이상 높으면 명중은 0%입니다. 내 레벨이 더 높아도 보너스는 없습니다. 치명타·블록에는 레벨 보정을 적용하지 않습니다. PvE나 대미지를 계산하지 않습니다.',
+        'noscript': '확률 계산에는 JavaScript가 필요합니다. JavaScript 실행 전에는 결과를 표시하지 않습니다.',
+        'invalid': '표시된 입력을 수정하세요. 모든 입력이 유효해질 때까지 전체 결과를 표시하지 않습니다.',
+        'error': '범위 내의 유한한 0 이상 십진수를 입력하세요. 레벨은 정수여야 합니다. 음수 부호·쉼표·64자 초과 입력은 허용하지 않습니다.',
+    }
+    labels = [
+        ('myLevel', 'My level', '내 레벨', '500'),
+        ('opponentLevel', 'Opponent level', '상대 레벨', '500'),
+        ('accuracy', 'My accuracy', '내 명중', '20000'),
+        ('evasion', 'Opponent evasion', '상대 회피', '20000'),
+        ('critical', 'My critical occurrence', '내 치명타 발생', '20000'),
+        ('criticalResistance', 'Opponent critical resistance', '상대 치명타 저항', '20000'),
+        ('block', 'My block', '내 블록', '20000'),
+        ('blockPenetration', 'Opponent block penetration', '상대 블록 관통', '20000'),
+    ]
+    outputs = [
+        ('hit', 'My hit chance', '내 명중률'),
+        ('evasion', 'Opponent evasion chance', '상대 회피율'),
+        ('critical', 'My critical chance', '내 치명타 확률'),
+        ('block', 'My block chance', '내 블록 확률'),
+    ]
+    return render(request, join(APP_NAME, 'pvp.html'), {
+        'pvp_text': ko if korean else en,
+        'pvp_language': 'ko' if korean else 'en',
+        'pvp_inputs': [{'key': key, 'label': kr if korean else eng, 'default': default}
+                       for key, eng, kr, default in labels],
+        'pvp_outputs': [{'key': key, 'label': kr if korean else eng}
+                        for key, eng, kr in outputs],
+    })

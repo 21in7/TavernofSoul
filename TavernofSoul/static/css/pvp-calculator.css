@@ -1,0 +1,29 @@
+/* Only the calculator page adjusts the shared flex content's minimum width. */
+#content:has(#pvp-calculator) { min-width: 0; }
+#pvp-calculator { max-width: 960px; width: 100%; margin: 0 auto; color: #e7e7eb; overflow-wrap: anywhere; }
+#pvp-calculator * { box-sizing: border-box; }
+#pvp-calculator h1 { font-size: 1.8rem; color: #fff; }
+#pvp-calculator h2, #pvp-calculator legend { font-size: 1.25rem; color: #fff; }
+#pvp-calculator fieldset { min-width: 0; border: 1px solid #697078; padding: 1rem; margin: 1rem 0; border-radius: .3rem; }
+#pvp-calculator .pvp-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+#pvp-calculator .pvp-field { min-width: 0; }
+#pvp-calculator label { display: block; margin-bottom: .35rem; }
+#pvp-calculator input { display: block; width: 100%; min-width: 0; border: 1px solid #9299a1; border-radius: .25rem; background: #252a30; color: #fff; padding: .6rem; font: inherit; }
+#pvp-calculator input[aria-invalid="true"] { border: 2px solid #ffb5b5; }
+#pvp-calculator button { background: #414a55; color: #fff; border: 1px solid #a0a8b2; border-radius: .25rem; padding: .6rem 1rem; font: inherit; cursor: pointer; white-space: normal; }
+#pvp-calculator input:focus-visible, #pvp-calculator button:focus-visible { outline: 3px solid #9bcaff; outline-offset: 2px; }
+#pvp-calculator .pvp-field-error, #pvp-calculator .pvp-warning { color: #ffc4c4; }
+#pvp-calculator .pvp-field-error { display: block; margin-top: .3rem; }
+#pvp-calculator [hidden] { display: none; }
+#pvp-calculator section { margin-top: 1.5rem; }
+#pvp-calculator dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+#pvp-calculator dl > div { min-width: 0; background: #292f36; border: 1px solid #697078; border-radius: .3rem; padding: .8rem; }
+#pvp-calculator dt { font-weight: 500; }
+#pvp-calculator dd { margin: .4rem 0 0; font-size: 1.5rem; color: #fff; font-variant-numeric: tabular-nums; }
+#pvp-calculator .pvp-formulas { padding-left: 1.3rem; }
+#pvp-calculator .pvp-formulas li { margin-bottom: .65rem; }
+@media (max-width: 600px) {
+    #pvp-calculator .pvp-inputs, #pvp-calculator dl { grid-template-columns: minmax(0, 1fr); }
+    #pvp-calculator fieldset { padding: .75rem; }
+    #pvp-calculator h1 { font-size: 1.5rem; }
+}

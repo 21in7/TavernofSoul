@@ -36,6 +36,7 @@ class StaticViewSitemap(Sitemap):
             'Jobs:index',
             'Attributes:index',
             'Planner:index',
+            'Planner:pvp',
             'Other:achieve'
             ]
     def location(self, item):
