@@ -1,14 +1,18 @@
 """Exercise actual parser/exporter, importer, ORM, URLs, views, and templates."""
 import json
 import copy
+from html.parser import HTMLParser
 from pathlib import Path
+import re
 import tempfile
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TransactionTestCase
-from django.db import transaction
+from django.test import TransactionTestCase, override_settings
+from django.db import connection, transaction
+from django.test.utils import CaptureQueriesContext
+from django.urls import resolve, reverse
 
 from DB import ToS_DB
 from items import resolve_package_contents
@@ -20,6 +24,40 @@ from harness.parser_fixture import parse_workspace, prepare_workspace
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'minimal_release.json'
 VERSION = {'version': 'harness-v1_001001.ipf'}
+
+
+class _PvpPageHTML(HTMLParser):
+    """Inspect rendered attributes and menu order without assuming quote style."""
+
+    def __init__(self, source):
+        super().__init__()
+        self.nodes = []
+        self.labels = []
+        self.current_label = None
+        self.sidebar_links = []
+        self.in_sidebar = False
+        self.feed(source)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        self.nodes.append((tag, attrs))
+        if tag == 'label':
+            self.current_label = (attrs.get('for'), [])
+            self.labels.append(self.current_label)
+        if tag == 'nav' and attrs.get('id') == 'sidebar':
+            self.in_sidebar = True
+        if tag == 'a' and self.in_sidebar:
+            self.sidebar_links.append(attrs.get('href'))
+
+    def handle_endtag(self, tag):
+        if tag == 'label':
+            self.current_label = None
+        if tag == 'nav':
+            self.in_sidebar = False
+
+    def handle_data(self, data):
+        if self.current_label is not None:
+            self.current_label[1].append(data)
 
 
 class PipelineTests(TransactionTestCase):
@@ -42,6 +80,104 @@ class PipelineTests(TransactionTestCase):
     def import_release(self):
         # Command instance pins base_path to the temporary exported release.
         call_command(self.command, update=1)
+
+    def test_pvp_url_rendering_accessibility_menu_and_sitemap(self):
+        from Planner.views import pvp
+        from TavernofSoul.urls import StaticViewSitemap
+
+        self.assertEqual(reverse('Planner:pvp'), '/planner/pvp/')
+        self.assertIs(resolve('/planner/pvp/').func, pvp)
+        with override_settings(REGION='itos'):
+            response = self.client.get(reverse('Planner:pvp'))
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'Planner/pvp.html')
+        document = _PvpPageHTML(response.content.decode())
+        links = document.sidebar_links
+        planner = links.index(reverse('Planner:index'))
+        self.assertEqual(links[planner:planner + 3], [
+            reverse('Planner:index'), '/planner/pvp/',
+            'https://www.buymeacoffee.com/gihyeonofsoul',
+        ])
+        self.assertEqual(links.count('/planner/pvp/'), 1)
+        inputs = {attrs['name']: attrs for tag, attrs in document.nodes
+                  if tag == 'input' and attrs.get('name') in {
+                      'myLevel', 'opponentLevel', 'accuracy', 'evasion', 'critical',
+                      'criticalResistance', 'block', 'blockPenetration'}}
+        labels = {
+            'myLevel': 'My level', 'opponentLevel': 'Opponent level',
+            'accuracy': 'My accuracy', 'evasion': 'Opponent evasion',
+            'critical': 'My critical occurrence',
+            'criticalResistance': 'Opponent critical resistance',
+            'block': 'My block', 'blockPenetration': 'Opponent block penetration',
+        }
+        self.assertEqual(set(inputs), set(labels))
+        for key, label in labels.items():
+            # Inspect the real label and its association directly rather than
+            # matching an HTML fragment inside the shared site's full markup.
+            self.assertEqual([
+                ''.join(text).strip() for target, text in document.labels
+                if target == 'pvp-' + key
+            ], [label])
+            self.assertEqual(inputs[key]['id'], 'pvp-' + key)
+            self.assertEqual(inputs[key]['value'], '500' if key.endswith('Level') else '20000')
+            self.assertNotEqual(inputs[key].get('tabindex'), '-1')
+            self.assertIn('pvp-' + key + '-error', inputs[key]['aria-describedby'].split())
+        outputs = {attrs['data-pvp-result'] for tag, attrs in document.nodes
+                   if 'data-pvp-result' in attrs}
+        self.assertEqual(outputs, {'hit', 'evasion', 'critical', 'block', 'levelFactor'})
+        self.assertTrue(any(tag == 'section' and attrs.get('aria-live') == 'polite'
+                            and attrs.get('aria-atomic') == 'true'
+                            for tag, attrs in document.nodes))
+        self.assertTrue(any(tag == 'button' and attrs.get('type') == 'reset'
+                            for tag, attrs in document.nodes))
+        self.assertTrue(any(tag == 'noscript' for tag, attrs in document.nodes))
+        self.assertContains(response, 'Enable JavaScript to calculate probabilities.')
+        self.assertTrue(any(tag == 'script' and attrs.get('src', '').endswith('/js/pvp-calculator.js')
+                            for tag, attrs in document.nodes))
+        self.assertTrue(any(tag == 'link' and attrs.get('href', '').endswith('/css/pvp-calculator.css')
+                            for tag, attrs in document.nodes))
+        sitemap = StaticViewSitemap()
+        self.assertIn('Planner:pvp', sitemap.items())
+        self.assertEqual(sitemap.location('Planner:pvp'), '/planner/pvp/')
+        # The original planner routes still resolve to their own handlers.
+        self.assertEqual(resolve(reverse('Planner:index')).func.__name__, 'index')
+        self.assertEqual(resolve(reverse('Planner:getJob')).func.__name__, 'getJob')
+
+    def test_pvp_language_defaults_guidance_and_errors_follow_region(self):
+        for region in ('ktos', 'ktest', 'itos', 'jtos', 'twtos', 'unknown'):
+            with self.subTest(region=region), override_settings(REGION=region):
+                response = self.client.get('/planner/pvp/')
+                korean = region in ('ktos', 'ktest')
+                self.assertContains(response, 'lang="{}"'.format('ko' if korean else 'en'))
+                for text in (('PvP 확률 계산기', '내 레벨', '상대 레벨', '내 블록 확률',
+                              '기본값으로 초기화', '양쪽 레벨 500', '음수 부호',
+                              '표시된 입력을 수정하세요.', 'JavaScript가 필요합니다',
+                              '별도 카드·버프·특성', '50레벨 이상', '실제 게임 패치')
+                             if korean else
+                             ('PvP Calculator', 'My level', 'Opponent level', 'My block chance',
+                              'Reset to defaults', 'both levels 500', 'Negative signs',
+                              'Correct the marked inputs.', 'Enable JavaScript',
+                              'Separate card, buff and trait', '50 or more levels',
+                              'not confirmation of a live game patch')):
+                    self.assertContains(response, text)
+                self.assertNotContains(response, '<dt>Opponent block chance</dt>')
+                if not korean:
+                    self.assertNotContains(response, '기본값으로 초기화')
+
+    def test_pvp_requests_do_not_write_database_or_accept_post(self):
+        # Observe real request SQL, including shared context processors. No importer
+        # or populated release is needed; SELECTs by the shared shell are permitted.
+        with CaptureQueriesContext(connection) as queries:
+            with override_settings(REGION='itos'):
+                response = self.client.get('/planner/pvp/', {'accuracy': '-1e-400'})
+                rejected = self.client.post('/planner/pvp/', {'accuracy': '25000'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(rejected.status_code, 405)
+        for query in queries.captured_queries:
+            self.assertIsNone(re.search(r'\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|TRUNCATE)\b',
+                                        query['sql'], flags=re.I), query['sql'])
+        self.assertContains(response, 'name="accuracy"')
+        self.assertContains(response, 'value="20000"')
 
     def test_parse_export_import_and_http_queries(self):
         self.import_release()

@@ -1,0 +1,64 @@
+{% extends 'base/index.html' %}
+{% load static %}
+{% block head %}
+<title>{{ pvp_text.title }} - TavernofSoul</title>
+<link rel="stylesheet" href="{% static 'css/pvp-calculator.css' %}">
+{% endblock %}
+{% block content %}
+<main id="pvp-calculator" lang="{{ pvp_language }}">
+  <h1>{{ pvp_text.title }}</h1>
+  <p>{{ pvp_text.intro }}</p>
+  <p id="pvp-defaults">{{ pvp_text.defaults }}</p>
+  <p id="pvp-limits">{{ pvp_text.limits }}</p>
+  <noscript><p class="pvp-warning">{{ pvp_text.noscript }}</p></noscript>
+  <form novalidate aria-describedby="pvp-defaults pvp-limits">
+    <fieldset>
+      <legend>{{ pvp_text.inputs }}</legend>
+      <div class="pvp-inputs">
+        {% for field in pvp_inputs %}
+        <div class="pvp-field">
+          <label for="pvp-{{ field.key }}">{{ field.label }}</label>
+          <input id="pvp-{{ field.key }}" name="{{ field.key }}" type="text" inputmode="decimal" value="{{ field.default }}" autocomplete="off" spellcheck="false" required aria-describedby="pvp-limits pvp-{{ field.key }}-error">
+          <span id="pvp-{{ field.key }}-error" class="pvp-field-error" hidden>{{ pvp_text.error }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <button type="reset">{{ pvp_text.reset }}</button>
+  </form>
+  <section class="pvp-results" aria-labelledby="pvp-results-title" aria-live="polite" aria-atomic="true">
+    <h2 id="pvp-results-title">{{ pvp_text.results }}</h2>
+    <p data-pvp-error class="pvp-warning" hidden>{{ pvp_text.invalid }}</p>
+    <dl>
+      {% for result in pvp_outputs %}
+      <div><dt>{{ result.label }}</dt><dd id="pvp-result-{{ result.key }}" data-pvp-result="{{ result.key }}">—</dd></div>
+      {% endfor %}
+      <div><dt>{{ pvp_text.factor }}</dt><dd id="pvp-result-levelFactor" data-pvp-result="levelFactor">—</dd></div>
+    </dl>
+  </section>
+  <section aria-labelledby="pvp-formulas-title">
+    <h2 id="pvp-formulas-title">{{ pvp_text.formula }}</h2>
+    {% if pvp_language == 'ko' %}
+    <ul class="pvp-formulas">
+      <li>명중률(%) = 100 / (1 + (1/9) × ((상대 회피 + 10) / (내 명중 + 10))²) × 레벨 보정</li>
+      <li>상대 회피율(%) = 100 − 최종 명중률(%)</li>
+      <li>치명타 확률(%) = 100 / (1 + 9 × ((상대 치명타 저항 + 10) / (내 치명타 발생 + 10))²)</li>
+      <li>내 블록 확률(%) = 100 / (1 + (7/3) × ((상대 블록 관통 + 10) / (내 블록 + 10))²)</li>
+      <li>레벨 보정 = max(0, 1 − max(0, 상대 레벨 − 내 레벨) / 50)</li>
+    </ul>
+    {% else %}
+    <ul class="pvp-formulas">
+      <li>Hit (%) = 100 / (1 + (1/9) × ((opponent evasion + 10) / (my accuracy + 10))²) × level correction</li>
+      <li>Opponent evasion (%) = 100 − final hit (%)</li>
+      <li>Critical (%) = 100 / (1 + 9 × ((opponent critical resistance + 10) / (my critical occurrence + 10))²)</li>
+      <li>My block (%) = 100 / (1 + (7/3) × ((opponent block penetration + 10) / (my block + 10))²)</li>
+      <li>Level correction = max(0, 1 − max(0, opponent level − my level) / 50)</li>
+    </ul>
+    {% endif %}
+    <p>{{ pvp_text.note }}</p>
+  </section>
+</main>
+{% endblock %}
+{% block script %}
+<script src="{% static 'js/pvp-calculator.js' %}" defer></script>
+{% endblock %}

@@ -919,3 +919,13 @@ fingerprint·quota/budget/approval·schedule·frozen morning report는 유지한
 전체 필드와 향후 실제 기록 읽기는 [모델 연결](agent-models.md#glm-호출의-private-지연-관측)과
 [개선 연구](improvements.md#private-glm-지연-기록-읽기)에 둔다. parent 검증·live·정상 hourly
 관측은 대기 중이며 worker가 수행하거나 성공을 주장하지 않는다.
+
+## 독립 PvP 확률 계산기
+
+`/planner/pvp/` (`Planner:pvp`)는 기존 Planner 다음에 연결된 클라이언트 도구다.
+Django는 지역별 문구와 입력 기본값을 렌더링하고, 제공된 독립 JavaScript의 순수 함수가
+입력 스탯의 기본 확률을 계산한다. DOM 연결은 입력·오류·초기화와 결과 표시를 담당한다.
+페이지는 DB에 쓰지 않으며 importer·게임 데이터 적재·PvE·대미지 계산과 독립이다.
+기존 Planner와 전역 번역 동작, 하네스·배포·GitHub 게시 정책은 바꾸지 않는다.
+제공된 개편 공식의 구현이며 실제 게임 패치 적용의 증거는 아니다.
+공식·안전 범위·언어·검증 경로와 관측 한계는 [PvP 계산기](pvp-calculator.md)에 둔다.

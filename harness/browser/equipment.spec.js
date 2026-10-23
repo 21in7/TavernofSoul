@@ -187,3 +187,137 @@ test('skill gem opens the related skill', async ({page}) => {
     await expect(page.locator('#title')).toHaveText('Regional Fire');
     await expect(page).toHaveURL(/\/skills\/400$/);
 });
+
+async function pvpResults(page, expected) {
+    for (const [key, value] of Object.entries(expected)) {
+        await expect(page.locator(`[data-pvp-result="${key}"]`)).toHaveText(value);
+    }
+}
+
+async function pvpFitsViewport(page, info) {
+    if (info.project.name === 'mobile') expect(page.viewportSize().width).toBe(390);
+    const layout = await page.evaluate(() => {
+        const calculator = document.querySelector('#pvp-calculator').getBoundingClientRect();
+        return {
+            width: window.innerWidth, document: document.documentElement.scrollWidth,
+            body: document.body.scrollWidth, left: calculator.left, right: calculator.right,
+        };
+    });
+    expect(layout.document).toBeLessThanOrEqual(layout.width);
+    expect(layout.body).toBeLessThanOrEqual(layout.width);
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(layout.width);
+}
+
+test('pvp calculator updates probabilities and level boundaries', async ({page}, info) => {
+    if (info.project.name === 'mobile') await page.setViewportSize({width: 390, height: 844});
+    await page.goto('/items/');
+    const menu = await page.locator('#sidebar a').evaluateAll(links =>
+        links.map(link => ({href: link.getAttribute('href'), text: link.textContent.trim()})));
+    const planner = menu.findIndex(link => link.href === '/planner/');
+    expect(planner).toBeGreaterThanOrEqual(0);
+    expect(menu.slice(planner, planner + 3).map(link => link.href)).toEqual([
+        '/planner/', '/planner/pvp/', 'https://www.buymeacoffee.com/gihyeonofsoul',
+    ]);
+    expect(menu[planner + 1].text).toBe('PvP Calculator');
+    if (info.project.name === 'mobile') {
+        await page.locator('#sidebarCollapse').click();
+        await expect(page.locator('#sidebar')).toHaveClass(/active/);
+    }
+    await page.locator('#sidebar a[href="/planner/pvp/"]').click();
+    await expect(page).toHaveURL(/\/planner\/pvp\/$/);
+    await expect(page.locator('#pvp-calculator')).toBeVisible();
+    await pvpResults(page, {hit: '90.00%', evasion: '10.00%', critical: '10.00%',
+                            block: '30.00%', levelFactor: '1.00 ×'});
+    await pvpFitsViewport(page, info);
+    for (const key of ['accuracy', 'critical', 'block']) {
+        await page.locator(`[name="${key}"]`).fill('10');
+    }
+    for (const key of ['evasion', 'criticalResistance', 'blockPenetration']) {
+        await page.locator(`[name="${key}"]`).fill('0');
+    }
+    await pvpResults(page, {hit: '97.30%', evasion: '2.70%', critical: '30.77%', block: '63.16%'});
+    await page.locator('[name="opponentLevel"]').fill('525');
+    await pvpResults(page, {hit: '48.65%', evasion: '51.35%', levelFactor: '0.50 ×'});
+    await page.locator('[name="opponentLevel"]').fill('549');
+    await pvpResults(page, {hit: '1.95%', evasion: '98.05%', levelFactor: '0.02 ×'});
+    for (const level of ['550', '551']) {
+        await page.locator('[name="opponentLevel"]').fill(level);
+        await pvpResults(page, {hit: '0.00%', evasion: '100.00%', levelFactor: '0.00 ×',
+                                critical: '30.77%', block: '63.16%'});
+    }
+    await page.locator('[name="myLevel"]').fill('600');
+    await pvpResults(page, {hit: '97.30%', evasion: '2.70%', levelFactor: '1.00 ×',
+                            critical: '30.77%', block: '63.16%'});
+    await pvpFitsViewport(page, info);
+    await evidence(page, info, 'pvp-probabilities');
+});
+
+test('pvp calculator rejects invalid inputs and resets accessibly', async ({page}, info) => {
+    if (info.project.name === 'mobile') await page.setViewportSize({width: 390, height: 844});
+    const response = await page.goto('/planner/pvp/');
+    expect(response.status()).toBe(200);
+    const calculator = page.locator('#pvp-calculator');
+    const labels = await calculator.locator('label').evaluateAll(nodes => nodes.map(label => ({
+        text: label.textContent.trim(), input: label.control && label.control.name,
+    })));
+    expect(labels.map(label => label.input)).toEqual([
+        'myLevel', 'opponentLevel', 'accuracy', 'evasion', 'critical',
+        'criticalResistance', 'block', 'blockPenetration',
+    ]);
+    expect(labels.every(label => label.text.length > 0)).toBe(true);
+    await expect(calculator.locator('.pvp-results')).toHaveAttribute('aria-live', 'polite');
+    await expect(calculator.locator('.pvp-results')).toHaveAttribute('aria-atomic', 'true');
+    await page.locator('[name="critical"]').fill('25000');
+    await pvpResults(page, {critical: '14.79%'});
+    for (const [key, value] of [
+        ['accuracy', ''], ['accuracy', '-1'], ['accuracy', '-1e-400'],
+        ['accuracy', 'abc'], ['accuracy', 'Infinity'], ['accuracy', '1e309'],
+        ['accuracy', '1000000000001'], ['myLevel', '500.5'], ['opponentLevel', '10001'],
+    ]) {
+        const input = page.locator(`[name="${key}"]`);
+        await input.fill(value);
+        await expect(input).toHaveValue(value);
+        await expect(input).toHaveAttribute('aria-invalid', 'true');
+        await expect(page.locator(`#pvp-${key}-error`)).toBeVisible();
+        await expect(calculator.locator('[data-pvp-error]')).toBeVisible();
+        await expect(calculator.locator('[data-pvp-result]')).toHaveText(['—', '—', '—', '—', '—']);
+        if (value === '-1e-400') {
+            await pvpFitsViewport(page, info);
+            await evidence(page, info, 'pvp-input-error');
+        }
+        await input.fill(key.endsWith('Level') ? '500' : '20000');
+        await expect(input).toHaveAttribute('aria-invalid', 'false');
+        await expect(calculator.locator('[data-pvp-error]')).toBeHidden();
+        await pvpResults(page, {hit: '90.00%', critical: '14.79%'});
+    }
+    // Change every default and leave an error active so reset must restore both
+    // the complete form and the cleared results, using the real keyboard path.
+    for (const {input: key} of labels) {
+        await page.locator(`[name="${key}"]`).fill(key.endsWith('Level') ? '600' : '0');
+    }
+    await page.locator('[name="opponentLevel"]').fill('650');
+    await page.locator('[name="blockPenetration"]').fill('-1e-400');
+    await expect(calculator.locator('[data-pvp-error]')).toBeVisible();
+    await expect(calculator.locator('[data-pvp-result]')).toHaveText(['—', '—', '—', '—', '—']);
+    // Native keyboard traversal follows the eight labelled fields, then reset.
+    await page.locator('[name="myLevel"]').focus();
+    await expect(page.locator('[name="myLevel"]')).toBeFocused();
+    for (const key of labels.slice(1).map(label => label.input)) {
+        await page.keyboard.press('Tab');
+        await expect(page.locator(`[name="${key}"]`)).toBeFocused();
+    }
+    await page.keyboard.press('Tab');
+    const reset = calculator.locator('button[type="reset"]');
+    await expect(reset).toBeFocused();
+    await page.keyboard.press('Enter');
+    for (const {input: key} of labels) {
+        await expect(page.locator(`[name="${key}"]`)).toHaveValue(key.endsWith('Level') ? '500' : '20000');
+    }
+    await pvpResults(page, {hit: '90.00%', evasion: '10.00%', critical: '10.00%',
+                            block: '30.00%', levelFactor: '1.00 ×'});
+    await expect(calculator.locator('[aria-invalid="true"]')).toHaveCount(0);
+    await expect(calculator.locator('[data-pvp-error]')).toBeHidden();
+    await pvpFitsViewport(page, info);
+    await evidence(page, info, 'pvp-reset');
+});
