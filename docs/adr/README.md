@@ -31,13 +31,18 @@
 | [0024](0024-immediate-batched-github-transport.md) | trusted-parent 단일 accept transport·사전 로드 Codex bridge·workflow 즉시 handoff, native 검증과 보수적 receipt 복구 유지 | 제안(proposed), 새 의미 검토/full check/실제 PR 관측 대기 | 2026-10-20 |
 | [0025](0025-progress-preserving-improvement-reviews.md) | 회차와 독립된 bounded 실제 참여 history·선택적 local·sealed source snapshot과 current freshness 분리 | 사용자 직접 요청 구현안, source 확인/단일 회차 선택은 0026으로 대체·검토/검증 대기 | 2026-10-21 |
 | [0026](0026-source-verified-retained-improvement-reports.md) | parent Read 증거·owner 코드 표본과 별도 문서 coverage·ID별 최신 verdict 보존·원본 승인 freshness | 사용자 요청 구현안, 새 Claude 의미 검토/full check/scoped apply/Git·CI 전달 대기 | 2026-10-22 |
-| [0027](0027-inspection-lock-isolation-and-diagnostics.md) | workflow 소유권과 짧은 source 보호·stable discovery/sender·경계별 private 진단 | 사용자 요청 구현안, 최종 새 Claude 의미 검토/full check/scoped apply·Git/CI·운영 관측 대기 | 2026-10-22 |
+| [0027](0027-inspection-lock-isolation-and-diagnostics.md) | workflow 소유권과 짧은 source 보호·stable discovery/sender·경계별 private 진단·실제 원인 보존 | 사용자 요청 구현안, 최종 새 Claude 의미 검토/full check/scoped apply·Git/CI·운영 관측 대기 | 2026-10-22 |
 | [0028](0028-resumed-run-result-archives.md) | 최초 실패 불변·원래 증거 연결·trusted-parent 명시 failed→passed 별도 세대 보관 | 사용자 승인 구현안, 새 의미 검토/full check/apply·전달·실제 복구 대기 | 2026-10-23 |
 
 ## 상태와 근거의 의미
 
 0028은0021의 일반 변경 결과 거부를 유지하면서 고정 세대의 명시 추가 보관을 도입한다.
 새 run/모델/검사/Git 실행 권한이 아니며 기존 실패 보관을 수정하지 않는다.
+
+0027의 후속 정밀화는 신뢰한 adapter/validator의 identity-bound 원인·field/rule을 scan/slot/
+cloud192·별도 local192 history/status/feedback까지 전달하며 복구에도 원래 사유·실제 호출 관측을 보존한다.
+legacy 상세는 unknown/unavailable,
+경고·모델/tool 문구는 실제 CLI 실패 원인의 증거가 아니다. 새 정책/ADR 없이 기존 결정을 완성한다.
 
 0027은 workflow 전체 project 잠금과0017의 공통 준비 실패 코드를 대체한다.0025/0026의
 sealed snapshot·진행·coverage·ID별 verdict 보존·승인 freshness는 유지한다. v1/v2/legacy의

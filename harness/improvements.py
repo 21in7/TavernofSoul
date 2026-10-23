@@ -462,13 +462,35 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
     result = None
     preparation_ms = verification_ms = None
     failure_reason = 'role_preparation_failed'
+    def observe(exc):
+        # Select only from the actual local program boundary. Runner exception
+        # names/messages/diagnostic attributes are never classification inputs.
+        reason = 'role_interrupted' if isinstance(exc, KeyboardInterrupt) else failure_reason
+        cause, phase = {
+            'role_preparation_failed': ('unavailable', 'preparation'),
+            'role_execution_failed': ('unavailable', 'execution'),
+            'role_result_invalid': ('envelope_invalid', 'response'),
+            'role_identity_mismatch': ('identity_mismatch', 'identity'),
+            'role_context_changed': ('context_changed', 'context'),
+            'role_json_invalid': ('json_invalid', 'json'),
+            'review_invalid': ('unavailable', 'review'),
+            'source_review_unverified': ('source_review_unverified', 'review'),
+            'role_context_cleanup_failed': ('context_cleanup_failed', 'cleanup'),
+            'role_interrupted': ('interrupted', 'execution'),
+        }.get(reason, ('unavailable', 'candidate'))
+        try:
+            diagnostics.attach(exc, diagnostics.detail(reason, cause, phase=phase))
+            diagnostics.record('stage', exc, start)
+        except (Exception, KeyboardInterrupt):
+            pass  # Optional diagnostics never replace this boundary's error.
     try:
         spec = agent_models.load_config()['roles'][role]
         participation.update(provider=spec['provider'], model=spec['model'])
         if role == 'reviewer' and spec['provider'] != 'claude':
             failure_reason = 'source_review_unverified'
             coverage.fail()
-        with selected.temporary_directory(prefix='tavern-improvement-context-', purpose='context') as context:
+        with agent_models._preserve_failure(selected.temporary_directory(
+                prefix='tavern-improvement-context-', purpose='context'), observe) as context:
             if context == ROOT or ROOT in context.parents or context in ROOT.parents:
                 raise ImprovementError('Model contexts must be outside repository ancestry.')
             model_root = context / 'sources'
@@ -520,7 +542,8 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             prompt += '\nPrior candidates: ' + json.dumps(sanitize(review_data), ensure_ascii=False)
             source_bytes = sum(len(snapshots[p]['content'] or b'') for p in paths)
             if source_bytes + len(prompt.encode('utf-8')) > config['limits']['max_context_bytes']:
-                raise ImprovementError('Model context exceeds its configured bound.')
+                raise diagnostics.attach(ImprovementError('Model context exceeds its configured bound.'),
+                    diagnostics.detail('role_preparation_failed', 'context_too_large', phase='preparation'))
             safe_prompt = agent_models.redact(prompt, keys)
             timeout = config['limits']['call_timeout_seconds']
             # The environment guard also rejects accidental in-process workflow
@@ -553,7 +576,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     if telemetry['outcome'] == 'interrupted':
                         participation['interrupted'] = True
             retained = workflow.triage.scrub({k: v for k, v in result.items()
-                                             if k != 'telemetry'}, keys)
+                                             if k not in ('telemetry', 'failure_detail')}, keys)
             if len(contract.canonical_json(retained)) <= config['limits']['max_response_bytes'] + 8192:
                 participation['result'] = retained
             else:
@@ -576,7 +599,10 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             if result.get('status') != 'passed':
                 failure_reason = 'role_execution_failed'
                 participation['status'] = 'failed'
-                raise ImprovementError('Model role failed; no consensus inferred.')
+                error = ImprovementError('Model role failed; no consensus inferred.')
+                # Hidden provenance is checked only AFTER configured identity.
+                diagnostics.inherit(error, result)
+                raise error
             # Verify even an injected runner did not change the read-only copy.
             failure_reason = 'role_context_changed'
             verify_start = time.monotonic()
@@ -627,11 +653,15 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     failure_reason = _candidate_failure_reason(exc)
                     raise
                 for c in parsed:
-                    if (len(c['evidence']) > config['limits']['max_evidence'] or
-                            len(c['benefit']['evidence']) > config['limits']['max_evidence'] or
-                            len(c['edit_files']) > config['limits']['max_edit_files'] or
-                            len(c['validation_plan']) > config['limits']['max_validation_steps']):
-                        raise ImprovementError('Candidate exceeds configured limits.')
+                    for field, count, limit in (
+                            ('evidence', len(c['evidence']), 'max_evidence'),
+                            ('benefit.evidence', len(c['benefit']['evidence']), 'max_evidence'),
+                            ('edit_files', len(c['edit_files']), 'max_edit_files'),
+                            ('validation_plan', len(c['validation_plan']), 'max_validation_steps')):
+                        if count > config['limits'][limit]:
+                            raise diagnostics.attach(ImprovementError('Candidate exceeds configured limits.'),
+                                diagnostics.detail('candidate_invalid', 'validation', phase='candidate',
+                                                   field=field, rule='length'))
             participation['status'] = 'succeeded'
             if 'cli_estimated_cost_usd' in result:
                 participation['cost'] = result['cli_estimated_cost_usd']
@@ -639,7 +669,8 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             failure_reason = 'role_context_cleanup_failed'
             return participation, parsed
     except (Exception, KeyboardInterrupt) as exc:
-        diagnostics.record('stage', exc, start)
+        observe(exc)
+        participation['failure_detail'] = diagnostics.exception_detail(exc)
         participation['error_type'] = _role_error_type(exc)
         if isinstance(exc, KeyboardInterrupt):
             participation['interrupted'] = True

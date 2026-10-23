@@ -92,7 +92,7 @@ fsync/커널 I/O 지연까지 시간 보장을 주장하지 않는다. 실패/�
 config, Store 생성, storage readiness, source/workflow/discovery/sender lock, state read/save,
 dependencies, snapshot/seal/stage, deadline, publication/정산과 diagnostic save를 구분한다.
 version/실제 UTC 발생시각/고정 reason/boundary/logical lock kind/allowlist stage/hour slot,
-정수 errno(0..4095), elapsed_ms(0..86400000)만 기록한다. bool/비정수/과대값은 null이며 외부
+정수 errno(0..4095), elapsed_ms(0..86400000)와 아래 고정 detail을 기록한다. bool/비정수/과대값은 null이며 외부
 exception.reason·str·자유 클래스명·원문·prompt·credential·절대 호스트 경로를 복사하지 않는다.
 검증한 holder 증거가 없으므로 holder_pid는 null이다. 발생시각은 logical 보고시각과 다르다.
 deadline reason은 trusted alarm handler에서 생성한다. 기존 역할별 정제 실패 코드는 유지한다.
@@ -104,6 +104,53 @@ state 읽기 실패나 진단 저장 실패는 `private_result_only`와 private 
 불가하면 persistent 진단도 보장할 수 없다. parent의 기존 private CLI 캡처가 필요하며 stdout
 미보존까지 복원하지 않는다. 오류 기록/정산 실패는 최초 진단과 durable 예약을 가리지 않는다.
 진단은 공개 web-v1 필드·digest에 추가하지 않는다.
+
+## 후속: 실제 원인의 private 전달
+
+2026-10-23 정밀화는 기존 진단 결정을 완성하며 새 승인/스케줄/저장/게시 정책을 만들지 않는다.
+`improvement-failure-v1`의 작은 API는 detail/attach/inherit/exception_detail과 adapter 결과의
+attach_result/result_detail이다. 예외·결과 identity-bound 표식만 전달하고 runner JSON·예외문은
+권위가 아니다. 저장/feedback의 sanitize_detail은 provenance를 만들지 않는다.
+고정9키·allowlist·512bytes·exact dict/str/int를 요구하며 exit_code0..255,errno0..4095,HTTP100..599는
+실제 경계의 관측값만 기록한다. bool/과대값은 null, validation field/rule 부족은 unavailable이다.
+공유 validator가 실제 첫 거절의 field/rule을 결합하며 기존 edit_files 세 reason과 거절 기준은 유지한다.
+원문·후보 값·동적 field/path·source/prompt/credential·호스트 절대 경로는 새 진단에 넣지 않는다.
+
+adapter가 실제 CLI/transport·응답 실패를 분류하고 _call_role과 local loop는 identity 확인 뒤
+표식을 전달한다. plain runner reason은 allowlist 코드여도 권위가 아니다.
+stdout 모델/tool/source의 auth/readonly/401/quota 문구는 실패 증거가 아니다.
+명확한 CLI 경계의 실제 증거만 분류하며 경고와 실패를 구별하고 부족하면 cli_failed/unavailable다.
+기존 auth/permissions·진짜 인증 실패/timeout/응답 검증·원래 예외와 trace 첫 실패를 유지한다.
+
+loop는 scan_id/slot/9단계 index/stage/owner_role과 admission/실제 호출 시각에 broad reason/detail을
+결합해 private 참여·slot·cloud history192건과 별도 local_history192건·status·bounded feedback에 남긴다.
+call_started_at/call_finished_at은 실제 clock 관측이다. finished_at은 기존 회계 시각이며 rollback 때
+admission 이전으로 옮기지 않는다. 실제 종료 관측은 별도로 유지하고 legacy에 시각을 합성하지 않는다.
+local history는 새 실제 예약/정산/복구만 기록하며 기존 cloud 오전 window/최신 역할 선택은 그대로다.
+legacy 상세는 조회에서 unknown/unavailable로 표시하고 과거 원인/기록을 재구성하지 않는다.
+후속 성공·재이행은 앞선 실패를 지우지 않는다. 정산 crash 전 저장된 local 실패도 복구가 사유·
+초안 digest·호출 시각을 덮지 않으며 같은 사유/상세를 feedback에 전달한다.
+후속 정산 보류는 이미 끝난 slot의 결과·사유·단계를 다음 단계 위치로 덮지 않는다.
+상한 밖 전체 참여는 기존 scan 계약에 따른다. no-call gate/quota/budget/source-lock은 실제 보류 reason을
+유지하며 실행 실패로 꾸미지 않는다. 모든 state 쓰기는 기존 잠금 내부이며 fallback/retry/새 scan은 없다.
+feedback의 specialist_failure_detail/review_failure_detail도 같은 정제와 기존 bytes/redaction/최대4요약을 따른다.
+
+ADR0025의 진행·sealed 입력/legacy와 ADR0026의 Read·coverage/ID별 verdict·승인 freshness는 유지한다.
+web-v1/completion-v1·frozen payload/digest·journal/전달·카드·제안 보존과 runtime37/128KiB/1.5MiB는 그대로다.
+22시 coordinator/02시 parser와01시 local·v3의 과거 실패 원인은 원문 미보존으로 미확정이며,
+보존 path_aliases_read_only 분류만으로 실제 근본 원인을 확정하지 않는다. 기록·보고를 고쳐 쓰지 않는다.
+
+native Lab은 실제 adapter→_call_role→tick→scan/slot/history/status/feedback·Store 재개와 후속 성공,
+CLI 오류 문구/경고·실제 인증/timeout/spawn 구별·후보/검토·원문/위조/legacy·비용/중단/정산 첫 실패 및
+기존 public/frozen/제안 보존을 명세한다. 검사는 미실행이다. 전체 diff 새 Claude 의미 검토와
+GIT=1 full make check/scoped apply·기존 Git 역할 및 parent 게시/CI3/merge/cleanup·스케줄/frozen
+독립 확인이 필요하다. 실제 향후 hourly 관측은 별도이며 인위적 운영 실패/tick으로 시험하지 않는다.
+
+native 회귀는 collection 때 보존한 adapter callable을 시험 내부에서만 호출한다. storage는 Lab,
+auth runtime·환경·CLI는 합성 경계로 대체하고 실제 CLI 경계 도달을 명시 검증한다. 공유 guard의
+모델 진입·키 로드·네트워크·Popen·workflow·검사 차단은 대체 구간 안팎에서도 검증한다.
+stdout 키워드만 있는 실패, 실제 stderr 인증 오류, 단순 경고, timeout/spawn은 서로 다른 fixture다.
+시계가 날짜를 넘겨도 slot 조회는 원래 admission 회계일을 사용하고 실제 call_finished_at을 비교한다.
 
 ## 회귀, 문서 판단, 운영 인계
 

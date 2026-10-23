@@ -1,6 +1,9 @@
 """Offline checks for provider isolation, billing selection, and failed probes."""
 import json
+import http.client
 import os
+import socket
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -8,12 +11,223 @@ from types import SimpleNamespace
 import pytest
 
 from harness import agent_models as models
-from harness import compaction, storage, triage
+from harness import compaction, storage, triage, improvement_diagnostics as diag
 from harness import review_coverage as coverage
 from harness.test_review_coverage import read_events, stdout, with_rate_limit_events
 
 
+_native_loop_run = models.run  # Capture before the shared offline fixture patches it.
+
+
+def run_synthetic_loop_adapter(lab, monkeypatch, blocked, cli, role, prompt, keys, **options):
+    """Exercise the real adapter using only the loop Lab's synthetic I/O."""
+    from harness import workflow, local_model
+    assert role in ('coordinator', 'reviewer')
+    guards = ((models, 'run'), (models, 'load_keys'), (subprocess, 'Popen'),
+              (workflow, 'execute'), (workflow, 'run_check'), (workflow.git_publish, 'prepare'),
+              (http.client, 'HTTPConnection'), (http.client, 'HTTPSConnection'),
+              (socket, 'socket'), (socket, 'create_connection'), (socket, 'getaddrinfo'),
+              (local_model, 'http_transport'))
+    io_guards = ((storage, 'resolve_storage'), (subprocess, 'run'))
+
+    def assert_blocked(boundaries):
+        for obj, name in boundaries:
+            boundary = getattr(obj, name)
+            assert boundary is blocked
+            with pytest.raises(pytest.fail.Exception, match='Offline loop test crossed'):
+                boundary()
+
+    assert_blocked(guards + io_guards)
+    workspace = str(options['workspace'])
+    runtime = dict(cli='/synthetic/codex', shell=None, root=lab.root.parent / 'runtime',
+                   source_home=lab.root.parent / 'auth', env={})
+
+    def resolve(root):
+        assert root == lab.root
+        return lab.selected
+
+    def process(command, **kwargs):
+        assert command[0] == '/synthetic/codex'
+        if 'login' not in command:
+            assert kwargs['cwd'] == workspace
+        return cli(command, **kwargs)
+
+    def review(command, task, cwd, env, timeout):
+        assert role == 'reviewer' and command[0] == 'claude'
+        assert cwd == workspace and '--verbose' in command
+        return cli(command, input=task, cwd=cwd, env=env, timeout=timeout)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(models, 'ROOT', lab.root)
+        patch.setattr(storage, 'resolve_storage', resolve)
+        assert_blocked(guards)
+        if role == 'coordinator':
+            patch.setattr(models, 'codex_runtime', lambda *a: nullcontext(runtime))
+            patch.setattr(models.shutil, 'which', lambda *a: '/synthetic/codex')
+            patch.setattr(subprocess, 'run', process)
+        else:
+            patch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+            patch.setattr(models, 'child_environment', lambda *a, **k: {})
+            patch.setattr(models, '_review_subprocess', review)
+        assert_blocked(guards + (((subprocess, 'run'),) if role == 'reviewer' else ()))
+        result = _native_loop_run(role, prompt, keys, compaction=False, **options)
+    assert_blocked(guards + io_guards)
+    return result
+
+
 PATH_ALIASES_WARNING = 'PATH aliases: Read-only file system (os error 30)'
+
+
+@pytest.mark.parametrize('failure,cause,phase', [
+    ('exit', 'cli_failed', 'execution'), ('timeout', 'timeout', 'execution'),
+    ('spawn', 'spawn_failed', 'execution'), ('json', 'json_invalid', 'json'),
+    ('envelope', 'envelope_invalid', 'response'), ('empty', 'empty_response', 'response'),
+])
+def test_actual_non_codex_failure_boundary_mints_private_detail(
+        local_keys, monkeypatch, failure, cause, phase):
+    marker = 'SYNTHETIC_RAW /private/host quota authentication'
+    monkeypatch.setattr(models.shutil, 'which', lambda cli: '/fake/' + cli)
+    def cli(command, **options):
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(command, 7, output=marker, stderr=marker)
+        if failure == 'spawn':
+            raise OSError(13, marker)
+        body = {'json': '{' + marker, 'envelope': '[]', 'empty': '{"result":""}'}.get(
+            failure, '{"result":"bounded"}')
+        return subprocess.CompletedProcess(command, 7 if failure == 'exit' else 0, body, marker)
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    result = models.run('reviewer', 'fixture', local_keys, compaction=False)
+    failure_detail = diag.result_detail(result)
+    assert result['status'] == 'failed'
+    assert (failure_detail['cause'], failure_detail['phase']) == (cause, phase)
+    assert failure_detail['exit_code'] == (7 if failure == 'exit' else None)
+    assert failure_detail['errno'] == (13 if failure == 'spawn' else None)
+    assert marker not in json.dumps(failure_detail)
+    assert diag.result_detail(dict(result))['cause'] == 'unavailable'
+
+
+@pytest.mark.parametrize('code,expected', [(255, 255), (256, None), (-9, None),
+                                         (True, None), (10 ** 50, None)])
+def test_cli_exit_detail_numbers_require_native_bounded_int(local_keys, monkeypatch, code, expected):
+    monkeypatch.setattr(models.shutil, 'which', lambda cli: '/fake/' + cli)
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **k:
+                        subprocess.CompletedProcess(a[0], code, 'private quota 401', 'private lock'))
+    result = models.run('reviewer', 'fixture', local_keys, compaction=False)
+    assert diag.result_detail(result)['exit_code'] == expected
+    assert diag.result_detail(result)['cause'] == 'cli_failed'
+
+
+@pytest.mark.parametrize('provider,output,cause', [
+    ('codex', '{broken', 'json_invalid'), ('codex', '[]', 'envelope_invalid'),
+    ('codex', '{"type":"turn.completed"}', 'response_incomplete'),
+    ('claude', 'true', 'envelope_invalid'),
+])
+def test_response_parser_marks_original_error_without_text_inference(provider, output, cause):
+    with pytest.raises(ValueError) as error:
+        models.response_text(provider, output)
+    assert diag.exception_detail(error.value)['cause'] == cause
+
+
+def test_codex_json_failure_keeps_specific_link_through_legacy_wrapper(
+        codex_login, local_keys, monkeypatch):
+    def cli(command, **options):
+        body = 'Logged in using ChatGPT' if 'login' in command else '{SYNTHETIC_RAW'
+        return subprocess.CompletedProcess(command, 0, body, '')
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    result = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert result['diagnostic'] == {'stage': 'execution', 'category': 'invalid_response'}
+    assert diag.result_detail(result)['cause'] == 'json_invalid'
+    assert 'SYNTHETIC_RAW' not in json.dumps(result)
+
+
+def test_cleanup_and_optional_observer_cannot_replace_body_exception():
+    from contextlib import contextmanager
+    original = OSError(13, 'PRIVATE_BODY')
+    @contextmanager
+    def context():
+        try:
+            yield None
+        finally:
+            raise RuntimeError('PRIVATE_CLEANUP')
+    def observer(exc):
+        raise RuntimeError('PRIVATE_DIAGNOSTIC')
+    with pytest.raises(OSError) as caught:
+        with models._preserve_failure(context(), observer):
+            raise original
+    assert caught.value is original
+
+
+@pytest.mark.parametrize('kind', ['model', 'tool', 'source'])
+@pytest.mark.parametrize('exit_code', [0, 1])
+@pytest.mark.parametrize('marker', [PATH_ALIASES_WARNING, 'Authentication failed: unauthorized 401',
+                                   'quota exceeded', 'readonly 인증 401'])
+def test_codex_model_tool_and_source_words_cannot_classify_cli_failure(
+        codex_login, local_keys, monkeypatch, kind, exit_code, marker):
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        events = codex_completed(command, '승인 소스 설명: ' + marker).stdout.splitlines()
+        if kind != 'model':
+            events.insert(0, json.dumps({'type': 'item.completed', 'item': {
+                'type': 'command_execution' if kind == 'tool' else 'file_change',
+                'aggregated_output': marker}}))
+        # Tools can echo CLI-looking stderr too; output makes it ambiguous.
+        return subprocess.CompletedProcess(command, exit_code, '\n'.join(events), marker)
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    result = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert result['status'] == ('passed' if exit_code == 0 else 'failed')
+    if exit_code:
+        assert result['diagnostic']['category'] == 'cli_failed'
+        failure = diag.result_detail(result)
+        assert (failure['cause'], failure['exit_code']) == ('cli_failed', 1)
+        assert marker not in json.dumps(failure)
+
+
+@pytest.mark.parametrize('stderr,category', [
+    ('Authentication failed: unauthorized 401', 'authentication_failed'),
+    (PATH_ALIASES_WARNING + '\nError: authentication failed: token expired', 'authentication_failed'),
+    (PATH_ALIASES_WARNING, 'cli_failed'),
+    ('source says authentication failed: unauthorized 401', 'cli_failed'),
+    ('Read source excerpt:\nAuthentication failed: unauthorized 401', 'cli_failed'),
+    ('Authentication failed: unauthorized 401\nTool output follows', 'cli_failed'),
+    ('Authentication failed: unauthorized 401\nAuthentication failed: quoted text', 'cli_failed'),
+    ('{"message":"Authentication failed: unauthorized 401"}', 'cli_failed'),
+    ('quota exceeded; lock busy; 401; readonly', 'cli_failed'),
+])
+def test_codex_nonzero_cli_stderr_requires_unambiguous_error_boundary(
+        codex_login, local_keys, monkeypatch, stderr, category):
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        return subprocess.CompletedProcess(command, 1, '', stderr)
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    result = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert result['status'] == 'failed' and result['diagnostic']['category'] == category
+    assert diag.result_detail(result)['cause'] == category
+    assert diag.result_detail(result)['http_status'] is None  # Text 401 is not HTTP framing.
+
+
+@pytest.mark.parametrize('exit_code', [None, 0, True, '1', -9, 256, 10 ** 50])
+def test_codex_text_without_native_nonzero_exit_has_no_failure_authority(exit_code):
+    assert models.codex_failure_category('Authentication failed: unauthorized 401',
+        'execution', exit_code=exit_code) == 'cli_failed'
+
+
+def test_codex_exit0_bad_response_with_auth_words_remains_response_failure(
+        codex_login, local_keys, monkeypatch):
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        event = {'type': 'turn.failed', 'error': {'message': 'Authentication failed: 401 ' + PATH_ALIASES_WARNING}}
+        return subprocess.CompletedProcess(command, 0, json.dumps(event), 'Authentication failed: unauthorized 401')
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    result = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert result['diagnostic']['category'] == 'invalid_response'
+    assert diag.result_detail(result)['cause'] == 'envelope_invalid'
 
 
 @pytest.mark.parametrize('mode', [
@@ -845,7 +1059,7 @@ def test_codex_doctor_smoke_and_direct_runs_have_separate_runtimes(codex_login, 
 
 @pytest.mark.parametrize('stage', ['authentication', 'execution'])
 @pytest.mark.parametrize('failure,category', [
-    ('aliases', 'path_aliases_read_only'), ('auth', 'authentication_failed'),
+    ('aliases', 'cli_failed'), ('auth', 'authentication_failed'),
     ('timeout', 'timeout'), ('spawn', 'cli_failed'), ('unknown_profile', 'cli_failed'),
 ])
 def test_codex_failures_are_safe_cleaned_and_never_retried(codex_login, local_keys,
@@ -867,7 +1081,8 @@ def test_codex_failures_are_safe_cleaned_and_never_retried(codex_login, local_ke
         message = {'aliases': 'PATH aliases: Read-only file system (os error 30)',
                    'auth': 'Authentication failed: unauthorized 401',
                    'unknown_profile': 'unknown variant harness-scoped'}[failure]
-        return subprocess.CompletedProcess(command, 1, sensitive, message + ' ' + sensitive)
+        return subprocess.CompletedProcess(command, 1, '' if failure == 'auth' else sensitive,
+                                           message + ' ' + sensitive)
     monkeypatch.setattr(models.subprocess, 'run', cli)
     report = models.run('parser', 'Read only approved.', local_keys, timeout=7,
                         workspace=codex_login['workspace'], scoped=True)
@@ -1143,7 +1358,8 @@ def test_codex_nonzero_with_warning_and_success_output_still_fails(codex_login, 
     report = models.run('parser', '', local_keys, smoke=True,
                         workspace=codex_login['workspace'], scoped=True)
     assert report['status'] == 'failed'
-    assert report['diagnostic'] == {'stage': stage, 'category': 'path_aliases_read_only'}
+    assert report['diagnostic'] == {'stage': stage, 'category': 'cli_failed'}
+    assert diag.result_detail(report)['cause'] == 'cli_failed'
     assert 'response' not in report and 'stdout' not in report and 'stderr' not in report
     assert all(value not in json.dumps(report) for value in (PATH_ALIASES_WARNING, 'fixture-access-secret'))
     assert len(roots) == (1 if stage == 'authentication' else 2)

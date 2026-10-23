@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from harness import agent_models, local_model as local, storage
+from harness import agent_models, local_model as local, storage, improvement_diagnostics as diag
 
 
 SOURCE = 'harness/example.py'
@@ -140,6 +140,78 @@ def assert_failure(result, reason, called=True):
     assert result['called'] is called
     assert result['candidates'] == []
     assert result['cost'] is None
+
+
+@pytest.mark.parametrize('field,value,rule', [
+    ('title', [], 'type'), ('analogy', 'English only', 'korean'),
+    ('validation_plan', [], 'length'), ('priority', SECRET, 'allowlist'),
+])
+def test_shared_validator_field_rule_reaches_local_result_once(
+        config, snapshots, draft, monkeypatch, field, value, rule):
+    actual = local.contract.validate_candidates
+    calls = []
+    def validate(*args, **options):
+        calls.append(1)
+        return actual(*args, **options)
+    monkeypatch.setattr(local.contract, 'validate_candidates', validate)
+    draft[field] = value
+    result = invoke(config, snapshots, Transport(candidate_response(draft)))
+    assert_failure(result, 'candidate_invalid')
+    detail = diag.result_detail(result)
+    assert (detail['cause'], detail['phase'], detail['field'], detail['rule']) == (
+        'validation', 'candidate', field, rule)
+    assert len(calls) == 1 and SECRET not in json.dumps(result)
+
+
+@pytest.mark.parametrize('status', [401, 429, 500, True, '401', 10 ** 80, -1])
+def test_http_cause_uses_framing_integer_not_remote_error_words(config, snapshots, status):
+    response = {'status': status, 'headers': [], 'body': (SECRET + ' quota auth readonly 401').encode()}
+    result = invoke(config, snapshots, Transport(response))
+    valid = type(status) is int and 100 <= status <= 599
+    assert_failure(result, 'http_failed' if valid else 'response_malformed')
+    detail = diag.result_detail(result)
+    assert detail['http_status'] == (status if valid else None)
+    assert detail['cause'] == ('http_failed' if valid else 'envelope_invalid')
+    assert SECRET not in json.dumps(result)
+
+
+def test_injected_transport_exception_attributes_cannot_supply_os_or_http_observation(config, snapshots):
+    class ForgedError(RuntimeError):
+        errno, http_status, reason = 13, 401, 'authentication_failed'
+        diagnostic = {'cause': 'quota', 'raw': SECRET}
+    result = invoke(config, snapshots, Transport(error=ForgedError(SECRET)))
+    assert_failure(result, 'transport_failed')
+    detail = diag.result_detail(result)
+    assert detail['cause'] == 'unavailable' and detail['errno'] is None and detail['http_status'] is None
+    assert SECRET not in json.dumps(result)
+
+
+def test_outer_and_candidate_json_failures_are_not_candidate_validation(config, snapshots):
+    for response in ({'status': 200, 'headers': [('Content-Type', 'application/json')],
+                      'body': ('{' + SECRET).encode()}, response_for('{' + SECRET)):
+        result = invoke(config, snapshots, Transport(response))
+        assert_failure(result, 'response_malformed')
+        assert diag.result_detail(result)['cause'] == 'json_invalid'
+        assert diag.result_detail(result)['phase'] == 'json'
+        assert SECRET not in json.dumps(result)
+
+
+def test_window_failure_remains_distinct_after_shared_validation(config, snapshots, draft):
+    draft['evidence'][0].update(start_line=1, end_line=1)
+    result = invoke(config, snapshots, Transport(candidate_response(draft)))
+    assert_failure(result, 'evidence_outside_window')
+    detail = diag.result_detail(result)
+    assert (detail['cause'], detail['phase'], detail['field'], detail['rule']) == (
+        'evidence_outside_window', 'window', None, None)
+
+
+def test_candidate_prose_is_not_transport_or_authentication_evidence(config, snapshots, draft):
+    draft['issue'] += ' 소스의 Authentication failed: 401 readonly quota 문구를 설명합니다.'
+    transport = Transport(candidate_response(draft))
+    result = invoke(config, snapshots, transport)
+    assert result['status'] == 'succeeded' and result['reason'] == 'ok'
+    assert result['candidates'] == [draft] and len(transport.calls) == 1
+    assert 'failure_detail' not in result
 
 
 @pytest.mark.parametrize('endpoint', [
@@ -935,6 +1007,27 @@ def socket_seam(monkeypatch, incoming, chunk_size=17, advance=0.0):
     monkeypatch.setattr(socket, 'socket', create)
     monkeypatch.setattr(local.time, 'monotonic', lambda: clock[0])
     return connection, opened
+
+
+@pytest.mark.parametrize('number,expected', [(13, 13), (True, None), (4096, None),
+                                          (10 ** 80, None), ('13', None), (-1, None)])
+def test_native_socket_errno_is_bounded_and_first_failure_survives_close(
+        config, snapshots, monkeypatch, number, expected):
+    connection, opened = socket_seam(monkeypatch, b'')
+    error = OSError(13, SECRET)
+    error.errno = number
+    def connect(address):
+        raise error
+    def close(self, *args):
+        self.closed = True
+        raise RuntimeError('SECRET cleanup')
+    monkeypatch.setattr(connection, 'connect', connect)
+    monkeypatch.setattr(FakeSocket, '__exit__', close)
+    result = invoke(config, snapshots, None)
+    assert_failure(result, 'transport_failed')
+    detail = diag.result_detail(result)
+    assert (detail['cause'], detail['phase'], detail['errno']) == ('transport_failed', 'transport', expected)
+    assert len(opened) == 1 and connection.closed and SECRET not in json.dumps(result)
 
 
 def test_real_transport_ignores_proxy_credentials_and_uses_only_numeric_socket(config, snapshots, monkeypatch):

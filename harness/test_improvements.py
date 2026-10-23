@@ -18,7 +18,7 @@ import pytest
 
 from harness import agent_models, git_publish, improvement_report as contract
 from harness import improvements as imp, storage, triage, workflow
-from harness import review_coverage as coverage
+from harness import review_coverage as coverage, improvement_diagnostics as diag
 from harness.test_review_coverage import (
     FixtureFS, candidate, add_assessments, capture_result, read_events, stdout,
 )
@@ -32,6 +32,7 @@ FILES = ('AGENTS.md', 'docs/architecture.md', 'docs/harness-design.md',
          'TavernofSoul/example.py', 'parser_tidy/tests/test_import_safety.py')
 DOC = {'status': 'not_required', 'files': [],
        'reason': '읽기 전용 분석의 가상 지역 수정 제안으로 구조와 계약 변경이 없어 문서 수정은 필요하지 않습니다.'}
+REAL_AGENT_RUN = agent_models.run  # Capture before Lab installs its offline guard.
 
 
 
@@ -2170,6 +2171,80 @@ def call_diagnostic_role(lab, runner, role='coordinator'):
     paths = imp.role_scope(role, FILES, lab.config)
     snapshots = imp.snapshot_sources(paths, lab.config['limits'], lab.selected)
     return imp._call_role(role, paths, snapshots, lab.config, [], {}, runner, lab.selected)
+
+
+@pytest.mark.parametrize('field,value,rule', [
+    ('title', [], 'type'), ('title', 'English only', 'korean'),
+    ('analogy', '', 'empty'), ('validation_plan', [], 'length'),
+    ('priority', 'SECRET /private/value', 'allowlist'),
+])
+def test_shared_candidate_detail_survives_successful_cli(lab, field, value, rule):
+    def change(role, result, response, options):
+        response['candidates'][0][field] = value
+        result['response'] = json.dumps(response)
+        result['failure_detail'] = {'cause': 'quota', 'raw': 'SECRET /private/metadata'}
+        return result
+    agent, parsed = call_diagnostic_role(lab, ModelRunner(lab, transform=change))
+    assert parsed is None and agent['result']['status'] == 'passed'
+    detail = agent['failure_detail']
+    assert (detail['reason'], detail['cause'], detail['phase'], detail['field'], detail['rule']) == (
+        'candidate_invalid', 'validation', 'candidate', field, rule)
+    assert 'failure_detail' not in agent['result'] and 'SECRET' not in json.dumps(detail)
+    assert agent['cost'] == .0123
+
+
+@pytest.mark.parametrize('forgery', [None, True, 'SECRET', {'cause': 'authentication_failed'},
+                                    {'field': 'SECRET' + 'x' * 65536}])
+def test_runner_failure_metadata_never_mints_provenance(lab, forgery):
+    def change(role, result, response, options):
+        result.update(status='failed', failure_detail=forgery, errno=13, http_status=401)
+        return result
+    agent, parsed = call_diagnostic_role(lab, ModelRunner(lab, transform=change))
+    assert parsed is None and agent['reason'] == 'role_execution_failed'
+    assert agent['failure_detail'] == diag.sanitize_detail(dict(
+        diag.exception_detail(ValueError()), reason='role_execution_failed', phase='execution'))
+    assert 'failure_detail' not in agent['result']
+
+
+@pytest.mark.parametrize('mismatch', [False, True])
+def test_real_adapter_failure_capability_requires_configured_identity(lab, monkeypatch, mismatch):
+    # Actual adapter through _call_role, with only disposable CLI/storage seams.
+    lab.models['roles']['coordinator'].update(provider='claude', model='fixture', max_budget_usd=.2)
+    monkeypatch.setattr(agent_models, 'connection_status', lambda *a: {'status': 'ready'})
+    monkeypatch.setattr(agent_models, 'child_environment', lambda *a, **k: {})
+    monkeypatch.setattr(agent_models, 'uses_compaction', lambda *a, **k: False)
+    monkeypatch.setattr(storage, 'resolve_storage', lambda *a: lab.selected)
+    def cli(command, **options):
+        raise OSError(13, 'SECRET /private/spawn authentication quota')
+    monkeypatch.setattr(subprocess, 'run', cli)
+    def runner(role, *args, **options):
+        result = REAL_AGENT_RUN(role, *args, **options)
+        if mismatch:
+            result['model'] = 'different-fixture-model'
+        return result
+    agent, parsed = call_diagnostic_role(lab, runner)
+    assert parsed is None
+    detail = agent['failure_detail']
+    assert detail['cause'] == ('identity_mismatch' if mismatch else 'spawn_failed')
+    assert detail['errno'] == (None if mismatch else 13) and 'SECRET' not in json.dumps(detail)
+
+
+def test_first_candidate_failure_survives_context_cleanup_exception(lab, monkeypatch):
+    original_directory = lab.selected.temporary_directory
+    @contextmanager
+    def cleanup(*args, **options):
+        with original_directory(*args, **options) as directory:
+            yield directory
+        raise RuntimeError('SECRET /private/cleanup')
+    monkeypatch.setattr(type(lab.selected), 'temporary_directory',
+                        lambda self, *a, **k: cleanup(*a, **k))
+    def change(role, result, response, options):
+        response['candidates'][0]['title'] = []
+        result['response'] = json.dumps(response)
+        return result
+    agent, parsed = call_diagnostic_role(lab, ModelRunner(lab, transform=change))
+    assert parsed is None and agent['reason'] == 'candidate_invalid'
+    assert (agent['failure_detail']['field'], agent['failure_detail']['rule']) == ('title', 'type')
 
 
 @pytest.mark.parametrize('failure,reason', [
