@@ -800,6 +800,9 @@ def main(argv=None):
                 report['archive'] = status_object(selected.fs.read_bytes(state))
             elif selected.version == 2 and report.get('status') in archive.TERMINAL:
                 report['archive'] = {'status': 'pending', 'reason': 'archive_not_recorded'}
+            if selected.version == 2 and storage._info(selected.fs, directory / archive.RESUMED) is not None:
+                report['archive_original'] = report.get('archive', {})
+                report['archive'] = archive.resumed_status(selected, directory)
             if not isinstance(report, dict) or report.get('run_id') != directory.name or \
                     not isinstance(report.get('status'), str) or \
                     not isinstance(report.get('github', {}), dict) or \
@@ -842,7 +845,8 @@ def main(argv=None):
                                  read_only=args.read_only, rules_only=args.rules_only, no_git=args.no_git)
         # Agent responses and check output stay in the private report, not the terminal.
         summary = {name: report[name] for name in ('run_id', 'pid', 'status', 'current', 'required_checks',
-                   'changed_files', 'applied', 'report', 'error', 'simulated', 'github', 'archive') if name in report}
+                   'changed_files', 'applied', 'report', 'error', 'simulated', 'github', 'archive',
+                   'archive_original') if name in report}
         print(json.dumps(summary if args.command != 'plan' else report, ensure_ascii=False, indent=2))
         # Exit 0 hands control to the parent; awaiting_github still means incomplete.
         return 0 if report.get('status', 'passed') in ('passed', 'running', 'demonstrated', 'awaiting_github') and report.get('archive', {}).get('status') != 'pending' else 1

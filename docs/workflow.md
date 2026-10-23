@@ -45,17 +45,23 @@ cleanup_pending은 완료 archive 대상이 아니다. GIT=0·실패/중단과 s
 검증 자식의 파생 v1 설정은 nested archive를 하지 않는다. archive pending은 기존 outcome·merge/
 cleanup 증거를 보존하고 별도 nonzero다.
 
-원격은 local freeze와 달리 directory rename을 사용하지 않는다. exclusive private 결과
-디렉터리의 attachment를 로컬 archive-transfer.json에 고정하고 bounded payload·inventory를
-검증한 뒤 마지막 commit.json을 no-replace 파일 link로 게시한다. 최종 0600/nlink=1 readback
-전에는 완료가 아니다. 정확한 frozen prefix만 이어 쓰고, 알려진 임시/최종 두 alias의 동일 inode/
-nlink=2 전이만 복구한다. 알 수 없는 충돌·변조·교체는 삭제하거나 덮어쓰지 않는다. mkdir 뒤
-receipt 전 중단은 자동 복구하지 않는다. trusted parent가 최종 archive.py의 실제 NFS 저장·
-readback/hash·동일 결과 멱등 재개 성공을 보고했다. 일반 pipeline 전체 성공을 뜻하지 않는다.
+원격은 exclusive private 디렉터리·receipt attachment·bounded payload/inventory 검증 뒤
+마지막 commit의 no-replace 파일 link와0600/nlink1 readback을 요구한다. directory rename은
+local freeze만 쓴다. frozen prefix만 append하고 알려진 동일 inode/nlink2 alias만 정리한다.
+unknown/충돌/변조/교체·mkdir→receipt 중단은 보존한다. parent의 과거 실제 NFS 저장/readback/hash/
+멱등 재개 관측은 전체 pipeline 성공이 아니다. 같은 config의 `make archive-run RUN_ID=... KIND=workflows`는
+모델/검사/Git 없이 같은 frozen/current만 재개한다. changed-result는 pending이며 workspace/backup/
+복구 증거와 floor를 유지한다.
 
-main은 같은 config의 `make archive-run RUN_ID=... KIND=workflows`로 모델/검사/Git 없이 보관만
-재개한다. frozen payload와 현재 terminal allowlist가 다르면 pending이며 과거 payload를 새
-성공으로 쓰지 않는다. local workspace/backup과 복구 증거는 자동 삭제하지 않고 floor를 유지한다.
+[ADR0028](adr/0028-resumed-run-result-archives.md)의 추가 보관은 trusted parent가 같은 config에서
+`python -m harness.archive --run-id 원래_run_id --kind workflows --resume-failed-to-passed`로
+명시한다. 원래 검토/diff/검증과 실제 merge/CI3/cleanup을 대조해 failed→passed를 별도 고정
+세대로 보관한다. 최초 payload/checkpoint/receipt/원격 네 파일은 읽기만 한다. 같은 원래 mutex·
+result allowlist·private/floor/commit readback을 유지하며 current 변경/충돌은 pending이다.
+동일 명령만 멱등 재개한다. child/discovery는 storage 전 거절, CLI/환경은 인간 인증이 아니다.
+status는 로컬 archive_original/현재 archive를 구분하며 NFS 무결성 증명은 명시 readback 책임이다.
+worker는 회귀를 실행하지 않는다. 최종 새 Claude 의미 검토와 GIT=1 full make check/scoped apply/
+기존 Git 역할 뒤 실제 기존 run 복구·원본 불변 대조, 구현 PR의 CI3/merge/cleanup/archive는 main 책임이다.
 
 [ADR0022](adr/0022-documentation-only-validation.md)에 따라 새 review 뒤 실제 최종 diff를 분류하고
 repair마다 다시 판단한다. 일반 README/docs prose만 docs-only이며 정책·코드·mode/type·불명은 full이다.

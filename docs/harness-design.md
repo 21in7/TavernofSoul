@@ -96,20 +96,21 @@ archive 조회를 추가하지 않는다. v2는 remote work root/active/report�
 명시 기존 설정은 유지하고 역사적 NFS journal은 원래 v1 config로 조회·재개한다. 과거 NFS 유지
 지시는 개발 active 선택에 한해 새 사용자 요청으로 대체되며 daily/hourly·게임 cron·approval은 유지한다.
 
-archive.py는 terminal allowlist만 bounded tar/inventory/manifest로 로컬 freeze한다. Git은 최종
-save·project/GitHub lock 해제·기존 completion hook 뒤 archive한다. standalone check 결과도
-보관하고 workflow의 파생 v1 검증 설정은 nested archive를 금지한다. pending은 outcome·merge SHA·
-cleanup proof를 보존하고 별도 nonzero를 반환한다. workspace/credential/raw 응답은 포함하지 않는다.
+archive.py의 bounded terminal allowlist freeze/전송은 [0021](adr/0021-local-work-and-result-archives.md#불변-payload와-원자-공개)을
+따른다. Git 최종 save→project/GitHub lock 해제→completion hook 뒤 호출한다. standalone도 지원하고
+파생 v1은 nested archive를 막는다. workspace/credential/raw 응답은 제외, pending/nonzero는
+outcome/merge/cleanup과 별개다. local no-replace rename, remote exclusive0700/no-replace link와
+receipt의 manifest/device/inode/mount/token binding을 유지한다. fresh readiness/attachment·
+동일 prefix·fsync·inventory/hash 뒤 마지막 commit/정확한 네 파일0600/nlink1 readback을 요구한다.
+동일 inode/nlink2의 알려진 alias만 정리한다. unknown/충돌/변조·receipt 전 mkdir 중단은 보존한다.
+archive-only는 frozen/current를 재대조하며 journal을 대체하거나 workspace/backup/floor를 없애지 않는다.
 
-로컬 freeze만 directory no-replace rename을 사용한다. NFS의 directory rename EINVAL 때문에
-원격은 exclusive private 디렉터리와 no-replace 파일 link 프로토콜을 사용한다. 로컬 receipt는
-frozen manifest와 목적지의 device/inode/mount·임시 token을 고정한다. 전송 중 fresh readiness와
-attachment를 검증하고, 부분 임시 파일은 원본 prefix와 같을 때만 append한다. 파일별 fsync/link/
-unlink와 전체 inventory/hash 검증 후 마지막 commit.json을 게시한다. 완료 readback은 정확한
-네 파일·marker·0600/nlink=1을 요구한다. 알려진 두 alias의 동일 inode/nlink=2 전이만 정리하며
-알 수 없는 hardlink·충돌·교체·변조는 보존한다. receipt 전 mkdir 중단은 자동 복구할 수 없다.
-archive-only 재개는 모델/검사/Git 없이 frozen/current 결과를 다시 대조하며 active journal을
-대체하지 않는다. 부피 큰 workspace/backup은 자동 정리하지 않고 local floor를 유지한다.
+[0028](adr/0028-resumed-run-result-archives.md)의 trusted-parent 명시 failed→passed 추가 보관은
+원래 review/diff/검증 불변과 실제 Git/CI3/cleanup 증거를 요구한다. 최초 보관은 읽기만 하고
+private record가 원래 run/이전 manifest/receipt/현재 inventory/별도 고정 세대를 연결한다.
+원래 archive mutex와 전송 검증을 공유하고 동일 결과만 재개한다. child/discovery는 storage 전
+거부하며 CLI/환경은 인간 인증이 아니다. status는 archive_original/현재 archive를 구분한다.
+새 모델/검사/Git/승인은 없으며 실제 최종 readback·불변 대조는 parent 책임이다.
 
 [ADR0022](adr/0022-documentation-only-validation.md)의 docs-only 선택은 scope/모델 주장 대신
 최종 baseline→candidate bytes/mode/type diff를 사용한다. 정책/코드/설정/불명은 full이며 repair마다

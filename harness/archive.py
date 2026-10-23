@@ -1,11 +1,12 @@
 """Private, immutable terminal result archives. No lookup or model/Git execution.
 
-Only archive_run touches the archive spec. Local payloads and state are separate;
+Only archive operations touch the archive spec. Local payloads and state are separate;
 retry never repacks an already frozen payload. The active journal remains the
 sole authority for workflow recovery. Local freeze uses no-replace directory
 rename; remote completion uses a no-replace file link, including on NFS.
 """
 import argparse
+from contextlib import contextmanager
 import ctypes
 import errno
 import fcntl
@@ -38,6 +39,8 @@ REPORT_FIELDS = ('run_id', 'status', 'read_only', 'simulated', 'no_git', 'github
                  'error_type', 'model_context_cleanup', 'command', 'checks', 'exit_code')
 GIT_FIELDS = ('version', 'run_id', 'status', 'step', 'branch', 'head_sha', 'merge_sha',
               'merge_status', 'pr_number', 'pr_url', 'checks', 'cleanup', 'cleanup_proof')
+RESUMED = 'archive-resumed-v1'
+RESUMED_KIND = 'workflows-resumed-v1'
 
 
 def encoded(value):
@@ -287,15 +290,16 @@ def verify_current_result(policy, directory, kind, report, payload):
         raise storage.StorageError('Terminal results differ from the frozen archive; retain local evidence.')
 
 
-def freeze(policy, directory, kind, report):
-    payload = directory / 'archive-payload'
+def freeze(policy, directory, kind, report, destination=None):
+    local = directory if destination is None else destination
+    payload = local / 'archive-payload'
     if storage._info(policy.fs, payload) is not None:
-        if verify_payload(policy, payload) != json.loads(read_file(policy, directory / 'archive-frozen.json')):
+        if verify_payload(policy, payload) != json.loads(read_file(policy, local / 'archive-frozen.json')):
             raise storage.StorageError('Frozen archive payload changed.')
         verify_current_result(policy, directory, kind, report, payload)
         return payload
     policy.check_ready()
-    stage = directory / ('.archive-build-' + uuid.uuid4().hex)
+    stage = local / ('.archive-build-' + uuid.uuid4().hex)
     policy.fs.create_directory(stage)
     inventory, total = [], 0
     # Payload is built only on local active storage; NFS never sees file-at-a-time results.
@@ -331,12 +335,12 @@ def freeze(policy, directory, kind, report):
     policy.check_ready()
     # A separate immutable checkpoint pins the first terminal payload. A crash
     # here may leave a build directory; preserve it rather than silently repack.
-    checkpoint = directory / 'archive-frozen.json'
+    checkpoint = local / 'archive-frozen.json'
     if storage._info(policy.fs, checkpoint) is None:
         write_file(policy, checkpoint, encoded(frozen))
     elif json.loads(read_file(policy, checkpoint)) != frozen:
         raise storage.StorageError('Archive checkpoint differs; retain local evidence.')
-    parent = private_directory(policy, directory)
+    parent = private_directory(policy, local)
     try:
         publish_directory(parent, stage.name, payload.name)
     finally:
@@ -599,10 +603,9 @@ def transfer(policy, payload, kind, run_id):
         os.close(parent)
 
 
-def archive_run(policy, directory, kind='workflows'):
-    """Archive only one active terminal run; failure preserves outcome and sources."""
-    if policy.version != 2:
-        return {'status': 'not_configured'}
+@contextmanager
+def archive_mutex(policy, directory, kind):
+    """Both archive intents use the original run's persistent lock inode."""
     directory = Path(directory)
     if kind not in ('workflows', 'checks') or not storage.RUN_ID.fullmatch(directory.name):
         raise storage.StorageError('Invalid archive run identity.')
@@ -622,6 +625,16 @@ def archive_run(policy, directory, kind='workflows'):
             raise storage.StorageError('Unsafe archive lock.')
         os.fchmod(lock.fileno(), 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if file_identity(os.fstat(lock.fileno())) != file_identity(policy.fs.lstat(directory / 'archive.lock')):
+            raise storage.StorageError('Archive lock attachment changed.')
+        yield directory
+
+
+def archive_run(policy, directory, kind='workflows'):
+    """Archive only one active terminal run; failure preserves outcome and sources."""
+    if policy.version != 2:
+        return {'status': 'not_configured'}
+    with archive_mutex(policy, directory, kind) as directory:
         try:
             report = terminal_report(policy, directory, kind)
             atomic_state(policy, directory, {'status': 'pending', 'run_id': directory.name})
@@ -637,20 +650,290 @@ def archive_run(policy, directory, kind='workflows'):
             return result
 
 
+def trusted_recovery_context(successor=False):
+    # These are exclusion markers, not authentication of a human or parent.
+    if (any(os.environ.get(key) for key in ('TAVERN_WORKFLOW_CHILD',
+            'TAVERN_IMPROVEMENT_DISCOVERY', 'TAVERN_IMPROVEMENT_UNATTENDED')) or
+            successor and (os.environ.get('READ_ONLY') == '1' or os.environ.get('GIT') == '0')):
+        raise storage.StorageError('Archive recovery requires the trusted parent.')
+
+
+def payload_records(policy, payload, names):
+    """Read selected allowlisted results from an already verified bounded tar."""
+    _, _, pinned = bundle_fingerprint(policy, payload / 'bundle.tar.gz')
+    parent = private_directory(policy, payload)
+    try:
+        fd = os.open('bundle.tar.gz', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    finally:
+        os.close(parent)
+    records = {}
+    with os.fdopen(fd, 'rb') as raw, tarfile.open(fileobj=raw, mode='r|gz') as tar:
+        before = os.fstat(raw.fileno())
+        if file_identity(before) != file_identity(pinned):
+            raise storage.StorageError('Previous archive attachment changed.')
+        total = 0
+        for member in tar:
+            total += member.size
+            if not member.isfile() or member.size > MAX_FILE or total > MAX_TOTAL or not result_name(member.name):
+                raise storage.StorageError('Unsafe previous archive member.')
+            if member.name in names:
+                with tar.extractfile(member) as handle:
+                    records[member.name] = json.loads(handle.read(MAX_FILE + 1))
+        if (file_identity(before) != file_identity(os.fstat(raw.fileno())) or
+                file_identity(before) != file_identity(policy.fs.lstat(payload / 'bundle.tar.gz'))):
+            raise storage.StorageError('Previous archive changed during evidence reading.')
+    return records
+
+
+def previous_archive(policy, directory):
+    """Read only: never repair, transfer, or update the original archive/receipt."""
+    payload = directory / 'archive-payload'
+    manifest = verify_payload(policy, payload)
+    if read_file(policy, directory / 'archive-frozen.json') != encoded(manifest):
+        raise storage.StorageError('Previous archive checkpoint differs.')
+    receipt_data = read_file(policy, directory / 'archive-transfer.json')
+    receipt = json.loads(receipt_data)
+    destination = policy.archive.path / 'workflows' / directory.name
+    archive_ready(policy, destination)
+    identities = []
+    for path in (destination.parent, destination):
+        fd = private_directory(policy, path)
+        try:
+            identities.append(directory_identity(policy, fd))
+        finally:
+            os.close(fd)
+    if (set(receipt) != {'version', 'manifest', 'destination', 'category_identity',
+            'directory_identity', 'token', 'published', 'committed'} or
+            receipt['version'] != 1 or receipt['manifest'] != manifest or
+            receipt['destination'] != str(destination) or
+            receipt['category_identity'] != identities[0] or
+            receipt['directory_identity'] != identities[1] or
+            receipt['published'] != list(FILES) or receipt['committed'] is not True or
+            not isinstance(receipt['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', receipt['token']) or
+            verify_archive(policy, destination, 'workflows', directory.name) != manifest):
+        raise storage.StorageError('Previous committed archive or receipt differs.')
+    return manifest, digest(receipt_data), payload_records(policy, payload, {'report.json', 'github.json'})
+
+
+def resumed_evidence(policy, directory, report, old):
+    """Permit delivery recovery only; review, diff and validation cannot change."""
+    from harness import git_publish
+    from harness import failure_feedback
+    previous = old['report.json']
+    mutable = {'status', 'github', 'finished_at', 'error_type'}
+    project = lambda value: {key: value[key] for key in REPORT_FIELDS if key in value and key not in mutable}
+    if (previous.get('run_id') != directory.name or previous.get('status') != 'failed' or
+            report.get('status') != 'passed' or project(previous) != project(report) or
+            any(report.get(key) is not False for key in ('read_only', 'simulated', 'no_git')) or
+            report.get('github_enabled') is not True):
+        raise storage.StorageError('Recovery must retain the original reviewed publishing result.')
+    inventory = result_inventory(policy, directory, 'workflows', report)
+    previous_inventory = json.loads(read_file(policy, directory / 'archive-payload' / 'inventory.json'))
+    stable = lambda rows: [row for row in rows if row['path'] not in {'report.json', 'github.json', 'cleanup.json'}]
+    if (stable(inventory) != stable(previous_inventory) or
+            not any(row['path'] == 'changes.diff' and row['bytes'] > 0 for row in inventory)):
+        raise storage.StorageError('Reviewed diff or validation artifacts changed.')
+    changed, scope = report.get('changed_files'), report.get('scope')
+    if (not isinstance(changed, list) or not changed or len(set(changed)) != len(changed) or
+            not isinstance(scope, list) or set(changed) - set(scope) or
+            set(report.get('applied', [])) != set(changed)):
+        raise storage.StorageError('Recovery requires the original applied scope.')
+    review = report.get('review', {})
+    doc = review.get('documentation', {})
+    if (set(review) != {'verdict', 'summary', 'findings', 'documentation'} or
+            review['verdict'] != 'approved' or review['findings'] != [] or not review['summary'] or
+            set(doc) != {'status', 'files', 'reason'} or doc['status'] not in {'updated', 'not_required'} or
+            not doc['reason'] or not isinstance(doc['files'], list) or set(doc['files']) - set(scope) or
+            (doc['status'] == 'updated' and not doc['files']) or
+            (doc['status'] == 'not_required' and doc['files'])):
+        raise storage.StorageError('Independent implementation review evidence is incomplete.')
+    checks = report.get('delivery_validation', report.get('validation'))
+    required = report.get('required_checks')
+    if (not isinstance(required, list) or not required or len(set(required)) != len(required) or
+            not isinstance(checks, list) or len(checks) != len(required) or
+            {item['command'] for item in checks} != set(required)):
+        raise storage.StorageError('Final validation selection differs.')
+    names = {row['path'] for row in inventory}
+    for item in checks:
+        command = item['command']
+        candidates = {str(directory / ('checks-' + str(round_id)) / command / (command + '.json'))
+                      for round_id in range(1, 4)}
+        path = item.get('report')
+        if (command not in RESULT_STEMS or not command.startswith('check') or path not in candidates or
+                item.get('status') != 'passed' or type(item.get('exit_code')) is not int or
+                item['exit_code'] != 0 or not failure_feedback.check_groups_passed(item.get('checks')) or
+                Path(path).relative_to(directory).as_posix() not in names):
+            raise storage.StorageError('Successful original validation artifacts are required.')
+        actual = json.loads(read_file(policy, Path(path)))
+        if actual.get('status') != 'passed' or actual.get('checks') != item['checks']:
+            raise storage.StorageError('Validation summary differs from its actual result.')
+    ledger = json.loads(read_file(policy, directory / 'github.json'))
+    before = old['github.json']
+    if before.get('status') != 'failed' or before.get('merge_sha'):
+        raise storage.StorageError('Only failed delivery before merge supports this recovery.')
+    for key in ('version', 'run_id', 'branch'):
+        if ledger.get(key) != before.get(key):
+            raise storage.StorageError('Original Git run identity changed.')
+    for key in ('head_sha', 'pr_number', 'pr_url'):
+        if before.get(key) is not None and ledger.get(key) != before[key]:
+            raise storage.StorageError('Previously pinned Git identity changed.')
+    for key in ('branch', 'base_sha', 'head_sha', 'pr_number', 'pr_url'):
+        pinned = previous.get('github', {}).get(key)
+        if pinned is not None and report.get('github', {}).get(key) != pinned:
+            raise storage.StorageError('Original report Git identity changed.')
+    expected = {name: 'success' for name in git_publish.REQUIRED}
+    proof = ledger.get('cleanup_proof', {})
+    if (ledger.get('version') != 'github-v1' or ledger.get('run_id') != directory.name or
+            ledger.get('branch') != 'codex/' + directory.name or ledger.get('status') != 'merged' or
+            ledger.get('step') != 'done' or not git_publish.cleanup_complete(ledger) or
+            any(not isinstance(ledger.get(key), str) or not re.fullmatch(r'[a-f0-9]{40}', ledger[key])
+                for key in ('head_sha', 'merge_sha')) or
+            type(ledger.get('pr_number')) is not int or ledger['pr_number'] <= 0 or
+            not isinstance(ledger.get('pr_url'), str) or not re.fullmatch(
+                r'https://github.com/[^/]+/[^/]+/pull/' + str(ledger['pr_number']), ledger['pr_url']) or
+            ledger.get('checks') != expected or proof.get('verified') is not True or
+            proof.get('checks') != expected or proof.get('head_sha') != ledger['head_sha'] or
+            proof.get('merge_sha') != ledger['merge_sha'] or report.get('github') != git_publish.summary(ledger)):
+        raise storage.StorageError('Pinned merge, CI and cleanup proof are required.')
+    cleanup = json.loads(read_file(policy, directory / 'cleanup.json'))
+    if (cleanup.get('run_id') != directory.name or cleanup.get('head_sha') != ledger['head_sha'] or
+            cleanup.get('merge_sha') != ledger['merge_sha'] or any(
+                cleanup.get(key) != value for key, value in ledger['cleanup'].items())):
+        raise storage.StorageError('Cleanup checkpoint differs from the completed Git run.')
+    return inventory
+
+
+def archive_resumed_run(policy, directory):
+    """Explicit trusted-parent failed→passed successor; no execution or approval."""
+    trusted_recovery_context(successor=True)  # Before inspecting the supplied storage policy.
+    if policy.version != 2:
+        return {'status': 'not_configured'}
+    directory = Path(directory)
+    result = {'status': 'pending', 'run_id': directory.name, 'generation': 'resumed-v1',
+              'intent': 'failed-to-passed'}
+    local = directory / RESUMED
+    owned = False
+    try:
+        with archive_mutex(policy, directory, 'workflows'):
+            try:
+                report = terminal_report(policy, directory, 'workflows')
+                result['terminal_status'] = report['status']
+                manifest, receipt_hash, old = previous_archive(policy, directory)
+                result['original'] = {'terminal_status': old['report.json'].get('status'), 'manifest': manifest}
+                inventory = resumed_evidence(policy, directory, report, old)
+                parent = private_directory(policy, directory)
+                try:
+                    record = {'version': 1, 'intent': 'failed-to-passed', 'run_id': directory.name,
+                              'run_directory': str(directory), 'run_identity': directory_identity(policy, parent),
+                              'generation': 'resumed-v1', 'previous_manifest': manifest,
+                              'previous_manifest_sha256': digest(encoded(manifest)),
+                              'previous_receipt_sha256': receipt_hash, 'current_inventory': inventory,
+                              'current_inventory_sha256': digest(encoded(inventory)),
+                              'destination': str(policy.archive.path / RESUMED_KIND / directory.name)}
+                    if storage._info(policy.fs, local) is None:
+                        policy.check_ready()
+                        os.mkdir(local.name, 0o700, dir_fd=parent)
+                        os.fsync(parent)
+                        os.close(private_directory(policy, local))
+                        write_file(policy, local / 'recovery.json', encoded(record))
+                        child = private_directory(policy, local)
+                        try:
+                            os.fsync(child)
+                        finally:
+                            os.close(child)
+                    else:
+                        os.close(private_directory(policy, local))
+                        if read_file(policy, local / 'recovery.json') != encoded(record):
+                            raise storage.StorageError('Recovery linkage or current result changed; preserve evidence.')
+                    owned = True
+                finally:
+                    os.close(parent)
+                result['inventory_sha256'] = record['current_inventory_sha256']
+                atomic_state(policy, local, result)
+                payload = freeze(policy, directory, 'workflows', report, destination=local)
+                if read_file(policy, payload / 'inventory.json') != encoded(inventory):
+                    raise storage.StorageError('Frozen successor differs from recovery inventory.')
+                verify_current_result(policy, directory, 'workflows', report, payload)
+                manifest = transfer(policy, payload, RESUMED_KIND, directory.name)
+                verify_current_result(policy, directory, 'workflows', report, payload)
+                # Recheck the immutable predecessor and linkage after remote readback too.
+                prior, receipt, old = previous_archive(policy, directory)
+                if (prior != record['previous_manifest'] or receipt != record['previous_receipt_sha256'] or
+                        resumed_evidence(policy, directory, report, old) != inventory or
+                        read_file(policy, local / 'recovery.json') != encoded(record)):
+                    raise storage.StorageError('Recovery evidence changed during publication.')
+                result.update(status='archived', destination=record['destination'], **manifest)
+                atomic_state(policy, local, result)
+            except (Exception, KeyboardInterrupt) as exc:
+                result.update(status='pending', error_type=type(exc).__name__)
+                if owned:
+                    atomic_state(policy, local, result)
+    except (Exception, KeyboardInterrupt) as exc:
+        result.update(status='pending', error_type=type(exc).__name__)
+    return result
+
+
+def resumed_status(policy, directory):
+    """Local-only status; a stale successor never represents changed results."""
+    local = directory / RESUMED
+    result = {'status': 'pending', 'run_id': directory.name, 'generation': 'resumed-v1'}
+    try:
+        os.close(private_directory(policy, local))
+        saved = json.loads(read_file(policy, local / 'archive-state.json'))
+        record_data = read_file(policy, local / 'recovery.json')
+        record = json.loads(record_data)
+        report = terminal_report(policy, directory, 'workflows')
+        parent = private_directory(policy, directory)
+        try:
+            identity = directory_identity(policy, parent)
+        finally:
+            os.close(parent)
+        if (record_data != encoded(record) or record['version'] != 1 or
+                record['intent'] != 'failed-to-passed' or record['run_identity'] != identity or
+                record['run_id'] != directory.name or record['run_directory'] != str(directory) or
+                record['generation'] != 'resumed-v1' or saved['run_id'] != directory.name or
+                saved['generation'] != 'resumed-v1' or report['status'] != 'passed' or
+                saved['status'] not in {'pending', 'archived'} or
+                record['destination'] != str(policy.archive.path / RESUMED_KIND / directory.name) or
+                record['previous_manifest_sha256'] != digest(encoded(record['previous_manifest'])) or
+                read_file(policy, directory / 'archive-frozen.json') != encoded(record['previous_manifest']) or
+                digest(read_file(policy, directory / 'archive-transfer.json')) != record['previous_receipt_sha256'] or
+                record['current_inventory'] != result_inventory(policy, directory, 'workflows', report) or
+                record['current_inventory_sha256'] != digest(encoded(record['current_inventory'])) or
+                saved.get('inventory_sha256') != digest(encoded(record['current_inventory']))):
+            return result
+        if saved['status'] == 'archived':
+            manifest = verify_payload(policy, local / 'archive-payload')
+            receipt = json.loads(read_file(policy, local / 'archive-transfer.json'))
+            if (any(saved.get(key) != value for key, value in manifest.items()) or
+                    receipt.get('manifest') != manifest or receipt.get('destination') != record['destination'] or
+                    receipt.get('published') != list(FILES) or receipt.get('committed') is not True or
+                    read_file(policy, local / 'archive-frozen.json') != encoded(manifest) or
+                    read_file(policy, local / 'archive-payload' / 'inventory.json') != encoded(record['current_inventory'])):
+                return result
+        return saved
+    except (ValueError, OSError, KeyError, TypeError, AttributeError):
+        return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--kind', choices=('workflows', 'checks'), default='workflows')
+    parser.add_argument('--resume-failed-to-passed', action='store_true',
+                        help='archive only the original run success in a separate immutable generation')
     args = parser.parse_args(argv)
     try:
-        if os.environ.get('TAVERN_WORKFLOW_CHILD'):
-            raise storage.StorageError('Archive recovery requires the trusted parent.')
+        trusted_recovery_context(successor=args.resume_failed_to_passed)
+        if args.resume_failed_to_passed and args.kind != 'workflows':
+            raise storage.StorageError('Resumed success archives require the original workflow run.')
         policy = storage.resolve_storage()
         if not storage.RUN_ID.fullmatch(args.run_id):
             raise storage.StorageError('Invalid archive run ID.')
         directory = (policy.find_run(args.run_id) if args.kind == 'workflows' else
                      policy.artifact_root / args.kind / args.run_id)
-        result = archive_run(policy, directory, args.kind)
+        result = (archive_resumed_run(policy, directory) if args.resume_failed_to_passed else
+                  archive_run(policy, directory, args.kind))
         print(json.dumps(result, sort_keys=True))
         return 0 if result['status'] == 'archived' else 1
     except (ValueError, OSError):

@@ -1,5 +1,13 @@
 # TavernofSoul 작업 지도
 
+재개된 Git 성공의 추가 보관은 [ADR0028](docs/adr/0028-resumed-run-result-archives.md)을 따른다.
+trusted parent의 `python -m harness.archive --run-id 원래_run --resume-failed-to-passed`만
+원래 검토·diff·검증과 완료 Git/cleanup 증거를 연결해 별도 고정 세대에 보관한다. 최초 실패는
+불변이며 일반 archive는 changed-result를 계속 거부한다. worker/discovery는 storage 전 거절하고
+CLI/환경을 인간 신원 증명으로 쓰지 않는다. 모델·검사·Git·승인·스케줄을 재실행하지 않는다.
+44개 승인과 runtime 연구37개 scope·128KiB/전체1.5MiB 상한은 별개다. 최종 새 Claude 의미 검토·
+기본 GIT=1 full make check·scoped apply·기존 Git 역할과 실제 보관/readback은 parent 책임이다.
+
 2026-10-22 잠금·실패 복구의 최신 계약은 [ADR0027](docs/adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
 workflow 실행 소유권은 고정 `.workflow-lock`, source capture/apply/cleanup/freshness는 기존
 `logs/harness/workflows/.lock` inode로 분리한다. 일반/READ_ONLY 모델·검토·검증은 격리 사본에서
@@ -337,16 +345,13 @@ Sites API/UI 구현·배포와 credential 관리는 메인 책임이며 저장�
    positive selected/passed와 zero skip/failure/error를 요구하며 빈/옛 보고서는 완료로 처리하지 않는다.
 6. 기본 검증에서 제외한 실데이터 테스트와 추가 검증의 수행 여부를 구분해 보고한다.
 
-v2는 remote work root·active/report 경로를 거부하고 local floor·no-follow·기존 lock을 유지한다.
-archive spec은 파싱 시 lexical/type/overlap만 검사하며 실제 mount/floor/private 검사는 ARCHIVE
-시점에 한다. Git 최종 save와 project/GitHub lock 해제 및 기존 completion hook 뒤 terminal 결과를
-보관한다. 중간 awaiting_github/awaiting_ci/cleanup_pending은 완료 archive 대상이 아니다.
-실패·중단/GIT=0의 지원 terminal 결과도 보관하되 성공으로 바꾸지 않는다. archive 장애는 기존
-passed/merge SHA/cleanup proof와 별도로 pending·nonzero이며 로컬 원본을 보존한다.
-parent의 `make archive-run RUN_ID=... KIND=workflows`는 같은 run의 보관만 재개한다.
-frozen payload와 현재 terminal 결과가 다르면 옛 결과를 새 성공처럼 표시하지 않고 거부한다.
-workspace·`.git`·모델 context·credential·lock·private config·승인 지시는 archive에서 제외한다.
-검증 workspace/backup/journal 자동 삭제는 하지 않으며 owned 임시 context cleanup만 유지한다.
+v2는 remote work/active/report를 거부하고 local floor/no-follow/lock을 유지한다. archive 파싱은
+lexical/type/overlap만, 실제 mount/floor/private는 ARCHIVE에서 검사한다. Git 최종 save→두 lock
+해제→completion hook 뒤 terminal 결과를 보관한다. awaiting_github/awaiting_ci/cleanup_pending은
+거부한다. 실패/중단/GIT=0도 성공으로 바꾸지 않으며 archive pending/nonzero는 merge/cleanup과
+별개다. 일반 `make archive-run RUN_ID=... KIND=workflows`는 frozen/current 불일치를 거부한다.
+workspace/.git/model context/credential/lock/private config/승인 지시는 제외한다. 원본·검증
+workspace/backup/journal은 보존하며 owned 임시 context cleanup만 한다. 명시 추가 보관은0028이다.
 
 docs checker는 Python 3.8 표준라이브러리로 링크·heading/fragment·역참조 등을 오프라인 검증한다.
 복잡한 Markdown의 지원 한계와 최종 내용의 의미적 완전성은 Claude 검토 책임으로 남긴다.

@@ -2,6 +2,7 @@
 
 - 상태: 제안(proposed), 사용자 요청 방향 기록; 최종 Claude 의미 검토·full make check·CI·GitHub 전달 대기
 - 기록일: 2026-10-19
+- 후속: [0028](0028-resumed-run-result-archives.md)은 최초 실패를 그대로 보존하는 명시적 failed→passed 추가 보관만 허용한다. 아래 최초 보관·동일 payload 재개·변경 결과 거부와 역사적 관측은 유지한다.
 - 대체 관계: [0011](0011-configurable-harness-storage.md)의 v1 저장 계약은 보존하고 명시 v2를 추가한다. 개발 작업의 NFS active 유지 선택만 대체한다. [0018](0018-storage-check-probe-deduplication.md)의 active readiness/probe와 [0013](0013-owned-validation-temporary-cleanup.md)의 owned-tree 경계는 유지한다.
 
 ## 문맥

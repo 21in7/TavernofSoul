@@ -580,49 +580,32 @@ orchestrator, connector 게시·필수 CI 확인·merge·정확한 cleanup은 ma
 
 ### Terminal 결과 보관과 보관만 재개
 
-workflow의 `workspace/`, checks·logs·backup·Git journal은 local active artifacts 아래에서
-생성·실행된다. archive는 명시 allowlist의 결과만 읽어 로컬 `archive-payload/`에
-`bundle.tar.gz`, `inventory.json`, `manifest.json`을 만든다. 별도 `archive-frozen.json`이 첫
-manifest를 고정하며 `archive-state.json`은 가변 보관 상태다. state와 archive 자체 digest는
-payload에서 제외해 순환/반복 재포장을 피한다. 입력 owner/regular/no-hardlink/0600·bytes/mode/hash와
-안전 경로를 검사하며 개별 64 MiB·총 256 MiB 초과는 실패다.
+workspace/checks/logs/backup/Git journal은 local active에 둔다. [ADR0021](adr/0021-local-work-and-result-archives.md#불변-payload와-원자-공개)의
+allowlist만 `archive-payload/{bundle.tar.gz,inventory.json,manifest.json}`으로 freeze하고
+`archive-frozen.json`에 고정한다. 가변 `archive-state.json`은 payload에서 제외한다.
+owner0600/regular/nlink1·no-follow·안전 경로/attachment·bytes/hash와 개별64MiB/총256MiB를 요구한다.
+정제 report/review·diff·Git/cleanup·검증 JSON/log만 포함한다. prepare는 바로 아래, checks-1~3은
+command 아래 결과를 읽는다. workspace/.git/backup·model context/manifest/raw 응답·credential·
+lock·private config/파생 storage-validation.json·승인 지시는 제외한다. 공개 전송은 추가하지 않는다.
 
-allowlist는 정제 report/review·changes.diff·허용 Git/cleanup 증거·검증 JSON/log다.
-workflow prepare 결과는 `prepare/doctor.json`, `prepare/doctor.log`처럼 바로 아래 파일이고,
-검증 라운드는 `checks-1/check/check.json`처럼 명령 디렉터리 아래다(`checks-1`~`checks-3`).
-private 파생 `storage-validation.json`은 제외한다. workspace·`.git`·backup·model context/manifest·
-credential runtime·lock·private config·approval instruction·raw agent 응답은 포함하지 않는다.
-raw 모델 응답의 기존 private 경계를 유지하며 외부 공개 전송을 추가하지 않는다.
+원격 `archive.path/<workflows|checks>/<run_id>/`는 private0700 exclusive mkdir로 확보한다.
+로컬 transfer receipt에 manifest·목적지/device/inode/mount·임시 token·published/committed를
+고정한다. receipt 없는 기존 목적지는 빈 디렉터리/같은 bytes도 채택하지 않는다. mkdir→receipt
+중단은 pending으로 보존한다. 게시한 파일 누락은 재생성하지 않고 committed 뒤는 읽기만 한다.
+알려진 임시 파일에 최대1MiB씩 전송하며 fresh mount/floor/private/no-follow/attachment를 검증한다.
+부분 파일은 frozen prefix가 같을 때만 append한다. fsync/no-replace link 뒤 임시 alias만 제거하며
+동일 inode/bytes의 정확한 nlink2 전이만 복구한다. 제3 alias·unknown entry·충돌/변조는 거부한다.
+전체 inventory/hash readback 뒤 **마지막 commit.json**을 게시하고 `verify_archive`가 네 파일·
+marker exact bytes·0600/nlink1을 확인해야 완료다. marker/두 링크 전이 중에는 미완료이며
+readback/state 저장 장애도 pending이다. 로컬만 directory no-replace rename을 사용한다.
+NFS4 directory rename EINVAL·파일 link 성공과 후속 실제 저장/readback/hash/멱등 재개는
+parent의 과거 관측이며 일반 pipeline 전체 성공이 아니다. rename fallback/unknown 삭제는 없다.
 
-archive 목적지는 `archive.path/<workflows|checks>/<run_id>/`이다. private0700 디렉터리를
-exclusive mkdir로 확보하고 로컬 `archive-transfer.json`에 frozen manifest·목적지·디렉터리/mount
-identity·임시 이름 token을 고정한다. 로컬 receipt가 파일별 게시와 committed도 기록하므로
-이미 게시한 파일 삭제는 재생성하지 않고, committed 뒤에는 읽기 검증만 한다. receipt 없는
-기존 목적지는 같은 bytes나 빈 디렉터리라도
-채택하지 않는다. mkdir 뒤 receipt 저장 전 중단은 자동 복구할 수 없으므로 pending 증거를 보존한다.
-
-세 파일은 알려진 `.transfer-<token>-<filename>`에 최대 1 MiB block으로 전송하고 fresh
-mount/floor·ownership/no-follow·attachment를 재확인한다. 부분 파일은 frozen 원본과 prefix가
-정확히 일치할 때만 append하며 변조·충돌은 덮어쓰지 않는다. fsync한 각 임시 파일을 no-replace
-`os.link`로 최종 이름에 게시하고 임시 alias만 제거한다. 정확한 두 이름이 같은 inode·같은
-frozen bytes·nlink=2일 때만 중단 전이를 복구한다. 제3 alias와 알 수 없는 entry는 거부한다.
-
-payload readback·inventory/SHA256 검증 후 **마지막 `commit.json`**을 같은 방식으로 게시한다.
-완료 판정은 `verify_archive`의 네 파일·marker exact bytes·0600/nlink=1 검증이다. marker 전이나
-두 링크 전이 중에는 완료가 아니다. marker 후 readback/state 실패도 pending이며 명시 재개는
-동일 결과를 검증한다. 로컬 freeze만 directory no-replace rename을 사용하고 원격은 사용하지 않는다.
-NFS4 directory rename EINVAL과 파일 link 성공은 프로토콜 선택 근거다. 후속 trusted parent 보고는
-최종 archive.py의 실제 NFS 저장/readback/hash·동일 결과 멱등 재개 성공까지이며 일반 pipeline 전체
-성공을 뜻하지 않는다. 일반 rename fallback·알 수 없는 대상 삭제는 없다. 자세한 복구 계약은
-[ADR0021](adr/0021-local-work-and-result-archives.md#불변-payload와-원자-공개)에 둔다.
-
-지원 terminal은 passed/failed/interrupted/demonstrated다. Git이 awaiting_github/awaiting_ci/
-cleanup_pending 등 중간 상태이면 완료 archive를 거부한다. workflow는 최종 저장·workflow 실행 잠금
-해제 뒤, Git 경로는 최종 save·project/GitHub 두 lock 해제와 기존 completion hook 뒤 보관한다.
-GIT=0·실패/중단도 결과가 있으면 보관하지만 성공으로 바꾸지 않는다. standalone runner의 v2
-`check*`는 매번 `artifacts/checks/<run_id>`의 새 결과만 보관한다. workflow 검증 자식의 파생
-v1 설정과 child marker는 nested archive를 방지한다. terminal report 생성 전 실패는 보관을
-보장할 수 없다. parent가 사용하는 재개 명령은 다음과 같다.
+terminal passed/failed/interrupted/demonstrated만 지원하며 awaiting_github/awaiting_ci/
+cleanup_pending 등 중간 Git 상태는 거부한다. workflow 최종 save/실행 잠금 해제 뒤, Git은
+최종 save→project/GitHub 두 lock 해제→기존 completion hook 뒤 보관한다. GIT=0·실패도
+성공으로 바꾸지 않는다. v2 standalone check*는 매번 새 artifacts/checks/run_id, workflow 자식은
+파생 v1/child marker로 nested archive를 막는다. terminal report 전 실패는 완료 보장이 없다.
 
 ```bash
 make archive-run RUN_ID=기존_run_id KIND=workflows
@@ -631,17 +614,22 @@ make archive-run RUN_ID=기존_standalone_run_id KIND=checks
 python -m harness.archive --run-id 기존_run_id --kind workflows
 ```
 
-이 재개는 모델·검사·Git 없이 같은 run의 archive만 시도한다. frozen payload와 현재 terminal
-allowlist inventory를 전송 전/후 대조한다. failed→passed나 review/Git 증거/diff/log 변화면 옛
-결과를 새 성공처럼 표시하지 않고 pending으로 거부한다. 원격 공개본도 덮어쓰지 않는다.
-parent가 원인을 조정할 때까지 로컬 증거를 보존하며 payload/state를 지워 강제 재포장하지 않는다.
-archived만 archive CLI 0이고 나머지는 nonzero다. workflow/검증의 기존 성공·merge SHA·cleanup
-proof는 보존하고 archive pending을 별도 노출한다. 보관 성공도 failed/interrupted outcome을
-성공으로 바꾸지 않는다. status는 로컬 state만 읽으며 NFS archive를 검색하지 않는다.
+일반 재개는 모델/검사/Git 없이 frozen/current inventory를 전송 전후 대조하며 변경 결과를
+pending으로 거부한다. 옛 payload를 새 성공으로 쓰거나 원본/receipt/잠금을 지우지 않는다.
+[ADR0028](adr/0028-resumed-run-result-archives.md)의 trusted-parent 명시 추가 보관은 다음과 같다.
 
-validation workspace/backup/journal은 자동 정리하지 않는다. 정확한 run 소유권과 복구 증거를
-보존할 근거가 부족하면 남긴다. 기존 owned 임시 context cleanup만 적용하며 floor로 로컬 고갈을
-숨기지 않는다. archive 장애 시 local 원본과 partial을 보존하므로 공간은 계속 필요하다.
+```bash
+python -m harness.archive --run-id 원래_run_id --kind workflows --resume-failed-to-passed
+```
+
+원래 검토/diff/검증 불변과 실제 Git merge/CI3/cleanup 증거를 대조해 failed→passed만 별도
+고정 세대에 보관한다. private recovery.json이 이전 manifest/receipt와 현재 inventory를 결합한다.
+동일 명령만 멱등 재개하며 결과 변경/unknown 전이는 pending이다. child/discovery는 storage 전
+거부한다. CLI/환경은 인간 인증이 아니다. 추가 전송도 result allowlist만 사용한다. 최초 로컬/원격
+보관은 읽기만 하며 status는 archive_original과 현재 archive를 구분한다. 로컬 status는 NFS의
+현재 무결성을 증명하지 않는다. archived만 CLI0이며 pending은 nonzero, merge/cleanup proof는
+유지한다. workspace/backup/journal/partial은 보존하고 owned 임시 context만 정리한다. floor를
+낮추지 않는다. 새 Claude 의미 검토·GIT=1 full make check·scoped apply/Git/실제 보관은 parent 책임이다.
 
 ## 문서 전용 검증 선택과 지원 범위
 

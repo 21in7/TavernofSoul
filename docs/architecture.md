@@ -42,6 +42,11 @@ progress의 검색/준비 대상이 아니며 mount/floor/private 검사는 ARCH
 Git 완료 경로의 최종 save·두 lock 해제·기존 completion hook 뒤 보관하며, 보관 pending은
 passed/merge/cleanup 증거를 바꾸지 않고 별도 nonzero다.
 
+[ADR0028](adr/0028-resumed-run-result-archives.md)은 원래 검토/diff/검증을 고정하고 실제
+Git/CI3/cleanup 전이를 증명한 trusted-parent 명시 failed→passed 추가 보관만 허용한다.
+원래 run mutex와 private 복구 연결을 사용하며 최초 보관은 불변, 별도 고정 세대는 같은 결과만
+재개한다. 상태는 archive_original/현재 archive를 구분한다. 새 실행/승인 권한은 아니다.
+
 로컬 freeze는 no-replace directory rename, 원격 완료는 private 결과 디렉터리와 no-replace
 파일 link를 사용한다. 로컬 receipt가 디렉터리 attachment와 frozen manifest·임시 이름을 고정한다.
 bounded 전송·inventory/hash 검증 후 마지막 commit.json이 게시되고 모든 최종 파일의 0600/nlink=1을
