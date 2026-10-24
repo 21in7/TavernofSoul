@@ -6,15 +6,17 @@ from pathlib import Path
 import tempfile
 from html.parser import HTMLParser
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree as ET
 
 from django.core.management import call_command, CommandError
 from django.db import IntegrityError
 from django.contrib.staticfiles import finders
 from django.test import TransactionTestCase, override_settings
+from django.template.loader import render_to_string
 
 from Dashboard.models import Version
-from Items.models import Items, Equipments, Gems, GoddessReinforcement
+from Items.models import Items, Item_Type, Equipments, Gems, GoddessReinforcement
 from Skills.models import Skills
 from harness.fixture_inputs import EQUIPMENT_FIXTURE, REGIONS
 from harness.parser_fixture import change_ies_column, parse_workspace, prepare_equipment_workspace
@@ -63,6 +65,122 @@ class EquipmentPipelineTests(TransactionTestCase):
         for name in ('_staged_snapshot', '_snapshot_path', '_previous_path',
                      '_available_skill_names', '_item_ids_by_name', '_reconcile_map_relations'):
             self.assertNotIn(name, self.command.__dict__)
+
+    def assert_search_pair(self, params=None):
+        """Exercise the collected regional pipeline, including the shared result template."""
+        document = self.client.get('/items/', params or {})
+        fragment = self.client.get('/items/', params or {}, HTTP_X_ITEM_SEARCH='results-v1')
+        keys = ('searched', 'item_len', 'curpage', 'pageLen', 'search_url',
+                'query', 'grade', 'class', 'type', 'minLV', 'maxLV', 'order')
+        for response, contract in ((document, 'document'), (fragment, 'results-v1')):
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response['X-Item-Search'], contract)
+            self.assertEqual(response['Content-Type'].split(';')[0], 'text/html')
+            self.assertIn('x-item-search', {v.strip().lower() for v in response['Vary'].split(',')})
+        for key in keys:
+            self.assertEqual(document.context[key], fragment.context[key], key)
+        self.assertEqual([row.ids for row in document.context['item']],
+                         [row.ids for row in fragment.context['item']])
+        result_keys = ('searched', 'item_len', 'curpage', 'pageLen', 'item', 'search_url')
+        shared = {key: document.context[key] for key in result_keys}
+        if document.context['searched']:
+            for key in ('pages', 'previous', 'next', 'pageStart', 'pageEnd'):
+                shared[key] = document.context[key]
+                self.assertEqual(document.context[key], fragment.context[key], key)
+        markup = render_to_string('Items/search_results.html', shared)
+        self.assertEqual(fragment.content.decode(), markup)
+        self.assertIn(markup, document.content.decode())
+        for expected in ('<!doctype html>', '<html lang="en">', '</html>',
+                         '<form id="item-search-form" action="/items/" method="get">',
+                         'css/item-search.css', 'js/item-search.js'):
+            self.assertContains(document, expected)
+        for response in (document, fragment):
+            self.assertContains(response, 'id="item-search-results"', count=1)
+            self.assertContains(response, 'data-item-search-fragment="results-v1"', count=1)
+        for forbidden in ('<!doctype', '<html', '<head', '<body', '<form', '<script'):
+            self.assertNotContains(fragment, forbidden)
+        return document, fragment
+
+    def assert_regional_search(self):
+        initial, _ = self.assert_search_pair()
+        self.assertFalse(initial.context['searched'])
+        self.assertNotContains(initial, 'No items found')
+        self.assertContains(initial, 'Enter a keyword')
+        expected = list(Items.objects.order_by('ids', 'pk').values_list('ids', flat=True))
+        seen = []
+        result_word = '結果' if self.region == 'jtos' else 'Results'
+        for page in (1, 2):
+            document, fragment = self.assert_search_pair({'q': '', 'order': 'ids-asc', 'page': page})
+            rows = list(document.context['item'])
+            self.assertEqual(document.context['item_len'], 14)
+            self.assertEqual(document.context['pageLen'], 2)
+            self.assertEqual(document.context['curpage'], page)
+            self.assertEqual([row.ids for row in rows], expected[(page - 1) * 10:page * 10])
+            self.assertContains(fragment, '14 ' + result_word)
+            self.assertContains(fragment, 'aria-current="page">%s' % page)
+            for row in rows:
+                self.assertContains(fragment, 'href="/items/%s">%s</a>' % (row.ids, row.ids))
+                self.assertContains(fragment, row.name)
+            seen.extend(row.ids for row in rows)
+            for entry in document.context['pages']:
+                parsed = urlsplit(entry['link'])
+                self.assertEqual(parsed.path, '/items/')
+                values = parse_qs(parsed.query, keep_blank_values=True)
+                self.assertEqual(values['q'], [''])
+                self.assertEqual(values['order'], ['ids-asc'])
+                self.assertEqual(values['page'], [str(entry['page'])])
+                self.assertNotIn('fragment', values)
+        self.assertEqual(seen, expected)
+        sword = Equipments.objects.get(item__ids='110')
+        equipment_type = Item_Type.objects.get(name=sword.type_equipment, is_equipment=True)
+        conditions = {'q': sword.item.name, 'grade': '6',
+                      'class': str(sword.requiredClass.index('T')),
+                      'type': str(equipment_type.pk) + '_eq', 'lvmin': '550',
+                      'lvmax': '560', 'order': 'eq-level-dsc'}
+        document, fragment = self.assert_search_pair(conditions)
+        self.assertEqual([row.ids for row in document.context['item']], ['110'])
+        self.assertContains(fragment, 'href="/items/110">Fixture Dawn Sword</a>')
+        self.assertContains(fragment, '女神' if self.region == 'jtos' else 'Goddess')
+        self.assertContains(fragment, '560')
+        canonical = parse_qs(urlsplit(document.context['search_url']).query)
+        for key, value in conditions.items():
+            self.assertEqual(canonical[key], [value])
+        for key, value in (('grade', '1'), ('lvmin', '561'), ('lvmax', '559')):
+            with self.subTest(region=self.region, excluded=key):
+                excluded, _ = self.assert_search_pair(dict(conditions, **{key: value}))
+                self.assertEqual(excluded.context['item_len'], 0)
+        keyword = '<missing & "한글" + #? / %_😀>'
+        empty, fragment = self.assert_search_pair({'q': keyword, 'grade': '6'})
+        self.assertEqual(empty.context['query'], keyword)
+        self.assertEqual(empty.context['grade'], '6')
+        self.assertEqual(empty.context['item_len'], 0)
+        self.assertEqual(empty.context['pages'], [])
+        self.assertContains(fragment, 'No items found')
+        self.assertContains(fragment, '0 ' + result_word)
+        self.assertContains(fragment, 'href="/items/" data-search-reset')
+        self.assertContains(empty, '&lt;missing &amp; &quot;한글&quot;')
+        self.assertNotContains(empty, '<missing')
+        self.assertEqual(parse_qs(urlsplit(empty.context['search_url']).query)['q'], [keyword])
+        unknown = self.client.get('/items/', {'q': ''}, HTTP_X_ITEM_SEARCH='results-v2')
+        self.assertEqual(unknown['X-Item-Search'], 'document')
+        self.assertContains(unknown, 'id="item-search-form"')
+
+    def test_search_invalid_inputs_are_safe_on_imported_data(self):
+        self.prepare_region()
+        self.import_release()
+        for page, expected in (('bad', 1), ('0', 1), ('-3', 1), ('1.5', 1), ('9' * 80, 2)):
+            with self.subTest(page=page):
+                document, _ = self.assert_search_pair({'q': '', 'page': page, 'order': 'ids-asc'})
+                self.assertEqual(document.context['curpage'], expected)
+                self.assertEqual(len(document.context['item']), 10 if expected == 1 else 4)
+        document, _ = self.assert_search_pair({
+            'q': '', 'page': 'NaN', 'order': 'eq-unknown-asc', 'grade': 'bad',
+            'class': '-1', 'type': '999999999999_eq', 'lvmin': 'Infinity', 'lvmax': '9' * 80,
+        })
+        self.assertEqual(document.context['item_len'], 14)
+        self.assertEqual(document.context['order'], 'updated-dsc')
+        for key in ('grade', 'class', 'type', 'minLV', 'maxLV'):
+            self.assertEqual(document.context[key], '')
 
     def test_mutable_equipment_and_skill_consumers_cannot_change_snapshot_or_prev(self):
         self.prepare_region()
@@ -114,6 +232,7 @@ class EquipmentPipelineTests(TransactionTestCase):
         self.prepare_region(region)
         self.import_release()
         self.assertEqual(Items.objects.count(), 14)
+        self.assert_regional_search()
         sword = Equipments.objects.get(item__ids='110')
         armor = Equipments.objects.get(item__ids='112')
         acc = Equipments.objects.get(item__ids='113')

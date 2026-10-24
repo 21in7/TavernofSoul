@@ -784,6 +784,15 @@ marker와 복원 상태는 한 파싱 호출 안에서만 유지하며 원본 �
 네트워크 다운로드, 전체 원본 파일 파싱, 아이콘/맵 생성, 운영 MySQL, 브라우저 JavaScript는
 이 첫 경로의 검증 범위에 포함되지 않는다.
 
+## 아이템 검색의 SSR와 부분 갱신 경계
+
+`/items/`는 Django SSR·GET과 지역·번역·계산을 보존한다. `q` 없음은 최초 안내,
+`?q=`는 전체 검색이다. 조회·페이지당 10개 결과·template은 SSR/조각이 공유하며
+`X-Item-Search: results-v1`과 Vary로 구분한다. 검색 전용 CSS/JS가 결과·건수·페이지만 갱신한다.
+입력·응답 검증, 취소·history·오류/Retry focus 복구, 모바일·native GET·실제 새 탭의
+context 감시·문서 연결·원래 화면 보존은 [ADR0029](adr/0029-item-search-progressive-enhancement.md),
+실행 경계는 [검색 인계](harness.md#아이템-검색-계약의-격리-검증과-인계)를 따른다.
+
 ## 아이템 원본부터 서빙까지
 
 `harness/fixtures/parser/`는 직접 작성한 CSV 형식 IES, XML/TSV 번역,

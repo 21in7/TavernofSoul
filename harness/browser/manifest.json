@@ -3,6 +3,13 @@
   "scenarios": [
     "search preserves filters and opens the detail page",
     "search with no matches stays empty",
+    "search labels focus and table fit narrow viewports",
+    "search partial pages preserve encoded conditions and history",
+    "search navigation preserves native link and modifier behavior",
+    "search cancels superseded requests and ignores reversed responses",
+    "search failures preserve results and allow retry",
+    "search failed popstate restores URL form and retry target",
+    "search without JavaScript keeps GET pages and reset usable",
     "560 sword steps reset and material links work",
     "transcend input order and reset preserve base stats",
     "560 armor updates both defenses",

@@ -57,87 +57,95 @@ bonus_stat_translator={
 
 from ipfparser.utils import *
 
+# Private /items/ HTML contract. Ordinary GETs remain complete documents.
+ITEM_SEARCH_HEADER = 'X-Item-Search'
+ITEM_SEARCH_FRAGMENT = 'results-v1'
+SEARCH_ORDERS = {
+    'updated-dsc': '-updated', 'eq-level-asc': 'equipments__level',
+    'eq-level-dsc': '-equipments__level', 'ids-asc': 'ids', 'ids-dsc': '-ids',
+    'name-asc': 'name', 'name-dsc': '-name',
+    'id_name-asc': 'id_name', 'id_name-dsc': '-id_name',
+}
+
+
 def index(request):
+    from django.utils.cache import patch_vary_headers
 
-    data = {}
-    data['types']       = []
-    types                       = Item_Type.objects.all()
-    for i in types:
-        if (i.is_equipment):
-            data['types'].append({'type':i.name.lower(), 'id' : str(i.id)+"_eq"})
-        else:
-            data['types'].append({'type':i.name.lower(), 'id' : str(i.id)})
+    types = list(Item_Type.objects.all())
+    type_map = {str(t.id) + ('_eq' if t.is_equipment else ''): t for t in types}
+    params = request.GET.copy()
+    grade = params.get('grade', '')
+    grade = grade if grade in ('', '1', '2', '3', '4', '5', '6') else ''
+    clas = params.get('class', '')
+    clas = clas if clas in ('', '0', '1', '2', '3', '4') else ''
+    type_key = params.get('type', '')
+    type_key = type_key if type_key in type_map else ''
+    order = params.get('order', 'updated-dsc')
+    order = order if order in SEARCH_ORDERS else 'updated-dsc'
 
-    if 'q' in request.GET:
-        query                           = getFromGet(request, 'q','')
-        grade                       = getFromGet(request,'grade', '')
-        clas                            = getFromGet(request,'class', '')
-        class_def             = ['.','.','.','.','.']
-        query                           = Q(name__icontains = query)
-        type_n                      = getFromGet(request, 'type', '')
-        minLV                       = getFromGet(request, 'lvmin', '')
-        maxLV                       = getFromGet(request, 'lvmax', '')
-        order                       = getFromGet(request, 'order', 'updated-dsc')
+    def level(key):
+        value = params.get(key, '')
+        try:
+            number = int(value)
+            return str(number) if -2147483648 <= number <= 2147483647 else ''
+        except (ValueError, TypeError):
+            return ''
 
+    min_lv, max_lv = level('lvmin'), level('lvmax')
+    searched = 'q' in params
+    data = {
+        'types': [{'type': t.name.lower(), 'id': key} for key, t in type_map.items()],
+        'query': params.get('q', ''), 'grade': grade, 'class': clas, 'type': type_key,
+        'minLV': min_lv, 'maxLV': max_lv, 'order': order,
+        'searched': searched, 'item': [], 'item_len': 0, 'curpage': 1, 'pageLen': 0,
+    }
+    for key, value in (('grade', grade), ('class', clas), ('type', type_key),
+                       ('lvmin', min_lv), ('lvmax', max_lv), ('order', order)):
+        params[key] = value
+    if searched:
+        params['q'] = data['query']
+        query = Q(name__icontains=data['query'])
+        if min_lv:
+            query &= Q(equipments__level__gte=int(min_lv))
+        if max_lv:
+            query &= Q(equipments__level__lte=int(max_lv))
+        if type_key:
+            t = type_map[type_key]
+            query &= Q(**{'equipments__type_equipment' if t.is_equipment else 'type': t.name})
+        if grade:
+            query &= Q(grade=int(grade))
+        if clas:
+            classes = ['.'] * 5
+            classes[int(clas)] = 'T'
+            query &= Q(equipments__requiredClass__regex=''.join(classes))
+        items = Items.objects.filter(query).order_by(SEARCH_ORDERS[order], 'pk').select_related('equipments')
+        count = items.count()
+        last = max(1, (count + 9) // 10)
+        try:
+            page = max(1, min(last, int(params.get('page', '1'))))
+        except (ValueError, TypeError):
+            page = 1
+        data.update(item_len=count, curpage=page, pageLen=last if count else 0,
+                    item=items[(page - 1) * 10:page * 10])
+        params['page'] = str(page)
 
+        def page_url(number):
+            link = params.copy()
+            link['page'] = str(number)
+            return request.path + '?' + link.urlencode()
 
-        if minLV != '':
-            try:
-                int(minLV)
-                query.add(Q(equipments__level__gte =minLV), Q.AND)
-            except:
-                pass
-        if maxLV != '':
-            try:
-                int(maxLV)
-                query.add(Q(equipments__level__lte =maxLV), Q.AND)
-            except:
-                pass
-
-        if (type_n != ''):
-            if ('_eq' in type_n):
-                type_n = type_n.replace('_eq','')
-                t = Item_Type.objects.get(id = type_n)
-                query.add(Q(equipments__type_equipment =t.name), Q.AND)
-            else:
-                t = Item_Type.objects.get(id = type_n)
-                query.add(Q(type =t.name), Q.AND)
-
-        data['type'] = getFromGet(request, 'type', '')
-
-
-        if (grade != ''):
-            query.add(Q(grade=grade), Q.AND)
-        if clas!= '':
-            class_def[int(clas)] = 'T'
-            class_def = ''.join(class_def)
-            query.add(Q(equipments__requiredClass__regex =class_def), Q.AND)
-
-        orders = order.split("-")
-        srt = '' if orders[-1] == 'asc' else '-'
-        data['curpage']     = int(getFromGet(request, 'page',1))
-        if ('eq' in order):
-            data['item']            = Items.objects.filter(query).order_by('{}equipments__{}'.format(srt, orders[1])).select_related('equipments')
-        else:
-            data['item']            = Items.objects.filter(query).order_by('{}{}'.format(srt, orders[0])).select_related('equipments')
-
-        data['item_len']    = data['item'].count()
-        data['item']            = data['item'] [(data['curpage']-1)*10:data['curpage']*10]
-        query                           = getFromGet(request, 'q','')
-        data['query']       = query 
-        data['class']           = clas
-        data['grade']           = grade
-        data['minLV']           = minLV
-        data['maxLV']           = maxLV
-        data['order']           = order
-        #creating pages
-        pages = list(range(math.ceil(data['item_len']/10) +1))
-        pages.remove(0) #there's no page 0
-        makePagination(request, data, pages, 11 )
-
-        
-        
-    return render(request, join(APP_NAME,"search.html"), data)
+        start = max(1, min(page - 5, last - 10))
+        data['pages'] = [{'page': n, 'link': page_url(n)}
+                         for n in range(start, min(last, start + 10) + 1)] if count else []
+        data['previous'] = page_url(page - 1) if page > 1 else None
+        data['next'] = page_url(page + 1) if page < last else None
+        data['pageStart'], data['pageEnd'] = page_url(1), page_url(last)
+    data['search_url'] = request.path + ('?' + params.urlencode() if searched else '')
+    fragment = request.META.get('HTTP_X_ITEM_SEARCH') == ITEM_SEARCH_FRAGMENT
+    response = render(request, 'Items/search_results.html' if fragment else 'Items/search.html', data)
+    patch_vary_headers(response, [ITEM_SEARCH_HEADER])
+    response[ITEM_SEARCH_HEADER] = ITEM_SEARCH_FRAGMENT if fragment else 'document'
+    return response
 
 def item_detail(request, id):
 
