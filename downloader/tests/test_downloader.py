@@ -900,6 +900,152 @@ def test_ipf_blacklist_does_not_block_partial_downloads(server, monkeypatch):
     assert changed
 
 
+# Full mode (the optional 'full' CLI argument): _run checks 'full' before the
+# partial branch, so do_patch_full runs alone and main returns EXIT_CHANGED.
+# These regressions call do_patch_full and patch_full directly beyond the CLI
+# and exercise the real processing path with encrypted CRLF revision
+# responses built through the existing fixture seams.
+
+def install_full_routes(server, revision_text='1\r\n2\r\n', patch_names=('1.ipf', '2.ipf')):
+    # The shared LocalServer knows only the partial revision names and patch
+    # routes. Its faults entries are answered before the named revision
+    # routes, so the test supplies the encrypted CRLF full list there, and
+    # each full patch name is routed to the same fixture archive bytes the
+    # partial routes serve. server.calls keeps URL basenames such as
+    # 'data.file.list.txt' and '1.ipf'.
+    server.faults['data.file.list.txt'] = {'data': encrypted_revisions(revision_text)}
+    for name in patch_names:
+        server.routes[name] = server.routes['1_001001.ipf']
+
+
+def test_do_patch_full_forwards_region_paths_and_repatch(workspace, monkeypatch):
+    captured = []
+    monkeypatch.setattr(client, 'patch_full', lambda *args: captured.append(args))
+    # The first do_patch_full argument is not forwarded: the patch directory
+    # is derived from the region, and repatch is forwarded as literal True.
+    client.do_patch_full('../elsewhere', 'https://fixture.invalid/patch/')
+    assert captured == [(os.path.join('..', 'itos_patch'),
+                         'https://fixture.invalid/patch/full/data/',
+                         '.ipf',
+                         False,
+                         'https://fixture.invalid/patch/full/data.file.list.txt',
+                         True)]
+    assert captured[0][5] is True
+
+
+def test_full_mode_processes_encrypted_revisions_and_disposes_cache(workspace, server, extract_stub, monkeypatch):
+    install_full_routes(server)
+    extract_stub.install({'ies.ipf/item.ies': VALID_ITEM_CSV})
+
+    def refuse_partial(*args, **kwargs):
+        raise AssertionError('full mode must not run partial processing')
+    monkeypatch.setattr(client, 'patch_partial', refuse_partial)
+
+    assert client.main(['itos', 'full']) == client.EXIT_CHANGED == 0
+    # The decrypted CRLF list is processed in server order under full patch
+    # names (<revision>.ipf); no partial revision request ever appears.
+    assert server.calls == ['data.file.list.txt', '1.ipf', '2.ipf']
+    assert (workspace / 'itos_unpack/ies.ipf/item.ies').read_bytes() == VALID_ITEM_CSV.encode('utf-8')
+    # Full processing never advances the version CSVs and never publishes
+    # translations: the partial branch is unreachable in full mode.
+    assert client.read_version('revision.csv') == {'itos': '0', 'ktos': '99'}
+    assert client.read_version('release.csv') == {'itos': '0', 'ktos': '99'}
+    assert not (workspace / 'Translation').exists()
+    # Success disposes the cached archive, the working copy and the
+    # temporary extraction.
+    assert not (workspace / 'itos_patch/1.ipf').exists()
+    assert not (workspace / 'itos_patch/2.ipf').exists()
+    assert not Path('1.ipf').exists() and not Path('2.ipf').exists()
+    assert not Path('extract').exists()
+    assert not list((workspace / 'itos_patch').glob('*.part'))
+
+
+def test_full_keeps_decrypted_list_order_and_lines_verbatim(server, monkeypatch):
+    install_full_routes(server, revision_text='10\r\n2 001001\r\n', patch_names=())
+    requested = []
+    monkeypatch.setattr(client, 'patch_process',
+                        lambda patch_file, patch_name, *args: requested.append(patch_name))
+    client.patch_full('../itos_patch', 'https://fixture.invalid/full/data/', '.ipf', False,
+                      'https://fixture.invalid/full/data.file.list.txt', 0)
+    # Unlike patch_partial, the full path neither sorts by numeric revision
+    # nor token-parses the lines: each decrypted line is used verbatim as
+    # '<line>.ipf' in server order.
+    assert requested == ['10.ipf', '2 001001.ipf']
+
+
+def test_full_repatch_false_skips_existing_and_true_reprocesses(server, monkeypatch):
+    install_full_routes(server)
+    (Path('../itos_patch') / '1.ipf').write_bytes(b'cached bytes')
+    requested = []
+    monkeypatch.setattr(client, 'patch_process',
+                        lambda patch_file, patch_name, *args: requested.append(patch_name))
+    call = ('../itos_patch', 'https://fixture.invalid/full/data/', '.ipf', False,
+            'https://fixture.invalid/full/data.file.list.txt')
+    client.patch_full(*call, 0)
+    # repatch=0 skips the existing path entirely: revision 1 is not processed.
+    assert requested == ['2.ipf']
+    requested.clear()
+    client.patch_full(*call, 1)
+    # repatch=1 reprocesses the already existing revision too.
+    assert requested == ['1.ipf', '2.ipf']
+
+
+def test_full_processing_failure_retains_cache_and_retry_reuses_it(workspace, server, extract_stub):
+    install_full_routes(server)
+    extract_stub.install({'ies.ipf/item.ies': DAMAGED_IES_FILES['short_row']})
+    assert client.main(['itos', 'full']) == client.EXIT_FAILED == 2
+    # The failed run keeps the downloaded cache for the retry and cleans only
+    # its temporaries.
+    cached = workspace / 'itos_patch/1.ipf'
+    assert cached.read_bytes() == server.routes['1.ipf']
+    assert client.read_version('revision.csv')['itos'] == '0'
+    assert not Path('extract').exists()
+    assert not Path('1.ipf').exists()
+    assert not list((workspace / 'itos_patch').glob('*.part'))
+    assert server.calls == ['data.file.list.txt', '1.ipf']
+    # With the tool restored, the retained nonempty cache is reused instead
+    # of downloaded again; processing then succeeds and disposes the cache.
+    extract_stub.restore()
+    assert client.main(['itos', 'full']) == client.EXIT_CHANGED == 0
+    assert server.calls == ['data.file.list.txt', '1.ipf', 'data.file.list.txt', '2.ipf']
+    assert not cached.exists()
+    assert not (workspace / 'itos_patch/2.ipf').exists()
+
+
+def test_full_revision_failure_fails_before_any_download(workspace, server):
+    server.faults['data.file.list.txt'] = {'data': b'bad'}
+    assert client.main(['itos', 'full']) == client.EXIT_FAILED == 2
+    assert server.calls == ['data.file.list.txt']
+    assert client.read_version('revision.csv')['itos'] == '0'
+
+
+def test_full_mode_ipf_blacklist_skips_download_and_processing(workspace, server, monkeypatch):
+    # With the full list and patch routes installed, the skipped name never
+    # reaches a download or patch_process: the blacklist alone removes it from
+    # patch_full's download condition while the other revision is fully
+    # processed and its cache disposed.
+    install_full_routes(server)
+    monkeypatch.setattr(client, 'IPF_BLACKLIST', ['1.ipf'])
+    assert client.main(['itos', 'full']) == client.EXIT_CHANGED == 0
+    assert server.calls == ['data.file.list.txt', '2.ipf']
+    assert not (workspace / 'itos_patch/1.ipf').exists()
+    assert not (workspace / 'itos_patch/2.ipf').exists()
+    assert client.read_version('revision.csv')['itos'] == '0'
+
+
+def test_full_mode_error_ipf_fails_before_download(workspace, server, monkeypatch):
+    # error_ipf blocks patch_process in both modes. With the full routes
+    # installed the failure cannot come from an unmapped URL: patch_process
+    # raises RuntimeError for the blocked name before any download, so only
+    # the revision list is ever requested and versions stay untouched.
+    install_full_routes(server)
+    monkeypatch.setattr(client, 'error_ipf', ['1.ipf'])
+    assert client.main(['itos', 'full']) == client.EXIT_FAILED == 2
+    assert server.calls == ['data.file.list.txt']
+    assert not (workspace / 'itos_patch/1.ipf').exists()
+    assert client.read_version('revision.csv')['itos'] == '0'
+
+
 @pytest.mark.parametrize('args', [[], ['unsupported']])
 def test_invalid_cli_arguments_are_failure(workspace, server, args):
     assert client.main(args) == 2
