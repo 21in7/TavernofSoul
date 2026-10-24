@@ -218,6 +218,12 @@ XML 빠른 경로, JSON 중복 유한성 순회 제거, 스킬 일괄 cleanup과
 [mysql.sh](../harness/mysql.sh)는 digest 고정 MySQL 8.4의 일회용 컨테이너·임시 저장소를
 생성·정리한다. [browser.sh](../harness/browser.sh)는 Chromium 엔진만 컨테이너에서 실행하며
 운영 DB·JSON·소스·인증을 mount하지 않는다. 브라우저 SDK만 읽기 전용 mount한다.
+아이템 검색의 실제 새 탭은 context 생성 직후 감시·routing을 설치하고 첫 요청부터
+외부망·HTTP·console·JavaScript 오류를 수집한다. page 이벤트 뒤의 interception 설정 변경을
+피하고 실제 Control-click/`target=_blank`의 응답·page·예상 URL의 DOM 준비를 함께 확인한다.
+원래 document 보존과 열린 탭 정리도 같은 시나리오의 책임이다. 계약은
+[ADR0029](adr/0029-item-search-progressive-enhancement.md), 현재 검증 순서는
+[검색 인계](harness.md#아이템-검색-계약의-격리-검증과-인계)에 둔다.
 설치·Docker·외부 site 요청은 선택 경로의 명시적 운영 준비/실행이지 기본 오프라인 검사 부작용이 아니다.
 CI는 현재 Ubuntu 22.04·Python 3.8·Node 22를 사용하고 의존성/브라우저 설치 뒤 검사한다.
 따라서 오프라인이라는 말은 고정 입력 검증의 데이터 경계를 뜻하며 CI 환경 설치까지 무통신이라는 뜻은 아니다.
