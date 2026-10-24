@@ -24,18 +24,35 @@ def passing_report():
 
 def test_complete_browser_report_counts_both_viewports():
     assert MANIFEST['projects'] == ['desktop', 'mobile']
-    assert len(MANIFEST['scenarios']) == len(set(MANIFEST['scenarios'])) == 11
+    assert len(MANIFEST['scenarios']) == len(set(MANIFEST['scenarios'])) == 18
     expected = {(scenario, project) for scenario in MANIFEST['scenarios']
                 for project in ('desktop', 'mobile')}
     raw = passing_report()
     pairs = [(spec['title'], test['projectName'])
              for spec in raw['suites'][0]['suites'][0]['specs'] for test in spec['tests']]
-    assert len(pairs) == len(expected) == 22
+    assert len(pairs) == len(expected) == 36
     assert set(pairs) == expected
     report = summarize_playwright(raw)
     assert report['status'] == 'passed'
     assert report['passed'] == report['selected'] == len(expected)
     assert report['errors'] == report['skipped'] == report['failures'] == []
+
+
+def test_search_recovery_scenarios_are_required_in_the_manifest():
+    # Keep the newly required failure paths explicit: replacing one with an
+    # unrelated scenario must not satisfy the fixed aggregate count of 36.
+    required = {
+        'search preserves filters and opens the detail page',
+        'search with no matches stays empty',
+        'search labels focus and table fit narrow viewports',
+        'search partial pages preserve encoded conditions and history',
+        'search navigation preserves native link and modifier behavior',
+        'search cancels superseded requests and ignores reversed responses',
+        'search failures preserve results and allow retry',
+        'search failed popstate restores URL form and retry target',
+        'search without JavaScript keeps GET pages and reset usable',
+    }
+    assert required <= set(MANIFEST['scenarios'])
 
 
 @pytest.mark.parametrize('scenario', MANIFEST['scenarios'])

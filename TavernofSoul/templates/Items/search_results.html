@@ -1,0 +1,44 @@
+{% load translate %}
+<section id="item-search-results" data-item-search-fragment="results-v1" data-search-url="{{search_url}}" aria-labelledby="item-search-summary" aria-busy="false">
+  <h2 id="item-search-summary" tabindex="-1">{% if searched %}{{item_len}} {{"Results"|translate}}{% if item_len %} · Page {{curpage}} / {{pageLen}}{% else %} · No result pages{% endif %}{% else %}Search items{% endif %}</h2>
+  {% if not searched %}
+    <p>Enter a keyword or choose filters, then select Filter to search items.</p>
+  {% elif not item_len %}
+    <p class="item-search-empty">No items found. Try a different keyword or change your filters.</p>
+    <a href="{% url 'Items:index' %}" data-search-reset>Reset filters</a>
+  {% else %}
+    <p id="item-table-help">Scroll the table horizontally to see all item details.</p>
+    <div class="item-search-table" role="region" aria-label="Item results" aria-describedby="item-table-help" tabindex="0">
+      <table class="table-bordered">
+        <caption class="sr-only">Item search results</caption>
+        <thead><tr>
+          <th scope="col"><span class="sr-only">Icon</span></th>
+          <th scope="col">{{"ClassID"|translate}}</th>
+          <th scope="col">{{"Name"|translate}}</th>
+          <th scope="col">{{"Type"|translate}}</th>
+          <th scope="col">{{"Grade"|translate}}</th>
+          <th scope="col">{{"Level"|translate}}</th>
+        </tr></thead>
+        <tbody>{% for i in item %}
+          <tr>
+            <td><img loading="lazy" alt="" src="/static/icons/{{i.icon}}.png" class="icon-64"></td>
+            <td><a href="{% url 'Items:item' i.ids %}">{{i.ids}}</a></td>
+            <td><a href="{% url 'Items:item' i.ids %}">{{i.name}}</a></td>
+            <td>{% if i.equipments %}{{i.equipments.type_equipment}}{% else %}{{i.type}}{% endif %}</td>
+            <td>{% if i.grade %}<span class="item-grade item-grade-{{i.grade}}" aria-hidden="true"></span>
+              {% if i.grade == 1 %}{{"Normal"|translate}}{% elif i.grade == 2 %}{{"Magic"|translate}}{% elif i.grade == 3 %}{{"Rare"|translate}}{% elif i.grade == 4 %}{{"Unique"|translate}}{% elif i.grade == 5 %}{{"Legendary"|translate}}{% elif i.grade == 6 %}{{"Goddess"|translate}}{% else %}{{i.grade}}{% endif %}
+              {% else %}—{% endif %}</td>
+            <td>{{i.equipments.level|default_if_none:""}}</td>
+          </tr>
+        {% endfor %}</tbody>
+      </table>
+    </div>
+    <nav aria-label="Item result pages" data-search-pagination>
+      <ul class="item-search-pages">
+        {% if previous %}<li><a href="{{pageStart}}">First</a></li><li><a href="{{previous}}" rel="prev">Previous</a></li>{% endif %}
+        {% for p in pages %}<li>{% if p.page == curpage %}<span aria-current="page">{{p.page}}</span>{% else %}<a href="{{p.link}}">{{p.page}}</a>{% endif %}</li>{% endfor %}
+        {% if next %}<li><a href="{{next}}" rel="next">Next</a></li><li><a href="{{pageEnd}}">Last</a></li>{% endif %}
+      </ul>
+    </nav>
+  {% endif %}
+</section>

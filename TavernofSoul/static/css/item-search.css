@@ -1,0 +1,36 @@
+/* Loaded only by the item search document. Allow its flex child to shrink. */
+#content { min-width: 0; }
+.item-search { width: 100%; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.item-search form, .item-search fieldset { min-width: 0; }
+.item-search fieldset { border: 1px solid #aab2bd; padding: .75rem; margin: 1rem 0; }
+.item-search legend { width: auto; padding: 0 .25rem; font-size: 1rem; }
+.item-search label { display: block; margin-bottom: .25rem; }
+.item-search-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.item-search-fields > div { min-width: 0; }
+.item-search input, .item-search select { width: 100%; min-width: 0; max-width: 100%; }
+.item-search-keyword { max-width: 36rem; }
+.item-search-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
+.item-search .btn { color: #fff; border: 1px solid #c0c9d4; }
+.item-search a { color: #a9d5ff; text-decoration: underline; }
+.item-search a:focus, .item-search button:focus, .item-search input:focus,
+.item-search select:focus, .item-search [tabindex]:focus {
+  outline: 3px solid #ffe08a; outline-offset: 2px;
+}
+#item-search-summary { font-size: 1.15rem; margin-top: 1rem; }
+#item-search-status { min-height: 1.5em; margin: .5rem 0; }
+#item-search-error { padding: .75rem; border: 1px solid #ffe08a; margin: .5rem 0; }
+#item-search-error[hidden] { display: none; }
+.item-search-table { overflow-x: auto; max-width: 100%; padding: 4px; }
+.item-search-table table { min-width: 38rem; width: 100%; }
+.item-search-table th, .item-search-table td { padding: .4rem; }
+.item-search-table .icon-64 { width: 64px; height: 64px; max-width: none; }
+.item-search-pages { display: flex; flex-wrap: wrap; list-style: none; padding: 0; gap: .35rem; margin-top: 1rem; }
+.item-search-pages a, .item-search-pages span { display: block; padding: .5rem .75rem; border: 1px solid #aab2bd; }
+.item-search-pages [aria-current] { font-weight: bold; border: 2px solid #ffe08a; }
+@media (max-width: 600px) {
+  .item-search-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 360px) {
+  .item-search-fields { grid-template-columns: minmax(0, 1fr); }
+  .item-search fieldset { padding: .5rem; }
+}

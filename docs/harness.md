@@ -763,13 +763,13 @@ obsolete parsing-server CI 3개는 메인 `/root`가 로컬에 그대로 보관�
 | --- | --- |
 | `check-downloader` | 로컬 암호화 revision·작은 IPF 대체 입력·IES CSV 검증 게이트·합성 Make 준비 타깃·실제 PAK 해제·변경 없음·전송/도구/검증/복사 실패·버전 보존·재시도·CLI 종료 코드·cron 중단 |
 | `check-parser` | 실제 CSV IES·XML/TSV·Lua → 아이템·combat·맵/속성/버프·5개 지역·560/550 장비·젬 JSON, 공통 계약·공개 차단·수치·참조·재계산·재시도와 기존 회귀 |
-| `check-django` | 기존 canonical ID·import 안전성·레시피 복구 테스트와 `Items.tests`의 검색·페이지·쿼리 수 검증 |
+| `check-django` | 기존 canonical ID·import 안전성·레시피 복구 테스트와 `Items.tests`의 SSR/fragment·조건·페이지·쿼리 수 검증 |
 | `check-pipeline` | 원본 IES/Lua 및 고정 JSON → 실제 importer·ORM·HTTP, 5개 지역·560/550 장비·젬·추가 유형, 계약 차단·상태 보존·재적재·관계 삭제·롤백 후 재시도 |
 | `doctor-mysql` | 명시적인 테스트 서버 접속, 제한된 계정 권한, 실제 서버 버전·SQL 모드·문자셋·격리 수준 확인 |
 | `check-mysql` | 실제 MySQL migrations, 전체 고정 입력 통합 경로와 아이템 검색, MySQL 저장·검색·오류 롤백 검증 |
 | `check-mysql-container` | 전용 MySQL 컨테이너 생성 → 계정 권한 제한 → `check-mysql` → 컨테이너 정리 |
 | `doctor-browser` | 고정 Playwright SDK 버전, Node.js 버전, 실제 Chromium 실행 또는 전용 컨테이너 연결 |
-| `check-browser` | 임시 원본 파싱·DB 적재·실제 Django HTTP/정적 파일 → 데스크톱·모바일 Chromium 18개 시나리오 |
+| `check-browser` | 임시 원본 파싱·DB 적재·실제 Django HTTP/정적 파일 → Chromium 18개 시나리오 × 2 viewport, 총 36개 실행 |
 | `check-browser-container` | 지원 Ubuntu의 ARM64/amd64 브라우저 컨테이너 → `check-browser` → 컨테이너 정리 |
 
 `check-django`는 `parser_tidy/tests/`의 importer 회귀 세 파일을 별도 프로세스에서 실행한 뒤,
@@ -906,10 +906,19 @@ make check-browser
 하네스 설정에만 추가한 context processor가 광고·동의 팝업·분석·외부 폰트를 제외한다.
 일반 지역 설정에서는 기존 서비스가 유지된다. 브라우저의 예기치 않은 외부 요청·HTTP 오류·console 오류·JavaScript 예외는 실패다.
 
-1440×900 데스크톱과 390×844 모바일 viewport에서 다음 9개 시나리오를 각각 실행한다.
+`harness/browser/manifest.json`은 desktop(1440×900)과 mobile(390×844)에 다음 18개
+시나리오를 각각 요구한다. 총 36개의 정확한 scenario/project 조합이며, 좁은 화면 검색
+시나리오는 각 project 안에서 390×844와 320×740도 확인한다.
 
 - 검색어·등급 유지, 검색 결과에서 상세 이동, 모바일 메뉴 열기/닫기.
 - 검색 결과가 없는 경우.
+- 모바일 접근성·overflow.
+- 부분 갱신·조건·페이지·history.
+- 기본 링크 탐색.
+- 취소·응답 역전.
+- 오류·Retry focus/사용자 이동.
+- popstate 실패 복구.
+- JS 없는 GET.
 - 560 무기 +5/+6/+30/0, 확률·재료·공격력 표시, 재료 링크 이동.
 - 강화/초월 입력 순서, 음수/상한 입력 처리, 0 초기화와 비용 표시.
 - 560 방어구의 물리/마법 방어력과 재료.
@@ -917,9 +926,12 @@ make check-browser
 - 일반 장비의 강화·초월 수치와 비용.
 - 젬의 레벨별 5개 슬롯 보너스·음수 페널티.
 - 스킬 젬에서 연결된 스킬 화면으로 이동.
+- PvP 확률·레벨 경계 계산과 메뉴 연결.
+- PvP 잘못된 입력과 접근 가능한 초기화.
 
 수치는 hand-authored fixture 기대값이며 실제 게임 밸런스 값으로 주장하지 않는다.
 필수 시나리오/viewport 누락·중복, skip/xfail, 재시도로 성공한 flaky 결과, 미수집은 성공으로 처리하지 않는다.
+`harness/test_browser_runner.py`의 검색 9개·전체 18×2 게이트는 중복으로 누락을 채워도 거부한다.
 `make check`에는 SDK/브라우저 설치를 요구하지 않고 빠른 Node DOM 검사와 브라우저 결과 판정의 회귀만 포함한다.
 
 `doctor-browser.json`, `browser.json`, `check-browser.json`은 실제 엔진 버전·선택/통과 수를 기록한다.
@@ -934,6 +946,20 @@ harness/browser/node_modules/.bin/playwright show-trace logs/harness/browser/<ru
 
 SSH 서버에서 자료를 로컬로 복사해 열 수 있다. 이 검증은 운영 도메인의 TLS/프록시/캐시/광고 동작이나
 실제 모바일 기기·Firefox/WebKit·전체 페이지·5개 지역 브라우저 검증을 포함하지 않는다.
+
+## 아이템 검색 계약의 격리 검증과 인계
+
+상세 계약·검증: [ADR0029](adr/0029-item-search-progressive-enhancement.md).
+`Items.tests.SearchQueryTests`·`EquipmentPipelineTests.test_source_to_http_<region>`으로 수집한다.
+browser 전용 25행은 지역 14행 보존. HTTP 실패는 정확한 URL/status의 비탐색 fragment만 허용한다.
+
+Claude 승인 후 full check 5882 selected/5881 passed, `applied=[]`.
+종전 개별 초과 설명(127442→133152bytes)은 정정: parent 진단은 37개 합계 1576439bytes,
+repair 후 1576512bytes로 전체 1572864bytes 초과다. 개별 131072bytes 한도 유지.
+
+최종 전체 diff·ADR의 새 Claude 검토·매 review의 `documentation={status,files,reason}`·
+기본 `GIT=1` full `make check`·실제 Chromium·scoped apply와 Git/CI3/merge/cleanup/archive는
+parent workflow가 수행한다. leaf 실행·과거 성공 재사용은 금지한다.
 
 ## 실제 게임 데이터와 운영 도메인
 

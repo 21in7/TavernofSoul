@@ -1,28 +1,45 @@
 'use strict';
 const {test: base, expect} = require('@playwright/test');
 
-// Exercise real HTML, static files and input events. Unexpected networking is a failure.
+// Deliberate HTTP failures are exempted only by exact URL/status and only
+// for a non-navigation fragment request. All other errors still fail the gate.
+async function watchNetworking(page, baseURL, expectedHTTP = new Map()) {
+    const errors = [];
+    const isExpected = response => !response.request().isNavigationRequest() &&
+        response.request().headers()['x-item-search'] === 'results-v1' &&
+        new URL(response.url()).pathname === '/items/' &&
+        expectedHTTP.get(response.url()) === response.status();
+    page.on('pageerror', error => errors.push(`JavaScript: ${error.message}`));
+    page.on('console', message => {
+        const status = expectedHTTP.get(message.location().url);
+        if (message.type() === 'error' && !(status === 503 &&
+            /^Failed to load resource: the server responded with a status of 503\b/.test(message.text()))) {
+            errors.push(`Console: ${message.text()}`);
+        }
+    });
+    page.on('response', response => {
+        if (response.status() >= 400 && !isExpected(response)) {
+            errors.push(`HTTP ${response.status()}: ${response.url()}`);
+        }
+    });
+    page.on('requestfailed', request => {
+        if (request.failure().errorText !== 'net::ERR_ABORTED') {
+            errors.push(`Network: ${request.url()} (${request.failure().errorText})`);
+        }
+    });
+    await page.route('**/*', route => {
+        const url = new URL(route.request().url());
+        if (url.origin === baseURL) return route.continue();
+        errors.push(`Unexpected external request: ${url.href}`);
+        return route.abort();
+    });
+    return errors;
+}
+
 const test = base.extend({
-    page: async ({page, baseURL}, use) => {
-        const errors = [];
-        page.on('pageerror', error => errors.push(`JavaScript: ${error.message}`));
-        page.on('console', message => {
-            if (message.type() === 'error') errors.push(`Console: ${message.text()}`);
-        });
-        page.on('response', response => {
-            if (response.status() >= 400) errors.push(`HTTP ${response.status()}: ${response.url()}`);
-        });
-        page.on('requestfailed', request => {
-            if (request.failure().errorText !== 'net::ERR_ABORTED') {
-                errors.push(`Network: ${request.url()} (${request.failure().errorText})`);
-            }
-        });
-        await page.route('**/*', route => {
-            const url = new URL(route.request().url());
-            if (url.origin === baseURL) return route.continue();
-            errors.push(`Unexpected external request: ${url.href}`);
-            return route.abort();
-        });
+    expectedHTTP: async ({}, use) => { await use(new Map()); },
+    page: async ({page, baseURL, expectedHTTP}, use) => {
+        const errors = await watchNetworking(page, baseURL, expectedHTTP);
         await use(page);
         expect(errors, 'Browser console, HTTP and network errors').toEqual([]);
     },
@@ -58,9 +75,9 @@ test('search preserves filters and opens the detail page', async ({page}, info) 
     await expect(page).toHaveURL(/q=Fixture\+Dawn\+Sword/);
     await expect(page.locator('[name=q]')).toHaveValue('Fixture Dawn Sword');
     await expect(page.locator('[name=grade]')).toHaveValue('6');
-    await expect(page.locator('#content a[href="/items/110"]')).toHaveCount(1);
+    await expect(page.locator('#item-search-results a[href="/items/110"]')).toHaveCount(2);
     await evidence(page, info, 'search-results');
-    await page.locator('#content a[href="/items/110"]').click();
+    await page.getByRole('link', {name: 'Fixture Dawn Sword', exact: true}).click();
     await expect(page.locator('#title')).toHaveText('Fixture Dawn Sword');
     await stat(page, 'patk', '7,000');
     await expect(page.locator('#anvil')).toBeEditable();
@@ -68,10 +85,449 @@ test('search preserves filters and opens the detail page', async ({page}, info) 
 
 test('search with no matches stays empty', async ({page}) => {
     await page.goto('/items/');
+    await expect(page.locator('#item-search-summary')).toHaveText('Search items');
+    await expect(page.locator('.item-search-empty')).toHaveCount(0);
     await page.locator('[name=q]').fill('there-is-no-such-fixture');
+    await page.locator('[name=grade]').selectOption('6');
     await page.getByRole('button', {name: 'Filter', exact: true}).click();
     await expect(page).toHaveURL(/q=there-is-no-such-fixture/);
-    await expect(page.locator('#content a[href^="/items/"]')).toHaveCount(0);
+    await expect(page.locator('#item-search-results tbody tr')).toHaveCount(0);
+    await expect(page.locator('.item-search-empty')).toContainText('No items found');
+    await expect(page.locator('.item-search-empty')).toContainText('change your filters');
+    await expect(page.locator('#item-search-summary')).toContainText('0 Results');
+    await expect(page.locator('[name=q]')).toHaveValue('there-is-no-such-fixture');
+    await expect(page.locator('[name=grade]')).toHaveValue('6');
+    const reset = page.locator('#item-search-results [data-search-reset]');
+    await expect(reset).toHaveAttribute('href', '/items/');
+    await reset.click();
+    await expect(page).toHaveURL(/\/items\/$/);
+    await expect(page.locator('[name=q]')).toHaveValue('');
+    await expect(page.locator('[name=grade]')).toHaveValue('');
+    await expect(page.locator('#item-search-summary')).toHaveText('Search items');
+});
+
+const searchKeyword = 'Search & + #? / "한글" <fixture>';
+const searchRows = page => page.locator('#item-search-results tbody tr');
+const searchSubmit = page => page.getByRole('button', {name: 'Filter', exact: true});
+const searchSummary = page => page.locator('#item-search-summary');
+
+async function rememberDocument(page) {
+    await page.evaluate(() => {
+        window.__searchDocument = document;
+        window.__searchPersistentNodes = ['item-search-form', 'item-search-status',
+            'item-search-error', 'sidebar'].map(id => document.getElementById(id));
+    });
+}
+
+async function sameDocument(page) {
+    expect(await page.evaluate(() => window.__searchDocument === document &&
+        window.__searchPersistentNodes.every(node => node === document.getElementById(node.id)))).toBe(true);
+}
+
+async function search(page, keyword) {
+    await page.locator('[name=q]').fill(keyword);
+    await searchSubmit(page).click();
+    await expect(page).toHaveURL(url => url.searchParams.get('q') === keyword);
+    await expect(page.locator('#item-search-results')).toHaveAttribute('aria-busy', 'false');
+}
+
+async function searchPage(page, number, rows) {
+    await expect(searchSummary(page)).toHaveText(`25 Results · Page ${number} / 3`);
+    await expect(searchRows(page)).toHaveCount(rows);
+    await expect(page.locator('[aria-current="page"]')).toHaveText(String(number));
+}
+
+async function rowNames(page) {
+    return searchRows(page).locator('td:nth-child(3)').allTextContents();
+}
+
+test('search labels focus and table fit narrow viewports', async ({page}, info) => {
+    await page.goto('/items/');
+    await search(page, 'Fixture Dawn Sword');
+    const labels = await page.locator('#item-search-form label').evaluateAll(nodes =>
+        nodes.map(node => ({name: node.control && node.control.name, text: node.textContent.trim()})));
+    expect(labels.map(label => label.name).sort()).toEqual(
+        ['q', 'type', 'class', 'grade', 'lvmin', 'lvmax', 'order'].sort());
+    expect(labels.every(label => label.text)).toBe(true);
+    await expect(page.locator('#item-search-form fieldset legend')).not.toHaveText('');
+    await expect(page.locator('#item-search-status')).toHaveAttribute('aria-live', 'polite');
+    await expect(page.locator('#item-search-status')).toHaveAttribute('aria-atomic', 'true');
+    const sizes = [page.viewportSize(), {width: 390, height: 844}, {width: 320, height: 740}];
+    for (const size of sizes) {
+        await page.setViewportSize(size);
+        const layout = await page.evaluate(() => {
+            const table = document.querySelector('.item-search-table');
+            const form = document.querySelector('#item-search-form').getBoundingClientRect();
+            return {width: innerWidth, document: document.documentElement.scrollWidth,
+                body: document.body.scrollWidth, left: form.left, right: form.right,
+                table: table.clientWidth, scroll: table.scrollWidth,
+                overflow: getComputedStyle(table).overflowX};
+        });
+        expect(layout.document).toBeLessThanOrEqual(layout.width);
+        expect(layout.body).toBeLessThanOrEqual(layout.width);
+        expect(layout.left).toBeGreaterThanOrEqual(0);
+        expect(layout.right).toBeLessThanOrEqual(layout.width);
+        expect(layout.overflow).toMatch(/auto|scroll/);
+        if (size.width <= 390) expect(layout.scroll).toBeGreaterThan(layout.table);
+        const region = page.getByRole('region', {name: 'Item results', exact: true});
+        await region.focus();
+        await expect(region).toBeFocused();
+        expect(await region.evaluate(node => getComputedStyle(node).outlineStyle)).not.toBe('none');
+        await page.keyboard.press('Tab');
+        await expect(page.getByRole('link', {name: '110', exact: true})).toBeFocused();
+        await page.keyboard.press('Tab');
+        const name = page.getByRole('link', {name: 'Fixture Dawn Sword', exact: true});
+        await expect(name).toBeFocused();
+        expect(await name.evaluate(node => parseFloat(getComputedStyle(node).outlineWidth))).toBeGreaterThan(0);
+        await expect(name).toHaveAttribute('href', '/items/110');
+        await expect(searchRows(page).locator('td:nth-child(5)')).toContainText('Goddess');
+    }
+    await evidence(page, info, 'search-320px-focus');
+});
+
+test('search partial pages preserve encoded conditions and history', async ({page, context, baseURL}) => {
+    await page.goto('/items/');
+    await rememberDocument(page);
+    const type = await page.locator('[name=type] option').filter({hasText: /^sword$/i}).getAttribute('value');
+    const values = {q: searchKeyword, grade: '6', class: '3', type,
+        lvmin: '550', lvmax: '560', order: 'name-asc'};
+    for (const [key, value] of Object.entries(values)) {
+        const input = page.locator(`[name=${key}]`);
+        if (['q', 'lvmin', 'lvmax'].includes(key)) await input.fill(value);
+        else await input.selectOption(value);
+    }
+    await searchSubmit(page).click();
+    await searchPage(page, 1, 10);
+    await expect(searchSubmit(page)).toBeFocused();
+    const first = await rowNames(page);
+    const firstURL = page.url();
+    const historySize = await page.evaluate(() => history.length);
+    await page.getByRole('link', {name: 'Next', exact: true}).click();
+    await searchPage(page, 2, 10);
+    const second = await rowNames(page);
+    expect(second.some(name => first.includes(name))).toBe(false);
+    await expect(searchSummary(page)).toBeFocused();
+    await expect(page.locator('#item-search-status')).toContainText('Page 2 / 3');
+    const secondURL = page.url();
+    for (const link of await page.locator('[data-search-pagination] a').evaluateAll(nodes => nodes.map(n => n.href))) {
+        const url = new URL(link);
+        expect(url.pathname).toBe('/items/');
+        expect(url.hash).toBe('');
+        expect([...url.searchParams.keys()].sort()).toEqual([...Object.keys(values), 'page'].sort());
+        for (const [key, value] of Object.entries(values)) expect(url.searchParams.get(key)).toBe(value);
+    }
+    await page.goBack();
+    await searchPage(page, 1, 10);
+    await expect(page).toHaveURL(firstURL);
+    expect(await rowNames(page)).toEqual(first);
+    await page.goForward();
+    await searchPage(page, 2, 10);
+    await expect(page).toHaveURL(secondURL);
+    expect(await rowNames(page)).toEqual(second);
+    expect(await page.evaluate(() => history.length)).toBe(historySize + 1);
+    for (const [key, value] of Object.entries(values)) await expect(page.locator(`[name=${key}]`)).toHaveValue(value);
+    await sameDocument(page);
+    await page.getByRole('link', {name: 'Last', exact: true}).click();
+    await searchPage(page, 3, 5);
+    const third = await rowNames(page);
+    expect(new Set([...first, ...second, ...third]).size).toBe(25);
+    await page.locator('[name=order]').selectOption('name-dsc');
+    await searchSubmit(page).click();
+    await searchPage(page, 1, 10);
+    expect(new URL(page.url()).searchParams.get('page')).toBe('1');
+    expect((await rowNames(page))[0].trim()).toBe(`${searchKeyword} 24`);
+    const changedURL = page.url();
+    await page.goBack();
+    await searchPage(page, 3, 5);
+    await expect(page.locator('[name=order]')).toHaveValue('name-asc');
+    await page.goForward();
+    await searchPage(page, 1, 10);
+    await expect(page.locator('[name=order]')).toHaveValue('name-dsc');
+    // Restore an actually different keyword as well as pagination and sort.
+    await search(page, `${searchKeyword} 24`);
+    await expect(searchSummary(page)).toHaveText('1 Results · Page 1 / 1');
+    await page.goBack();
+    await searchPage(page, 1, 10);
+    await expect(page.locator('[name=q]')).toHaveValue(searchKeyword);
+    await page.goForward();
+    await expect(searchSummary(page)).toHaveText('1 Results · Page 1 / 1');
+    await expect(page.locator('[name=q]')).toHaveValue(`${searchKeyword} 24`);
+    await page.goBack();
+    await searchPage(page, 1, 10);
+    await expect(page).toHaveURL(changedURL);
+    await sameDocument(page);
+    const shared = await context.newPage();
+    const sharedErrors = await watchNetworking(shared, baseURL);
+    try {
+        const response = await shared.goto(changedURL);
+        expect(response.headers()['x-item-search']).toBe('document');
+        await searchPage(shared, 1, 10);
+        await expect(shared.locator('[name=q]')).toHaveValue(searchKeyword);
+    } finally {
+        await shared.close();
+        expect(sharedErrors, 'Shared search browser errors').toEqual([]);
+    }
+    await page.reload();
+    await searchPage(page, 1, 10);
+    for (const [key, value] of Object.entries({...values, order: 'name-dsc'})) {
+        await expect(page.locator(`[name=${key}]`)).toHaveValue(value);
+    }
+});
+
+test('search navigation preserves native link and modifier behavior', async ({page, context, baseURL}) => {
+    await page.goto('/items/');
+    await search(page, searchKeyword);
+    await rememberDocument(page);
+    const originalURL = page.url();
+    const next = page.getByRole('link', {name: 'Next', exact: true});
+    const targetURL = await next.getAttribute('href');
+    for (const mode of ['control', 'target']) {
+        if (mode === 'target') await next.evaluate(link => { link.target = '_blank'; });
+        const opened = context.waitForEvent('page').then(async tab => ({
+            tab, errors: await watchNetworking(tab, baseURL),
+        }));
+        await next.click(mode === 'control' ? {modifiers: ['Control']} : {});
+        const {tab, errors} = await opened;
+        try {
+            await tab.waitForLoadState('domcontentloaded');
+            await searchPage(tab, 2, 10);
+            expect(new URL(tab.url()).pathname + new URL(tab.url()).search).toBe(targetURL);
+        } finally {
+            await tab.close();
+            expect(errors, 'Native link browser errors').toEqual([]);
+        }
+        await expect(page).toHaveURL(originalURL);
+    }
+    // Cancel only at document bubbling, after the search handler has had a chance
+    // to intercept: assert it leaves these unsupported navigations untouched.
+    const intercepted = await page.evaluate(() => {
+        const nav = document.querySelector('[data-search-pagination]');
+        const results = [];
+        const cases = [
+            ['/items/?q=x', {metaKey: true}], ['/items/?q=x', {shiftKey: true}],
+            ['/items/?q=x', {altKey: true}], ['/items/110', {}],
+            ['/skills/400', {}], ['https://example.invalid/items/?q=x', {}],
+            ['/items/?q=x#unexpected', {}],
+        ];
+        for (const [href, modifiers] of cases) {
+            const link = document.createElement('a');
+            link.href = href;
+            nav.append(link);
+            document.addEventListener('click', event => {
+                results.push(event.defaultPrevented);
+                event.preventDefault();
+            }, {once: true});
+            link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, ...modifiers}));
+            link.remove();
+        }
+        return results;
+    });
+    expect(intercepted).toEqual([false, false, false, false, false, false, false]);
+    await sameDocument(page);
+    await search(page, 'Fixture Dawn Sword');
+    await page.getByRole('link', {name: 'Fixture Dawn Sword', exact: true}).click();
+    await expect(page.locator('#title')).toHaveText('Fixture Dawn Sword');
+    await expect(page).toHaveURL(/\/items\/110$/);
+});
+
+test('search cancels superseded requests and ignores reversed responses', async ({page}) => {
+    await page.goto('/items/');
+    await rememberDocument(page);
+    // Delay delivery of an already-read real response body. Its signal can be
+    // aborted but this body still resolves, exercising the sequence guard too.
+    await page.evaluate(() => {
+        const realFetch = window.fetch.bind(window);
+        window.__searchAborted = false;
+        window.fetch = async (url, options) => {
+            if (new URL(url).searchParams.get('q') !== 'Fixture Dawn Sword') return realFetch(url, options);
+            options.signal.addEventListener('abort', () => { window.__searchAborted = true; });
+            const response = await realFetch(url, options);
+            const markup = await response.text();
+            response.text = () => new Promise(resolve => {
+                window.__releaseSearch = () => resolve(markup);
+            });
+            return response;
+        };
+    });
+    await page.locator('[name=q]').fill('Fixture Dawn Sword');
+    await searchSubmit(page).click();
+    await page.waitForFunction(() => typeof window.__releaseSearch === 'function');
+    await expect(page.locator('#item-search-results')).toHaveAttribute('aria-busy', 'true');
+    await expect(page.locator('#item-search-status')).toContainText('Loading');
+    await search(page, 'Fixture Dawn Armor');
+    await expect(searchRows(page).locator('td:nth-child(3)')).toHaveText('Fixture Dawn Armor');
+    expect(await page.evaluate(() => window.__searchAborted)).toBe(true);
+    const committed = page.url();
+    await page.evaluate(async () => {
+        window.__releaseSearch();
+        await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await expect(searchRows(page).locator('td:nth-child(3)')).toHaveText('Fixture Dawn Armor');
+    await expect(page).toHaveURL(committed);
+    await expect(page.locator('[name=q]')).toHaveValue('Fixture Dawn Armor');
+    await expect(page.locator('#item-search-error')).toBeHidden();
+    await sameDocument(page);
+});
+
+test('search failures preserve results and allow retry', async ({page, expectedHTTP}) => {
+    test.setTimeout(60000); // Includes the application's real 12-second timeout.
+    await page.goto('/items/');
+    await search(page, 'Fixture Dawn Sword');
+    await rememberDocument(page);
+    let broken = null;
+    let releaseTimeout;
+    let releaseRetry;
+    let attempted = 0;
+    await page.route('**/items/?*', async route => {
+        if (route.request().headers()['x-item-search'] !== 'results-v1' || !broken) return route.continue();
+        attempted++;
+        if (broken === 'timeout') {
+            await new Promise(resolve => { releaseTimeout = resolve; });
+            // The browser has already aborted this request; do not send a late
+            // response or let it leak into the retry.
+            return route.abort('aborted');
+        }
+        if (broken === 'http') {
+            expectedHTTP.set(route.request().url(), 503);
+            return route.fulfill({status: 503, contentType: 'text/html', body: 'Unavailable'});
+        }
+        const response = await route.fetch();
+        let body = await response.text();
+        const headers = {...response.headers()};
+        delete headers['content-length'];
+        delete headers['content-encoding'];
+        if (broken === 'header') delete headers['x-item-search'];
+        if (broken === 'content-type') headers['content-type'] = 'application/json';
+        if (broken === 'document') body = `<!doctype html><html><body>${body}</body></html>`;
+        if (broken === 'script') body = body.replace('</section>', '<script>window.__injected = true</script></section>');
+        if (broken === 'marker') body = body.replace('results-v1', 'unrecognized');
+        if (broken === 'event') body = body.replace('<h2 ', '<h2 onclick="window.__injected=true" ');
+        if (broken === 'unsafe-url') body = body.replace('href="/items/112"', 'href="javascript:window.__injected=true"');
+        if (broken === 'canonical') body = body.replace(/data-search-url="[^"]*"/, 'data-search-url="https://example.invalid/items/"');
+        if (broken === 'retry-delay') await new Promise(resolve => { releaseRetry = resolve; });
+        return route.fulfill({response, headers, body});
+    });
+    for (const fault of ['http', 'header', 'content-type', 'document', 'script', 'marker',
+        'event', 'unsafe-url', 'canonical', 'timeout']) {
+        const beforeURL = page.url();
+        const beforeRows = await rowNames(page);
+        broken = fault;
+        const beforeAttempts = attempted;
+        await page.locator('[name=q]').fill('Fixture Dawn Armor');
+        await searchSubmit(page).click();
+        await expect.poll(() => attempted).toBe(beforeAttempts + 1);
+        await expect(page.locator('#item-search-error')).toBeVisible({timeout: 16000});
+        if (releaseTimeout) { releaseTimeout(); releaseTimeout = null; }
+        await expect(page.locator('#item-search-results')).toHaveAttribute('aria-busy', 'false');
+        expect(await rowNames(page), fault).toEqual(beforeRows);
+        await expect(page).toHaveURL(beforeURL);
+        await expect(page.locator('#item-search-status')).toContainText('Previous results are still shown');
+        const fallback = new URL(await page.locator('#item-search-fallback').getAttribute('href'), page.url());
+        expect(fallback.pathname).toBe('/items/');
+        expect(fallback.searchParams.get('q')).toBe('Fixture Dawn Armor');
+        expect(await page.evaluate(() => window.__injected)).toBeUndefined();
+        await sameDocument(page);
+        broken = null;
+        await page.getByRole('button', {name: 'Retry', exact: true}).click();
+        await expect(searchRows(page).locator('td:nth-child(3)')).toHaveText('Fixture Dawn Armor');
+        await expect(page.locator('#item-search-error')).toBeHidden();
+        await expect(searchSummary(page)).toBeFocused();
+        await sameDocument(page);
+        await search(page, 'Fixture Dawn Sword');
+    }
+    // A successful retry must respect focus moved by the user while waiting.
+    broken = 'http';
+    await page.locator('[name=q]').fill('Fixture Dawn Armor');
+    await searchSubmit(page).click();
+    await expect(page.locator('#item-search-error')).toBeVisible();
+    broken = 'retry-delay';
+    try {
+        await page.getByRole('button', {name: 'Retry', exact: true}).click();
+        await expect.poll(() => typeof releaseRetry).toBe('function');
+        await expect(page.locator('#item-search-results')).toHaveAttribute('aria-busy', 'true');
+        await page.locator('[name=q]').focus();
+    } finally {
+        if (releaseRetry) releaseRetry();
+    }
+    await expect(searchRows(page).locator('td:nth-child(3)')).toHaveText('Fixture Dawn Armor');
+    await expect(page.locator('#item-search-error')).toBeHidden();
+    await expect(page.locator('#item-search-results')).toHaveAttribute('aria-busy', 'false');
+    await expect(page.locator('[name=q]')).toBeFocused();
+    await sameDocument(page);
+});
+
+test('search failed popstate restores URL form and retry target', async ({page, expectedHTTP}) => {
+    await page.goto('/items/');
+    await search(page, 'Fixture Dawn Sword');
+    const swordURL = page.url();
+    await page.locator('[name=grade]').selectOption('6');
+    await search(page, 'Fixture Dawn Armor');
+    const armorURL = page.url();
+    await rememberDocument(page);
+    let fail = true;
+    await page.route('**/items/?*', route => {
+        if (!fail || route.request().headers()['x-item-search'] !== 'results-v1') return route.continue();
+        expectedHTTP.set(route.request().url(), 503);
+        return route.fulfill({status: 503, contentType: 'text/html', body: 'Unavailable'});
+    });
+    await page.goBack();
+    await expect(page.locator('#item-search-error')).toBeVisible();
+    await expect(page).toHaveURL(armorURL);
+    await expect(page.locator('[name=q]')).toHaveValue('Fixture Dawn Armor');
+    await expect(page.locator('[name=grade]')).toHaveValue('6');
+    await expect(searchRows(page).locator('td:nth-child(3)')).toHaveText('Fixture Dawn Armor');
+    await expect(page.getByRole('button', {name: 'Retry', exact: true})).toBeFocused();
+    expect(await page.locator('#item-search-fallback').getAttribute('href')).toBe(swordURL);
+    await sameDocument(page);
+    fail = false;
+    await page.getByRole('button', {name: 'Retry', exact: true}).click();
+    await expect(page).toHaveURL(swordURL);
+    await expect(page.locator('[name=q]')).toHaveValue('Fixture Dawn Sword');
+    await expect(page.locator('[name=grade]')).toHaveValue('');
+    await expect(searchRows(page).locator('td:nth-child(3)')).toHaveText('Fixture Dawn Sword');
+    await expect(page.locator('#item-search-error')).toBeHidden();
+    await expect(searchSummary(page)).toBeFocused();
+    await sameDocument(page);
+});
+
+test('search without JavaScript keeps GET pages and reset usable', async ({browser, page, baseURL}) => {
+    const context = await browser.newContext({baseURL, javaScriptEnabled: false, viewport: page.viewportSize()});
+    const native = await context.newPage();
+    const errors = await watchNetworking(native, baseURL);
+    const navigationHeaders = [];
+    native.on('request', request => {
+        if (request.isNavigationRequest()) navigationHeaders.push(request.headers()['x-item-search']);
+    });
+    try {
+        await native.goto('/items/');
+        await native.locator('[name=q]').fill(searchKeyword);
+        await Promise.all([native.waitForNavigation(), searchSubmit(native).click()]);
+        await searchPage(native, 1, 10);
+        await Promise.all([native.waitForNavigation(), native.getByRole('link', {name: 'Next', exact: true}).click()]);
+        await searchPage(native, 2, 10);
+        expect(new URL(native.url()).searchParams.get('q')).toBe(searchKeyword);
+        await native.locator('[name=q]').fill('missing & + #? "한글"');
+        await native.locator('[name=grade]').selectOption('6');
+        await Promise.all([native.waitForNavigation(), searchSubmit(native).click()]);
+        expect(new URL(native.url()).searchParams.has('page')).toBe(false);
+        await expect(native.locator('.item-search-empty')).toContainText('No items found');
+        await expect(native.locator('[name=q]')).toHaveValue('missing & + #? "한글"');
+        await expect(native.locator('[name=grade]')).toHaveValue('6');
+        await Promise.all([native.waitForNavigation(), native.locator('#item-search-results [data-search-reset]').click()]);
+        await expect(native).toHaveURL(/\/items\/$/);
+        await expect(searchSummary(native)).toHaveText('Search items');
+        await expect(native.locator('[name=q]')).toHaveValue('');
+        await native.locator('[name=q]').fill('Fixture Dawn Sword');
+        await Promise.all([native.waitForNavigation(), searchSubmit(native).click()]);
+        await Promise.all([native.waitForNavigation(),
+            native.getByRole('link', {name: 'Fixture Dawn Sword', exact: true}).click()]);
+        await expect(native.locator('#title')).toHaveText('Fixture Dawn Sword');
+        expect(navigationHeaders.length).toBe(7);
+        expect(navigationHeaders.every(header => header === undefined)).toBe(true);
+    } finally {
+        await context.close();
+        expect(errors, 'Native GET browser errors').toEqual([]);
+    }
 });
 
 test('560 sword steps reset and material links work', async ({page}, info) => {
