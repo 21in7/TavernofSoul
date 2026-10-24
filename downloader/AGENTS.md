@@ -12,6 +12,7 @@
 - 다운로드가 완료된 파일만 캐시로 공개한다. 오류가 난 `.part`는 삭제한다.
 - 복호화·압축 해제·복사 오류는 버전을 전진시키지 않는다. release는 번역 복사도 성공해야 완료다.
 - 여러 패치 중 일부가 실패하면 마지막 완료된 패치의 버전을 유지하고 다음 실행에서 재시도한다.
+- 패치 건너뜀 규칙 세 가지: `IPF_BLACKLIST`는 full 모드(`patch_full`)의 다운로드 조건에서만 검사되므로 full 경로 전용이다. `error_ipf`는 `patch_process`가 RuntimeError로 차단하므로 full·partial 양쪽 경로에서 실패한다. partial 모드(`patch_partial`)는 리비전 147674(`PARTIAL_REVISION_BLACKLIST`)를 다운로드·버전 갱신 없이 무음 건너뛰며, 그 사유는 소스에 기록이 없어 불명이다(추정하지 않는다).
 - 파일·CSV는 개별 원자 교체를 사용한다. unpack·번역 디렉터리 전체의 원자 갱신은 보장하지 않는다.
 - 연결된 cron/버전 처리 변경의 기존 회귀 검증은 `make check-parser`에 포함된다.
 - 실행 상태 CSV는 `.example`과 구분한다. 기존 버전·unpack 데이터를 변경하지 않는다.

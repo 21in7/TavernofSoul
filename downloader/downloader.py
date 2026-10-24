@@ -15,9 +15,17 @@ from os.path import join
 import csv
 import tempfile
 import stat
+# Full-mode skip rule: patch_full checks this blacklist only in its download
+# condition, so it applies to the full path alone.
 IPF_BLACKLIST = []
 region = ""
+# Both-modes failure rule: patch_process refuses these patch names with
+# RuntimeError in the full and partial paths alike.
 error_ipf = [] #the somehow error patch
+# Partial-mode skip rule: patch_partial silently skips these revisions, even
+# when newer than the installed version or when repatching. The reason for
+# skipping 147674 is recorded nowhere in this source and stays unknown.
+PARTIAL_REVISION_BLACKLIST = ['147674']
 EXIT_CHANGED = 0
 EXIT_UNCHANGED = 1
 EXIT_FAILED = 2
@@ -395,7 +403,7 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
     revisions = sorted(set(line.split(' ')[0] for line in revision_list), key=int)
     for revision in revisions:
      
-        if (int(revision) > int(revision_new[region]) or repatch==1) and revision not in ['147674']:
+        if (int(revision) > int(revision_new[region]) or repatch==1) and revision not in PARTIAL_REVISION_BLACKLIST:
             # Process patch
             patch_name = revision + '_001001' + patch_ext
             patch_file = os.path.join(patch_path, patch_name)

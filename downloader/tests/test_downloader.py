@@ -835,6 +835,71 @@ def test_blocked_patch_does_not_advance_version(workspace, server, monkeypatch):
     assert server.calls == ['data.revision.txt']
 
 
+# The three patch-skip rules and their application modes, pinned at their
+# boundaries: IPF_BLACKLIST applies to the full path only, error_ipf fails
+# both modes (the blocked-patch test above), and partial revision 147674 is
+# skipped silently. The reason for skipping 147674 is recorded nowhere in
+# the source, so these tests pin the behavior, never a reason.
+
+def test_partial_revision_147674_is_skipped_silently(server):
+    assert '147674' in client.PARTIAL_REVISION_BLACKLIST
+    server.revision = encrypted_revisions('147674\r\n')
+    # No download, no failure and no version advance: unchanged exit code.
+    assert client.main(['itos']) == 1
+    assert server.calls == ['data.revision.txt', 'release.revision.txt']
+    assert client.read_version('revision.csv')['itos'] == '0'
+    assert client.read_version('release.csv')['itos'] == '0'
+
+
+def test_partial_revision_147674_skip_does_not_block_other_revisions(server):
+    server.revision = encrypted_revisions('1\r\n147674\r\n2\r\n')
+    old, new, changed = patch_data()
+    assert server.calls == ['data.revision.txt', '1_001001.ipf', '2_001001.ipf']
+    assert old['itos'] == '0'
+    # The skipped revision must not advance the version cursor either.
+    assert new['itos'] == '2'
+    assert changed
+
+
+def test_partial_revision_147674_skip_survives_repatch(server):
+    server.revision = encrypted_revisions('147674\r\n')
+    old, new, changed = client.patch_partial(
+        '../itos_patch', 'https://fixture.invalid/partial/data/', '.ipf', False,
+        'revision.csv', 'https://fixture.invalid/partial/data.revision.txt', 1)
+    assert server.calls == ['data.revision.txt']
+    assert new['itos'] == '0'
+    assert not changed
+
+
+def test_ipf_blacklist_skips_only_the_full_download(server, monkeypatch):
+    server.revision = encrypted_revisions('1\r\n2\r\n')
+    requested = []
+    monkeypatch.setattr(client, 'patch_process',
+                        lambda patch_file, patch_name, *args: requested.append(patch_name))
+    # repatch=1 mirrors do_patch_full, so the blacklist is the only remaining
+    # full-mode skip; the revision URL keeps the fixture-served suffix. Full
+    # names are revision + patch_ext ('1.ipf', '2.ipf'), not the partial
+    # '<rev>_001001.ipf' used by the test below.
+    full = ('../itos_patch', 'https://fixture.invalid/full/data/', '.ipf', False,
+            'https://fixture.invalid/full/data.revision.txt')
+    client.patch_full(*full, 1)
+    assert requested == ['1.ipf', '2.ipf']
+    monkeypatch.setattr(client, 'IPF_BLACKLIST', ['1.ipf'])
+    client.patch_full(*full, 1)
+    assert requested == ['1.ipf', '2.ipf', '2.ipf']
+
+
+def test_ipf_blacklist_does_not_block_partial_downloads(server, monkeypatch):
+    # The blacklist is read only in patch_full: the same name still downloads
+    # and advances the version in partial mode.
+    monkeypatch.setattr(client, 'IPF_BLACKLIST', ['1_001001.ipf'])
+    old, new, changed = patch_data()
+    assert server.calls == ['data.revision.txt', '1_001001.ipf', '2_001001.ipf']
+    assert old['itos'] == '0'
+    assert new['itos'] == '2'
+    assert changed
+
+
 @pytest.mark.parametrize('args', [[], ['unsupported']])
 def test_invalid_cli_arguments_are_failure(workspace, server, args):
     assert client.main(args) == 2
