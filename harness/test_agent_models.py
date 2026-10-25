@@ -1785,3 +1785,53 @@ def test_zai_real_listener_is_closed_on_mocked_child_exit(local_keys, monkeypatc
     assert c.server.fileno() == -1 and not c.thread.is_alive()
     assert result['status'] == ('passed' if failure == 'none' else 'failed')
     assert result['telemetry']['logical_requests_observed'] == (None if failure == 'spawn' else 1)
+
+
+@pytest.mark.parametrize('provider,role', [('claude', 'reviewer'), ('codex', 'parser')])
+def test_private_usage_records_actual_final_and_transmitted_prompt_size(
+        provider, role, codex_login, local_keys, monkeypatch):
+    from harness import agent_usage
+    config = models.load_config()
+    config['roles']['reviewer'] = {'provider': 'claude', 'model': 'fixture-model',
+                                   'effort': 'medium', 'max_budget_usd': 2}
+    monkeypatch.setattr(models, 'load_config', lambda: config)
+    monkeypatch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+    monkeypatch.setattr(models, 'child_environment', lambda *a, **kw: {})
+    sent = []
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        sent.append(options['input'])
+        if provider == 'codex':
+            output = '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n' + \
+                     '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":60,"output_tokens":5}}'
+        else:
+            output = json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                                 'result': 'ok', 'total_cost_usd': .01,
+                                 'usage': {'input_tokens': 10, 'cache_read_input_tokens': 60,
+                                           'cache_creation_input_tokens': 30, 'output_tokens': 5}})
+        return subprocess.CompletedProcess(command, 0, output, '')
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    report = models.run(role, '한국어 요청', local_keys, workspace=codex_login['workspace'],
+                        scoped=True, compaction=False)
+    assert report['status'] == 'passed' and report['response'] == 'ok'
+    assert report['usage']['total_tokens'] == 105 and report['usage']['status'] == 'available'
+    assert report['prompt_size'] == {'characters': len(sent[0]), 'utf8_bytes': len(sent[0].encode('utf-8'))}
+    assert report['prompt_size']['characters'] > len('한국어 요청')
+    assert report.get('cli_estimated_cost_usd') == (.01 if provider == 'claude' else None)
+    def broken(*a, **kw):
+        raise ValueError('PRIVATE-OBSERVER-FAILURE')
+    monkeypatch.setattr(agent_usage, 'observe', broken)
+    unchanged = models.run(role, '한국어 요청', local_keys, workspace=codex_login['workspace'],
+                           scoped=True, compaction=False)
+    assert unchanged['status'] == 'passed' and unchanged['usage']['status'] == 'unavailable'
+    assert unchanged['response'] == report['response']
+    assert unchanged.get('cli_estimated_cost_usd') == report.get('cli_estimated_cost_usd')
+    assert 'PRIVATE-OBSERVER-FAILURE' not in json.dumps(unchanged)
+
+
+def test_legacy_response_text_signature_and_tuple_remain_compatible():
+    assert models.response_text('claude', '{"result":"legacy","total_cost_usd":0.1}') == ('legacy', .1)
+    assert models.response_text('zai', '{"result":"legacy","total_cost_usd":0.1}') == ('legacy', None)
+    assert models.response_text('codex', '{"type":"item.completed","item":{"type":"agent_message","text":"legacy"}}\n'
+                                '{"type":"turn.completed"}') == ('legacy', None)

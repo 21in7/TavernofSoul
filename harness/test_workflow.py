@@ -656,7 +656,8 @@ def test_sync_scope_propagates_reversions_and_deletions_without_copying_extra_fi
     ('{"tasks":[{"role":"parser","task":"Fix "PRIVATE-UNESCAPED-CODE" slices.",'
      '"files":["parser_tidy/example.py"]}]}', 'json_syntax'),
 ])
-def test_plan_parse_failure_repairs_only_coordinator_with_trusted_guidance(project, invalid, category):
+@pytest.mark.parametrize('mixed', [False, True])
+def test_plan_parse_failure_repairs_only_coordinator_with_trusted_guidance(project, invalid, category, mixed):
     calls, prompts = [], []
     normal = runner_for(calls)
     def repair(role, task, keys, **options):
@@ -665,9 +666,11 @@ def test_plan_parse_failure_repairs_only_coordinator_with_trusted_guidance(proje
         if task.startswith('Plan this development task') and len(calls) == 1:
             result['response'] = invalid
         return result
-    report = run_fixture(runner=repair)
+    scope = ['downloader/example.py', 'parser_tidy/example.py'] if mixed else ['parser_tidy/example.py']
+    report = run_fixture(scope, runner=repair)
     assert report['status'] == 'passed', report.get('error')
-    assert [role for role, _, _ in calls] == ['coordinator', 'coordinator', 'parser', 'reviewer']
+    assert [role for role, _, _ in calls] == \
+        ['coordinator', 'coordinator'] + (['downloader'] if mixed else []) + ['parser', 'reviewer']
     assert report['plan_recovered'] is True
     assert report['plan_attempts'][0]['diagnostic']['category'] == category
     if category == 'json_syntax':
@@ -678,7 +681,8 @@ def test_plan_parse_failure_repairs_only_coordinator_with_trusted_guidance(proje
             'column': caught.value.colno, 'position': caught.value.pos}
     second = prompts[1][1]
     assert second.startswith('Plan this development task')
-    assert 'Owners: {"parser_tidy/example.py": "parser"}\nTask:' in second
+    owners = {name: workflow.owner(name) for name in scope}
+    assert 'Owners: ' + json.dumps(owners, ensure_ascii=False, separators=(',', ':')) + '\nTask:' in second
     assert 'fresh short complete valid JSON object' in second
     assert 'Correctly escape task strings' in second
     assert '\n' + invalid not in second
@@ -720,7 +724,8 @@ def test_plan_attempt_policy_bounds_are_strict_and_independent(project, monkeypa
 
 
 @pytest.mark.parametrize('kind', ['owner', 'scope', 'planner_write', 'cli_failure'])
-def test_unsafe_planner_failures_are_fatal_without_repair(project, kind):
+@pytest.mark.parametrize('mixed', [False, True])
+def test_unsafe_planner_failures_are_fatal_without_repair(project, kind, mixed):
     calls = []
     normal = runner_for(calls)
     def unsafe(role, task, keys, **options):
@@ -733,7 +738,8 @@ def test_unsafe_planner_failures_are_fatal_without_repair(project, kind):
         else:
             result['status'] = 'failed'
         return result
-    report = run_fixture(runner=unsafe)
+    scope = ['downloader/example.py', 'parser_tidy/example.py'] if mixed else ['parser_tidy/example.py']
+    report = run_fixture(scope, runner=unsafe)
     assert report['status'] == 'failed' and report['applied'] == []
     assert len(calls) == 1 and calls[0][0] == 'coordinator'
     assert (project / 'parser_tidy/example.py').read_text() == 'existing parser edit\n'
@@ -810,6 +816,8 @@ def test_reviewer_findings_only_repair_the_task_owning_each_finding(project):
     def review_once(role, task, keys, **options):
         prompts.append((role, task))
         result = normal(role, task, keys, **options)
+        if options['write']:
+            result['response'] = 'Implementation result ' + str(len(calls))
         if role == 'reviewer':
             reviews.append(task)
             if len(reviews) == 1:
@@ -826,6 +834,15 @@ def test_reviewer_findings_only_repair_the_task_owning_each_finding(project):
     assert 'Allowed edit files (exact paths): ["parser_tidy/other.py"]' in repairs[0]
     assert 'NOT-FOR-REPAIR-SUMMARY' not in repairs[0]
     assert len(reviews) == 2
+
+    latest = {}
+    for agent in report['agents']:
+        if agent['phase'] == 'implement':
+            latest[agent['task_id']] = agent['response']
+    selected = json.loads(reviews[-1].split('Implementation results: ')[1].splitlines()[0])
+    assert len(selected) == 3 and {item['task_id']: item['response'] for item in selected} == latest
+    assert len([agent for agent in report['agents'] if agent['phase'] == 'implement']) == 4
+    assert report['repairs'] and report['events']
 
 
 def test_repeated_same_failure_records_no_source_progress_and_preserves_user_edit(project):
@@ -1723,3 +1740,46 @@ def test_terminal_archive_runs_after_project_lock_release_and_keeps_passed(proje
     assert len(observed) == 1
     assert report['status'] == 'passed' and report['archive']['status'] == 'pending'
     assert report['applied'] == ['parser_tidy/example.py']
+
+
+@pytest.mark.parametrize('github', [False, True])
+def test_coordinator_single_owner_direct_keeps_all_files_one_task_and_fresh_review(project, monkeypatch, github):
+    if github:
+        enable_github(project, monkeypatch)
+    scope = ['harness/example.py', 'harness/other.py']
+    for name in scope:
+        (project / name).write_text('existing user edit\n')
+    decision = {'status': 'passed', 'source': 'fixture', 'recommendation':
+                {'role': 'coordinator', 'required_checks': ['check']}}
+    monkeypatch.setattr(triage, 'observe', lambda *a, **kw: decision)
+    calls, prompts = [], []
+    normal = runner_for(calls)
+    def direct(role, task, keys, **options):
+        assert not task.startswith('Plan this development task')
+        prompts.append(task)
+        return normal(role, task, keys, **options)
+    report = run_fixture(scope, runner=direct)
+    assert report['status'] == ('awaiting_github' if github else 'passed'), report.get('error')
+    assert [role for role, _, _ in calls] == ['coordinator', 'reviewer'] + (['git'] if github else [])
+    assert [write for _, write, _ in calls] == [True, False] + ([False] if github else [])
+    assert report['tasks'] == [{'role': 'coordinator', 'task': 'Make the assigned improvement.', 'files': scope}]
+    assert report['plan_attempts'] == [] and report['required_checks'] == ['check']
+    assert report['triage'] == decision and report['review']['documentation']['status'] == 'not_required'
+    assert report['applied'] == scope and prompts[0].count('Make the assigned improvement.') == 1
+    assert 'Assigned task:\n' not in prompts[0]
+    assert 'Approved readable files: the exact allowed edit files listed above.' in prompts[0]
+    assert workflow.DOCUMENTATION_GUIDANCE in prompts[1]
+
+
+def test_coordinator_ownership_with_other_recommendation_still_calls_planner(project, monkeypatch):
+    name = 'harness/example.py'
+    (project / name).write_text('user edit\n')
+    decision = {'status': 'passed', 'source': 'fixture', 'recommendation':
+                {'role': 'parser', 'required_checks': ['check-parser']}}
+    monkeypatch.setattr(triage, 'observe', lambda *a, **kw: decision)
+    calls = []
+    report = run_fixture([name], runner=runner_for(calls))
+    assert report['status'] == 'passed', report.get('error')
+    assert [role for role, _, _ in calls] == ['coordinator', 'coordinator', 'reviewer']
+    assert report['plan_attempts'][0]['status'] == 'accepted'
+    assert report['tasks'][0]['files'] == [name] and report['required_checks'] == ['check']

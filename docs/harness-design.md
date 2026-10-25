@@ -343,8 +343,11 @@ flowchart TD
 
 메인은 요청과 외부 모델이 읽을 소스·테스트·문서·예정 신규 파일의 개별 경로를 준비한다.
 실행기는 준비 검사 doctor를 먼저 수행하고 Jev를 관측한다. 경로 규칙이 최소 필수 검사를 결정하며
-Jev는 이를 낮추지 못한다. Jev 영역과 경로가 일치하는 명확한 작업은 직접 담당자에 배정한다.
-여러 영역·불확실성·계약 영향·키 누락·응답/전송 실패는 coordinator 계획으로 간다. 검토 후 실제 변경으로
+Jev는 이를 낮추지 못한다. Jev recommendation과 모든 승인 경로의 owner가 같은 단일 역할이면 coordinator도 직접 배정한다.
+추천 불일치 또는 mixed ownership은 coordinator 계획으로 간다. [ADR0033](adr/0033-workflow-token-efficiency.md)의
+prompt builder는 원요청·scope·feedback·full diff를 보존하고 검토에 task별 최신 결과를 제공한다.
+원본 실패 이력과 fresh full review는 유지하며 agent_usage는 private 숫자 관측만 담당한다.
+usage와 prompt 크기는 청구/구독·admission 판단을 대신하지 않는다. 검토 후 실제 변경으로
 검사를 다시 정하며 계약 영향·실제 공통 변경은 full이다. fallback만으로 full을 추가하지 않는다.
 triage 단독 명령은 shadow 기록이며 `execution_allowed=false`다. 실제 실행 주체는 workflow다.
 

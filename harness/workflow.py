@@ -13,7 +13,7 @@ import sys
 import time
 
 from harness import agent_models, archive, check_selection, docs_check, failure_feedback, git_publish, storage, triage, workspace
-from harness import project_lock
+from harness import project_lock, workflow_prompts
 
 ROOT = agent_models.ROOT
 CONFIG = ROOT / 'harness/workflow-config.json'
@@ -23,19 +23,7 @@ PHASES = {'prepare': '준비', 'triage': 'Jev 판단', 'plan': '작업 배정',
           'implement': '담당 에이전트 실행', 'review': 'Claude 검토',
           'validate': '하네스 검증', 'apply': '결과 반영', 'github': 'GitHub 게시·병합·정리'}
 CHECKS = ('check', 'check-downloader', 'check-parser', 'check-django', 'check-pipeline', 'check-docs')
-DOCUMENTATION_GUIDANCE = (
-    'Assess documentation impact at task start and in every review. Changes to structure, '
-    'responsibilities, data contracts, isolation, validation, failure recovery or GitHub publication '
-    'policy require updates to the relevant design/boundary documents; major decisions require a new '
-    'or replacement ADR. Use docs/harness-design.md, docs/adr/README.md and docs/workflow.md only '
-    'when explicitly approved for reading. A typo or local behavior-preserving change may need no '
-    'documentation update, but the review must record a concrete reason. Never automatically copy, '
-    'read or create documents outside the approved scope. If a required document is out of scope, '
-    'report its exact missing path; the reviewer must request changes with a finding attributed to '
-    'an existing approved file. The main coordinator must confirm scope and prepare a new run; '
-    'repair rounds do not expand approval. Documentation completeness is a semantic reviewer '
-    'judgment, not something proven by a Markdown extension check.'
-)
+DOCUMENTATION_GUIDANCE = workflow_prompts.DOCUMENTATION_GUIDANCE
 
 
 def load_policy():
@@ -321,7 +309,7 @@ def model_step(progress, candidate, phase, role, task, keys, policy, runner,
                scope=(), write=False, task_id=None):
     before = workspace.manifest(candidate, policy)
     progress.event(phase, 'running', role, agent_started=not progress.report['simulated'], task_id=task_id)
-    task += '\nApproved readable files (exact paths): ' + json.dumps(progress.report['scope'])
+    task += workflow_prompts.readable_scope(progress.report['scope'], scope if phase == 'implement' else None)
     result = triage.scrub(runner(role, agent_models.redact(task, keys), keys, write=write,
                                 timeout=policy['agent_timeout_seconds'], workspace=candidate,
                                 scoped=True), keys)
@@ -347,15 +335,7 @@ def repair_feedback(progress, tasks, items, round_number, attempts, previous, ke
                    'implementation_attempt_round': attempts[index]['round'],
                    'failure_fingerprint': identity, 'same_failure_recurred': recurring,
                    'preceding_attempt_source_changed': changed, 'diagnostics': own}
-        text = ('Required correction; do not run checks yourself. Diagnostics contain only approved '
-                'source context or scoped reviewer findings. Unavailable/unattributed context has no '
-                'known cause; conservatively inspect only your assigned files or report missing context. '
-                'All originally required checks will run after a fresh review.\n' +
-                json.dumps(payload, ensure_ascii=False))
-        if recurring:
-            text += '\nThe same failure recurred.'
-        if not changed:
-            text += '\nThe preceding implementation attempt made no assigned source change.'
+        text = workflow_prompts.correction(payload, recurring, changed)
         text = agent_models.redact(text, keys)
         evidence.append({**payload, 'role': tasks[index]['role'], 'feedback': text,
                          'sent': False})
@@ -507,14 +487,8 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                 ready = agent_models.connection_status(provider, keys)
                 if ready['status'] != 'ready':
                     raise ValueError('Role is not configured: ' + role)
-        if recommendation['role'] == 'coordinator' or any(owner(name) != recommendation['role'] for name in scope):
-            prompt = ('Plan this development task without editing files or running checks. '
-                      'Return ONLY JSON: {{"tasks":[{{"role":"parser","task":"...","files":["..."]}}]}}. '
-                      'Use each declared file exactly once; never invent additional files. '
-                      'Role must equal the supplied owner. Tasks execute sequentially in listed order. '
-                      'Do not call agent-run or harness.workflow.\nOwners: {}\nTask: {}').format(
-                          json.dumps({name: owner(name) for name in scope}, ensure_ascii=False), task)
-            prompt += '\n' + DOCUMENTATION_GUIDANCE
+        if any(owner(name) != recommendation['role'] for name in scope):
+            prompt = workflow_prompts.plan(task, {name: owner(name) for name in scope})
             original_prompt = prompt
             for plan_attempt in range(1, policy['max_plan_attempts'] + 1):
                 attempt = {'attempt': plan_attempt, 'status': 'running'}
@@ -543,12 +517,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                     progress.event('plan', 'invalid', 'coordinator', **attempt)
                     if plan_attempt == policy['max_plan_attempts']:
                         raise ValueError('Plan attempts exhausted; no implementation or application allowed.') from None
-                    prompt = (original_prompt + '\nTrusted plan diagnostic: ' + json.dumps(diagnostic) +
-                              '\nReturn a fresh short complete valid JSON object with exactly tasks. '
-                              'Each task has exactly role (supplied owner), task (nonempty string), '
-                              'files (nonempty approved path list). Cover each supplied file once. '
-                              'Correctly escape task strings; avoid embedded unescaped quotes or code. '
-                              'No extra text. Keep the exact original owners and file scope.')
+                    prompt = workflow_prompts.repair_plan(original_prompt, diagnostic)
                 else:
                     attempt.update(status='accepted', recovered=plan_attempt > 1)
                     report['plan_recovered'] = plan_attempt > 1
@@ -566,15 +535,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             for index, feedback in pending.items():
                 assigned = tasks[index]
                 before_attempt = workspace.manifest(model_context, policy)
-                prompt = ('Original request:\n{}\nAssigned task:\n{}\n'
-                          'Allowed edit files (exact paths): {}\n'
-                          'Preserve existing user edits. {} '
-                          'Do not run checks, agent-run, harness.workflow, cron or operating data pipelines. '
-                          'The orchestrator runs checks. Report your result and remaining concerns.\n{}').format(
-                              task, assigned['task'], json.dumps(assigned['files'], ensure_ascii=False),
-                              'Do not edit any files; this is analysis only.' if read_only else
-                              'Implement the assigned change only in the allowed files.', feedback)
-                prompt += '\n' + DOCUMENTATION_GUIDANCE
+                prompt = workflow_prompts.implement(task, assigned, read_only, feedback)
                 if feedback:
                     assignment = next(item for item in report['repairs'][-1]['assignments']
                                       if item['task_id'] == index)
@@ -601,24 +562,8 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             diff_path.write_text(agent_models.redact(diff, keys), encoding='utf-8')
             diff_path.chmod(0o600)
             report['changed_files'] = changes
-            summaries = [agent['response'] for agent in report['agents'] if agent['phase'] == 'implement']
-            prompt = ('Review the task outcome and candidate source against the original request. '
-                      'Return ONLY JSON with exactly verdict, summary, findings, documentation. '
-                      'verdict is approved or changes_requested. approved requires findings=[]. '
-                      'Otherwise each finding has file (one of the scoped files), severity '
-                      '(high/medium/low) and message. Inspect source as needed; do not edit files. '
-                      'documentation has exactly status, files, reason. status is updated, not_required '
-                      'or missing; reason is a nonempty string explaining the concrete impact judgment. '
-                      'files is a unique list of approved .md paths. updated requires at least one '
-                      'actual changed .md file and may reference only changed documents. not_required '
-                      'requires files=[] and a specific reason. missing requires changes_requested '
-                      'and nonempty findings attributed to approved files, even when the needed '
-                      'document itself is outside scope (name the missing path in reason/message). '
-                      'No changes is acceptable for an analysis request or an already satisfied request, '
-                      'but reject an unimplemented requested fix.\nRead only: {}\nScope: {}\n'
-                      'Request: {}\nImplementation results: {}\nDiff:\n{}').format(
-                          read_only, json.dumps(scope), task, json.dumps(summaries, ensure_ascii=False), diff)
-            prompt += '\nActual changed files: ' + json.dumps(changes) + '\n' + DOCUMENTATION_GUIDANCE
+            prompt = workflow_prompts.review(
+                task, read_only, workflow_prompts.latest_implementations(report['agents'], range(len(tasks))), diff, changes)
             response = model_step(progress, model_context, 'review', 'reviewer', prompt, keys, policy, runner)
             review = parse_review(response, scope, changes)
             report['review'] = review
@@ -690,15 +635,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             if github_enabled and changes:
                 # The model writes bounded descriptions only. The parent connector
                 # performs all GitHub mutations; credentials never reach a worker.
-                prompt = ('Write a commit message and PR description for this reviewed, validated change. '
-                          'Return ONLY JSON with exactly commit_message, pr_title, pr_body (all strings). '
-                          'Describe the problem, final behavior and actual validation. Do not edit files, '
-                          'execute Git, call tools that publish, or request extra source. Do not invent tests. '
-                          'The orchestrator controls repository, branch, scope and merge policy.\n'
-                          'Task: {}\nChanged files: {}\nReview: {}\nLocal check results: {}\nDiff:\n{}').format(
-                              task, json.dumps(changes), json.dumps(review, ensure_ascii=False),
-                              json.dumps([{'command': item['command'], 'status': item['status']}
-                                          for item in report['delivery_validation']]), diff)
+                prompt = workflow_prompts.github(task, changes, review, report['delivery_validation'], diff)
                 response = model_step(progress, model_context, 'github', 'git', prompt, keys, policy, runner)
                 selected.check_ready()
                 with project_lock.hold(selected, reentrant=False):

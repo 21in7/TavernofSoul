@@ -456,6 +456,13 @@ planner·worker·reviewer 모두 이 기준을 받고 Jev 직접 배정도 worke
 메인이 문서 범위를 확인·승인한 뒤 새 실행을 준비한다. 문서를 자동 복사·열람·생성하거나
 수정 라운드에서 범위를 늘리지 않는다.
 
+[ADR0033](adr/0033-workflow-token-efficiency.md): Jev recommendation과 모든 승인 경로의 owner가
+같은 단일 역할이면 coordinator도 전체 승인 파일을 가진 task 하나로 직접 배정한다. mixed ownership이나
+추천 불일치에는 아래 planner gates를 유지한다. 원요청과 완전히 같은 배정만 중복 삽입을 생략하며,
+review에는 알려진 task_id별 최신 구현 결과와 개별 legacy/불명 결과를 제공한다. 원본 시도·실패 기록,
+현재 full diff와 매번 새 documentation 판단은 보존한다. private usage와 prompt 문자/UTF8 크기는
+별도 관측이며 청구·구독 사용량이나 검증 성공을 대신하지 않는다.
+
 계획은 선언된 파일을 정확히 한 번씩 담당 역할에 배정해야 한다. 모델이 새로운 파일을
 추가하거나 소유 영역을 바꾸면 실행을 중단한다. 범위가 부족하면 `/root`가 원인을 확인하고
 필요한 소스·테스트·문서를 포함해 새 실행을 준비한다.
