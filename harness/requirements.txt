@@ -1,6 +1,8 @@
 # Pinned for the project's Python 3.8 stack; isolated harness only.
 Django==4.1.13
 pytest==7.4.4
+pytest-xdist==3.6.1
+execnet==2.1.1
 django-mysql==4.12.0
 PyMySQL==1.1.0
 cryptography==44.0.3

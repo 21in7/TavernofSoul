@@ -3,12 +3,14 @@
 자동 검사 선택은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
 master push·PR·수동 CI와 핵심 회귀·수동 targets를 유지한다. 실제 CI/게시 검증은 parent 책임이다.
 
-잠금/진단 회귀와 과거 수리 이력은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md),
-진행 보존은 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md), 실제 Read/제안 보존은
-[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다. 기존 harness/test_*.py 수집과
-공유 offline guard를 유지한다. fake/Lab만 사용하며 모델·운영 storage·키·네트워크·기본 검사 호출은 막는다.
-Lab을 재사용하는 모듈은 autouse fixture도 명시적으로 가져와야 한다. collection 때 보존한 resolver를
-쓰는 구성 오류 관측·합성 process/flock·실제 source lock·signed claim replay 회귀는 해당 ADR에 둔다.
+로컬 pytest 병렬/직렬 사용법·측정·격리·실패 의미는 [ADR0032](adr/0032-parallel-local-regressions.md)에 둔다.
+
+잠금/진단·과거 수리 회귀는 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md),
+진행 보존은 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md), Read/제안 보존은
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)에 둔다.
+harness/test_*.py 수집·공유 offline guard를 유지한다. fake/Lab만 허용하며 모델·운영 storage·키·
+네트워크·기본 검사 호출을 막는다. Lab 재사용 시 autouse fixture도 명시 import한다.
+보존 resolver의 구성 오류·process/flock·source lock·signed claim replay는 해당 ADR를 따른다.
 
 이번 test_improvement_loop는 실제 adapter→_call_role→tick→scan/slot/history/status/feedback의
 고정 원인과 후보 field/rule, local 뒤 정규 cloud·후속 성공의 이전 실패 보존, identity/context/중단·
@@ -20,8 +22,7 @@ Lab 조회/합성 승인 파일 helper는 반복만 줄이며 기존 assertion·
 전체 diff의 새 Claude 의미 검토·documentation 판단, GIT=1 full make check·scoped apply·기존 Git 역할과
 parent 전용 게시/CI3/merge/cleanup·frozen digest/스케줄 독립 확인을 남긴다. 합성 명세는 실제 hourly 관측이 아니다.
 
-[전체 하네스 설계](harness-design.md)와 [ADR 목록](adr/README.md)은 목표·책임·격리·검토·게시의
-설계 기준을 설명한다. 이 문서는 환경 준비와 상세 명령을 다룬다.
+[전체 설계](harness-design.md)·[ADR](adr/README.md)은 목표·책임·격리·검토·게시, 이 문서는 환경·명령을 다룬다.
 
 2026-10-21 연구 진행 보존 수리는 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)와
 [최신 인계](improvements.md#진행-보존-수리의-문서-영향과-실행기-인계)를 따른다. local 실패 뒤
@@ -37,16 +38,13 @@ current freshness를 snapshot review_complete로 대신하지 않는다. 작성�
 active 저장 선택만 이번 사용자 요청으로 대체한다. daily/hourly·게임 cron·approval 기록과 기존
 모델/역할/인증 설정은 유지한다. 실제 private 기본값 활성화는 코드 검토·검증 후 parent 책임이다.
 
-AI 역할별 모델 연결과 API 키 등록은 [에이전트 모델 연결](agent-models.md)을 참고한다.
-개발 요청의 배정·구현·검토·검증·반영은 [자동 작업 실행](workflow.md)의 `make agent-workflow`로 연결한다.
-`make agent-workflow-status`는 현재 단계와 실제 담당 역할·모델을 표시한다.
-`make agent-doctor`는 로컬 설정만 확인하며, 실모델 요청은 별도 `make agent-smoke`로 실행한다.
-구현 전 Jev 배정 추천은 [Jev 작업 판단](triage.md)을 참고한다.
-`make agent-triage-demo`는 키 없는 고정 응답 검증이며 실제 TypeSafe 연결은 `make triage-smoke`로 구분한다.
-이 판단 경로의 오류 처리·필수 검증 보존·키 격리 테스트도 기본 `make check`에 포함한다.
-Claude Code 역할의 [Jev 대화 기록 압축](compaction.md)은 `make compaction-demo`로 고정 입력을 확인한다.
-오프라인 Node 테스트는 기본 `make check`에 포함하고, 네이티브 훅 엔진·실제 API 확인은
-각각 `make check-compaction-engine`, `make compaction-smoke`로 실행한다.
+모델·키 등록은 [모델 연결](agent-models.md), 배정→구현→검토→검증→반영은
+[자동 작업](workflow.md)의 `make agent-workflow`를 따른다. `make agent-workflow-status`는 단계·실제 역할/모델,
+`make agent-doctor`는 로컬 설정을 표시하며 실모델 요청은 `make agent-smoke`다.
+[Jev 배정](triage.md)의 `make agent-triage-demo`는 키 없는 고정 응답, `make triage-smoke`는 실제 TypeSafe다.
+오류 처리·필수 검증·키 격리와 오프라인 Node 테스트는 기본 `make check`에 포함한다.
+Claude Code의 [Jev 압축](compaction.md)은 `make compaction-demo`로 고정 입력,
+`make check-compaction-engine`으로 네이티브 훅 엔진, `make compaction-smoke`로 실제 API를 확인한다.
 
 아래 명령은 일반 개발 환경의 사용법이다. 현재 문서·소스 준비 단계에서는 실행기가 전체
 `make check`를 수행하며, 범위가 제한된 작업자는 검증이나 운영 명령을 실행하지 않는다.

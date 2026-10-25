@@ -303,6 +303,9 @@ def test_configured_pytest_basetemp_is_disposable_and_private(
     from harness import runner
     policy, _, _ = configured_runner_storage
     seen = []
+    test_directory = runner.ROOT / 'harness'
+    test_directory.mkdir()
+    (test_directory / 'test_synthetic.py').write_text('def test_placeholder(): pass\n')
 
     def pytest_main(args, plugins):
         basetemp = Path(args[args.index('--basetemp') + 1])
@@ -313,6 +316,9 @@ def test_configured_pytest_basetemp_is_disposable_and_private(
         (basetemp / 'scratch').write_text('disposable')
         seen.append(basetemp.parent)
         assert '-p' in args and 'no:cacheprovider' in args
+        assert args[args.index('-n') + 1] == '2'
+        assert '--dist=load' in args and '--max-worker-restart=0' in args
+        assert 'xdist.plugin' in args and 'harness.pytest_support' in args
         assert any(arg.startswith('--deselect=') for arg in args)
         if crash:
             raise RuntimeError('fake pytest crash')
@@ -324,7 +330,9 @@ def test_configured_pytest_basetemp_is_disposable_and_private(
         with pytest.raises(RuntimeError, match='fake pytest crash'):
             runner.run_pytest('parser')
     else:
-        assert runner.run_pytest('parser')['status'] == 'passed'
+        # Storage lifecycle stubs do not supply actual collection/phase evidence.
+        # Counter-only fake success must now fail the gate.
+        assert runner.run_pytest('parser')['status'] == 'failed'
     assert len(seen) == 1 and not seen[0].exists()
     assert policy.temp_root.is_dir()
 
@@ -334,11 +342,12 @@ def test_local_pytest_preserves_default_basetemp(monkeypatch):
 
     def pytest_main(args, plugins):
         assert '--basetemp' not in args
+        assert '-n' not in args and 'xdist.plugin' not in args
         plugins[0].report.update(selected=1, passed=1)
         return 0
 
     monkeypatch.setattr(pytest, 'main', pytest_main)
-    assert runner.run_pytest('downloader')['status'] == 'passed'
+    assert runner.run_pytest('downloader')['status'] == 'failed'
 
 
 @pytest.mark.parametrize('operation', ['child', 'pytest', 'write'])
@@ -434,3 +443,42 @@ def test_runner_resolves_only_current_project_root(tmp_path, monkeypatch, isolat
     assert runner.main() == 0
     assert seen and set(seen) == {isolated_runner_storage}
     assert (isolated_runner_storage / 'logs/harness/doctor.json').is_file()
+
+
+def test_stdlib_only_docs_and_environment_diagnostics_do_not_import_pytest(tmp_path):
+    changes = tmp_path / 'changes.json'
+    changes.write_text(json.dumps({'changes': []}))
+    script = '''
+import importlib.abc, json, subprocess, sys
+from pathlib import Path
+class NoTestDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in ('pytest', 'xdist', 'execnet'):
+            raise ModuleNotFoundError('synthetic stdlib-only environment')
+sys.meta_path.insert(0, NoTestDependencies())
+from harness import runner
+assert 'harness.pytest_support' not in sys.modules
+root = Path(sys.argv[1])
+source_root = Path(sys.argv[2])
+runner.ROOT = root
+sys.argv = ['harness', 'check-docs', '--changes-file', str(root / 'changes.json'),
+            '--report-dir', str(root / 'reports')]
+assert runner.main() in (0, 1)
+assert (root / 'reports/check-docs.json').is_file()
+# Keep the environment diagnosis local; do not launch Node or read real storage.
+runner.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout='v18.0.0')
+runner.ROOT = source_root
+report = runner.doctor()
+assert report['status'] == 'failed'
+assert any(c['name'] == 'pytest' and not c['ok'] for c in report['checks'])
+assert 'harness.pytest_support' not in sys.modules
+assert 'pytest' not in sys.modules
+'''
+    env = dict(os.environ)
+    env['PYTHONPATH'] = str(ROOT)
+    env.pop('HARNESS_STORAGE_CONFIG', None)
+    env.pop('HARNESS_REPORT_DIR', None)
+    result = subprocess.run([sys.executable, '-S', '-c', script, str(tmp_path), str(ROOT)],
+                            cwd=str(tmp_path), env=env, capture_output=True, text=True,
+                            timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -1,4 +1,5 @@
 PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(if $(wildcard TavernofSoul/itos/3.8/bin/python),TavernofSoul/itos/3.8/bin/python,python3))
+PYTEST_WORKERS ?= 2
 
 .PHONY: help doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql check-mysql-container doctor-browser check-browser check-browser-container
 .PHONY: prepare-ipf-unpacker
@@ -24,7 +25,7 @@ help:
 	@echo "storage-doctor  Check mounts/free space [PROBE=1: probe existing private directories]"
 	@echo "prepare-ipf-unpacker Force a native release build directly to IPFUnpacker/ipf_unpack"
 	@echo "check-downloader Run local patch, failure, and retry checks"
-	@echo "check-parser    Run parser regressions without game data"
+	@echo "check-parser    Run parser regressions without game data [PYTEST_WORKERS=1: serial, default 2]"
 	@echo "check-django    Run importer regressions and item search tests"
 	@echo "check-pipeline  Parse/export a fixture, import it, and query real views"
 	@echo "check           Run all required checks (fails on skipped tests)"
@@ -87,7 +88,7 @@ archive-run:
 	$(PYTHON) -m harness.archive --run-id $(call improve_quote,$(RUN_ID)) --kind $(call improve_quote,$(if $(KIND),$(KIND),workflows))
 
 doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql doctor-browser check-browser check-live check-site:
-	$(PYTHON) -m harness $@
+	$(PYTHON) -m harness $@ --pytest-workers $(call improve_quote,$(PYTEST_WORKERS))
 
 check-mysql-container:
 	bash harness/mysql.sh "$(PYTHON)"
