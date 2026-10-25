@@ -151,13 +151,13 @@ def test_direct_jev_route_skips_planner_and_preserves_required_checks(project, m
     assert report['review']['documentation']['status'] == 'not_required'
 
 
-def test_jev_failure_uses_codex_planning_and_full_check(project):
+def test_jev_failure_uses_codex_planning_and_actual_parser_check(project):
     calls = []
     report = workflow.execute('Improve parsing.', ['parser_tidy/example.py'], keys={},
                               runner=runner_for(calls), checker=successful_check)
     assert report['triage']['fallback_reason'] == 'missing_typesafe_key'
     assert calls[0][0] == 'coordinator' and calls[1][0] == 'parser'
-    assert report['required_checks'] == ['check'] and report['status'] == 'passed'
+    assert report['required_checks'] == ['check-parser'] and report['status'] == 'passed'
 
 
 def enable_github(project, monkeypatch):
@@ -193,13 +193,13 @@ def test_parent_read_only_is_isolated_before_synthetic_github_preparation(reques
     name = 'parser_tidy/example.py'
     def checker(candidate, command, report_dir, keys, policy):
         checks.append(command)
-        if command == 'check':
+        if command == 'check-parser':
             assert (candidate / name).read_text() == 'validated edit\n'
             assert (project / name).read_text() == 'existing parser edit\n'
         return successful_check(candidate, command, report_dir, keys, policy)
     report = run_fixture(runner=runner_for(calls), checker=checker)
     assert report['status'] == 'awaiting_github', report.get('error')
-    assert checks == ['doctor', 'check']
+    assert checks == ['doctor', 'check-parser']
     assert [role for role, _, _ in calls] == ['coordinator', 'parser', 'reviewer', 'git']
     assert calls[-1][1] is False
     assert report['review']['verdict'] == 'approved'
@@ -1066,7 +1066,7 @@ def test_changed_document_passes_review_validation_apply_and_is_retained_in_repo
     report = run_fixture(['parser_tidy/example.py', name],
                          runner=runner_for(calls, documentation=judgment), checker=checker)
     assert report['status'] == 'awaiting_github', report.get('error')
-    assert checks == ['doctor', 'check'] and set(report['applied']) == {name, 'parser_tidy/example.py'}
+    assert checks == ['doctor', 'check-parser'] and set(report['applied']) == {name, 'parser_tidy/example.py'}
     assert (project / name).read_text() == 'validated edit\n'
     assert json.loads(Path(report['report']).read_text())['review']['documentation'] == judgment
     assert calls[-1][0] == 'git' and calls[-1][1] is False
@@ -1126,7 +1126,7 @@ def test_documentation_finding_repairs_only_its_task_then_requires_fresh_review(
         return successful_check(*args)
     report = run_fixture(scope, runner=repair, checker=checker)
     assert report['status'] == 'passed', report.get('error')
-    assert report['round'] == 2 and len(reviews) == 2 and checks == ['doctor', 'check']
+    assert report['round'] == 2 and len(reviews) == 2 and checks == ['doctor', 'check-parser']
     assert doc_attempts == [['docs/design.md']] * 2
     assert (project / 'docs/design.md').read_text() == complete
     repair_record = report['repairs'][0]
@@ -1373,9 +1373,12 @@ def test_configured_workflow_places_all_new_artifacts_and_context_privately(
     for name in ('baseline.json', 'model-context.json', 'report.json', 'events.jsonl',
                  'github.json', 'github-approved.json'):
         assert (directory / name).stat().st_mode & 0o777 == 0o600
-    for name in ('workspace', 'backup', 'prepare', 'checks-1/check'):
-        assert (directory / name).stat().st_mode & 0o777 == 0o700
-    assert seen == [directory / 'prepare', directory / 'checks-1/check']
+    targets = report['required_checks']
+    assert targets and targets == report['validation_selection']['local_checks']
+    check_dirs = [directory / 'checks-1' / target for target in targets]
+    for path in [directory / name for name in ('workspace', 'backup', 'prepare')] + check_dirs:
+        assert path.stat().st_mode & 0o777 == 0o700
+    assert seen == [directory / 'prepare'] + check_dirs
     assert selected.project_lock_path == project / 'logs/harness/workflows/.lock'
     assert not list(workflow.REPORTS.glob('*/report.json'))
 
@@ -1698,47 +1701,6 @@ def test_actual_docs_only_with_code_read_scope_skips_dependency_doctor(project, 
     assert report['delivery_validation'][0]['validation_digest'] == report['validation_selection']['digest']
     assert report['delivery_validation'][0]['checks']['docs']['selected'] > 0
     assert 'environment' not in report
-
-
-def test_repair_reclassifies_actual_changes_and_keeps_fresh_final_evidence(project, docs_creation_umask):
-    name = 'docs/guide.md'
-    (project / 'docs').mkdir()
-    (project / name).write_text('# Before\n')
-    expected_mode = 0o666 & ~docs_creation_umask
-    assert stat.S_IMODE((project / name).stat().st_mode) == expected_mode
-    judgment = {'status': 'updated', 'files': [name], 'reason': 'Prose updated alongside the repair.'}
-    normal = runner_for([], documentation=judgment)
-    rounds = []
-    def edit(role, task, keys, **options):
-        code = options['workspace'] / 'parser_tidy/example.py'
-        previous = code.read_bytes()
-        value = normal(role, task, keys, **options)
-        if options['write'] and role == 'parser' and len(rounds) == 0:
-            code.write_bytes(previous)
-        return value
-    def check(candidate, command, report_dir, keys, policy):
-        rounds.append(command)
-        value = successful_check(candidate, command, report_dir, keys, policy)
-        if command == 'check-docs':
-            value.update(status='failed', exit_code=1, checks={'docs': {
-                'status': 'failed', 'selected': 1, 'passed': 0, 'skipped': [],
-                'errors': [{'exception_type': 'ValueError'}]}})
-        return value
-    report = run_fixture([name, 'parser_tidy/example.py'], runner=edit, checker=check)
-    # Unknown context conservatively repairs both tasks. The second actual diff
-    # includes code, so its new review is followed by the original full gate.
-    assert report['status'] == 'passed', report.get('error')
-    assert rounds == ['check-docs', 'doctor', 'check']
-    assert report['repairs'][0]['target_files'] == [name, 'parser_tidy/example.py']
-    assert report['required_checks'] == ['check']
-    assert [row['command'] for row in report['delivery_validation']] == ['check']
-    assert report['validation_selection']['mode'] == 'full'
-    assert [row['command'] for row in report['validation']] == ['check-docs', 'check']
-    first, final = report['validation']
-    assert first['validation_digest'] != report['validation_selection']['digest']
-    assert final['validation_digest'] == report['validation_selection']['digest']
-    assert report['delivery_validation'] == [final]
-    assert stat.S_IMODE((project / name).stat().st_mode) == expected_mode
 
 
 def test_terminal_archive_runs_after_project_lock_release_and_keeps_passed(project, configured_storage, monkeypatch):

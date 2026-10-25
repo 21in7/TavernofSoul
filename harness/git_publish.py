@@ -20,7 +20,7 @@ import subprocess
 import time
 from urllib.parse import quote
 
-from harness import agent_models, git_cleanup, storage, workspace
+from harness import agent_models, check_selection, git_cleanup, storage, workspace
 
 ROOT = agent_models.ROOT
 REPORTS = ROOT / 'logs/harness/workflows'
@@ -322,25 +322,8 @@ def check_suite_id(row):
 
 
 def docs_skips_proven(skipped, latest, suites):
-    """Require a complete suite per skip and valid current gate success."""
-    success_names = REQUIRED | {SELECTION}
-
-    def successful(rows):
-        return all(rows.get(name, {}).get('status') == 'completed' and
-                   rows[name].get('conclusion') == 'success' and
-                   check_suite_id(rows[name]) is not None for name in success_names)
-
-    cohorts = [suites.get(check_suite_id(row), {}) for row in skipped]
-    # Another suite's newer success cannot hide this execution's real failure.
-    for cohort in cohorts:
-        if any(row.get('status') == 'completed' and row.get('conclusion') != 'success' and
-               not (row['name'] in HEAVY_EXECUTION and row.get('conclusion') == 'skipped')
-               for row in cohort.values()):
-            raise ValueError('CI failed, skipped, neutral or cancelled; PR remains unmerged.')
-    return successful(latest) and all(successful(cohort) and all(
-        cohort.get(name, {}).get('status') == 'completed' and
-        cohort[name].get('conclusion') == 'skipped' for name in HEAVY_EXECUTION)
-        for cohort in cohorts)
+    return check_selection.ci_skips_proven(
+        skipped, latest, suites, REQUIRED, SELECTION, HEAVY_EXECUTION, check_suite_id)
 
 
 def checks_gate(records, cfg, sha):
@@ -369,9 +352,10 @@ def checks_gate(records, cfg, sha):
     # Expected skips can arrive before selection/final gates. Missing or invalid
     # suite evidence must wait, never turn a skip into required-check success.
     skips_proven = not skipped or docs_skips_proven(skipped, latest, suites)
+    execution_complete = check_selection.ci_executions_complete(latest, HEAVY_EXECUTION, SELECTION)
     passed = all(name in latest and latest[name].get('status') == 'completed' and
                  latest[name].get('conclusion') == 'success' for name in cfg['required_checks']) and \
-        all(row.get('status') == 'completed' for row in latest.values()) and skips_proven
+        all(row.get('status') == 'completed' for row in latest.values()) and skips_proven and execution_complete
     return passed, states
 
 

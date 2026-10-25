@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from harness import agent_models, archive, docs_check, failure_feedback, git_publish, storage, triage, workspace
+from harness import agent_models, archive, check_selection, docs_check, failure_feedback, git_publish, storage, triage, workspace
 from harness import project_lock
 
 ROOT = agent_models.ROOT
@@ -172,6 +172,12 @@ def required_checks(scope, recommendation):
     checks.update(recommendation['required_checks'])
     checks.update(agent_models.load_config()['roles'][owner(name)]['check'] for name in scope)
     return ['check'] if 'check' in checks else sorted(checks)
+
+
+def round_checks(changes, recommendation, previous):
+    return check_selection.local_checks(
+        changes, recommendation, previous, owner=owner, path_rules=triage.path_rules,
+        role_check=lambda role: agent_models.load_config()['roles'][role]['check'])
 
 
 def storage_policy():
@@ -628,8 +634,11 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
             selection = docs_check.classify(docs_check.manifest_changes(baseline, candidate_manifest))
             selection['digest'] = docs_check.change_digest(baseline, candidate_manifest)
             report['validation_selection'] = selection
-            round_checks = ['check-docs'] if selection['mode'] == 'docs' else checks
-            report['required_checks'] = round_checks
+            selected_checks = round_checks(selection['changes'], recommendation, checks)
+            if selection['mode'] == 'docs' and selected_checks != ['check-docs']:
+                selection.update(mode='full', reason='shared_contract_change')
+            selection['local_checks'] = selected_checks
+            report['required_checks'] = selected_checks
             round_policy = {**policy, '_docs_changes': selection['changes']}
             if selection['mode'] != 'docs' and not environment_checked:
                 selected.ensure_directory(directory / 'prepare')
@@ -639,7 +648,7 @@ def execute(task, files, read_only=False, rules_only=False, simulated=False,
                     raise ValueError('Harness environment is not ready.')
                 environment_checked = True
             failures, round_validation = [], []
-            for command in round_checks:
+            for command in selected_checks:
                 progress.event('validate', 'running', detail=command, round=round_number)
                 selected.check_ready()
                 check_dir = selected.ensure_directory(directory / ('checks-' + str(round_number)) / command)

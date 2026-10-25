@@ -2,6 +2,7 @@ name: Development harness
 
 on:
   push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -18,6 +19,10 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       docs_only: ${{ steps.select.outputs.docs_only }}
+      offline: ${{ steps.select.outputs.offline }}
+      mysql: ${{ steps.select.outputs.mysql }}
+      browser: ${{ steps.select.outputs.browser }}
+      live: ${{ steps.select.outputs.live }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -29,7 +34,7 @@ jobs:
           python-version: '3.8'
       - id: select
         name: Classify complete event diff
-        run: python -m harness.docs_check --ci --selection-file validation-selection.json
+        run: python -m harness.check_selection --ci --selection-file validation-selection.json --plan-file execution-plan.json
       - name: Validate affected documentation
         if: steps.select.outputs.docs_only == 'true'
         run: python -m harness.docs_check --changes-file validation-selection.json --report docs-result.json
@@ -40,6 +45,7 @@ jobs:
           name: validation-selection
           path: |
             validation-selection.json
+            execution-plan.json
             docs-result.json
           if-no-files-found: error
           retention-days: 14
@@ -47,7 +53,7 @@ jobs:
   browser:
     name: Chromium browser execution
     needs: selection
-    if: needs.selection.outputs.docs_only != 'true'
+    if: needs.selection.outputs.browser == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
@@ -84,8 +90,10 @@ jobs:
 
   offline:
     name: Offline execution (SQLite)
+    outputs:
+      live_result: ${{ steps.live.outcome }}
     needs: selection
-    if: needs.selection.outputs.docs_only != 'true'
+    if: needs.selection.outputs.offline == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
@@ -105,7 +113,9 @@ jobs:
           package-manager-cache: false
       - name: Run offline gate
         run: make check PYTHON=python
-      - name: Run reviewed real source sample gate
+      - id: live
+        name: Run reviewed real source sample gate
+        if: needs.selection.outputs.live == 'true'
         run: make check-live PYTHON=python
       - name: Upload offline results
         if: always()
@@ -119,7 +129,7 @@ jobs:
   mysql:
     name: MySQL execution
     needs: selection
-    if: needs.selection.outputs.docs_only != 'true'
+    if: needs.selection.outputs.mysql == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     services:
@@ -162,10 +172,6 @@ jobs:
         run: >-
           docker exec -i "$MYSQL_CONTAINER" sh -c
           'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' < harness/mysql-init.sql
-      - name: Check MySQL environment
-        env:
-          HARNESS_MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
-        run: make doctor-mysql PYTHON=python
       - name: Run MySQL gate
         env:
           HARNESS_MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
@@ -202,37 +208,22 @@ jobs:
           - name: Chromium browser harness
             execution: browser
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: validation-selection
           path: evidence
-      - name: Require real documentation or full execution success
+      - name: Require the complete planned execution and documentation evidence
         env:
           SELECTION_RESULT: ${{ needs.selection.result }}
-          DOCS_ONLY: ${{ needs.selection.outputs.docs_only }}
-          EXECUTION_RESULT: ${{ needs[matrix.execution].result }}
-        run: |
-          python3 - <<'PYCODE'
-          import json, os
-          from pathlib import Path
-          if os.environ['SELECTION_RESULT'] != 'success':
-              raise SystemExit('Change selection or documentation validation failed')
-          selection = json.loads(Path('evidence/validation-selection.json').read_text())
-          if os.environ['DOCS_ONLY'] == 'true':
-              report = json.loads(Path('evidence/docs-result.json').read_text())
-              groups = report.get('checks')
-              ok = (selection.get('mode') == 'docs' and bool(selection.get('changes')) and
-                    report.get('selection') == selection and report.get('status') == 'passed' and
-                    isinstance(groups, dict) and bool(groups) and all(
-                        g.get('status') == 'passed' and type(g.get('selected')) is int and
-                        g['selected'] > 0 and type(g.get('passed')) is int and
-                        g['passed'] == g['selected'] and not g.get('skipped') and
-                        not g.get('failures') and not g.get('errors') for g in groups.values()))
-              if not ok:
-                  raise SystemExit('Required documentation evidence is incomplete')
-              print('Required gate passed with selected/passed, zero-skip documentation evidence')
-          elif selection.get('mode') != 'full' or os.environ['EXECUTION_RESULT'] != 'success':
-              raise SystemExit('Required full execution failed or did not run')
-          else:
-              print('Required gate passed with full execution success')
-          PYCODE
+          EXECUTION_RESULTS: >-
+            {"offline":"${{ needs.offline.result }}","mysql":"${{ needs.mysql.result }}","browser":"${{ needs.browser.result }}"}
+          LIVE_RESULT: ${{ needs.offline.result == 'skipped' && 'skipped' || needs.offline.outputs.live_result }}
+        run: >-
+          python3 -m harness.check_selection --verify
+          --selection-file evidence/validation-selection.json
+          --plan-file evidence/execution-plan.json
+          --docs-report evidence/docs-result.json

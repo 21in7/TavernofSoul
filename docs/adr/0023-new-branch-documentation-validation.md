@@ -1,5 +1,7 @@
 # 0023. 최초 branch push의 완전한 비교 근거와 문서 검증
 
+현재 자동 검사 선택과 작업 branch push 실행은 [0031](0031-change-scoped-automatic-validation.md)이 부분 대체한다. 아래는 당시 결정·실패·검증 관측을 보존한 기록이다. docs 검사 계약과 완전한 event diff 수집 구현은 유지한다.
+
 - 상태: 제안(proposed), 사용자 요청 방향 기록; 새 Claude 의미 검토·전체 make check·parent GitHub/CI/merge 검증 대기
 - 기록일: 2026-10-20
 - 부분 대체: [0022](0022-documentation-only-validation.md)의 새 브랜치 zero-before 무조건 full 결정만 대체한다.

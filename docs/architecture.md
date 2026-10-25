@@ -1,5 +1,8 @@
 # 프로젝트 지도와 데이터 경계
 
+현재 자동 검증 경계는 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
+실제 diff 선택·CI 증명 책임을 따르며 핵심 회귀·기존 영역/권한 경계는 유지한다.
+
 잠금·복구는 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
 workflow 소유권과 source capture/apply/cleanup/freshness mutex를 분리하고 격리 모델/검증 중에는
 source 잠금을 놓는다. 전체 baseline 충돌·외부 사용자 편집 보존과 signed claim은 유지한다.
@@ -34,17 +37,16 @@ readback해야 완료다. 알려진 동일 inode의 임시/최종 nlink=2 전이
 성공까지이며 일반 pipeline 전체 성공을 뜻하지 않는다. workspace/credential·raw 모델 응답은 제외한다.
 
 [ADR0022](adr/0022-documentation-only-validation.md)는 실제 최종 baseline→candidate diff에
-문서 검증과 적용·게시를 결합한다. 불명/정책/코드/mode/type 변경은 full이며 repair마다 다시
+문서 검증과 적용·게시를 결합한다. 불명/정책/공통 계약/mode/type 변경은 full이며 repair마다 다시
 분류한다. Python 3.8 stdlib checker가 링크·fragment·삭제/rename 역참조를 검사하고 Claude가
 의미를 검토한다. CI의 세 required gate는 docs 결과 또는 기존 heavy 실행의 실제 성공을 요구한다.
 로컬 POSIX mode 정수는 정규화하지 않아 동일 비실행 권한(0664/0640/0600 등)을 허용하고 실제
 권한 변경을 거부한다. CI raw Git mode는 기존 100644 기준이다. 여러 줄 inline code는 정확한
 backtick run·escape와 block/fence 경계를 구별하며 원문 줄 번호·heading 텍스트·실제 링크 검사를 유지한다.
-[ADR0023](adr/0023-new-branch-documentation-validation.md)은 정확한 zero-before와
-created=true/deleted=false인 비기본 branch 최초 push에 한해 fetched default ref의 commit을
-고정하고 event head와의 유일 merge base→head 전체 diff를 같은 classifier에 전달한다.
-불명 metadata/ref/history·dirty/untracked/head 불일치·빈 diff는 full이다. 선택한 전체 changes는
-docs 보고서와 세 required gate까지 유지한다. 이번 harness/CI 변경도 full make check 대상이다.
+[ADR0031](adr/0031-change-scoped-automatic-validation.md)은 master push·PR·수동 실행만 자동 실행한다.
+ADR0023의 새 branch 전체 비교 구현은 보존하지만 작업 branch push로 CI를 중복 시작하지 않는다.
+불명 event/history·dirty/untracked/head 불일치·빈 diff는 full이다. selection과 별도 실행계획을
+세 required gate까지 전달한다. 이번 selector·CI 변경은 parent full make check 대상이다.
 
 하네스 전체의 목표·책임·격리·검토·게시 설계는 [전체 설계서](harness-design.md),
 주요 선택과 변경 이력은 [ADR 목록](adr/README.md)에 기록한다.

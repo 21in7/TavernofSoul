@@ -1,5 +1,8 @@
 # TavernofSoul 작업 지도
 
+현재 자동 검증은 [ADR0031](docs/adr/0031-change-scoped-automatic-validation.md)이 우선한다.
+실제 diff로 검사하고 master push·PR·수동 CI, 핵심 회귀·수동 targets와 기존 권한 경계를 유지한다.
+
 재개된 Git 성공의 추가 보관은 [ADR0028](docs/adr/0028-resumed-run-result-archives.md)을 따른다.
 trusted parent의 `python -m harness.archive --run-id 원래_run --resume-failed-to-passed`만
 원래 검토·diff·검증과 완료 Git/cleanup 증거를 연결해 별도 고정 세대에 보관한다. 최초 실패는
@@ -210,7 +213,7 @@ GitHub `merged=true`·merge SHA 확인이 게시·머지 완료 기준이다. re
 [ADR0022](docs/adr/0022-documentation-only-validation.md)의 예정 heavy skip 예외는 정확히
 `Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped뿐이다.
 각 skip과 같은 SHA·GitHub Actions·동일한 양의 정수 check_suite.id 안의 최신 selection success,
-세 required success와 세 heavy skip 전체를 요구하며 전체 이름별 최신 selection/required도 success여야 한다.
+세 required success와 세 execution의 계획상 success/skipped 전체를 요구하며 전체 이름별 최신 selection/required도 success여야 한다.
 최신 selection/required의 suite metadata도 유효해야 하며 잘못된 metadata를 옛 성공으로 보완하지 않는다.
 다른 suite의 성공을 합치거나 최신 failure/pending을 우회하지 않는다. 먼저 도착한 skip은 증거가
 완성될 때까지 `waiting_for_ci`로 대기하며 불명 suite도 성공이 아니다. 임의 skip과 실제 실패는 거부하고
@@ -291,8 +294,8 @@ Sites API/UI 구현·배포와 credential 관리는 메인 책임이며 저장�
    Django·importer 변경은 `make check-django`를 실행한다.
 4. 데이터 계약·연결부·하네스·CI·정책 변경은 기존 필수 검증을 유지한다. 실제 변경이 허용 prose
    (`README.md`, `docs/**/*.md`)뿐이면 `check-docs`를 선택할 수 있다. `AGENTS.md`,
-   `docs/workflow.md`, `docs/harness-design.md`, 코드/설정/CI/Makefile, mode/type/symlink 변화,
-   불명/빈 증거·비문서 rename은 full이다. 읽기 scope나 모델 주장은 선택 근거가 아니다.
+   `docs/workflow.md`, `docs/harness-design.md`, 공통 설정/CI/Makefile, mode/type/symlink 변화,
+   불명/빈 증거는 full이다. 영역 코드는 실제 변경의 경로·설정·추천으로 기존 영역 검사를 선택한다. 읽기 scope나 모델 주장은 선택 근거가 아니다.
    repair마다 다시 판단하며 삭제·rename의 양쪽 경로와 남은 역참조를 검사한다.
 5. 결과는 선택된 active artifact root에서 확인한다(설정 없으면 `logs/harness/`). 선택된 검사는
    positive selected/passed와 zero skip/failure/error를 요구하며 빈/옛 보고서는 완료로 처리하지 않는다.
@@ -310,11 +313,9 @@ docs checker는 Python 3.8 표준라이브러리로 링크·heading/fragment·�
 복잡한 Markdown의 지원 한계와 최종 내용의 의미적 완전성은 Claude 검토 책임으로 남긴다.
 공개 Git 관리 소스 [.github/workflows/harness.yml](.github/workflows/harness.yml) 참조는 credential
 접근이 아니며 CI 파일 수정 자체는 full이다. CI complete PR diff는 docs-only일 수 있다.
-[ADR0023](docs/adr/0023-new-branch-documentation-validation.md)에 따라 정확한 zero-before,
-created=true/deleted=false인 비기본 branch 최초 push는 검증된 fetched default tip과 event head의
-유일 merge base부터 전체 raw diff가 prose뿐일 때 docs 검증을 선택한다. metadata/ref/commit·
-범위 증거 불명, shallow/dirty/untracked/head 불일치·빈 diff·unknown/workflow_dispatch는 full이다.
-세 required check는 docs 증거 또는 해당 full 실행 성공을 확인하는 실제 gate로 계속 실행한다.
+[ADR0031](docs/adr/0031-change-scoped-automatic-validation.md)에 따라 작업 branch push는 자동 실행하지 않는다.
+ADR0023의 완전한 새 branch 비교 구현은 직접 호출 호환용으로 보존한다. unknown/workflow_dispatch는
+전체 CI이며 세 required check는 계획과 모든 실제 실행 또는 기존 docs 증거를 확인한다.
 skipped/neutral을 success로 취급하거나 branch protection·권한·lock·CI를 우회하지 않는다.
 
 이번 저장/검증 구현은 harness·CI 변경이므로 docs-only 대상이 아니다. 이전 run

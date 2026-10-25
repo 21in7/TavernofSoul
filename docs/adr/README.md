@@ -26,8 +26,8 @@
 | [0019](0019-private-glm-call-telemetry.md) | parent loopback OTLP collector·bounded numeric private GLM latency contract·public web-v1 제외 | 제안(proposed), 새 의미 검토·전체 검사·parent 합성/정상 hourly 관측 대기 | 2026-10-18 |
 | [0020](0020-automatic-proposal-completion.md) | signed run 완료 증거·별도 completion-v1 private outbox·동일 digest GET 복구와 명시 재전송 | 사용자 요청 계약 승인, 최종 의미 검토/full check/Git 전달·메인의 Sites 구현·배포/HTTP 관측 대기 | 2026-10-19 |
 | [0021](0021-local-work-and-result-archives.md) | 명시 v2 local 작업·검증과 allowlist terminal archive, frozen/current 일치·NFS 파일 link/최종 commit·보관만 재개 | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
-| [0022](0022-documentation-only-validation.md) | 최종 실제 diff·digest에 결합한 prose 검증과 세 required CI의 실제 gate | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
-| [0023](0023-new-branch-documentation-validation.md) | 최초 비기본 branch push의 fetched default와 유일 merge base에 근거한 전체 diff 선택; 0022의 zero-before 결정만 대체 | 제안(proposed), 새 Claude 의미 검토/full check/CI/Git 전달 대기 | 2026-10-20 |
+| [0022](0022-documentation-only-validation.md) | 최종 실제 diff·digest에 결합한 prose 검증과 세 required CI의 실제 gate; 자동 선택 부분은 0031로 대체 | 제안(proposed), 새 의미 검토/full check/CI/Git 전달 대기 | 2026-10-19 |
+| [0023](0023-new-branch-documentation-validation.md) | 최초 비기본 branch push의 fetched default와 유일 merge base에 근거한 전체 diff 선택; 0022의 zero-before 결정만 대체; 작업 branch 자동 push 실행은 0031로 대체 | 제안(proposed), 새 Claude 의미 검토/full check/CI/Git 전달 대기 | 2026-10-20 |
 | [0024](0024-immediate-batched-github-transport.md) | trusted-parent 단일 accept transport·사전 로드 Codex bridge·workflow 즉시 handoff, native 검증과 보수적 receipt 복구 유지 | 제안(proposed), 새 의미 검토/full check/실제 PR 관측 대기 | 2026-10-20 |
 | [0025](0025-progress-preserving-improvement-reviews.md) | 회차와 독립된 bounded 실제 참여 history·선택적 local·sealed source snapshot과 current freshness 분리 | 사용자 직접 요청 구현안, source 확인/단일 회차 선택은 0026으로 대체·검토/검증 대기 | 2026-10-21 |
 | [0026](0026-source-verified-retained-improvement-reports.md) | parent Read 증거·owner 코드 표본과 별도 문서 coverage·ID별 최신 verdict 보존·원본 승인 freshness | 사용자 요청 구현안, 새 Claude 의미 검토/full check/scoped apply/Git·CI 전달 대기 | 2026-10-22 |
@@ -35,6 +35,7 @@
 | [0028](0028-resumed-run-result-archives.md) | 최초 실패 불변·원래 증거 연결·trusted-parent 명시 failed→passed 별도 세대 보관 | 사용자 승인 구현안, 새 의미 검토/full check/apply·전달·실제 복구 대기 | 2026-10-23 |
 | [0029](0029-item-search-progressive-enhancement.md) | 아이템 검색 SSR·조각 응답·history/복구·실제 새 탭 감시 | 제안(proposed), 직접 요청 구현안·새 검토/브라우저→전체 검증/전달 대기 | 2026-10-24 |
 | [0030](0030-item-detail-mobile-layout.md) | 상세 모바일·표 접근성·46조합 | 제안, CI 실패 수리·새 검증 대기 | 2026-10-25 |
+| [0031](0031-change-scoped-automatic-validation.md) | 완전한 실제 diff 기반 자동 검사 계획·master push/PR 중복 제거·같은 suite의 부분 선택 증거 | 사용자 범위 확정 구현안, 새 검토/parent full check/CI·전달 대기 | 2026-10-25 |
 
 ## 상태와 근거의 의미
 
