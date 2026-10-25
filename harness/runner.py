@@ -1,6 +1,5 @@
 """Run checks in fresh processes and publish explicit coverage/results as JSON."""
 import argparse
-from contextlib import nullcontext
 import importlib
 import json
 import os
@@ -24,7 +23,7 @@ EXCLUDED = {
     'parser_tidy/tests/test_package_unresolved.py::TestKtosUnresolvedIntegration':
         'Requires local ktos unpack data.',
 }
-DEPENDENCIES = ('pytest', 'django', 'django_mysql', 'pymysql', 'rest_framework',
+DEPENDENCIES = ('pytest', 'xdist', 'execnet', 'django', 'django_mysql', 'pymysql', 'rest_framework',
                 'mathfilters', 'lupa', 'PIL', 'pandas', 'numpy', 'pytz', 'cryptography')
 
 
@@ -98,69 +97,22 @@ def doctor():
             'python_version': sys.version.split()[0], 'checks': checks}
 
 
-class PytestResults:
-    def __init__(self):
-        self.report = {'runner': 'pytest', 'selected': 0, 'passed': 0,
-                       'failures': [], 'errors': [], 'skipped': [], 'deselected': []}
-
-    def pytest_collection_finish(self, session):
-        self.report['selected'] = len(session.items)
-
-    def pytest_deselected(self, items):
-        self.report['deselected'].extend(item.nodeid for item in items)
-
-    def pytest_collectreport(self, report):
-        if report.failed:
-            self.report['errors'].append({'test': report.nodeid, 'reason': str(report.longrepr)})
-        elif report.skipped:
-            self.report['skipped'].append({'test': report.nodeid, 'reason': str(report.longrepr)})
-
-    def pytest_runtest_logreport(self, report):
-        entry = {'test': report.nodeid, 'reason': str(report.longrepr)}
-        if report.skipped or hasattr(report, 'wasxfail'):
-            self.report['skipped'].append(entry)
-        elif report.failed:
-            self.report['failures' if report.when == 'call' else 'errors'].append(entry)
-        elif report.when == 'call' and report.passed:
-            self.report['passed'] += 1
-
-    def pytest_sessionfinish(self, session, exitstatus):
-        if self.report['skipped'] or not self.report['selected']:
-            session.exitstatus = 1
+def __getattr__(name):
+    # Preserve the public import without requiring pytest for docs/diagnostics.
+    if name == 'PytestResults':
+        from harness.pytest_support import PytestResults
+        return PytestResults
+    raise AttributeError(name)
 
 
-def run_pytest(group):
-    storage = resolve_storage(ROOT)
-    storage.prepare()
-    # Pytest owns/removes basetemp. Only hand it a child of our unique directory.
-    temporary = (storage.temporary_directory(prefix='tavern-harness-pytest-')
-                 if storage.configured else nullcontext(None))
-    with temporary as work_dir:
-        return _run_pytest(group, basetemp=work_dir / 'pytest' if work_dir else None)
+def run_pytest(group, *, workers=2):
+    from harness.pytest_support import run_pytest as run
+    return run(group, workers=workers)
 
 
-def _run_pytest(group, *, basetemp=None):
-    import pytest
-    plugin = PytestResults()
-    test_dir = ROOT / 'parser_tidy' / 'tests'
-    if group == 'downloader':
-        paths = [str(ROOT / 'downloader' / 'tests')]
-    elif group == 'parser':
-        paths = [str(path) for path in sorted(test_dir.glob('test_*.py'))
-                 if path.name not in DJANGO_TESTS + ('test_baseline_json.py',)]
-        paths.extend(str(path) for path in sorted((ROOT / 'harness').glob('test_*.py')))
-    else:
-        paths = [str(test_dir / name) for name in DJANGO_TESTS]
-    args = ['-c', str(ROOT / 'harness' / 'pytest.ini'), '--rootdir', str(ROOT),
-            '-ra', '--tb=short', '-p', 'no:cacheprovider'] + paths
-    if basetemp is not None:
-        args += ['--basetemp', str(basetemp)]
-    if group == 'parser':
-        args += ['--deselect=' + name for name in EXCLUDED if '::' in name]
-        plugin.report['excluded'] = EXCLUDED
-    code = int(pytest.main(args, plugins=[plugin]))
-    plugin.report.update(status='passed' if code == 0 else 'failed', exit_code=code)
-    return plugin.report
+def _run_pytest(group, *, basetemp=None, workers=2):
+    from harness.pytest_support import _run_pytest as run
+    return run(group, basetemp=basetemp, workers=workers)
 
 
 def run_django(group):
@@ -213,56 +165,9 @@ def run_django(group):
     return report
 
 
-def child_check(kind, group, path):
-    storage = resolve_storage(ROOT)
-    path = Path(path).absolute()
-    storage.ensure_directory(path.parent)
-    # Also protect direct callers from a previous success masking a crash.
-    if path.is_symlink():
-        raise StorageError('Unsafe runner result path: symlink.')
-    path.unlink(missing_ok=True)
-    with storage.temporary_directory(prefix='tavern-harness-') as work_dir:
-        env = dict(os.environ)
-        env['HARNESS_WORK_DIR'] = str(work_dir)
-        if storage.configured:
-            child_tmp = storage.ensure_directory(work_dir / 'tmp')
-            # This environment belongs only to the validation child. Authentication
-            # runtimes retain their separate local policy; never change os.environ.
-            env.update(TMPDIR=str(child_tmp), TMP=str(child_tmp), TEMP=str(child_tmp))
-        if group == 'browser':
-            env['HARNESS_BROWSER_REPORT_DIR'] = str(path.parent)
-            (path.parent / 'browser-engine.json').unlink(missing_ok=True)
-        env['DJANGO_SETTINGS_MODULE'] = ('TavernofSoul.settings_harness_mysql'
-                                         if group in ('mysql', 'mysql-doctor')
-                                         else 'TavernofSoul.settings_harness')
-        env['PYTHONPATH'] = os.pathsep.join(str(path) for path in
-                                          (ROOT, ROOT / 'TavernofSoul', ROOT / 'parser_tidy'))
-        env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
-        env.pop('PYTEST_ADDOPTS', None)
-        env.pop('PYTEST_PLUGINS', None)
-        storage.check_ready()
-        result = subprocess.run([sys.executable, '-m', 'harness', kind, group,
-                                 '--report-dir', str(path.parent)], cwd=str(ROOT), env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        log_path = path.with_suffix('.log')
-        write_private_text(log_path, result.stdout, storage=storage)
-        if result.returncode:
-            print(result.stdout, end='')
-    if not path.exists():
-        write_report(path, {'status': 'failed', 'exit_code': result.returncode,
-                            'errors': ['Check process ended without a result report.']}, storage=storage)
-    if path.is_symlink():
-        raise StorageError('Unsafe runner result path: symlink.')
-    try:
-        report = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError) as exc:
-        report = {'status': 'failed', 'exit_code': 1,
-                  'errors': ['Cannot read the check result: {}'.format(exc)]}
-    if result.returncode:
-        report.update(status='failed', exit_code=result.returncode)
-    report['log'] = str(log_path)
-    write_report(path, report, storage=storage)
-    return report
+def child_check(kind, group, path, *, pytest_workers=2):
+    from harness.pytest_support import child_check as run
+    return run(kind, group, path, pytest_workers=pytest_workers)
 
 
 def _main(state):
@@ -273,6 +178,8 @@ def _main(state):
     parser.add_argument('group', nargs='?', choices=('downloader', 'parser', 'django', 'pipeline',
                                                     'mysql', 'mysql-doctor', 'browser', 'live'))
     parser.add_argument('--report-dir', type=Path)
+    parser.add_argument('--pytest-workers', type=int, choices=(1, 2), default=2,
+                        help='Local parser/harness processes; 1 selects serial diagnostics (default: 2).')
     parser.add_argument('--base')
     parser.add_argument('--head')
     parser.add_argument('--changes-file', type=Path)
@@ -314,7 +221,8 @@ def _main(state):
             parser.error('Internal checks require a group')
         name = args.group + ('-regressions' if args.command == '_pytest' and args.group == 'django' else '')
         try:
-            report = run_pytest(args.group) if args.command == '_pytest' else run_django(args.group)
+            report = (run_pytest(args.group, workers=args.pytest_workers)
+                      if args.command == '_pytest' else run_django(args.group))
         except Exception as exc:
             import traceback
             traceback.print_exc()
@@ -369,7 +277,7 @@ def _main(state):
     for kind, group, name in specs:
         print('\nRunning {} ...'.format(name), flush=True)
         path = report_dir / (name + '.json')
-        results[name] = child_check(kind, group, path)
+        results[name] = child_check(kind, group, path, pytest_workers=args.pytest_workers)
         if group == 'browser':
             results[name]['environment'] = browser
             write_report(path, results[name])

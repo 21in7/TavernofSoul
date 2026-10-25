@@ -1,7 +1,7 @@
 # 전체 하네스 설계
 
-자동 검사 선택·증명 책임은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
-로컬 실제 diff 선택과 CI skip 증명은 check_selection에 모으고 workflow/publisher가 위임한다.
+검사 선택·CI 증명은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)의 check_selection에 위임한다.
+pytest_support의 실행·집계·worker 격리·정리와 runner 지연 import는 [ADR0032](adr/0032-parallel-local-regressions.md)를 따른다.
 
 ## 개발 실행과 읽기 점검의 잠금 격리
 

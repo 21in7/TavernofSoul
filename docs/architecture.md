@@ -1,7 +1,7 @@
 # 프로젝트 지도와 데이터 경계
 
-현재 자동 검증 경계는 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
-실제 diff 선택·CI 증명 책임을 따르며 핵심 회귀·기존 영역/권한 경계는 유지한다.
+자동 검증은 [ADR0031](adr/0031-change-scoped-automatic-validation.md), 로컬 pytest 프로세스·결과·소유 정리는
+[ADR0032](adr/0032-parallel-local-regressions.md)를 따른다. 핵심 회귀·권한·운영·모델·게시 경계는 유지한다.
 
 잠금·복구는 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
 workflow 소유권과 source capture/apply/cleanup/freshness mutex를 분리하고 격리 모델/검증 중에는

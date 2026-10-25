@@ -420,17 +420,18 @@ def test_one_time_legacy_index_never_rescans_and_never_invents_missing_timestamp
             pytest.fail('recurring scan of private history directory')
         return actual(path)
 
-    monkeypatch.setattr(os, 'scandir', no_scan)
-    lab.store = imp.Store(lab.selected)
-    lab.tick(1)
-    assert len(lab.state()['participation']) == 1
-    report = copy.deepcopy(lab.state()['round']['report'])
-    report['scan_id'] = '123456789-abcdef'
-    report['agents'][0].pop('started_at')
-    report['agents'][0].pop('finished_at')
-    state = loop._new_state()
-    loop._import_participation(state, report)
-    assert state['participation'] == []
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'scandir', no_scan)
+        lab.store = imp.Store(lab.selected)
+        lab.tick(1)
+        assert len(lab.state()['participation']) == 1
+        report = copy.deepcopy(lab.state()['round']['report'])
+        report['scan_id'] = '123456789-abcdef'
+        report['agents'][0].pop('started_at')
+        report['agents'][0].pop('finished_at')
+        state = loop._new_state()
+        loop._import_participation(state, report)
+        assert state['participation'] == []
 
 
 def test_post_migration_exact_legacy_day_pointer_adds_participation_once(lab):
@@ -472,10 +473,11 @@ def test_legacy_directory_migration_overflow_is_bounded_no_call(lab, monkeypatch
             return ExcessEntries()
         return actual(path)
 
-    monkeypatch.setattr(os, 'scandir', bounded_fixture)
-    result = lab.tick(0, runner=forbidden, local_runner=forbidden, quota_transport=forbidden)
-    assert result['status'] == 'paused' and result['reason'] == 'legacy_history_unbounded'
-    assert lab.events == [] and not lab.store.exists(loop.LEGACY_INDEX)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'scandir', bounded_fixture)
+        result = lab.tick(0, runner=forbidden, local_runner=forbidden, quota_transport=forbidden)
+        assert result['status'] == 'paused' and result['reason'] == 'legacy_history_unbounded'
+        assert lab.events == [] and not lab.store.exists(loop.LEGACY_INDEX)
 
 
 @pytest.mark.parametrize('change', ['scope_mode', 'ownership', 'provider', 'model', 'protocol'])

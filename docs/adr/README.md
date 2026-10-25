@@ -1,7 +1,7 @@
 # 하네스 설계 결정 기록
 
-전체 맥락은 [전체 하네스 설계](../harness-design.md), 실행 절차는 [workflow](../workflow.md),
-환경·검증 범위는 [하네스 사용법](../harness.md)에 둔다. ADR는 주요 선택·비교·비용을 기록한다.
+설계는 [하네스 설계](../harness-design.md), 실행은 [workflow](../workflow.md), 환경·검증은
+[사용법](../harness.md), 주요 선택·비교·비용은 ADR에 둔다.
 
 | 번호 | 결정 | 상태 | 기록일 |
 | --- | --- | --- | --- |
@@ -36,6 +36,7 @@
 | [0029](0029-item-search-progressive-enhancement.md) | 아이템 검색 SSR·조각 응답·history/복구·실제 새 탭 감시 | 제안(proposed), 직접 요청 구현안·새 검토/브라우저→전체 검증/전달 대기 | 2026-10-24 |
 | [0030](0030-item-detail-mobile-layout.md) | 상세 모바일·표 접근성·46조합 | 제안, CI 실패 수리·새 검증 대기 | 2026-10-25 |
 | [0031](0031-change-scoped-automatic-validation.md) | 완전한 실제 diff 기반 자동 검사 계획·master push/PR 중복 제거·같은 suite의 부분 선택 증거 | 사용자 범위 확정 구현안, 새 검토/parent full check/CI·전달 대기 | 2026-10-25 |
+| [0032](0032-parallel-local-regressions.md) | 로컬 pytest 병렬·증거·정리 | 제안, 검토·측정·검증·전달 대기 | 2026-10-25 |
 
 ## 상태와 근거의 의미
 
