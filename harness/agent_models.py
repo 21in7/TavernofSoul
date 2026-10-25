@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 
-from harness import agent_telemetry, storage, improvement_diagnostics as diagnostics
+from harness import agent_telemetry, agent_usage, storage, improvement_diagnostics as diagnostics
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'harness' / 'agent-models.json'
@@ -525,6 +525,8 @@ def task_prompt(role, task, workspace=None, scoped=False):
         return ('Role: {}. This is a scoped workflow leaf worker.\n'
                 'Read only the approved files provided in this workspace. '
                 'Do not read other paths, credentials, parent instructions or host settings. '
+                'Start with relevant sections of needed approved files; read entire approved files when needed. '
+                'Avoid repeated bulk output or rereading of supplied diffs and results; the full review scope remains. '
                 'If context is missing, report which additional files are needed.\n'
                 'Do not delegate or start harness.workflow or agent-run. '
                 'The orchestrator owns validation; do not run checks, cron, downloads or importAll.\n'
@@ -675,7 +677,8 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
     prompt = ('Reply with exactly {}. Do not use any tools.'.format(nonce) if smoke
               else task_prompt(role, task, workspace=workspace, scoped=scoped))
     report = {'role': role, 'provider': provider, 'model': spec['model'],
-              'kind': 'smoke' if smoke else 'task', 'status': 'failed'}
+              'kind': 'smoke' if smoke else 'task', 'status': 'failed',
+              'prompt_size': agent_usage.prompt_size(prompt), 'usage': agent_usage.unavailable()}
     if provider == 'codex':
         report['warnings'] = []
     report['compaction'] = {'requested': enabled, 'key_registered': bool(keys.get('TYPESAFE_API_KEY')),
@@ -788,6 +791,12 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                         if execution_error is not None:
                             raise execution_error
             report['exit_code'] = result.returncode
+            if not result.returncode:
+                try:
+                    report['usage'] = agent_usage.observe(
+                        provider, result.stdout, stream=discovery_review is not None)
+                except Exception:
+                    pass  # Optional measurement must not change execution/cost/diagnostics.
             if provider != 'codex':
                 report['stderr'] = '' if discovery_review is not None else redact(result.stderr, keys)
             else:

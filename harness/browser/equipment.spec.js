@@ -950,10 +950,13 @@ async function orderedDetailNavigation(page, baseURL, order, navigate) {
     const name = url => new URL(url).pathname.split('/').pop();
     const requested = [];
     const completed = [];
+    const interceptedRequests = new Set();
     let release;
     const barrier = new Promise(resolve => { release = resolve; });
     const handler = async route => {
-        const stylesheet = name(route.request().url());
+        const request = route.request();
+        interceptedRequests.add(request);
+        const stylesheet = name(request.url());
         requested.push(stylesheet);
         const response = await route.fetch();
         expect(response.status(), stylesheet).toBe(200);
@@ -961,7 +964,8 @@ async function orderedDetailNavigation(page, baseURL, order, navigate) {
         await route.fulfill({response});
     };
     const finished = request => {
-        if (matches(new URL(request.url()))) completed.push(name(request.url()));
+        // Earlier navigations can finish the same URL during this invocation.
+        if (interceptedRequests.has(request)) completed.push(name(request.url()));
     };
     page.on('requestfinished', finished);
     await page.route(matches, handler);
