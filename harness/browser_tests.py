@@ -9,7 +9,9 @@ from django.conf import settings
 from django.core.management import call_command
 from django.test import override_settings
 from PIL import Image
-from Items.models import Items, Equipments
+from Items.models import (Items, Equipments, Equipment_Bonus, Recipes,
+                          Item_Recipe_Material, Item_Recipe_Target, Collections,
+                          Item_Collection_Material, Item_Collection_Bonus)
 
 from harness.browser_runner import run_browser
 from harness.parser_fixture import parse_workspace, prepare_equipment_workspace
@@ -33,6 +35,39 @@ class FixtureImageRefs(HTMLParser):
 class EquipmentBrowserTests(StaticLiveServerTestCase):
     host = '127.0.0.1'
 
+    def seed_detail_layout(self, sword):
+        # Browser-only fixed data goes through the real ORM/view/template. Keep
+        # existing search keywords, regional fixtures and calculation data intact.
+        source = sword.item
+        tail = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' * 3
+
+        def row(ident, kind, name, description):
+            return Items.objects.create(
+                ids=ident, id_name='harness_detail_' + kind + '_' + tail[:60], name=name,
+                descriptions=description, type=source.type, grade=source.grade,
+                icon=source.icon, tradability=source.tradability,
+            )
+
+        equipment = row('910001', 'equipment', '모바일 장비 日本語 Equipment ' + tail,
+                        '긴 설명 日本語 description ' + tail + '{nl}Second description line 12345678901234567890')
+        fields = {field.name: getattr(sword, field.name)
+                  for field in Equipments._meta.concrete_fields if field.name != 'item'}
+        cloned = Equipments.objects.create(item=equipment, **fields)
+        Equipment_Bonus.objects.create(equipment=cloned, bonus_stat='ADD_FIRE',
+                                       bonus_val='12345678901234567890{nl}' + tail)
+        material = row('910002', 'material', '긴 재료 日本語 Material ' + tail,
+                       'Core material description 日本語 한글 ' + tail)
+        recipe = Recipes.objects.create(item=row('910003', 'recipe',
+                    '긴 제작법 日本語 Recipe ' + tail, 'Fixed recipe description'))
+        Item_Recipe_Target.objects.create(recipe=recipe, target=equipment)
+        Item_Recipe_Material.objects.create(recipe=recipe, material=material, qty=123456789)
+        collection = Collections.objects.create(item=row('910004', 'collection',
+                    '긴 수집품 日本語 Collection ' + tail, 'Fixed collection description'))
+        Item_Collection_Material.objects.create(collection=collection, material=equipment)
+        Item_Collection_Material.objects.create(collection=collection, material=material)
+        Item_Collection_Bonus.objects.create(collection=collection, bonus_stat='ADD_FIRE',
+                                            bonus_val='12345678901234567890')
+
     def test_browser_scenarios(self):
         with tempfile.TemporaryDirectory(prefix='tavern-browser-fixture-') as temporary:
             workspace = prepare_equipment_workspace(temporary, 'itos')
@@ -55,6 +90,7 @@ class EquipmentBrowserTests(StaticLiveServerTestCase):
                           for field in Equipments._meta.concrete_fields if field.name != 'item'}
                 fields['requiredClass'] = '...T.'
                 Equipments.objects.create(item=row, **fields)
+            self.seed_detail_layout(sword)
             static = Path(temporary) / 'fixture-static'
             icons = static / 'icons'
             icons.mkdir(parents=True)
@@ -64,7 +100,8 @@ class EquipmentBrowserTests(StaticLiveServerTestCase):
                 refs = FixtureImageRefs()
                 for url in ('/items/?q=&page=1', '/items/?q=&page=2', '/items/?q=&page=3',
                             '/items/?q=&page=4', '/items/100', '/items/110', '/items/111', '/items/112',
-                            '/items/113', '/items/230', '/items/240', '/skills/400'):
+                            '/items/113', '/items/230', '/items/240', '/skills/400',
+                            '/items/910001', '/items/910002', '/items/910003', '/items/910004'):
                     response = self.client.get(url)
                     self.assertEqual(response.status_code, 200, url)
                     refs.feed(response.content.decode())

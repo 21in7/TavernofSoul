@@ -2,6 +2,7 @@
 {% load translate static %}
 <!--Block content goes below-->
 {%block head%}
+    <link rel="stylesheet" href="{% static 'css/item-detail.css' %}">
     <title>{{item.name}} - Gihyeon of Soul</title>
     <meta content="{{item.name}} - Gihyeon of Soul" property="og:title" />
     <meta content="{{item.descriptions}}" property="og:description" />
@@ -27,9 +28,20 @@
 
 {%endblock%}
 
-  {% block content %}
+{% block content_class %}item-detail-content{% endblock %}
 
-<h1 id="title">{{item.name}}</h1>
+  {% block content %}
+<article class="item-detail" aria-labelledby="title">
+
+<header class="item-detail-heading">
+    {% if item.cards %}
+        <img class="item-detail-icon" alt="" src="/static/icons/{{item.cards.icon}}.jpg">
+    {% else %}
+        <img class="item-detail-icon" alt="" src="/static/icons/{{item.icon}}.png">
+    {% endif %}
+    <h1 id="title">{{item.name}}</h1>
+</header>
+<p id="item-detail-scroll-help" class="item-detail-scroll-help">{{ "Wide tables: scroll horizontally to read all columns. Keyboard: focus the table area and use the arrow keys."|translate }}</p>
 {%if desc%}
 	{% for line in desc%}
 		<p class="mb-0">{{line}}</p>
@@ -40,11 +52,13 @@
 {%endif%}
 <br>
 	  
-<div class="form-inline">
-	<table class="table-bordered border border-white border-responsive mt-1 tabe" >
+<div class="form-inline item-detail-facts">
+	<div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "ClassID"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe" >
+<caption class="sr-only">{{ "ClassID"|translate }}</caption>
     <thead>
       <tr>
-      	<th>ClassID</th> 	
+      	<th scope="col">ClassID</th> 	
       </tr>
     </thead>
     <tbody>
@@ -53,10 +67,13 @@
       </tr>
     </tbody>
   </table>
-  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+</div>
+  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "ClassName"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "ClassName"|translate }}</caption>
     <thead>
       <tr>
-      	<th>ClassName</th>
+      	<th scope="col">ClassName</th>
       </tr>
     </thead>
     <tbody>
@@ -66,10 +83,13 @@
     </tbody>
  
   </table>
-  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+</div>
+  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Type"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Type"|translate }}</caption>
     <thead>
       <tr>
-        <th>{{"Type" | translate}}</th>
+        <th scope="col">{{"Type" | translate}}</th>
       </tr>
     </thead>
     <tbody>
@@ -83,27 +103,31 @@
     </tbody>
  
   </table>
-  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+</div>
+  {%if item.grade%}
+  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Grade"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Grade"|translate }}</caption>
     <thead>
       <tr>
-        {%if item.grade%}
-        	<th>{{"Grade" | translate}}</th>
-        {%endif%}
+        	<th scope="col">{{"Grade" | translate}}</th>
       </tr>
     </thead>
     <tbody>
     	 <tr>
-        {%if item.grade%}
         	<td class="cell-center"><span class="item-grade item-grade-{{item.grade}}"></span></td>
-        {%endif%}
       </tr>
     </tbody>
  
   </table>
-  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+</div>
+  {%endif%}
+  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Trade"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Trade"|translate }}</caption>
     <thead>
       <tr>
-        <th>{{"Trade" | translate}}</th>
+        <th scope="col">{{"Trade" | translate}}</th>
       </tr>
     </thead>
     <tbody>
@@ -113,79 +137,83 @@
     </tbody>
  
   </table>
-  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+</div>
+  {%if item.Weight > 0%}
+  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Weight"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Weight"|translate }}</caption>
     <thead>
       <tr>
-        {%if item.Weight > 0%}
-        	<th>{{"Weight" | translate}}</th>
-        {%endif%}
+        	<th scope="col">{{"Weight" | translate}}</th>
       </tr>
     </thead>
     <tbody>
     	 <tr>
-        {%if item.Weight > 0%}
         	<td>{{item.weight}}</td>
-        {%endif%}
       </tr>
     </tbody>
  
   </table>
-  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+</div>
+  {%endif%}
+  {%if item.equipments%}
+  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Level"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Level"|translate }}</caption>
     <thead>
       <tr>
-        {%if item.equipments%}
-        	<th>{{"Level" | translate}}</th>
-        {%endif%}
+        	<th scope="col">{{"Level" | translate}}</th>
       </tr>
     </thead>
     <tbody>
     	 <tr>
-        {%if item.equipments%}
-        	<td>{{item.equipments.level}}</th>
-        {%endif%}
+        	<td>{{item.equipments.level}}</td>
       </tr>
     </tbody>
  
   </table>
-  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+</div>
+  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Class"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Class"|translate }}</caption>
     <thead>
       <tr>
-        {%if item.equipments%}
-        	<th>{{"Class" | translate}}</th>
-        {%endif%}
+        	<th scope="col">{{"Class" | translate}}</th>
       </tr>
     </thead>
     <tbody>
     	 <tr>
-        {%if item.equipments%}
-        	<td>{{item.equipments.requiredClass}}</th>
-        {%endif%}
+        	<td>{{item.equipments.requiredClass}}</td>
       </tr>
     </tbody>
  
   </table>
+</div>
+  {%endif%}
 </div>
 
   
   
 {%if item.equipments%}
 	<br>
-	<div class="form-inline align-items-start">
-		<div class="mr-4">
+	<div class="item-detail-columns">
+		<section class="item-detail-stats">
 			<h2>{{"Stats" | translate}}</h2>
-	  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+	  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Stats"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Stats"|translate }}</caption>
 	    <thead>
 	      <tr>
 
-        	<th>{{"Durability" | translate}}</th>
+        	<th scope="col">{{"Durability" | translate}}</th>
         	{%if item.equipments.potential > -1%}
-        	<th>{{"Potential" | translate}}</th>
+        	<th scope="col">{{"Potential" | translate}}</th>
         	{%endif%}
-        	<th>{{"Socket" | translate}}</th>
+        	<th scope="col">{{"Socket" | translate}}</th>
 	      </tr>
 	    </thead>
 	    <tbody>
-
+          <tr>
         	<td>{{item.equipments.durability}}</td>
         	{%if item.equipments.potential > -1%}
         	<td>{{item.equipments.potential}}</td>
@@ -195,22 +223,25 @@
 	    </tbody>
 	 
 	  </table>
+</div>
 	  <br>
 
-	  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+	  <div class="item-detail-table" role="region"{% if item.equipments.patk or item.equipments.matk or item.equipments.pdef or item.equipments.mdef %} tabindex="0"{% endif %} aria-label="{{ "Stats"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Stats"|translate }}</caption>
 	    <thead>
 	      <tr>
             {% if item.equipments.patk %}
-	      	<th>{{"PATK"|translate}}</th>
+	      	<th scope="col">{{"PATK"|translate}}</th>
 	      	{% endif %}
             {% if item.equipments.matk %}
-	      	<th>{{"MATK"|translate}}</th>
+	      	<th scope="col">{{"MATK"|translate}}</th>
 	      	{% endif %}
 	      	{% if item.equipments.pdef%}
-	        <th>{{"PDEF"|translate}}</th>
+	        <th scope="col">{{"PDEF"|translate}}</th>
 	        {% endif %}
 	        {% if item.equipments.mdef%}
-        	<th>{{"MDEF"|translate}}</th>
+        	<th scope="col">{{"MDEF"|translate}}</th>
         	{% endif %}
 
 	      </tr>
@@ -238,15 +269,18 @@
 	    </tbody>
 	 
 	  </table>
+</div>
 
   
   {%if equipment_bonus%}
 	  <br>
-	  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+	  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Bonus"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Bonus"|translate }}</caption>
 	    <tbody>
 	    	{%for bonus in equipment_bonus%}
 	    	 <tr>
-	    			<th>{{bonus.bonus_stat}}</th>
+	    			<th scope="row">{{bonus.bonus_stat}}</th>
 
 	    			<td>
 	    		            {%for b in bonus.bonus_val %}
@@ -258,10 +292,11 @@
 	    </tbody>
 	 
 	  </table>
+</div>
 	{%endif%}
-		</div>
+		</section>
 	
-	<div class="mr 4">
+	<section class="item-detail-enhancement">
 			
     {% if enhancement %}
         <h2>{{ "Enhancement"|translate }}</h2>
@@ -269,18 +304,20 @@
             <p>Lv. {{ enhancement.level }} · {{ enhancement.group }}</p>
             <p>{{ "Item stats only; set effects and evolution are excluded."|translate }}</p>
         {% endif %}
-        <div class="form-inline">
-            <table class="table-bordered border border-white border-responsive mt-1 mr-2 tabe">
+        <div class="item-detail-calculators">
+            <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Anvil"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="item-detail-input-table table-bordered border border-white border-responsive mt-1 mr-2 tabe">
+<caption class="sr-only">{{ "Anvil"|translate }}</caption>
                 <thead><tr>
-                    <th>{{ "Anvil"|translate }}</th><th>{{ "Bonus"|translate }}</th>
+                    <th scope="col"><label for="anvil">{{ "Anvil"|translate }}</label></th><th scope="col">{{ "Bonus"|translate }}</th>
                     {% if enhancement.goddess %}
-                        <th>{{ "Materials"|translate }}</th><th>{{ "Chance"|translate }}</th>
+                        <th scope="col">{{ "Materials"|translate }}</th><th scope="col">{{ "Chance"|translate }}</th>
                     {% else %}
-                        <th>{{ "Price"|translate }}</th><th>{{ "Total"|translate }}</th>
+                        <th scope="col">{{ "Price"|translate }}</th><th scope="col">{{ "Total"|translate }}</th>
                     {% endif %}
                 </tr></thead>
                 <tbody><tr>
-                    <td><input class="form-control-sm" type="number" min="0" max="{{ enhancement.maximum }}" step="1" value="0" id="anvil" aria-label="{{ 'Anvil'|translate }}" style="width:70px"></td>
+                    <td><input class="form-control-sm" type="number" min="0" max="{{ enhancement.maximum }}" step="1" inputmode="numeric" value="0" id="anvil" aria-label="{{ 'Anvil'|translate }}"></td>
                     <td id="anvil_bonus">0</td>
                     {% if enhancement.goddess %}
                         <td id="god_materials">—</td><td id="god_chance">—</td>
@@ -289,17 +326,21 @@
                     {% endif %}
                 </tr></tbody>
             </table>
-            <table class="table-bordered border border-white border-responsive mt-1 tabe">
-                <thead><tr><th>{{ "Transcend"|translate }}</th><th>{{ "Bonus"|translate }}</th><th>{{ "Price"|translate }}</th><th>{{ "Total"|translate }}</th></tr></thead>
+</div>
+            <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Transcend"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="item-detail-input-table table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Transcend"|translate }}</caption>
+                <thead><tr><th scope="col"><label for="tc">{{ "Transcend"|translate }}</label></th><th scope="col">{{ "Bonus"|translate }}</th><th scope="col">{{ "Price"|translate }}</th><th scope="col">{{ "Total"|translate }}</th></tr></thead>
                 <tbody><tr>
-                    <td><input class="form-control-sm" type="number" min="0" max="10" step="1" value="0" id="tc" aria-label="{{ 'Transcend'|translate }}" style="width:70px"></td>
+                    <td><input class="form-control-sm" type="number" min="0" max="10" step="1" inputmode="numeric" value="0" id="tc" aria-label="{{ 'Transcend'|translate }}"></td>
                     <td id="tc_bonus">0%</td><td id="tc_price">0</td><td id="tc_total">0</td>
                 </tr></tbody>
             </table>
+</div>
         </div>
     {% endif %}
 
-		</div>
+		</section>
 		
 	</div>  
 	  {%endif%}
@@ -311,25 +352,31 @@
         {% endif %}
         {% if gem_bonuses %}
             <h2>{{ "Socket bonuses"|translate }}</h2>
-            <table id="gem-socket-bonuses" class="table-bordered border border-white border-responsive mt-1 tabe">
-                <thead><tr><th>{{ "Level"|translate }}</th><th>{{ "Slot"|translate }}</th><th>{{ "Stat"|translate }}</th><th>{{ "Value"|translate }}</th></tr></thead>
+            <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Socket bonuses"|translate }}" aria-describedby="item-detail-scroll-help">
+<table id="gem-socket-bonuses" class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Socket bonuses"|translate }}</caption>
+                <thead><tr><th scope="col">{{ "Level"|translate }}</th><th scope="col">{{ "Slot"|translate }}</th><th scope="col">{{ "Stat"|translate }}</th><th scope="col">{{ "Value"|translate }}</th></tr></thead>
                 <tbody>{% for bonus in gem_bonuses %}<tr>
                     <td>{{ bonus.level|default_if_none:"—" }}</td><td>{{ bonus.slot|translate }}</td>
                     <td>{{ bonus.stat|translate }}</td><td>{{ bonus.value|default_if_none:"—" }}</td>
                 </tr>{% endfor %}</tbody>
             </table>
+</div>
         {% endif %}
     {% endif %}
 
 	{%if item.recipes%}
 	<br>
 	<h2>{{"Produce" | translate}}</h2>
-	<table class="table-bordered border border-white border-responsive mt-1 tabe">
+	<div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Produce"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Produce"|translate }}</caption>
+<thead><tr><th scope="col">{{ "Visual"|translate }}</th><th scope="col">{{ "Name"|translate }}</th></tr></thead>
 		<tbody>
 			{% for i in target%}
 			<tr>
 				<td>
-					<img loading="lazy" alt="" src="/static/icons/{{i.target.icon}}.png") class="icon-32">
+					<img loading="lazy" alt="" src="/static/icons/{{i.target.icon}}.png" class="icon-32">
 				</td>
 				<td>
 					<a href="{% url 'Items:item' i.target.ids %}">{{i.target.name}}</a>
@@ -338,14 +385,18 @@
 			{%endfor%}
 		</tbody>
 	</table>
+</div>
 	<br>
 	<h2>{{"Materials" | translate}}</h2>
-	<table class="table-bordered border border-white border-responsive mt-1 tabe">
+	<div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Materials"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Materials"|translate }}</caption>
+<thead><tr><th scope="col">{{ "Visual"|translate }}</th><th scope="col">{{ "Name"|translate }}</th><th scope="col">{{ "Quantity"|translate }}</th></tr></thead>
 		<tbody>
 			{% for i in materialRecipe%}
 			<tr>
 				<td>
-					<img loading="lazy" alt="" src="/static/icons/{{i.material.icon}}.png") class="icon-32">
+					<img loading="lazy" alt="" src="/static/icons/{{i.material.icon}}.png" class="icon-32">
 				</td>
 				<td>
 					<a href="{% url 'Items:item' i.material.ids %}">{{i.material.name}}</a>
@@ -357,50 +408,60 @@
 			{%endfor%}
 		</tbody>
 	</table>
+</div>
 	{%endif%}
 
 	{%if collectionBonus%}
 	<br>
-	  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+	  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Bonus"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Bonus"|translate }}</caption>
 	    <tbody>
 	    	{%for bonus in collectionBonus%}
 		    	 <tr>
-		    			<th>{{bonus.bonus_stat}}</th>
+		    			<th scope="row">{{bonus.bonus_stat}}</th>
 		    			<td>{{bonus.bonus_val}}</td>
 		      </tr>
 	      {%endfor%}
 	    </tbody>
 	 
 	  </table>
+</div>
 	{%endif%}
 
 	{%if collectionMaterial%}
 	<br>
 	<h2>{{"Materials" | translate}}</h2>
-	  <table class="table-bordered border border-white border-responsive mt-1 tabe">
+	  <div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Materials"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Materials"|translate }}</caption>
+<thead><tr><th scope="col">{{ "Name"|translate }}</th></tr></thead>
 	    <tbody>
 	    	{%for material in collectionMaterial%}
 	    	 <tr>
-	    		<td><img loading="lazy" alt="" src="/static/icons/{{material.material.icon}}.png") class="icon-24"> 	<a href="{% url 'Items:item' material.material.ids %}">{{material.material.name}}</a></td>
+	    		<td><img loading="lazy" alt="" src="/static/icons/{{material.material.icon}}.png" class="icon-24"> 	<a href="{% url 'Items:item' material.material.ids %}">{{material.material.name}}</a></td>
 	      </tr>
 	      {%endfor%}
 	    </tbody>
 	 
 	  </table>
+</div>
 	{%endif%}
 
   {%if targetRecipe or collectionMaterialFor or dropped or mapDrop%}
   <br>
   <h2>{{"Refferences" | translate}}</h2>
   
-  	<table class="table-bordered border border-white border-responsive mt-1 tabe">
+  	<div class="item-detail-table" role="region" tabindex="0" aria-label="{{ "Refferences"|translate }}" aria-describedby="item-detail-scroll-help">
+<table class="table-bordered border border-white border-responsive mt-1 tabe">
+<caption class="sr-only">{{ "Refferences"|translate }}</caption>
 		    <tbody>
 		    	{%if targetRecipe%}
 		    	<tr>
-		      	<th>{{"Crafted From" | translate}}</th>
+		      	<th scope="row">{{"Crafted From" | translate}}</th>
 		      	<td>
 		      		{%for i in targetRecipe%}
-		      			<a href="{% url 'Items:item' i.recipe.item.ids %}"> <p class="mb-0"> <img loading="lazy" alt="" src="/static/icons/{{i.recipe.item.icon}}.png") class="icon-24">{{i.recipe.item.name}}</p></a>
+		      			<a href="{% url 'Items:item' i.recipe.item.ids %}"> <p class="mb-0"> <img loading="lazy" alt="" src="/static/icons/{{i.recipe.item.icon}}.png" class="icon-24">{{i.recipe.item.name}}</p></a>
 		      			
 		      		{%endfor%}
 		      	</td>
@@ -409,10 +470,10 @@
 
 		      {%if collectionMaterialFor%}
 		      <tr>
-		      	<th>{{"Collections" | translate}}</th>
+		      	<th scope="row">{{"Collections" | translate}}</th>
 		      	<td>
 			      	{%for i in collectionMaterialFor%}
-		      			<a href="{% url 'Items:item' i.collection.item.ids %}"><p class="mb-0"><img loading="lazy" alt="" src="/static/icons/{{i.collection.item.icon}}.png") class="icon-24"> {{i.collection.item.name}}</p></a>
+		      			<a href="{% url 'Items:item' i.collection.item.ids %}"><p class="mb-0"><img loading="lazy" alt="" src="/static/icons/{{i.collection.item.icon}}.png" class="icon-24"> {{i.collection.item.name}}</p></a>
 			      			
 		      		{%endfor%}
 	      		</td>
@@ -420,17 +481,18 @@
 		      {% endif %}
 		      {%if dropped%}
 		    	<tr>
-		      	<th style="vertical-align:top">{{"Dropped by" | translate}}</th>
+		      	<th scope="row" style="vertical-align:top">{{"Dropped by" | translate}}</th>
 		      	<td>
 		      		{%for i in dropped%}
-		      			<p class="mb-0"> <a href="{%url 'Monsters:monster' i.monster.ids%}"> <img loading="lazy" alt="" src="/static/icons/{{i.monster.icon}}.png") class="icon-24">{{i.monster.name}}</a> ({{i.chance}} %)</p> 
+		      			<p class="mb-0"> <a href="{%url 'Monsters:monster' i.monster.ids%}"> <img loading="lazy" alt="" src="/static/icons/{{i.monster.icon}}.png" class="icon-24">{{i.monster.name}}</a> ({{i.chance}} %)</p> 
 		      			
 		      		{%endfor%}
 		      	</td>
 		      </tr>
 		      {%endif%}
 		      {%if mapDrop%}
-		      <th style="vertical-align:top">{{"Dropped at" | translate}}</th>
+              <tr>
+		      <th scope="row" style="vertical-align:top">{{"Dropped at" | translate}}</th>
 		      	<td>
 		      		{%for i in mapDrop%}
 		      			<p class="mb-0"> <a href="{%url 'Maps:maps' i.map.ids%}"> {{i.map.name}}</a> ({{i.chance}} %)</p> 
@@ -442,6 +504,7 @@
 		    </tbody>
 		 
 		  </table>
+</div>
   {%endif%}
 
   <br>
@@ -451,6 +514,7 @@
   {%else%}
   	<img loading="lazy" alt="" src="/static/icons/{{item.icon}}.png" style="width: 250px; height: 250px;">
   {%endif%}
+</article>
   {% endblock %}
 
 {% block script %}

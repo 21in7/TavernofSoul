@@ -906,6 +906,549 @@ async function pvpResults(page, expected) {
     }
 }
 
+// These are server-rendered ORM fixtures, not replacement HTML or injected CSS.
+const detailTail = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.repeat(3);
+const detailName = '모바일 장비 日本語 Equipment ' + detailTail;
+const materialName = '긴 재료 日本語 Material ' + detailTail;
+const recipeName = '긴 제작법 日本語 Recipe ' + detailTail;
+const collectionName = '긴 수집품 日本語 Collection ' + detailTail;
+const detailSizes = info => info.project.name === 'mobile' ?
+    [{width: 390, height: 844}, {width: 320, height: 740}] : [{width: 1440, height: 900}];
+
+async function detailFits(page) {
+    // Navigation/text readiness does not establish settled geometry. Re-read
+    // every bound together on each observation, using the default expect timeout.
+    await expect.poll(() => page.evaluate(() => {
+        const article = document.querySelector('.item-detail').getBoundingClientRect();
+        const layout = {width: innerWidth, body: document.body.scrollWidth,
+            document: document.documentElement.scrollWidth, x: scrollX,
+            left: article.left, right: article.right};
+        return [
+            {bound: 'body', fits: layout.body <= layout.width},
+            {bound: 'document', fits: layout.document <= layout.width},
+            {bound: 'scrollX', fits: layout.x === 0},
+            {bound: 'article left', fits: layout.left >= 0},
+            {bound: 'article right', fits: layout.right <= layout.width + 1},
+        ].filter(check => !check.fits).map(check => ({...check, ...layout,
+            // Diagnostic observations only: sheet attachment is not an assertion
+            // that every stylesheet has been applied or layout has settled.
+            readyState: document.readyState,
+            bodyMargin: getComputedStyle(document.body).margin,
+            stylesheets: Array.from(document.querySelectorAll('link[rel="stylesheet"]'), link => ({
+                href: link.href, attached: link.sheet !== null, disabled: link.disabled,
+            })),
+        }));
+    }), {message: 'Body, document and detail bounds fit the viewport together'}).toEqual([]);
+}
+
+async function orderedDetailNavigation(page, baseURL, order, navigate) {
+    // Hold the later real stylesheet response until the browser has finished
+    // receiving the first. Neither HTTP 200 nor completion proves CSS application;
+    // the caller still observes actual geometry and rendered content afterwards.
+    const matches = url => url.origin === new URL(baseURL).origin &&
+        /\/(?:style|item-detail)\.css$/.test(url.pathname);
+    const name = url => new URL(url).pathname.split('/').pop();
+    const requested = [];
+    const completed = [];
+    let release;
+    const barrier = new Promise(resolve => { release = resolve; });
+    const handler = async route => {
+        const stylesheet = name(route.request().url());
+        requested.push(stylesheet);
+        const response = await route.fetch();
+        expect(response.status(), stylesheet).toBe(200);
+        if (stylesheet === order[1]) await barrier;
+        await route.fulfill({response});
+    };
+    const finished = request => {
+        if (matches(new URL(request.url()))) completed.push(name(request.url()));
+    };
+    page.on('requestfinished', finished);
+    await page.route(matches, handler);
+    try {
+        // goto must stop at commit; link clicks must use noWaitAfter. Waiting
+        // for load here would wait for the stylesheet held by this same barrier.
+        await navigate();
+        await expect.poll(() => [...requested].sort(),
+            {message: 'Both real detail stylesheets are requested exactly once'}).toEqual([...order].sort());
+        await expect.poll(() => [...completed],
+            {message: 'The first stylesheet finishes while the second is held'}).toEqual([order[0]]);
+        release();
+        await expect.poll(() => [...completed],
+            {message: 'Both stylesheet responses finish in the controlled order'}).toEqual(order);
+    } finally {
+        release();
+        await page.unrouteAll({behavior: 'wait'});
+        page.off('requestfinished', finished);
+    }
+}
+
+async function readableText(locator) {
+    await expect(locator).toBeVisible();
+    // Inspect rendered text rectangles, so ellipsis, fixed-height clipping and
+    // hidden ancestors cannot pass just because textContent remains in the DOM.
+    expect(await locator.evaluate(node => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const box = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        const lines = Array.from(range.getClientRects()).filter(rect => rect.width && rect.height);
+        let unclipped = true;
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+            const bounds = parent.getBoundingClientRect();
+            const css = getComputedStyle(parent);
+            if (Number(css.opacity) === 0 || css.visibility !== 'visible') unclipped = false;
+            // Named scrollports may expose offscreen columns by scrolling;
+            // hidden/clip ancestors provide no such reading path.
+            if (/hidden|clip/.test(css.overflowX) && lines.some(rect =>
+                rect.left < bounds.left - 1 || rect.right > bounds.right + 1)) unclipped = false;
+            if (/hidden|clip/.test(css.overflowY) && lines.some(rect =>
+                rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1)) unclipped = false;
+        }
+        if (!node.closest('table') && lines.some(rect => rect.left < 0 || rect.right > innerWidth + 1)) {
+            unclipped = false;
+        }
+        return unclipped && lines.length > 0 && style.textOverflow !== 'ellipsis' &&
+            lines.every(rect => rect.left >= box.left - 1 && rect.right <= box.right + 1 &&
+                rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1) &&
+            node.scrollWidth <= node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1;
+    }), 'All rendered text fits its own box without clipping').toBe(true);
+}
+
+async function visibleDetailFocus(locator, expectedURL = locator.page().url()) {
+    await expect(locator).toBeFocused();
+    await expect(locator).toBeInViewport();
+    // Require full visibility within the existing assertion timeout.
+    // Re-read one real DOM snapshot per attempt; never move focus or scroll here.
+    await expect.poll(() => locator.evaluate(node => {
+        const style = getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        const width = parseFloat(style.outlineWidth);
+        const offset = parseFloat(style.outlineOffset);
+        const outset = Math.max(0, width + offset);
+        const box = {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom};
+        const outline = {left: rect.left - outset, right: rect.right + outset,
+            top: rect.top - outset, bottom: rect.bottom + outset};
+        const viewport = {left: 0, right: innerWidth, top: 0, bottom: innerHeight};
+        const input = node.matches('input');
+        // A tall table region can be only partly visible vertically. Its input
+        // must fit in full, including the outline, on both axes.
+        const contains = (outer, inner, vertical = true) =>
+            inner.left >= outer.left && inner.right <= outer.right &&
+            (!vertical || inner.top >= outer.top && inner.bottom <= outer.bottom);
+        const region = node.parentElement.closest('.item-detail-table[role="region"]');
+        let scrollport = null;
+        if (region) {
+            const bounds = region.getBoundingClientRect();
+            scrollport = {left: bounds.left + region.clientLeft, top: bounds.top + region.clientTop};
+            scrollport.right = scrollport.left + region.clientWidth;
+            scrollport.bottom = scrollport.top + region.clientHeight;
+        }
+        // Include failed bounds in the poll diff, so a persistent failure can
+        // be attributed without inferring its cause from this shared helper's line.
+        const clipping = [
+            {target: 'input', area: 'viewport', rect: box, bounds: viewport, vertical: input},
+            {target: 'outline', area: 'viewport', rect: outline, bounds: viewport, vertical: input},
+            ...(scrollport ? [
+                {target: 'input', area: 'table scrollport', rect: box, bounds: scrollport, vertical: true},
+                {target: 'outline', area: 'table scrollport', rect: outline, bounds: scrollport, vertical: true},
+            ] : []),
+        ].filter(({rect, bounds, vertical}) => !contains(bounds, rect, vertical));
+        return {focused: document.activeElement === node, url: location.href,
+            clipping: clipping.map(bounds => ({element: node.id || node.tagName, ...bounds})),
+            style: style.outlineStyle, width, color: style.outlineColor, offset,
+            box, outline, viewport, scrollport,
+            scroll: region && {scrollLeft: region.scrollLeft, scrollWidth: region.scrollWidth,
+                clientWidth: region.clientWidth, maxScroll: region.scrollWidth - region.clientWidth},
+            outlineVisible: !/none|hidden/.test(style.outlineStyle) && width > 0 &&
+                !['transparent', 'rgba(0, 0, 0, 0)'].includes(style.outlineColor),
+            inputInViewport: contains(viewport, box, input),
+            outlineInViewport: contains(viewport, outline, input),
+            scrollportPresent: !input || scrollport !== null,
+            inputInRegion: !scrollport || contains(scrollport, box),
+            outlineInRegion: !scrollport || contains(scrollport, outline)};
+    }), {message: 'Actual focus, input and outline fit the viewport and table scrollport'}).toMatchObject({
+        focused: true, url: expectedURL, outlineVisible: true,
+        inputInViewport: true, outlineInViewport: true, scrollportPresent: true,
+        inputInRegion: true, outlineInRegion: true,
+        clipping: [],
+    });
+}
+
+async function detailTableAccess(page, region, pinned = false) {
+    const geometry = await region.evaluate(node => ({width: node.clientWidth, scroll: node.scrollWidth,
+        left: node.scrollLeft}));
+    if (geometry.scroll > geometry.width) {
+        const exposure = () => region.evaluate(node => {
+            const left = node.getBoundingClientRect().left + node.clientLeft;
+            const right = left + node.clientWidth;
+            const position = {scrollport: {left, right}, scrollLeft: node.scrollLeft,
+                scrollWidth: node.scrollWidth, clientWidth: node.clientWidth,
+                maxScroll: node.scrollWidth - node.clientWidth,
+                focused: document.activeElement && {tag: document.activeElement.tagName,
+                    id: document.activeElement.id, region: document.activeElement === node},
+                viewport: {width: innerWidth, height: innerHeight}};
+            const cells = ['thead', 'tbody'].flatMap(section => ['first', 'last'].map(edge => {
+                const cell = node.querySelector(`${section} tr > :${edge}-child`);
+                const r = cell.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+                return {
+                    section, edge, cell: {tag: cell.tagName, id: cell.id,
+                        left: r.left, right: r.right, top: r.top, bottom: r.bottom},
+                    inRegion: r.left >= left && r.right <= right, accessible: cell.contains(hit),
+                    hit: hit && {tag: hit.tagName, id: hit.id},
+                };
+            }));
+            return {...position, cells,
+                lastColumnReached: cells.filter(cell => cell.edge === 'last').every(cell => cell.inRegion),
+                failures: cells.filter(cell => !cell.inRegion || !cell.accessible)
+                    .map(cell => ({...cell, ...position}))};
+        });
+        await page.keyboard.press('ArrowRight');
+        if (pinned) {
+            await expect.poll(async () => {
+                const state = await exposure();
+                return state.scrollLeft > geometry.left ? [] : [{...state, previousLeft: geometry.left}];
+            }, {message: 'The first real ArrowRight advances the table'}).toEqual([]);
+            await region.hover();
+            // Wheel delivery is asynchronous. Keep observing real wheel movement
+            // instead of switching to a key before that movement has arrived.
+            // A progress sample is only an intermediate position, so continue
+            // until the final column fits or the real scroll limit is reached.
+            let state = await exposure();
+            let attempts = 0;
+            while (attempts < 64 && (attempts === 0 || !state.lastColumnReached) &&
+                state.scrollLeft < state.maxScroll) {
+                const previousLeft = state.scrollLeft;
+                attempts++;
+                await page.mouse.wheel(state.maxScroll - state.scrollLeft, 0);
+                await expect.poll(async () => {
+                    state = await exposure();
+                    return state.scrollLeft > previousLeft || state.lastColumnReached ? [] :
+                        [{...state, previousLeft, attempts, guard: 64}];
+                }, {message: 'Real wheel scrolling advances or exposes the final column'}).toEqual([]);
+            }
+            expect(state.lastColumnReached ? [] : [{...state, attempts, guard: 64,
+                atScrollLimit: state.scrollLeft >= state.maxScroll}],
+                'The final column is reached before the scroll limit or 64-wheel guard').toEqual([]);
+            await expect.poll(async () => (await exposure()).failures,
+                {message: 'Input/header and final column remain exposed after horizontal scrolling'}).toEqual([]);
+        } else {
+            await expect.poll(() => region.evaluate(node => node.scrollLeft)).toBeGreaterThan(geometry.left);
+        }
+        return true;
+    }
+    // A narrow table may already fit at 390px. Require every cell to be
+    // displayed inside the scrollport rather than requiring artificial overflow.
+    const cells = await region.evaluate(node => {
+        const bounds = node.getBoundingClientRect();
+        const left = bounds.left + node.clientLeft;
+        const right = left + node.clientWidth;
+        return Array.from(node.querySelectorAll('table th, table td'), cell => {
+            const rect = cell.getBoundingClientRect();
+            const style = getComputedStyle(cell);
+            return rect.width > 0 && rect.height > 0 && style.display !== 'none' &&
+                style.visibility === 'visible' && rect.left >= left - 1 && rect.right <= right + 1;
+        });
+    });
+    expect(cells.length, 'The fitting table retains its cells').toBeGreaterThan(0);
+    expect(cells.every(Boolean), 'Every column is visible inside the fitting table region').toBe(true);
+    return false;
+}
+
+async function detailTableSemantics(page) {
+    const tables = await page.locator('.item-detail table').evaluateAll(nodes => nodes
+        .filter(table => table.querySelector('tbody td, tbody th')).map(table => {
+            const region = table.closest('[role="region"]');
+            const headers = Array.from(table.querySelectorAll('th'));
+            const cells = Array.from(table.querySelectorAll('td, th'));
+            const columnCount = Array.from(table.querySelectorAll('thead tr:first-child th'))
+                .reduce((sum, cell) => sum + cell.colSpan, 0);
+            return {
+                caption: table.caption && table.caption.textContent.trim(),
+                name: region && (region.getAttribute('aria-label') ||
+                    document.getElementById(region.getAttribute('aria-labelledby'))?.textContent.trim()),
+                tabIndex: region && region.tabIndex,
+                help: region && document.getElementById(region.getAttribute('aria-describedby'))?.textContent.trim(),
+                headers: headers.length > 0 && headers.every(cell =>
+                    ['row', 'col'].includes(cell.scope) && cell.textContent.trim()),
+                associated: Array.from(table.tBodies).flatMap(body => Array.from(body.rows)).every(row =>
+                    row.querySelector('th[scope="row"]') ||
+                    Array.from(row.cells).reduce((sum, cell) => sum + cell.colSpan, 0) <= columnCount),
+                visible: cells.every(cell => {
+                    const style = getComputedStyle(cell);
+                    const rect = cell.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0 && style.display !== 'none' &&
+                        style.visibility === 'visible';
+                }),
+            };
+        }));
+    expect(tables.length).toBeGreaterThan(0);
+    for (const table of tables) {
+        expect(table.caption).toBeTruthy();
+        expect(table.name).toBeTruthy();
+        expect(table.help).toBeTruthy();
+        expect(table.tabIndex).toBe(0);
+        expect(table.headers).toBe(true);
+        expect(table.associated).toBe(true);
+        expect(table.visible).toBe(true);
+    }
+}
+
+test('detail headings and core content fit desktop and narrow viewports', async ({page}, info) => {
+    for (const size of detailSizes(info)) {
+        await page.setViewportSize(size);
+        for (const [id, name] of [['910001', detailName], ['112', 'Fixture Dawn Armor'],
+            ['113', 'Fixture Goddess Necklace'], ['111', 'Regional Staff'],
+            ['230', 'Fixture Red Gem'], ['240', 'Fixture Fire Skill Gem'], ['910002', materialName]]) {
+            await item(page, id, name);
+            await detailFits(page);
+            await readableText(page.locator('#title'));
+            const icon = page.locator('.item-detail-heading img');
+            await expect(icon).toBeVisible();
+            expect(await icon.evaluate(node => node.complete && node.naturalWidth > 0)).toBe(true);
+            const order = await page.locator('.item-detail').evaluate(node => {
+                const heading = node.querySelector('header').getBoundingClientRect();
+                const facts = node.querySelector('.item-detail-facts').getBoundingClientRect();
+                return {headingBottom: heading.bottom, factsTop: facts.top};
+            });
+            expect(order.headingBottom).toBeLessThanOrEqual(order.factsTop);
+            if (id === '112') {
+                const columns = await page.locator('.item-detail-columns').evaluate(node => {
+                    const stats = node.querySelector('.item-detail-stats').getBoundingClientRect();
+                    const enhancement = node.querySelector('.item-detail-enhancement').getBoundingClientRect();
+                    return {statsTop: stats.top, statsBottom: stats.bottom, statsRight: stats.right,
+                        enhancementTop: enhancement.top, enhancementLeft: enhancement.left};
+                });
+                if (size.width === 1440) {
+                    expect(Math.abs(columns.statsTop - columns.enhancementTop)).toBeLessThanOrEqual(1);
+                    expect(columns.enhancementLeft).toBeGreaterThanOrEqual(columns.statsRight);
+                } else {
+                    expect(columns.enhancementTop).toBeGreaterThanOrEqual(columns.statsBottom);
+                }
+            }
+            if (id === '910001') {
+                await readableText(page.locator('.item-detail > p').filter({hasText: '긴 설명 日本語 description'}));
+                await stat(page, 'patk', '7,000');
+                await expect(page.locator('.item-detail-stats')).toContainText('12345678901234567890');
+                await expect(page.locator('.item-detail')).toContainText('Second description line 12345678901234567890');
+                await evidence(page, info, `detail-heading-${size.width}`);
+            }
+        }
+    }
+});
+
+test('detail tables retain semantics and scroll with the keyboard', async ({page}, info) => {
+    for (const size of detailSizes(info)) {
+        await page.setViewportSize(size);
+        for (const id of ['910001', '910003', '910004', '230', '240']) {
+            await page.goto(`/items/${id}`);
+            await detailTableSemantics(page);
+            await detailFits(page);
+        }
+        await item(page, '230', 'Fixture Red Gem');
+        const table = page.locator('#gem-socket-bonuses');
+        const before = await table.locator('tbody tr').allTextContents();
+        expect(before).toHaveLength(16);
+        await expect(table.locator('thead th')).toHaveText(['Lv', 'Slot', 'Stat', 'Value']);
+        await expect(table).toContainText('-10');
+        const region = page.getByRole('region', {name: 'Socket bonuses', exact: true});
+        await region.focus();
+        await visibleDetailFocus(region);
+        if (await detailTableAccess(page, region)) {
+            // Scroll to the final value through the browser's own focus/scroll path.
+            await table.locator('tbody tr:last-child td:last-child').scrollIntoViewIfNeeded();
+            await expect(table.locator('tbody tr:last-child td:last-child')).toBeInViewport();
+        }
+        expect(await table.locator('tbody tr').allTextContents()).toEqual(before);
+        await detailFits(page);
+        await evidence(page, info, `detail-table-${size.width}`);
+    }
+});
+
+test('detail calculators support touch keyboard and reset values', async ({page}, info) => {
+    const cases = [
+        ['110', 'Fixture Dawn Sword', 'patk', '7,600', '8,020', '7,000'],
+        ['112', 'Fixture Dawn Armor', 'pdef', '10,200', '10,740', '9,000'],
+        ['113', 'Fixture Goddess Necklace', 'matk', '3,780', '3,978', '3,300'],
+        ['111', 'Regional Staff', 'matk', '392', '462', '350'],
+    ];
+    for (const size of detailSizes(info)) {
+        await page.setViewportSize(size);
+        for (const [id, name, key, enhanced, transcended, initial] of cases) {
+            await item(page, id, name);
+            const detailURL = page.url();
+            const anvil = page.getByRole('spinbutton', {name: 'Anvil', exact: true});
+            const tc = page.getByRole('spinbutton', {name: 'Transcend', exact: true});
+            for (const [input, label, maximum] of [[anvil, 'Anvil', id === '111' ? '40' : '30'],
+                [tc, 'Transcend', '10']]) {
+                expect(await input.evaluate(node => Array.from(node.labels).some(label =>
+                    label.control === node && label.textContent.trim()))).toBe(true);
+                await expect(input).toHaveValue('0');
+                await expect(input).toHaveAttribute('min', '0');
+                await expect(input).toHaveAttribute('max', maximum);
+                await expect(input).toHaveAttribute('step', '1');
+                await expect(input).toHaveAttribute('inputmode', 'numeric');
+                const region = page.getByRole('region', {name: label, exact: true});
+                await region.focus();
+                await visibleDetailFocus(region);
+                await detailTableAccess(page, region, size.width <= 390);
+                await detailFits(page);
+                await page.keyboard.press('Tab');
+                await visibleDetailFocus(input, detailURL);
+                await expect.poll(() => input.evaluate(node => {
+                    const r = node.getBoundingClientRect();
+                    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === node;
+                }), {message: 'The focused input is exposed above the other columns'}).toBe(true);
+                const box = await input.boundingBox();
+                expect(box.width).toBeGreaterThanOrEqual(88);
+                expect(box.height).toBeGreaterThanOrEqual(44);
+                if (info.project.name === 'mobile') await input.tap();
+                else await input.click();
+                await expect(input).toBeFocused();
+            }
+            await anvil.fill('5');
+            await anvil.press('ArrowUp');
+            await expect(anvil).toHaveValue('6');
+            await stat(page, key, enhanced);
+            if (id === '112') await stat(page, 'mdef', '5,700');
+            if (id === '113') await stat(page, 'patk', '3,780');
+            if (id !== '111') {
+                await page.keyboard.press('Tab');
+                await visibleDetailFocus(page.locator('#god_materials a').first(), detailURL);
+            }
+            await tc.fill('2');
+            await stat(page, key, transcended);
+            if (id === '112') await stat(page, 'mdef', '5,970');
+            if (id === '111') {
+                await stat(page, 'anvil_price', '600');
+                await stat(page, 'anvil_total', '2,100');
+            } else {
+                await stat(page, 'god_chance', '98%');
+                const quantities = {'110': ['36', '12'], '112': ['18', '6'], '113': ['12', '7']}[id];
+                await expect(page.locator('#god_materials')).toContainText(`Regional Ore × ${quantities[0]}`);
+                await expect(page.locator('#god_materials')).toContainText(`Fixture Dust × ${quantities[1]}`);
+                await expect(page.locator('#god_materials a[href="/items/100"]')).toHaveText('Regional Ore');
+            }
+            await detailFits(page);
+            if (id === '110') await evidence(page, info, `detail-calculator-${size.width}`);
+            // The current calculator resets through its zero inputs; it has no
+            // separate reset/step buttons. Keep this real interaction contract.
+            await anvil.fill('0');
+            await tc.fill('0');
+            await stat(page, key, initial);
+            await stat(page, 'tc_total', '0');
+            await expect(page).toHaveURL(detailURL);
+        }
+    }
+});
+
+test('detail recipes collections and long links preserve navigation', async ({page}, info) => {
+    for (const size of detailSizes(info)) {
+        await page.setViewportSize(size);
+        await item(page, '910003', recipeName);
+        const materials = page.getByRole('region', {name: 'Materials', exact: true});
+        await expect(materials).toContainText('x123456789');
+        const material = materials.getByRole('link', {name: materialName, exact: true});
+        await materials.focus();
+        await page.keyboard.press('Tab');
+        await visibleDetailFocus(material);
+        await readableText(material);
+        if (size.width <= 390) expect((await material.boundingBox()).height).toBeGreaterThanOrEqual(44);
+        await detailFits(page);
+        await evidence(page, info, `detail-recipe-${size.width}`);
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL(/\/items\/910002$/);
+        await expect(page.locator('#title')).toHaveText(materialName);
+        await item(page, '910004', collectionName);
+        await expect(page.locator('.item-detail')).toContainText('12345678901234567890');
+        await page.getByRole('link', {name: detailName, exact: true}).click();
+        await expect(page.locator('#title')).toHaveText(detailName);
+        const references = page.getByRole('region', {name: 'Refferences', exact: true});
+        await expect(references.getByRole('rowheader', {name: 'Crafted From', exact: true})).toBeVisible();
+        const recipe = references.getByRole('link', {name: recipeName, exact: true});
+        await recipe.scrollIntoViewIfNeeded();
+        await readableText(recipe);
+        await recipe.click();
+        await expect(page.locator('#title')).toHaveText(recipeName);
+        await page.getByRole('region', {name: 'Produce', exact: true})
+            .getByRole('link', {name: detailName, exact: true}).click();
+        await expect(page).toHaveURL(/\/items\/910001$/);
+        await page.getByRole('link', {name: collectionName, exact: true}).click();
+        await expect(page).toHaveURL(/\/items\/910004$/);
+        await item(page, '240', 'Fixture Fire Skill Gem');
+        await page.locator('.item-detail a[href="/skills/400"]').click();
+        await expect(page.locator('#title')).toHaveText('Regional Fire');
+    }
+});
+
+test('detail without JavaScript retains core content and links', async ({browser, baseURL}, info) => {
+    const context = await browser.newContext({baseURL, javaScriptEnabled: false,
+        viewport: detailSizes(info)[0]});
+    let errors = [];
+    try {
+        errors = await watchNetworking(context, baseURL);
+        const page = await context.newPage();
+        for (const size of detailSizes(info)) {
+            await page.setViewportSize(size);
+            for (const order of [['style.css', 'item-detail.css'], ['item-detail.css', 'style.css']]) {
+                await orderedDetailNavigation(page, baseURL, order, async () => {
+                    const response = await page.goto('/items/910001', {waitUntil: 'commit'});
+                    expect(response.status()).toBe(200);
+                });
+                await expect(page.locator('#title')).toHaveText(detailName);
+                await detailFits(page);
+                await readableText(page.locator('#title'));
+                const description = page.locator('.item-detail > p')
+                    .filter({hasText: '긴 설명 日本語 description'});
+                await expect(description).toContainText('긴 설명 日本語 description ' + detailTail);
+                await expect(page.locator('.item-detail')).toContainText('Second description line 12345678901234567890');
+                await readableText(description);
+                await stat(page, 'patk', '7000');
+                await expect(page.locator('.item-detail-stats')).toContainText('12345678901234567890');
+                await detailTableSemantics(page);
+                const collection = page.getByRole('link', {name: collectionName, exact: true});
+                await expect(collection).toHaveAttribute('href', '/items/910004');
+                await orderedDetailNavigation(page, baseURL, order, () => collection.click({noWaitAfter: true}));
+                await expect(page.locator('#title')).toHaveText(collectionName);
+                await detailFits(page);
+                await readableText(page.locator('#title'));
+                await expect(page.locator('.item-detail')).toContainText('12345678901234567890');
+                await detailTableSemantics(page);
+                await page.getByRole('link', {name: detailName, exact: true}).click();
+                await expect(page.locator('#title')).toHaveText(detailName);
+                await page.getByRole('link', {name: recipeName, exact: true}).click();
+                await expect(page.locator('#title')).toHaveText(recipeName);
+                const materials = page.getByRole('region', {name: 'Materials', exact: true});
+                await expect(materials).toContainText('x123456789');
+                const material = materials.getByRole('link', {name: materialName, exact: true});
+                await expect(material).toHaveAttribute('href', '/items/910002');
+                await readableText(material);
+                await orderedDetailNavigation(page, baseURL, order, () => material.click({noWaitAfter: true}));
+                await expect(page.locator('#title')).toHaveText(materialName);
+                await detailFits(page);
+                await readableText(page.locator('#title'));
+                const materialDescription = page.locator('.item-detail > p')
+                    .filter({hasText: 'Core material description 日本語 한글'});
+                await expect(materialDescription).toContainText('Core material description 日本語 한글 ' + detailTail);
+                await readableText(materialDescription);
+                await evidence(page, info, `detail-no-js-${size.width}-${order[0]}`);
+            }
+            await item(page, '230', 'Fixture Red Gem');
+            await expect(page.locator('#gem-socket-bonuses tbody tr')).toHaveCount(16);
+            await expect(page.locator('#gem-socket-bonuses')).toContainText('-10');
+            await detailFits(page);
+            await evidence(page, info, `detail-no-js-${size.width}`);
+            await item(page, '240', 'Fixture Fire Skill Gem');
+            await page.locator('.item-detail a[href="/skills/400"]').click();
+            await expect(page.locator('#title')).toHaveText('Regional Fire');
+        }
+    } finally {
+        await context.close();
+        expect(errors, 'Detail without JavaScript browser errors').toEqual([]);
+    }
+});
+
 async function pvpFitsViewport(page, info) {
     if (info.project.name === 'mobile') expect(page.viewportSize().width).toBe(390);
     const layout = await page.evaluate(() => {
