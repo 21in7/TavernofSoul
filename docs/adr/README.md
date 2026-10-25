@@ -34,6 +34,7 @@
 | [0027](0027-inspection-lock-isolation-and-diagnostics.md) | workflow 소유권과 짧은 source 보호·stable discovery/sender·경계별 private 진단·실제 원인 보존 | 사용자 요청 구현안, 최종 새 Claude 의미 검토/full check/scoped apply·Git/CI·운영 관측 대기 | 2026-10-22 |
 | [0028](0028-resumed-run-result-archives.md) | 최초 실패 불변·원래 증거 연결·trusted-parent 명시 failed→passed 별도 세대 보관 | 사용자 승인 구현안, 새 의미 검토/full check/apply·전달·실제 복구 대기 | 2026-10-23 |
 | [0029](0029-item-search-progressive-enhancement.md) | 아이템 검색 SSR·조각 응답·history/복구·실제 새 탭 감시 | 제안(proposed), 직접 요청 구현안·새 검토/브라우저→전체 검증/전달 대기 | 2026-10-24 |
+| [0030](0030-item-detail-mobile-layout.md) | 상세 모바일·표 접근성·46조합 | 제안, 검토·검증·전달 대기 | 2026-10-25 |
 
 ## 상태와 근거의 의미
 

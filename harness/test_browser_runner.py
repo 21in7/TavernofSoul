@@ -24,13 +24,13 @@ def passing_report():
 
 def test_complete_browser_report_counts_both_viewports():
     assert MANIFEST['projects'] == ['desktop', 'mobile']
-    assert len(MANIFEST['scenarios']) == len(set(MANIFEST['scenarios'])) == 18
+    assert len(MANIFEST['scenarios']) == len(set(MANIFEST['scenarios'])) == 23
     expected = {(scenario, project) for scenario in MANIFEST['scenarios']
                 for project in ('desktop', 'mobile')}
     raw = passing_report()
     pairs = [(spec['title'], test['projectName'])
              for spec in raw['suites'][0]['suites'][0]['specs'] for test in spec['tests']]
-    assert len(pairs) == len(expected) == 36
+    assert len(pairs) == len(expected) == 46
     assert set(pairs) == expected
     report = summarize_playwright(raw)
     assert report['status'] == 'passed'
@@ -40,7 +40,7 @@ def test_complete_browser_report_counts_both_viewports():
 
 def test_search_recovery_scenarios_are_required_in_the_manifest():
     # Keep the newly required failure paths explicit: replacing one with an
-    # unrelated scenario must not satisfy the fixed aggregate count of 36.
+    # unrelated scenario must not satisfy the fixed aggregate count.
     required = {
         'search preserves filters and opens the detail page',
         'search with no matches stays empty',
@@ -53,6 +53,30 @@ def test_search_recovery_scenarios_are_required_in_the_manifest():
         'search without JavaScript keeps GET pages and reset usable',
     }
     assert required <= set(MANIFEST['scenarios'])
+
+
+def test_original_equipment_and_pvp_scenarios_are_preserved():
+    assert MANIFEST['scenarios'][9:18] == [
+        '560 sword steps reset and material links work',
+        'transcend input order and reset preserve base stats',
+        '560 armor updates both defenses',
+        '550 accessory uses its own reinforcement table',
+        'ordinary equipment keeps its existing calculator',
+        'gem levels include bonuses and penalties',
+        'skill gem opens the related skill',
+        'pvp calculator updates probabilities and level boundaries',
+        'pvp calculator rejects invalid inputs and resets accessibly',
+    ]
+
+
+def test_detail_layout_scenarios_are_required_in_the_manifest():
+    assert MANIFEST['scenarios'][18:] == [
+        'detail headings and core content fit desktop and narrow viewports',
+        'detail tables retain semantics and scroll with the keyboard',
+        'detail calculators support touch keyboard and reset values',
+        'detail recipes collections and long links preserve navigation',
+        'detail without JavaScript retains core content and links',
+    ]
 
 
 @pytest.mark.parametrize('scenario', MANIFEST['scenarios'])
@@ -73,7 +97,8 @@ def test_every_registered_scenario_requires_each_viewport(scenario, project, rep
 
 @pytest.mark.parametrize('case', [
     'empty', 'missing_scenario', 'missing_mobile', 'duplicate', 'skip', 'xfail',
-    'fail_annotation', 'retry', 'actual_failure', 'runner_error', 'inconsistent_stats',
+    'fail_annotation', 'fixme', 'skipped_attempt', 'retry', 'retry_only', 'flaky',
+    'actual_failure', 'runner_error', 'inconsistent_stats', 'unexpected_scenario', 'unexpected_project',
 ])
 def test_browser_gate_rejects_incomplete_and_misleading_green_reports(case):
     raw = deepcopy(passing_report())
@@ -92,6 +117,10 @@ def test_browser_gate_rejects_incomplete_and_misleading_green_reports(case):
     elif case == 'duplicate':
         specs.append(deepcopy(specs[0]))
         raw['stats']['expected'] += 2
+    elif case == 'unexpected_scenario':
+        specs[0]['title'] = 'Unregistered detail scenario'
+    elif case == 'unexpected_project':
+        test['projectName'] = 'unregistered'
     elif case == 'skip':
         test['annotations'] = [{'type': 'skip'}]
     elif case == 'xfail':
@@ -99,10 +128,18 @@ def test_browser_gate_rejects_incomplete_and_misleading_green_reports(case):
         test['results'][0]['status'] = 'failed'
     elif case == 'fail_annotation':
         test['annotations'] = [{'type': 'fail'}]
+    elif case == 'fixme':
+        test['annotations'] = [{'type': 'fixme'}]
+    elif case == 'skipped_attempt':
+        test['results'][0]['status'] = 'skipped'
     elif case == 'retry':
         test['results'].insert(0, {'status': 'failed'})
         test['status'] = 'flaky'
         raw['stats']['flaky'] = 1
+    elif case == 'retry_only':
+        test['results'][0]['retry'] = 1
+    elif case == 'flaky':
+        test['status'] = 'flaky'
     elif case == 'actual_failure':
         test['status'] = 'unexpected'
         test['results'][0]['status'] = 'failed'
@@ -112,6 +149,28 @@ def test_browser_gate_rejects_incomplete_and_misleading_green_reports(case):
     elif case == 'inconsistent_stats':
         raw['stats']['expected'] = 0
     assert summarize_playwright(raw)['status'] == 'failed'
+
+
+@pytest.mark.parametrize('key', ['projects', 'scenarios'])
+@pytest.mark.parametrize('case', ['empty', 'duplicate', 'blank'])
+def test_invalid_manifest_cannot_reduce_required_coverage(key, case):
+    manifest = deepcopy(MANIFEST)
+    if case == 'empty':
+        manifest[key] = []
+    elif case == 'duplicate':
+        manifest[key].append(manifest[key][0])
+    else:
+        manifest[key].append('')
+    report = summarize_playwright(passing_report(), manifest)
+    assert report['status'] == 'failed'
+    assert report['errors']
+
+
+def test_empty_manifest_and_empty_engine_report_cannot_pass_together():
+    raw = {'suites': [], 'errors': [], 'stats': {'expected': 0}}
+    report = summarize_playwright(raw, {'projects': [], 'scenarios': []})
+    assert report['status'] == 'failed'
+    assert report['selected'] == report['passed'] == 0
 
 
 def test_passing_django_wrapper_cannot_replace_a_missing_browser_result(tmp_path, monkeypatch):

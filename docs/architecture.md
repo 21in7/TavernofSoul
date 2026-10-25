@@ -793,6 +793,8 @@ marker와 복원 상태는 한 파싱 호출 안에서만 유지하며 원본 �
 context 감시·문서 연결·원래 화면 보존은 [ADR0029](adr/0029-item-search-progressive-enhancement.md),
 실행 경계는 [검색 인계](harness.md#아이템-검색-계약의-격리-검증과-인계)를 따른다.
 
+상세 SSR·전용 CSS·표 스크롤·계산 보존 경계는 [ADR0030](adr/0030-item-detail-mobile-layout.md)을 따른다.
+
 ## 아이템 원본부터 서빙까지
 
 `harness/fixtures/parser/`는 직접 작성한 CSV 형식 IES, XML/TSV 번역,

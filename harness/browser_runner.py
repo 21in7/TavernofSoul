@@ -22,6 +22,13 @@ def browser_doctor():
 
 
 def summarize_playwright(raw, manifest=MANIFEST):
+    # A malformed/empty manifest must not turn an empty engine report green.
+    manifest_errors = []
+    for key in ('projects', 'scenarios'):
+        values = manifest[key]
+        if not values or any(not isinstance(value, str) or not value.strip() for value in values) or \
+                len(values) != len(set(values)):
+            manifest_errors.append({'coverage': 'Browser manifest requires unique nonempty ' + key})
     required = {(project, title) for project in manifest['projects'] for title in manifest['scenarios']}
     entries = []
 
@@ -35,7 +42,7 @@ def summarize_playwright(raw, manifest=MANIFEST):
     for suite in raw.get('suites', []):
         visit(suite)
     actual = {(test.get('projectName'), title) for title, test in entries}
-    errors = list(raw.get('errors', []))
+    errors = list(raw.get('errors', [])) + manifest_errors
     if actual != required or len(entries) != len(required):
         errors.append({'coverage': 'Required browser scenarios are missing, duplicated or unexpected',
                        'missing': sorted(required - actual), 'unexpected': sorted(actual - required)})
@@ -48,7 +55,7 @@ def summarize_playwright(raw, manifest=MANIFEST):
                 any(a.get('status') == 'skipped' for a in attempts):
             skipped.append(entry)
         elif test.get('status') != 'expected' or len(attempts) != 1 or \
-                attempts[0].get('status') != 'passed':
+                attempts[0].get('status') != 'passed' or attempts[0].get('retry', 0) != 0:
             entry['results'] = attempts
             failures.append(entry)
         else:

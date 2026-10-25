@@ -1,5 +1,6 @@
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
+from html.parser import HTMLParser
 
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -10,6 +11,96 @@ from django.test.utils import CaptureQueriesContext
 
 from Items.models import Items, Item_Type, Equipments
 from Items import views
+
+
+class DetailDocument(HTMLParser):
+    """Inspect the server document without executing calculator JavaScript."""
+    def __init__(self, html):
+        super().__init__()
+        self.elements = []
+        self.text = []
+        self.feed(html)
+
+    def handle_starttag(self, tag, attributes):
+        self.elements.append((tag, dict(attributes)))
+
+    def handle_data(self, text):
+        self.text.append(text)
+
+
+class ItemDetailDocumentTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        from Items.models import Recipes, Item_Recipe_Material, Item_Recipe_Target
+
+        cls.long_name = '긴이름日本語LongUnbrokenEquipmentName' * 5
+        cls.description = '설명 日本語 <details> & material information'
+        cls.equipment = Items.objects.create(
+            ids='mobile-equipment', id_name='LongClassName' * 7,
+            name=cls.long_name, descriptions=cls.description, icon='fixture',
+            tradability='TTTTT', grade=4, type='Weapon')
+        Equipments.objects.create(
+            item=cls.equipment, level=400, type_equipment='Staff',
+            requiredClass='TTTTT', unidentified=False, unidentifiedRandom=False,
+            durability=40, potential=8, sockets_limit=3, matk=350,
+            anvil_atk=[7 * n for n in range(1, 41)],
+            anvil_def=[], anvil_price=[100 * n for n in range(1, 41)],
+            transcend_price=list(range(1, 11)))
+        cls.recipe_item = Items.objects.create(
+            ids='mobile-recipe', id_name='Recipe_Mobile', name='Recipe ' + cls.long_name,
+            tradability='TTTTT', type='Recipe', icon='fixture')
+        cls.material = Items.objects.create(
+            ids='mobile-material', id_name='Material_Mobile', name='材料 & <ore> ' + cls.long_name,
+            tradability='TTTTT', type='Material', icon='fixture')
+        recipe = Recipes.objects.create(item=cls.recipe_item)
+        Item_Recipe_Target.objects.create(recipe=recipe, target=cls.equipment)
+        Item_Recipe_Material.objects.create(recipe=recipe, material=cls.material, qty=123456)
+
+    def document(self, item):
+        response = self.client.get(item.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        return response, DetailDocument(response.content.decode())
+
+    def test_server_document_keeps_stats_and_labelled_calculator_controls(self):
+        response, document = self.document(self.equipment)
+        self.assertIn(self.long_name, ''.join(document.text))
+        self.assertIn(self.description, ''.join(document.text))
+        ids = [attrs['id'] for _, attrs in document.elements if 'id' in attrs]
+        self.assertEqual(len(ids), len(set(ids)))
+        controls = {attrs['id']: attrs for tag, attrs in document.elements
+                    if tag == 'input' and attrs.get('id') in ('anvil', 'tc')}
+        labels = {attrs.get('for') for tag, attrs in document.elements if tag == 'label'}
+        self.assertEqual(set(controls), {'anvil', 'tc'})
+        for ident, attrs in controls.items():
+            self.assertIn(ident, labels)
+            self.assertEqual((attrs['type'], attrs['inputmode'], attrs['min'],
+                              attrs['step'], attrs['value']),
+                             ('number', 'numeric', '0', '1', '0'))
+        self.assertEqual(controls['tc']['max'], '10')
+        self.assertEqual(response.context['enhancement']['base']['matk'], 350)
+        self.assertEqual(response.context['enhancement']['attack'][5], 42)
+        self.assertEqual(response.context['enhancement']['prices'][5], 600)
+        self.assertContains(response, 'id = "matk" >350</td>')
+        regions = [attrs for _, attrs in document.elements if attrs.get('role') == 'region']
+        self.assertTrue(regions)
+        for attrs in regions:
+            self.assertTrue(attrs.get('aria-label'))
+            self.assertEqual(attrs['tabindex'], '0')
+            self.assertIn(attrs['aria-describedby'], ids)
+        headers = [attrs for tag, attrs in document.elements if tag == 'th']
+        self.assertTrue(headers)
+        self.assertTrue(all(attrs.get('scope') in ('row', 'col') for attrs in headers))
+
+    def test_recipe_and_reference_links_are_present_in_basic_html(self):
+        _, recipe = self.document(self.recipe_item)
+        links = [attrs.get('href') for tag, attrs in recipe.elements if tag == 'a']
+        self.assertIn(self.material.get_absolute_url(), links)
+        self.assertIn(self.equipment.get_absolute_url(), links)
+        self.assertIn(self.material.name, ''.join(recipe.text))
+        self.assertIn('x123456', ''.join(recipe.text))
+        _, equipment = self.document(self.equipment)
+        self.assertIn(self.recipe_item.get_absolute_url(),
+                      [attrs.get('href') for tag, attrs in equipment.elements if tag == 'a'])
 
 
 class SearchQueryTests(TestCase):
