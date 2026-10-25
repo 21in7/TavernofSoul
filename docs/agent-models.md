@@ -245,6 +245,14 @@ PATH aliases 구현이나 최초 발생 프로세스를 증명하지 않는다. 
 기록하며 모델 응답·인증 원문을 문서에 복사하지 않는다.
 Jev fallback과 workflow 종료 상태의 관계는 [자동 작업 실행](workflow.md)을 참고한다.
 
+[ADR0033](adr/0033-workflow-token-efficiency.md)의 stdlib `agent_usage`는 private agent 결과와 workflow
+agents에 실제 final CLI의 정제 숫자만 기록한다. `usage`의 status/source/semantics는 고정 enum이며
+누락·legacy·불명 완료는 unavailable/unknown/null이다. Codex input은 캐시 포함이라 cached를 다시
+더하지 않는다. Claude/Z.ai input은 캐시 제외라 cache_read/cache_creation을 모두 관측해야 total을
+유도한다. `prompt_size={characters,utf8_bytes}`는 전송 stdin 크기이며 전체 입력/billed tokens가 아니다.
+CLI usage·기존 Claude dollar estimate·Codex/Z.ai 구독 quota는 서로 다르다. 측정 실패는 모델 결과·
+cost ledger·admission·Read proof·기존 GLM telemetry를 바꾸지 않으며 public payload에는 추가하지 않는다.
+
 ## 역할 실행
 
 작업을 텍스트 파일에 작성하고 해당 역할로 전달한다.
