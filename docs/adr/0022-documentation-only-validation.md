@@ -1,5 +1,7 @@
 # 0022. 실제 최종 변경에 결합한 문서 전용 검증과 CI gate
 
+현재 자동 검사 선택과 작업 branch push 실행은 [0031](0031-change-scoped-automatic-validation.md)이 부분 대체한다. 아래는 당시 결정·실패·검증 관측을 보존한 기록이다. docs 검사 계약과 완전한 event diff 수집 구현은 유지한다.
+
 - 상태: 채택(accepted), 2026-10-20 구현·검증·전달 완료 (메인 제공 관측 근거는 아래 기록)
 - 기록일: 2026-10-19
 - 부분 대체: 2026-10-20 사용자 직접 요청에 따른 [0023](0023-new-branch-documentation-validation.md)이 새 브랜치 zero-before의 무조건 full 결정만 대체한다. 아래 해당 문단은 당시 결정의 역사이며 다른 docs-only 정책은 유지한다.

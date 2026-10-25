@@ -411,8 +411,13 @@ def test_ci_keeps_three_required_names_and_propagates_evidence_failure():
         assert '- name: ' + name in text
     assert 'needs: [selection, offline, mysql, browser]' in text
     assert "SELECTION_RESULT: ${{ needs.selection.result }}" in text
-    assert "EXECUTION_RESULT: ${{ needs[matrix.execution].result }}" in text
-    assert 'report.get(\'selection\') == selection' in text
+    assert 'EXECUTION_RESULTS:' in text
+    assert '${{ needs.offline.result }}' in text
+    assert '${{ needs.mysql.result }}' in text
+    assert '${{ needs.browser.result }}' in text
+    assert "LIVE_RESULT: ${{ needs.offline.result == 'skipped' && 'skipped' || needs.offline.outputs.live_result }}" in text
+    helper = (Path(__file__).parents[1] / 'harness/check_selection.py').read_text()
+    assert 'report.get(\'selection\') == selection' in helper
     assert 'uses: actions/checkout@v6' in text
     assert 'fetch-depth: 0' in text
     assert 'persist-credentials: false' in text
@@ -420,8 +425,13 @@ def test_ci_keeps_three_required_names_and_propagates_evidence_failure():
     assert 'ref: ${{ github.event.pull_request.head.sha || github.sha }}' in text
     assert '--changes-file validation-selection.json --report docs-result.json' in text
     assert "if: always()\n    needs: [selection, offline, mysql, browser]" in text
-    assert "if os.environ['SELECTION_RESULT'] != 'success':" in text
-    assert "elif selection.get('mode') != 'full' or os.environ['EXECUTION_RESULT'] != 'success':" in text
+    assert "if os.environ['SELECTION_RESULT'] != 'success':" in helper
+    assert 'harness.check_selection --verify' in text
+    assert '--plan-file evidence/execution-plan.json' in text
+    assert "expected = 'success' if plan[name] else 'skipped'" in helper
+    assert "if results[name] != expected:" in helper
+    assert "g['selected'] > 0" in helper
+    assert "g.get('skipped') == []" in helper
 
 
 def test_public_ci_source_link_is_distinct_from_hidden_credentials(tmp_path):

@@ -1,5 +1,8 @@
 # 전체 하네스 설계
 
+자동 검사 선택·증명 책임은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
+로컬 실제 diff 선택과 CI skip 증명은 check_selection에 모으고 workflow/publisher가 위임한다.
+
 ## 개발 실행과 읽기 점검의 잠금 격리
 
 잠금 획득·책임과 이행은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이
@@ -48,7 +51,7 @@ private record가 원래 run/이전 manifest/receipt/현재 inventory/별도 고
 새 모델/검사/Git/승인은 없으며 실제 최종 readback·불변 대조는 parent 책임이다.
 
 [ADR0022](adr/0022-documentation-only-validation.md)의 docs-only 선택은 scope/모델 주장 대신
-최종 baseline→candidate bytes/mode/type diff를 사용한다. 정책/코드/설정/불명은 full이며 repair마다
+최종 baseline→candidate bytes/mode/type diff를 사용한다. 정책/하네스/공통 설정/계약/불명은 full이며 repair마다
 재판단한다. validation_selection·검사 digest·delivery_validation을 반영·게시까지 결합한다.
 로컬 mode 기록은 POSIX 정수를 유지해 동일 0664/0640/0600 등 일반 비실행 권한을 허용하고
 실제 권한 변경·실행/special bit·invalid mode는 full로 보낸다. 추가/삭제는 존재하는 쪽을 검사하며
@@ -58,11 +61,9 @@ check-docs는 Python 3.8 stdlib로 링크/Unicode heading·fragment·삭제/rena
 inline code는 같은 block의 줄바꿈·정확한 backtick run·code 안팎의 escape를 구별해 마스킹하며
 원문 줄 번호·heading 텍스트·뒤의 실제 링크 검사와 fence 경계를 보존한다.
 CI complete event diff와 세 required final gate는 positive selected/passed·zero skip의 docs 증거
-또는 기존 heavy 실행 성공을 요구한다. [ADR0023](adr/0023-new-branch-documentation-validation.md)은
-정확한 zero-before·created=true/deleted=false·유효한 비기본 branch 최초 push에서 fetched
-default ref의 commit을 고정하고 유일 merge base→event head 전체 raw diff를 사용한다.
-일반 push before→after/PR base→head는 유지하며 선택된 changes를 docs 보고서/gate까지 전달한다.
-불명 metadata/ref·불완전 history·공통 조상 없음/복수·dirty/untracked/head 불일치·빈 diff는 full이다.
+또는 ADR0031의 계획에 일치하는 모든 실행 성공/예정 skip을 요구한다. 작업 branch push는 자동
+실행하지 않으며 master push·PR·수동 실행을 유지한다. ADR0023의 직접 호출용 전체 비교 구현과
+불명 metadata/history·공통 조상 없음/복수·dirty/untracked/head 불일치·빈 diff의 full fallback은 유지한다.
 trusted parent의 최종 archive.py 실제 NFS 저장/readback/hash·동일 결과 멱등 재개 성공 관측은
 일반 pipeline 전체 성공이 아니다. 이번 수정은 새 실제 Claude 검토·full make check·실제 문서 검사·
 GitHub/CI 검증이 필요하다.
@@ -343,7 +344,8 @@ flowchart TD
 메인은 요청과 외부 모델이 읽을 소스·테스트·문서·예정 신규 파일의 개별 경로를 준비한다.
 실행기는 준비 검사 doctor를 먼저 수행하고 Jev를 관측한다. 경로 규칙이 최소 필수 검사를 결정하며
 Jev는 이를 낮추지 못한다. Jev 영역과 경로가 일치하는 명확한 작업은 직접 담당자에 배정한다.
-여러 영역·불확실성·계약 영향·키 누락·응답/전송 실패는 coordinator 계획과 전체 check로 간다.
+여러 영역·불확실성·계약 영향·키 누락·응답/전송 실패는 coordinator 계획으로 간다. 검토 후 실제 변경으로
+검사를 다시 정하며 계약 영향·실제 공통 변경은 full이다. fallback만으로 full을 추가하지 않는다.
 triage 단독 명령은 shadow 기록이며 `execution_allowed=false`다. 실제 실행 주체는 workflow다.
 
 계획 JSON은 정확히 `tasks`; 각 task는 `role/task/files`이며 승인 파일을 정확히 한 번씩
@@ -636,7 +638,7 @@ head/base 변경·충돌·required의 실패·skip·neutral·누락·미완료�
 [ADR0022](adr/0022-documentation-only-validation.md)의 publisher 연결 정정은 정확히
 `Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped만
 예외 후보로 둔다. 각 skip과 같은 SHA·github-actions·동일 양의 정수 check_suite.id 안의 최신
-`Select actual change validation` success, 세 required success, 세 heavy skip 전체를 요구한다.
+`Select actual change validation` success, 세 required success, 세 execution의 계획상 success/skipped 전체를 요구한다.
 전체 이름별 최신 selection/required도 completed/success여야 하며 suite 내부 최신 결과도 확인한다.
 예정 skip 예외에서는 최신 selection/required의 suite metadata도 유효해야 한다. 옛 정상 suite
 증거로 최신 결과의 누락·malformed metadata를 대신할 수 없다.

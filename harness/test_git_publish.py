@@ -1494,3 +1494,71 @@ def test_post_merge_test_merge_ci_gate_is_retained(prepared):
     delivery.accept(ledger, {'sha': TEST_MERGE, 'total_count': 0})
     delivery.accept(ledger, {'full_name': ledger['config']['repository'], 'default_branch': 'master'})
     assert ledger['step'] == 'cleanup_branches'
+
+
+def partial_rows_for(browser=False, suite=101, first_id=1):
+    rows = docs_rows_for(suite=suite, first_id=first_id)
+    rows[0]['conclusion'] = 'success'
+    if browser:
+        rows[2]['conclusion'] = 'success'
+    return rows
+
+
+@pytest.mark.parametrize('browser', [False, True])
+def test_partial_planned_skips_require_entire_artifact_attesting_suite(ci_ledger, browser):
+    rows = partial_rows_for(browser)
+    assert delivery.checks_gate(rows, ci_ledger['config'], HEAD)[0] is True
+    for index in range(len(rows)):
+        incomplete = copy.deepcopy(rows)
+        incomplete.pop(index)
+        assert delivery.checks_gate(incomplete, ci_ledger['config'], HEAD)[0] is False
+        mixed = copy.deepcopy(rows)
+        mixed[index]['check_suite'] = {'id': 202}
+        assert delivery.checks_gate(mixed, ci_ledger['config'], HEAD)[0] is False
+
+
+@pytest.mark.parametrize('browser', [False, True])
+@pytest.mark.parametrize('target', range(7))
+def test_partial_latest_pending_failure_or_bad_suite_cannot_borrow_old_success(ci_ledger, browser, target):
+    rows = partial_rows_for(browser)
+    for override in ({'status': 'queued', 'conclusion': None}, {'check_suite': {'id': True}},
+                     {'check_suite': {'id': 202}}):
+        current = rows + [{**rows[target], 'id': 99, **override}]
+        assert delivery.checks_gate(current, ci_ledger['config'], HEAD)[0] is False
+    for outcome in ('failure', 'neutral', 'cancelled'):
+        with pytest.raises(ValueError, match='CI failed'):
+            delivery.checks_gate(rows + [{**rows[target], 'id': 99, 'conclusion': outcome}],
+                                 ci_ledger['config'], HEAD)
+
+
+def test_partial_execution_failure_in_skip_suite_is_not_hidden_by_other_suite(ci_ledger):
+    old = partial_rows_for()
+    old[0]['conclusion'] = 'failure'
+    newer = partial_rows_for(suite=202, first_id=101)
+    # The newest skip still belongs to the failing older suite.
+    old[1]['id'] = 201
+    with pytest.raises(ValueError, match='CI failed'):
+        delivery.checks_gate(old + newer, ci_ledger['config'], HEAD)
+
+
+def test_partial_unsupported_skip_pattern_is_not_attested(ci_ledger):
+    rows = partial_rows_for()
+    rows[1]['conclusion'] = 'success'  # MySQL selected with browser skipped is no supported plan.
+    assert delivery.checks_gate(rows, ci_ledger['config'], HEAD)[0] is False
+
+
+@pytest.mark.parametrize('browser', [False, True])
+def test_partial_success_and_fresh_cleanup_use_new_complete_proof(ci_ledger, browser):
+    ledger = ci_ledger
+    delivery.accept(ledger, pr_data(ledger))
+    delivery.accept(ledger, check_response(partial_rows_for(browser)))
+    assert ledger['step'] == 'statuses'
+    delivery.accept(ledger, {'sha': HEAD, 'total_count': 0})
+    delivery.accept(ledger, pr_data(ledger))
+    delivery.accept(ledger, {'merged': True, 'sha': MERGE})
+    assert ledger['step'] == 'cleanup_pr'
+    delivery.accept(ledger, cleanup_pr_data(ledger))
+    fresh = partial_rows_for(browser, suite=303, first_id=201)
+    delivery.accept(ledger, check_response(fresh))
+    assert ledger['step'] == 'cleanup_statuses'
+    assert ledger['merge_sha'] == MERGE

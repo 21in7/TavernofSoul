@@ -1,5 +1,8 @@
 # 개발 작업 자동 배정과 실행
 
+자동 검사 선택은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
+새 review 뒤 실제 최종 diff로 기존 targets를 선택한다. CI 증명·Git/cleanup 권한 경계는 유지한다.
+
 최신 잠금·격리·실패 복구 계약은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
 일반/READ_ONLY workflow는 실행 소유권만 최종 save까지 유지하고 source mutex는 capture와
 apply에 한정한다. review diff도 capture의 승인 파일 original 사본에서 만들며 live 원본을
@@ -64,18 +67,17 @@ worker는 회귀를 실행하지 않는다. 최종 새 Claude 의미 검토와 G
 기존 Git 역할 뒤 실제 기존 run 복구·원본 불변 대조, 구현 PR의 CI3/merge/cleanup/archive는 main 책임이다.
 
 [ADR0022](adr/0022-documentation-only-validation.md)에 따라 새 review 뒤 실제 최종 diff를 분류하고
-repair마다 다시 판단한다. 일반 README/docs prose만 docs-only이며 정책·코드·mode/type·불명은 full이다.
+repair마다 다시 판단한다. 일반 README/docs prose만 docs-only이며 정책·하네스·공통 계약·mode/type·불명은 full이다.
+일반 영역 코드+prose는 ADR0031의 실제 영역 검사를 선택한다.
 로컬 manifest는 POSIX permission 정수를 보존하여 0664/0640/0600 등 기존 비실행 regular 문서의
 동일 권한 수정과 정상 추가/삭제를 허용한다. 실제 권한 변경(0600→0644 포함)·실행/special bit·
 불명 mode는 full이며 CI raw Git mode 문자열은 기존 100644 기준을 유지한다.
 check-docs는 stdlib 링크/fragment/삭제·rename 영향을 검사하고 positive selected/passed·zero skip
 결과를 validation_selection/delivery_validation digest로 적용·게시까지 결합한다. CI의 세 required
 gate는 docs 증거 또는 기존 heavy 검사의 실제 성공을 요구한다.
-[ADR0023](adr/0023-new-branch-documentation-validation.md)에 따라 정확한 zero-before와
-created=true/deleted=false인 유효한 비기본 branch 최초 push는 fetched default commit을 고정하고
-유일 merge base→event head 전체 diff로 판정한다. 불명 metadata/ref/history·공통 조상 없음/복수·
-dirty/untracked/head 불일치·빈 diff는 full이며 최초 push 자체를 skip하지 않는다. 선택된 changes는
-docs 검증과 report/selection equality까지 유지한다. 여러 줄 inline code는 같은 길이의 backtick run과 code 안팎의 escape 규칙으로 마스킹하고
+[ADR0031](adr/0031-change-scoped-automatic-validation.md)에 따라 작업 branch push 자동 실행은 제거하고
+master push·PR·수동 실행을 유지한다. ADR0023의 직접 호출용 전체 비교 구현과 불명 증거 full fallback은
+보존한다. 선택된 전체 changes는 기존 docs report/selection equality와 별도 계획까지 유지한다. 여러 줄 inline code는 같은 길이의 backtick run과 code 안팎의 escape 규칙으로 마스킹하고
 원문 줄 번호·heading 텍스트 기여·code 뒤 실제 링크 검사를 유지한다. paragraph·heading·fence 경계와
 미지원 multiline link/HTML의 fail-closed 정책은 유지한다. 이번 harness/CI 수정은 shortcut 대상이 아니며 main이 새 Claude 의미 검토·전체
 make check·실제 문서 검사·GitHub 전달/CI를 수행한다. worker는 이 실행을 대신하지 않는다.
@@ -292,15 +294,15 @@ make agent-workflow-demo
 `WRITE=1`을 별도로 요구하는 개별 `agent-run`과 동작이 다르다.
 하네스 Python이 별도 환경이면 `PYTHON=/path/to/python`을 지정한다.
 Jev는 등록된 TypeSafe 키로 접수 판단을 요청한다. 키 누락·오류·낮은 확신은
-coordinator 계획과 전체 `check`로 넘어가며, 기록에서 fallback을 명시한다.
+coordinator 계획으로 넘어가며, 기록에서 fallback을 명시한다. 검토 뒤 실제 변경으로 검사를 정한다.
 Claude/GLM의 기존 대화 압축 설정도 유지한다.
 
 Jev 접수의 DNS/전송 실패와 이후 coordinator의 Codex 초기화 실패는 별도 단계다.
 예를 들어 `api.typesafe.ai` DNS 조회의 `gaierror(-3)`는 Jev 보고서의
 `fallback_reason=network_error`, `diagnostic={"error_type":"gaierror","errno":-3}`로 남는다.
-fallback은 Jev 판단 대신 coordinator 계획과 전체 검증이 필요하다는 뜻이며 Jev 연결 성공을 뜻하지 않는다.
+fallback은 Jev 판단 대신 coordinator 계획이 필요하다는 뜻이며 Jev 연결 성공을 뜻하지 않는다.
 계획에 필요한 Codex까지 초기화에 실패하면 workflow는 실패하고 원본 파일은 반영하지 않는다.
-필수 전체 `check`는 정상적으로 후속 단계에 도달했을 때 실행기가 수행하며, fallback 기록만으로
+실제 변경이 요구하는 검사는 정상적으로 후속 단계에 도달했을 때 실행기가 수행하며, fallback 기록만으로
 계획·검증이 실제 실행되었거나 통과했다고 해석하지 않는다.
 
 Jev의 두 자리 probability·score가 독립적으로 반올림된 경우 probability 합은
@@ -314,7 +316,7 @@ score `0.07` / probabilities `{'0': 0.94, '1': 0.06, '2': 0.0}` / confidence `0.
 반올림된 probability 합 `0.99`·`1.01`도 이 범위 안이면 허용한다. 원본 probability·score·confidence와
 기존 라우팅 임계값을 보존하며 재정규화·score 대체·자동 재시도·모델 변경·네트워크 확대는 하지 않는다.
 범위 밖 숫자·bool·NaN·Inf·다른 legend·누락/추가 label·choice 최댓값 위반은 계속 거부한다.
-오차 한도를 넘는 응답은 `invalid_response` fallback으로 coordinator 계획과 전체 `check`를 요구한다.
+오차 한도를 넘는 응답은 `invalid_response` fallback으로 coordinator 계획을 요구한다. 검토 후 검사는 실제 변경으로 결정한다.
 triage의 추천은 허용 응답과 fallback 모두 `execution_allowed=false`이며 에이전트를 실행하지 않는다.
 
 Jev 진단은 허용된 `error_type`과 선택적인 정수 `errno`, HTTP 실패의 정수 `http_status`로 제한한다.
@@ -498,7 +500,7 @@ ADR0011/0012/0013 및 architecture·data-contracts·harness·workflow의 의미�
 수정 요청은 finding 파일을 맡은 **정확한 구현 task**에만 전달한다. 검증 실패도 승인된
 실패 파일을 찾으면 그 파일을 맡은 task에만 전달하며, 같은 역할의 다른 task나 관련 없는
 downloader 작업을 다시 호출하지 않는다. 각 task에는 자기 파일의 finding·진단만 전달한다.
-수정 뒤에는 **새 reviewer 검토와 최초의 모든 필수 검사**를 다시 요구한다.
+수정 뒤에는 **새 reviewer 검토와 최초 baseline→현재 candidate의 실제 변경에 필요한 모든 검사**를 다시 요구한다.
 문서 finding도 같은 task 범위·`max_rounds`·새 검토 규칙을 따른다.
 
 검증 피드백은 per-check `failures`/`errors`/`skipped`와 traceback의 위치 토큰을 로컬에서
@@ -531,8 +533,8 @@ fallback을 사용한다. 확인된 다른 task의 소스·진단은 섞지 않�
 읽기 전용 실행은 검토·검증 실패를 재수정하지 않는다.
 
 검증 명령은 실행기의 허용 목록에서만 선택하며 모델 응답으로 셸 명령을 실행하지 않는다.
-경로 규칙·Jev 추천·계획의 파일 소유 영역 중 가장 넓은 필수 검증을 유지한다.
-계약·하네스·영역 간 작업과 coordinator fallback은 전체 `check`를 실행한다.
+실제 변경의 경로 규칙·역할 설정·영역 추천의 필요한 검사를 유지한다.
+계약·하네스·영역 간 실제 변경은 전체 `check`를 실행하며 읽기 scope와 coordinator fallback만으로 확대하지 않는다.
 종료 코드뿐 아니라 이번 실행의 JSON에서 실제 선택된 테스트 수, 성공 수, 실패·오류·skip을 검사한다.
 빈 검사·skip/xfail·누락 보고서·이전 성공 결과는 통과로 처리하지 않는다.
 검증이 소스 파일을 변경한 경우에도 반영을 중단한다.
@@ -704,7 +706,7 @@ check-runs의 모든 페이지를 읽고 중복 ID·불완전한 coverage를 거
 `Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped만
 예정 skip 예외 후보로 둔다. 각 skip과 같은 SHA·GitHub Actions·동일한 양의 정수 check_suite.id의
 최신 이름별 `Select actual change validation` completed/success, 세 required completed/success,
-세 heavy completed/skipped 전체가 필요하다. 전체 이름별 최신 selection/required success도 확인하여
+세 execution의 계획상 completed/success 또는 completed/skipped 전체가 필요하다. 전체 이름별 최신 selection/required success도 확인하여
 오래된 성공·다른 suite/SHA/app을 섞거나 최신 failure/pending을 우회하지 않는다. bool·문자열·0·
 null·누락·잘못된 suite 객체는 증거가 아니다. 최신 selection/required success의 suite metadata도
 유효해야 하며 불명 metadata를 옛 정상 증거로 보완하지 않는다. skip이 먼저 도착하고 gates가

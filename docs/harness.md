@@ -1,5 +1,8 @@
 # 개발 하네스 사용법
 
+자동 검사 선택은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
+master push·PR·수동 CI와 핵심 회귀·수동 targets를 유지한다. 실제 CI/게시 검증은 parent 책임이다.
+
 잠금/진단 회귀와 과거 수리 이력은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md),
 진행 보존은 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md), 실제 Read/제안 보존은
 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다. 기존 harness/test_*.py 수집과
@@ -622,7 +625,7 @@ python -m harness.archive --run-id 원래_run_id --kind workflows --resume-faile
 
 workflow는 최종 baseline→candidate의 실제 bytes/POSIX mode/존재 변경을 새 review 뒤 분류한다.
 일반 `README.md`, `docs/**/*.md`의 비실행 regular prose만 가능하고 `AGENTS.md` 이름과
-`docs/workflow.md`, `docs/harness-design.md`는 정책으로 제외한다. 코드/설정/CI/Makefile·혼합·
+`docs/workflow.md`, `docs/harness-design.md`는 정책으로 제외한다. 공통 설정/CI/Makefile·공통 계약·
 mode/type/symlink·불명/빈/모호한 증거·비문서 rename은 full이다. 읽기 scope에 참조 코드가 있어도
 실제 수정이 prose뿐이면 docs-only일 수 있다. repair마다 재판단하며 read_only/nochange의 반영·
 게시 금지는 유지한다. 빈 변경은 docs-only가 아니다. 삭제/rename은 양쪽 경로와 남은 역참조를 검사한다.
@@ -661,28 +664,19 @@ custom anchor 등 모호한 문법은 unsupported 오류로 두며 skip/성공�
 passed==selected, zero skip/failure/error가 필수다. 빈·누락·과거 결과나 CLI 0만으로 통과하지 않는다.
 실패는 정제 feedback으로 해당 task에 귀속하고 새 review/최종 diff 선택을 반복한다.
 
-CI는 event JSON을 shell code에 직접 보간하지 않고 complete PR base→head 또는 일반 push before→after
-raw diff의 rename/deletion/mode로 같은 판정을 한다.
-[ADR0023](adr/0023-new-branch-documentation-validation.md)에 따라 before가 정확한 40자리 zero,
-created=true/deleted=false이며 유효한 refs/heads/...가 repository.default_branch와 다른 최초 push는
-예외다. forced가 있으면 bool만 허용하며 생성 이벤트의 true/false는 이전 tip 증거로 사용하지 않는다.
-기존 checkout fetch-depth:0으로 받은 정확한 `refs/remotes/origin/<default_branch>`를 검증해 commit
-SHA로 고정하고 event.after와의 `merge-base --all`이 유효한 하나일 때만 조상→after 전체 diff를 쓴다.
-분기 후 default의 전진은 branch 변경에 섞이지 않으며 이전 코드 commit 뒤 최신 docs만 바뀌어도 full이다.
-비교 기준은 실제 fetched default tip이며 최초 push 당시 원격 상태를 재구성하지 않는다. 추가 fetch/API,
-HEAD^·event.commits·empty tree 추측은 없다. default ref 없음/모호함·tag/삭제/기본 branch 생성·
-잘못된 metadata/ref/SHA·공통 조상 없음/복수·shallow/missing objects·dirty/untracked/head 불일치·
-빈 diff·불명 event·workflow_dispatch는 full이다. 선택 JSON의 전체 changes를 docs 검증에 그대로
-전달하고 보고서 selection equality로 세 gate까지 유지한다. 세 required 이름 Offline harness (SQLite), MySQL harness,
-Chromium browser harness는 실제 final gate다. docs이면 selection/docs artifact의 일치와 구조화
-성공을 확인하고 full이면 해당 기존 실행 성공을 요구한다. docs 실패·증거 누락은 세 gate 실패,
-full 실행 실패/미실행은 대응 gate 실패다. skipped/neutral로 success를 대체하거나 임의 CI 생략·
-branch protection/권한/lock 우회는 하지 않는다.
+CI는 event JSON을 shell에 보간하지 않고 complete PR base→head 또는 master push before→after의
+전체 raw diff를 분류한다. 작업 branch push는 자동 실행하지 않는다. ADR0023의 직접 호출용 새 branch
+비교 구현은 보존한다. 불완전 history·dirty/untracked/head 불일치·빈/불명 증거·workflow_dispatch는
+전체 실행이다. 별도 execution-plan.json은 docs/offline/mysql/browser/live 선택과 경로 근거를 보존한다.
+세 required 이름 Offline harness (SQLite), MySQL harness, Chromium browser harness는 실제 final gate다.
+각 gate는 전체 계획과 모든 실행/live 결과를 대조하고 선택된 success·미선택 skipped만 허용한다.
+docs는 기존 selection equality·positive selected=passed·zero skip/failure/error를 유지한다.
+누락/잘못된 계획·선택 실행의 실패/미실행은 gate 실패다. branch protection/권한/lock은 유지한다.
 
-2026-10-20 publisher 연결 정정: pre-merge와 fresh cleanup의 `checks_gate`는 정확히
+2026-10-20 publisher 연결 정정을 ADR0031의 부분 선택에 확장: pre-merge와 fresh cleanup의 `checks_gate`는 정확히
 `Offline execution (SQLite)`, `MySQL execution`, `Chromium browser execution`의 completed/skipped만
 예외 후보로 본다. 각 skip과 같은 SHA·GitHub Actions·동일한 유효 양의 정수 check_suite.id의
-최신 이름별 selection completed/success, 세 required completed/success, 세 heavy completed/skipped
+최신 이름별 selection completed/success, 세 required completed/success, 세 execution의 계획상 completed/success 또는 completed/skipped
 전체를 요구한다. 전체 이름별 최신 selection/required도 success여야 하므로 다른 suite의 성공을
 합치거나 오래된 성공으로 최신 failure/pending을 덮지 않는다. bool/문자열/0/null/누락·잘못된
 suite는 증거가 아니다. 최신 selection/required success의 suite metadata가 불명이면 옛 정상
@@ -857,8 +851,8 @@ JSON 계약 전체에 MySQL 저장 길이 검사를 추가한 것은 아니다. 
 고정 fixture의 작은 경로를 검증하며 운영 서버의 버전·collation·설정이 같다고 가정하지 않는다.
 전체 지역 데이터·모든 계산식·운영 DB 성능은 별도 검증이다.
 
-`.github/workflows/harness.yml`은 push·pull request·수동 실행에 대응한다.
-새 Python 3.8 환경에서 고정 의존성을 설치하고 SQLite 오프라인·독립 MySQL 서비스·Chromium 작업을 실행한다.
+`.github/workflows/harness.yml`은 master push·pull request·수동 실행에 대응한다.
+새 Python 3.8 환경에서 선택된 SQLite 오프라인·독립 MySQL 서비스·Chromium 작업의 의존성을 설치하고 실행한다.
 MySQL 작업도 같은 digest의 서버와 제한된 계정을 사용한다. 결과 JSON·로그는 성공/실패 모두
 `harness-offline`, `harness-mysql`, `harness-browser` artifact로 14일 보관하며 실패 시 진단 자료도 수집한다.
 기존 서버 구축 workflow·운영 배포·cron은 이 workflow의 실행 범위에 포함하지 않는다.
