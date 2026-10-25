@@ -18,6 +18,11 @@
     "gem levels include bonuses and penalties",
     "skill gem opens the related skill",
     "pvp calculator updates probabilities and level boundaries",
-    "pvp calculator rejects invalid inputs and resets accessibly"
+    "pvp calculator rejects invalid inputs and resets accessibly",
+    "detail headings and core content fit desktop and narrow viewports",
+    "detail tables retain semantics and scroll with the keyboard",
+    "detail calculators support touch keyboard and reset values",
+    "detail recipes collections and long links preserve navigation",
+    "detail without JavaScript retains core content and links"
   ]
 }

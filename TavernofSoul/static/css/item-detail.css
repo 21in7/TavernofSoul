@@ -1,0 +1,187 @@
+/* Loaded only by the item detail template, after the global theme. */
+#content.item-detail-content {
+  min-width: 0;
+}
+
+.item-detail {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.item-detail-heading {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.item-detail-heading h1 {
+  min-width: 0;
+  margin: 0;
+  line-height: 1.25;
+}
+
+.item-detail-icon {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  flex: 0 0 64px;
+}
+
+.item-detail img,
+.item-detail canvas,
+.item-detail iframe {
+  max-width: 100%;
+}
+
+.item-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.item-detail-columns,
+.item-detail-calculators {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+
+.item-detail-columns > *,
+.item-detail-calculators > *,
+.item-detail-facts > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.item-detail-columns > * {
+  flex: 0 1 auto;
+}
+
+.item-detail-facts {
+  align-items: stretch;
+  gap: .5rem;
+}
+
+.item-detail-table {
+  max-width: 100%;
+  overflow-x: auto;
+  /* Leave room inside the scrollport for focus rings. */
+  padding: 4px;
+  scroll-padding: 4px;
+}
+
+.item-detail-table table {
+  margin-right: 0 !important;
+}
+
+.item-detail-calculators table,
+.item-detail #gem-socket-bonuses {
+  min-width: 22rem;
+}
+
+.item-detail td,
+.item-detail th {
+  max-width: 24rem;
+  overflow-wrap: anywhere;
+}
+
+.item-detail label {
+  display: inline-block;
+  margin-bottom: 0;
+}
+
+.item-detail input[type="number"] {
+  box-sizing: border-box;
+  width: 5.5rem;
+  min-height: 44px;
+  padding: .5rem;
+  font-size: 1rem;
+}
+
+/* The theme removes a/button outlines with !important (style.css).
+   Use a scoped, more specific important rule to restore keyboard focus. */
+.item-detail :is(a, button, input, select, textarea, [tabindex]):focus {
+  outline: 3px solid #ffe082 !important;
+  outline-offset: 1px;
+}
+
+.item-detail-scroll-help {
+  font-size: .875rem;
+  margin-block: .5rem;
+}
+
+@media (max-width: 575.98px) {
+  .item-detail-calculators {
+    --calculator-input-width: max(88px, 5.5rem);
+    --calculator-input-column: calc(var(--calculator-input-width) + 18px);
+  }
+
+  .item-detail-input-table {
+    border-collapse: separate;
+    border-spacing: 0;
+    table-layout: auto;
+  }
+
+  /* Reserve the input's border-box, two 8px gutters and two 1px borders.
+     Each gutter contains the 3px outline plus its 1px offset, including
+     vertically. Pin the label and input together while results scroll. */
+  .item-detail-input-table tr > :first-child {
+    box-sizing: border-box;
+    width: var(--calculator-input-column);
+    min-width: var(--calculator-input-column);
+    max-width: var(--calculator-input-column);
+    padding: 8px;
+    position: sticky;
+    left: 4px;
+    z-index: 2;
+    text-align: center;
+    background: #48505c;
+    box-shadow: 1px 0 #dee2e6;
+  }
+
+  .item-detail-input-table thead tr > :first-child {
+    z-index: 3;
+    background: #657182;
+  }
+
+  .item-detail-input-table input[type="number"] {
+    width: var(--calculator-input-width);
+    min-width: var(--calculator-input-width);
+    max-width: var(--calculator-input-width);
+    margin: 0;
+    vertical-align: middle;
+  }
+
+  .item-detail-calculators > .item-detail-table {
+    isolation: isolate;
+    scroll-padding-left: calc(var(--calculator-input-column) + 8px);
+  }
+
+  .item-detail-heading {
+    align-items: flex-start;
+    gap: .75rem;
+  }
+
+  .item-detail-heading h1 {
+    font-size: 1.75rem;
+  }
+
+  .item-detail-columns,
+  .item-detail-calculators {
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .item-detail-columns > *,
+  .item-detail-calculators > * {
+    width: 100%;
+  }
+
+  .item-detail a {
+    display: inline-block;
+    min-height: 44px;
+    padding-block: .5rem;
+  }
+}

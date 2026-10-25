@@ -769,7 +769,7 @@ obsolete parsing-server CI 3개는 메인 `/root`가 로컬에 그대로 보관�
 | `check-mysql` | 실제 MySQL migrations, 전체 고정 입력 통합 경로와 아이템 검색, MySQL 저장·검색·오류 롤백 검증 |
 | `check-mysql-container` | 전용 MySQL 컨테이너 생성 → 계정 권한 제한 → `check-mysql` → 컨테이너 정리 |
 | `doctor-browser` | 고정 Playwright SDK 버전, Node.js 버전, 실제 Chromium 실행 또는 전용 컨테이너 연결 |
-| `check-browser` | 임시 원본 파싱·DB 적재·실제 Django HTTP/정적 파일 → Chromium 18개 시나리오 × 2 viewport, 총 36개 실행 |
+| `check-browser` | 임시 원본 파싱·DB 적재·실제 Django HTTP/정적 파일 → Chromium 23개 시나리오 × 2 project, 총 46개 실행 |
 | `check-browser-container` | 지원 Ubuntu의 ARM64/amd64 브라우저 컨테이너 → `check-browser` → 컨테이너 정리 |
 
 `check-django`는 `parser_tidy/tests/`의 importer 회귀 세 파일을 별도 프로세스에서 실행한 뒤,
@@ -906,9 +906,9 @@ make check-browser
 하네스 설정에만 추가한 context processor가 광고·동의 팝업·분석·외부 폰트를 제외한다.
 일반 지역 설정에서는 기존 서비스가 유지된다. 브라우저의 예기치 않은 외부 요청·HTTP 오류·console 오류·JavaScript 예외는 실패다.
 
-`harness/browser/manifest.json`은 desktop(1440×900)과 mobile(390×844)에 다음 18개
-시나리오를 각각 요구한다. 총 36개의 정확한 scenario/project 조합이며, 좁은 화면 검색
-시나리오는 각 project 안에서 390×844와 320×740도 확인한다.
+`harness/browser/manifest.json`은 desktop(1440×900)과 mobile(390×844)에 다음 23개
+시나리오를 각각 요구한다. 총 46개의 정확한 scenario/project 조합이며, 좁은 화면 검색은
+각 project에서 390×844·320×740, 새 상세는 mobile 안에서 두 폭을 확인한다.
 
 - 검색어·등급 유지, 검색 결과에서 상세 이동, 모바일 메뉴 열기/닫기.
 - 검색 결과가 없는 경우.
@@ -928,15 +928,20 @@ make check-browser
 - 스킬 젬에서 연결된 스킬 화면으로 이동.
 - PvP 확률·레벨 경계 계산과 메뉴 연결.
 - PvP 잘못된 입력과 접근 가능한 초기화.
+- 상세 제목·본문·아이콘·열 배치와 overflow.
+- 표 의미·키보드 스크롤·값 보존.
+- 계산 입력·touch·focus·0 초기화.
+- 재료·레시피·수집품·긴 링크 탐색.
+- JS 없는 상세·능력치·링크·CSS 응답 순서 양방향·엄격 geometry poll.
 
 수치는 hand-authored fixture 기대값이며 실제 게임 밸런스 값으로 주장하지 않는다.
 필수 시나리오/viewport 누락·중복, skip/xfail, 재시도로 성공한 flaky 결과, 미수집은 성공으로 처리하지 않는다.
-`harness/test_browser_runner.py`의 검색 9개·전체 18×2 게이트는 중복으로 누락을 채워도 거부한다.
+`harness/test_browser_runner.py`의 검색 9개·전체 23×2 게이트는 중복으로 누락을 채워도 거부한다.
 `make check`에는 SDK/브라우저 설치를 요구하지 않고 빠른 Node DOM 검사와 브라우저 결과 판정의 회귀만 포함한다.
 
 `doctor-browser.json`, `browser.json`, `check-browser.json`은 실제 엔진 버전·선택/통과 수를 기록한다.
 `browser-container.json`에는 컨테이너 정리 여부, `.log`에는 엔진 로그를 남긴다.
-`logs/harness/browser/<run-id>/`에 Playwright JSON·HTML 보고서와 검색/무기/젬 스크린샷이 남으며,
+`logs/harness/browser/<run-id>/`에 Playwright JSON·HTML 보고서와 검색/무기/젬/상세 스크린샷이 남으며,
 실패 시 해당 화면의 스크린샷·`trace.zip`도 저장한다. 실행별 디렉터리로 이전 성공 자료와 구분한다.
 
 ```bash
@@ -952,10 +957,11 @@ SSH 서버에서 자료를 로컬로 복사해 열 수 있다. 이 검증은 운
 Control 통과·`_blank` 표시·검증·실패 이력은 [ADR0029](adr/0029-item-search-progressive-enhancement.md)에 모은다.
 수집은 `Items.tests.SearchQueryTests`·`EquipmentPipelineTests.test_source_to_http_<region>`이다.
 parent는 최종 통합 diff의 새 Claude 의미 검토·유효 JSON·`documentation={status,files,reason}` 뒤
-새 컨테이너의 `check-browser-container` 3회 연속 36/36·zero skip/flaky/missing·`container_removed=true`·source fingerprint
+새 컨테이너의 `check-browser-container` 3회 연속 46/46·zero failure/error/skip/flaky/missing·`container_removed=true`·source fingerprint
 불변을 확인하고 원래 `GIT=1` full `make check`를 실행한다. 동일 최종 bytes 검증 뒤
 scoped apply·Git·새 PR·실제 CI3 success·squash merge·cleanup·archive로 잇는다.
 실패 브라우저 JSON은 native 수리 피드백이며 full check를 대신하지 않는다. leaf는 실행하지 않는다.
+상세 설계·실제 CI 실패·수리 인계는 [ADR0030](adr/0030-item-detail-mobile-layout.md)에 둔다.
 
 ## 실제 게임 데이터와 운영 도메인
 
