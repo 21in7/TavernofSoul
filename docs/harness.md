@@ -1,5 +1,25 @@
 # 개발 하네스 사용법
 
+## 실패 복구 health의 parent 운영
+
+기존 hourly wrapper는 tick 하나 그대로다. 정상 최종 save와 잠금/deadline 해제 뒤 별도 health를
+자동 전송하며 정산된 역할 실패도 대상이다. 초기 config/storage/lock/bootstrap 실패·rollback·
+`--no-deliver`·조회/publish-morning은 보내지 않는다. 별도 health_publication/outbox 결과는 원래
+실패·ledger·frozen morning을 바꾸지 않는다. unknown/sending은 GET만 하며 자동 재POST하지 않는다.
+qualified unattended 전송은 승인/실행 권한이 아니다. 수동 publish는 child/discovery/unattended를 거절한다.
+parent만 기존 hourly 전용 명시 v1 local storage/report 선택과 private inbox origin/token을 유지한다.
+
+```bash
+python -m harness.improvement_health query
+python -m harness.improvement_health publish
+python -m harness.improvement_health publish --reconcile --digest FROZEN_HEALTH_DIGEST
+```
+
+query는 키/HTTP 없는 조회다. reconcile은 이전 outbox의 정확한 digest와 GET404 뒤에만 동일 POST를
+허용한다. strict schema/digest/전체 GET 일치만 delivered다. 실패로 tick을 재실행하지 않는다.
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)의 계약/미관측 상태를 따른다.
+worker는 실행하지 않으며 새 검토/full check·GLM probe와 Sites 구현/배포/readback은 parent 책임이다.
+
 자동 검사 선택은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
 master push·PR·수동 CI와 핵심 회귀·수동 targets를 유지한다. 실제 CI/게시 검증은 parent 책임이다.
 
@@ -1444,51 +1464,9 @@ merge와 cleanup 상태는 구분하며 cleanup complete 전 전체 성공을 �
 
 ## 이번 importer/cleanup 수리의 후보 근거와 검증 대기
 
-이번 범위는 기존 `files-repair.txt`의 정확히 31개 개별 파일이다. 원래 최적화와 추가 8개
-repair 파일의 작업 승인을 유지하되 이 수리는 importer snapshot/SELECT와 호출 소유 임시
-cleanup만 완료한다. `parser_tidy/items.py`·`luautil.py`는 바꾸지 않는다. 장비 Lua batching은
-제공된 측정에서 4.8% 느려 제외되었으며 해당 Lua ADR은 만들거나 index하지 않는다.
-기존 역할/provider/model과 후속 PAK 실행용 GLM을 유지한다. 기존 configured NFS 선택·mount·
-floor도 유지하며 local storage override나 activation 변경은 없다.
+[당시 인계 원문](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-importer)에 실패·관측·검증 대기와
+기존 요구를 그대로 보존한다. 현재 작업의 성공이나 권한으로 재해석하지 않는다.
 
-`load_import_snapshot`은 모든 JSON의 strict validation/order를 유지하고 consumed collections와
-version만 반환한다. 활성 handle의 staging 소비자에는 deepcopy, direct/prev에는 fresh read를
-적용하며 성공·실패·retry에서 상태를 버린다. SELECT 인덱스는 canonical ID와 기존 item
-분류 목록/우선순위/오류, 스킬 행별 save·update=0·created/updated·삭제 및 missing/ambiguous
-예외를 보존한다. 새 snapshot API/ORM 검증은 기존 scoped `test_release_contract.py`,
-`test_import_safety.py`, `harness/contract_tests.py`에 두고 기존 테스트와 제외를 유지한다.
-호출 소유·nested copy·strict order·fresh direct/prev·failure/retry·state cleanup과 실제
-save/audit/write 수·삭제·참조 예외를 의미 있는 기대값으로 확인해야 하며 skip을 추가하지 않는다.
-
-아래는 메인이 제공한 **검토된 후보의 진단 근거**다. 이 worker는 재측정하거나 검사하지 않았다.
-
-| 제공된 관측 | 범위와 한계 |
-| --- | --- |
-| isolated importer 3회: 첫 실행 wall 31.7%, 반복 실행 48.1% 감소 | 후보/기준의 importer 비교이며 최종 소스나 전체 pipeline 개선율이 아님 |
-| 반복 SELECT 1604→100 | read 최적화; bulk write나 save 생략의 근거가 아님 |
-| 33개 테이블: 자동 audit timestamp 외 값 동일 | audit 값을 제외한 DB 비교이며 모든 필드의 byte 동등성 주장이 아님 |
-| 정확한 prev bytes 및 INSERT/UPDATE/DELETE 수 동일 | 후보의 비교 기준/쓰기 동등성 근거 |
-| fresh isolated kTOS/iTOS/jTOS main: 지역별 41개 JSON bytes baseline과 동일 | 후보 지역 출력 비교이며 반영한 최종 소스를 다시 확인해야 함 |
-| selected parser/harness 2691 tests passed, zero skips | parent의 부분 검사 기록; 전체 make check/full workflow 성공이 아님 |
-| NFS statvfs probe 회복 | 제공된 장애 회복 관측; cleanup 성능·최종 validation 완료가 아님 |
-
-prior real models와 Claude가 공급된 후보 diff를 승인했으나 새 cleanup/readiness 수리 후 최종
-소스의 fresh real review가 필요하다. 이전 full workflow는 NFS RPC 대기 중 timeout했으며
-old parent `shutil.rmtree`는 readonly keep에서 실패했다. selected tests 이후에도 cleanup이
-매우 느렸다. **full validation은 통과하지 않았고 현재 pending이다.** 최종 수리의 cleanup
-성능/성공·전체 `make check`·최종 source bytes/ORM 비교·실제 CI/merge/cleanup 성공을 꾸미지 않는다.
-
-이번 repair 입력의 `check` diagnostic은 context unavailable·unattributed다. 이 정보만으로
-실패 원인이나 특정 파일의 책임을 추정하지 않으며 기존 후보의 timeout/cleanup 실패와
-같은 원인으로 합치지 않는다. 최종 소스의 새 실제 review 후 원래 필수 checks를 모두 실행하는
-책임은 오케스트레이터에 남는다.
-
-오케스트레이터가 새 실제 review, complete `make check`와 기존 tests/제외·zero-skip 확인,
-31파일 scoped apply 및 기본 Git 역할을 담당한다. main은 최종 소스 근거를 확인한 뒤 정확한
-GitHub 앱 journal을 실행하고 `Offline harness (SQLite)`, `MySQL harness`,
-`Chromium browser harness`의 실제 success 3개, SHA 고정 merge와 cleanup 완료를 확인한다.
-worker는 checks·Git·workflow·agent-run·다른 모델·cron·download·importAll을 실행하지 않는다.
-외부 모델에는 승인 31파일만 주며 private config/diagnostic 파일은 주지 않는다.
 인계와 매 review의 `documentation={status,files,reason}` 요구는
 [workflow](workflow.md#이번-31파일-수리의-검토검증게시-인계), 결정은
 [0012](adr/0012-importer-single-run-snapshot.md)와 [0013](adr/0013-owned-validation-temporary-cleanup.md)에 둔다.

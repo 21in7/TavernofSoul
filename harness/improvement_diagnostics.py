@@ -3,7 +3,9 @@
 The active trace belongs to one CLI/API invocation. Its first failure survives
 failed settlement/diagnostic writes; no alternate storage or state write occurs
 here. The returned private result is also the observation path before Store is
-available. Public report projection must never include this object.
+available. Public report projection must never include this object. Separately
+authorized improvement-health-v1 selects only fixed cloud failure codes, never
+this private object's numeric observations or trace events.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar

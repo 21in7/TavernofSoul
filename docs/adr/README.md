@@ -38,8 +38,36 @@
 | [0031](0031-change-scoped-automatic-validation.md) | 완전한 실제 diff 기반 자동 검사 계획·master push/PR 중복 제거·같은 suite의 부분 선택 증거 | 사용자 범위 확정 구현안, 새 검토/parent full check/CI·전달 대기 | 2026-10-25 |
 | [0032](0032-parallel-local-regressions.md) | 로컬 pytest 병렬·증거·정리 | 제안, 검토·측정·검증·전달 대기 | 2026-10-25 |
 | [0033](0033-workflow-token-efficiency.md) | 단일 역할 direct 배정·손실 없는 프롬프트 중복 제거·private CLI usage 관측 | 제안, 새 의미 검토·parent full check·측정·전달 대기 | 2026-10-25 |
+| [0034](0034-inspection-failure-recovery-and-health.md) | Z.ai discovery schema·native 요청 예산·잠금 해제 후 health와 실패/후속 성공 분리 | 제안, full6263 뒤 실제 구조화 실패/이전 timeout 보존·구조1/transport0 호환 수리 새 검토/검증 대기 | 2026-10-26 |
 
 ## 상태와 근거의 의미
+
+0034는 이번 명시 직접 개발 요청에 한해0020의 두 정제 전송 계약에 별도 health-v1을 추가한다.
+web-v1/completion-v1·frozen digest는 유지하며 cloud5역할의 고정 실패 코드/실제 호출 시각과
+별도 후속 성공만 노출한다. Z.ai specialist discovery의 native schema는 후보 의미 검증을
+대체하지 않는다. 정상 tick 저장과 잠금/deadline 해제 뒤 별도 health를 전달하며 startup 실패·
+rollback·no-deliver·조회/publish-morning은 제외한다. 수동 trusted-parent query/publish와
+child/discovery 거절은 유지하며 새 cron·모델·approval/execute·Git hook은 없다.
+직전 run1793023022496810528-82c64a의900초 timeout/applied=[]·20파일 checkpoint 복원은
+검토/검증/성공이 아니다. 새 최종본의 review/documentation/full check·Sites 배포/GET·실제 GLM
+단1회 개발 재검증과 후속 hourly 결과는 parent 책임이며 미관측이다.
+
+후속 run1793029835254678756-74e8c1의 새 전체diff 승인·focused68/68·full6251/6251·apply19개 뒤
+2026-10-27 별도 실제 native GLM 검증은480.172811초 timeout으로 실패했다. GitHub request 전
+중단했고 journal events0이다. 후속 run1793031743543582459-d3598c는 새 전체diff 승인·표적422/422,
+최초 전체검사 중단 뒤 parent의 digest/PID 확인과 같은 run의 native 재개로 full6263/6263
+(실패/오류/skip0), apply19개·기존 Git 역할까지 성공했으나 01:53 KST 실제 GLM gate에서
+7.437927초 만에 structured_output_retry_exhausted/0attempts·Read1개로 실패했다. 원격 요청 events0,
+PR없음이다. CLI usage0/duration_api0으로 API 미호출을 단정하거나 unrecognized_model 경고를
+원인으로 쓰지 않는다. parent는 private 증거를 보존하고 같은19파일만 원래 baseline으로 복원한다.
+설치 CLI+localhost 합성 재현(외부 모델 호출0)에서 구조 budget0도 즉시 유효 구조화 응답이면
+성공하지만 Read1개 뒤 실패했다.1은 Read3개 뒤 유효 구조화 응답에 성공하고 불량 구조화 응답
+뒤 추가 repair 요청0이었다. 이번 수리는 검증된 native Z.ai child만
+`MAX_STRUCTURED_OUTPUT_RETRIES=1`로 고치고 `CLAUDE_CODE_MAX_RETRIES=0`을 유지한다.
+같은1 invocation의 정상 Read 대화와 실패 뒤 새 CLI 호출/재시도를 구분한다. low/force effort·
+8192 출력·forced thinking·480초와 일반 역할/격리는 유지한다. 새 실제 GLM 성공은 아직 미검증이다.
+이전 pass·중단·probe 실패를 보존하고 새 최종후보의 독립 documentation 판단/full check·새 입력
+fingerprint의 실제480초 단1회 GLM 증거를 요구한다. 상세 시각/재현/후속 Git 책임은 ADR0034에 둔다.
 
 0028은0021의 일반 변경 결과 거부를 유지하면서 고정 세대의 명시 추가 보관을 도입한다.
 새 run/모델/검사/Git 실행 권한이 아니며 기존 실패 보관을 수정하지 않는다.

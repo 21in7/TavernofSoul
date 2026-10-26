@@ -15,6 +15,8 @@ An embedded caller must request deliver=True or supply publisher. Publishers tak
 (date, selected=storage_policy), return the existing delivery result, and run only
 AFTER BOTH locks are released. Never call publish from inside Store.lock. An
 unknown send needs explicit publish(reconcile=True), always with the same digest.
+deliver=True also sends separate health after successful durable tick settlement
+and lock/deadline exit; startup failures and rollback cannot authorize a send.
 
 Integration with approval: improvements._fresh must call validate_scan_freshness
 for scans carrying loop_dependencies. Existing config_fingerprint deliberately
@@ -120,6 +122,10 @@ _ROLE_ERROR_TYPES = frozenset((
 
 class LoopError(imp.ImprovementError):
     """Fixed diagnostic codes only; external bodies/exceptions never escape."""
+
+
+class _SenderBusy(LoopError):
+    """Minted at sender acquisition, independent of the trace's first failure."""
 
 
 def _number(value, minimum=0, maximum=None):
@@ -1046,8 +1052,15 @@ def _deadline(seconds):
 
 
 def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
-                keys, runner, selected, config, budget, coverage=None):
+                keys, runner, selected, config, budget, coverage=None, clock=None):
     source_bytes = sum(len(snapshots[path]['content'] or b'') for path in own_paths)
+    call_times = {}
+
+    def observe_time(key):
+        try:
+            call_times[key] = _clock(clock() if clock else None).isoformat()
+        except (Exception, KeyboardInterrupt):
+            pass  # Optional observation must never replace the original failure.
 
     def bounded_runner(actual_role, prompt, runtime_keys, **options):
         # Owner retains full existing ownership/shared context; only local HTTP
@@ -1073,14 +1086,22 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
         options['timeout'] = min(options['timeout'], config['model_timeout_seconds'])
         if actual_role == 'reviewer':
             options['max_budget_usd'] = budget
-        return runner(actual_role, prompt, runtime_keys, **options)
+        # Parent wall observations of the actual adapter invocation, not slot
+        # admission, context preparation, settlement or model-reported times.
+        observe_time('call_started_at')
+        try:
+            return runner(actual_role, prompt, runtime_keys, **options)
+        finally:
+            observe_time('call_finished_at')
 
     bounded_config = copy.deepcopy(discovery)
     bounded_config['limits']['max_candidates_per_specialist'] = config['max_candidates_per_specialist']
     bounded_config['limits']['call_timeout_seconds'] = config['model_timeout_seconds']
     participation, parsed = imp._call_role(role, own_paths, snapshots, bounded_config,
                                           records, keys, bounded_runner, selected)
-    return _safe_participation(participation), parsed
+    safe = _safe_participation(participation)
+    safe.update(call_times)
+    return safe, parsed
 
 
 def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
@@ -1486,7 +1507,7 @@ def _sender_lock(store):
             with diagnostics.boundary('sender_lock'):
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise LoopError('publication_busy') from None
+            raise _SenderBusy('publication_busy') from None
         yield
     finally:
         handle.close()
@@ -1517,7 +1538,7 @@ def _stable_sender_lock(store):
     try:
         mutex.__enter__()
     except BlockingIOError:
-        raise LoopError('publication_busy') from None
+        raise _SenderBusy('publication_busy') from None
     try:
         yield
     finally:
@@ -1870,8 +1891,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                              reservation_usd=budget)
     _write_state(store, state)
     report = state['round']['report']
-    call_started_at = _clock(finish_clock()).isoformat()
     if stage == 'local_explorer':
+        call_started_at = _clock(finish_clock()).isoformat()
         participation, candidates = _local_call(role, own_paths, snapshots, local_config, cursor,
             feedback, prepared, local_runner or local_model.run, config, now)
         call_finished = _clock(finish_clock())
@@ -1892,11 +1913,11 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             report['proposals'], drafts, feedback, keys, runner or agent_models.run,
             store.policy, config, budget,
             coverage=[{'role': a['role'], 'status': a['status'],
-                       'read_files': a.get('read_files', [])} for a in report['agents'][:-1]])
+                       'read_files': a.get('read_files', [])} for a in report['agents'][:-1]],
+            clock=finish_clock)
         call_finished = _clock(finish_clock())
         participation.update(provider=provider, model=model,
-                             started_at=now.isoformat(), finished_at=call_finished.isoformat(),
-                             call_started_at=call_started_at, call_finished_at=call_finished.isoformat())
+                             started_at=now.isoformat(), finished_at=call_finished.isoformat())
         _attempt_position(participation, pending['round_id'], slot, pending['stage_index'])
         _role_agent(report, role, participation)
         if stage == 'specialist':
@@ -1981,7 +2002,6 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
         # allowance to an execution that crossed its accounting boundary.
         _account_cross_day(state, pending, now)
     participation['finished_at'] = now.isoformat()
-    participation['call_started_at'] = call_started_at
     _attempt_position(participation, pending['round_id'], slot, pending['stage_index'])
     state['high_water_at'] = max(_stamp(state['high_water_at']), now).isoformat()
     # Snapshot completion is independent of live source freshness. Control
@@ -2041,6 +2061,8 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
     finish_clock = clock or ((lambda: fixed_now) if fixed_now is not None else
                              (lambda: dt.datetime.now(dt.timezone.utc)))
     now = _clock(clock() if clock is not None else now)
+    morning_ready = False
+    health_ready = False
     with diagnostics.Trace() as trace:
         diagnostics.position('prepare', now.hour)
         store = None
@@ -2060,38 +2082,71 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
                         with diagnostics.boundary('stage'):
                             result = _tick_locked(store, state, now, config, runner, keys, local_runner,
                                                   local_config, quota_transport, finish_clock)
+                            # A duplicate slot still checks the morning sender mutex.
+                            # Bootstrap/persistence exceptions authorize neither sender.
+                            morning_ready = True
+                            health_ready = result.get('reason') not in (
+                                'clock_rollback', 'slot_already_claimed', 'clock_rollback_during_call')
                     except (Exception, KeyboardInterrupt) as exc:
                         failure = trace.capture('stage', exc)
                         reason = _failure_reason(exc, failure['reason'])
                         # Build a usable private observation BEFORE attempting any
                         # error write. Inflight reservations remain authoritative.
                         result = dict(_summary(state, now, config), reason=reason, status='paused')
-                        try:
-                            if state['inflight'] is None and state['last_slot'] is not None:
-                                _pause(store, state, state['last_slot'], reason, now, config)
-                            _freeze_unavailable_morning(store, state, now, reason)
-                        except (Exception, KeyboardInterrupt):
-                            result['recovery'] = 'durable_state_retained'
-                    _attach_diagnostic(result, trace, store)
-                if (publisher is not None or deliver) and result.get('reason') != 'clock_rollback':
-                    with diagnostics.boundary('publication'):
-                        result['publication'] = publish(now=_clock(finish_clock()),
-                                                        selected=store.policy, publisher=publisher)
+                        if (state['last_slot'] == now.strftime('%Y-%m-%dT%H') and
+                                failure['boundary'] not in ('storage_readiness', 'state_save')):
+                            try:
+                                if state['inflight'] is None:
+                                    _pause(store, state, state['last_slot'], reason, now, config)
+                                _freeze_unavailable_morning(store, state, now, reason)
+                            except (Exception, KeyboardInterrupt):
+                                result['recovery'] = 'durable_state_retained'
+                        else:
+                            # No established slot, or persistence already failed.
+                            # Keep stdout evidence without a readiness retry for
+                            # derived morning/diagnostic writes or publication.
+                            result.update(diagnostic=trace.first,
+                                          diagnostic_preservation='private_result_only')
+                    if result.get('diagnostic_preservation') != 'private_result_only':
+                        _attach_diagnostic(result, trace, store)
+                if ((publisher is not None or deliver) and morning_ready and
+                        result.get('reason') != 'clock_rollback'):
+                    try:
+                        with diagnostics.boundary('publication'):
+                            result['publication'] = publish(now=_clock(finish_clock()),
+                                                            selected=store.policy, publisher=publisher)
+                    except _SenderBusy as exc:
+                        # Only the trusted sender acquisition mints this signal.
+                        # Preserve an earlier role failure in the invocation trace.
+                        trace.capture('sender_lock', exc, kind='busy')
+                        result['publication'] = {'status': 'paused', 'reason': 'sender_lock_busy'}
+                        if result.get('reason') in (None, 'slot_already_claimed'):
+                            result.update(status='paused', reason='sender_lock_busy')
+                    except (Exception, KeyboardInterrupt) as exc:
+                        # Transport failure cannot replace a settled role failure
+                        # or prevent the separate post-tick health observation.
+                        trace.capture('publication', exc)
+                        result['publication'] = {'status': 'publication_unknown'}
                 if trace.first is not None:
                     result['diagnostic'] = trace.first
                     # Publication may be the first failure, after the original
                     # state mutex was released. Its own settlement owns writes.
                     result.setdefault('diagnostic_preservation',
                         result.get('publication', {}).get('diagnostic_preservation', 'private_result_only'))
-                return result
         except (Exception, KeyboardInterrupt) as exc:
+            health_ready = False
             failure = trace.capture('stage', exc)
             # No loop state mutation outside Store.lock, including first-lock
             # failure. stdout is the existing private CLI observation path.
-            return {'version': STATE_VERSION, 'date': now.date().isoformat(), 'status': 'paused',
+            result = {'version': STATE_VERSION, 'date': now.date().isoformat(), 'status': 'paused',
                     'reason': failure['reason'], 'diagnostic': failure,
                     'diagnostic_preservation': 'private_result_only',
                     'message_ko': '점검을 안전하게 완료할 수 없어 보류했습니다. private 진단 경계를 확인하세요.'}
+    if deliver and health_ready:
+        from harness import improvement_health
+        result['health_publication'] = improvement_health._after_tick(
+            store, finish_clock, now.strftime('%Y-%m-%dT%H'))
+    return result
 
 
 def _failure_reason(exc, fallback):
@@ -2129,7 +2184,7 @@ def _attach_diagnostic(result, trace, store):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='한 시간에 한 단계의 읽기 전용 개선 탐색')
     parser.add_argument('action', choices=('tick', 'status', 'publish'))
-    parser.add_argument('--no-deliver', action='store_true', help='tick의 보고 전달을 생략')
+    parser.add_argument('--no-deliver', action='store_true', help='tick의 오전 보고와 health 전달을 생략')
     parser.add_argument('--reconcile', action='store_true', help='동일 digest의 모호한 전달만 명시 재조정')
     args = parser.parse_args(argv)
     if args.reconcile and args.action != 'publish':

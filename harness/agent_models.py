@@ -468,9 +468,14 @@ def _validated_budget_override(spec, max_budget_usd, smoke):
 
 def command_for(role, write=False, smoke=False, compaction=None, workspace=None, scoped=False,
                 codex_cli=None, codex_shell=None, runtime_root=None, auth_home=None, *,
-                max_budget_usd=None):
+                max_budget_usd=None, discovery_schema=None):
     spec = load_config()['roles'][role]
     provider = spec['provider']
+    native_schema = None
+    if discovery_schema is not None:
+        from harness import improvement_schema
+        native_schema = improvement_schema.validate_request(discovery_schema, role, provider,
+            workspace, write=write, smoke=smoke, scoped=scoped)
     budget_override = _validated_budget_override(spec, max_budget_usd, smoke)
     if write and role in ('reviewer', 'escalation', 'git'):
         raise ValueError('Reviewer, escalation and Git roles are read-only.')
@@ -516,6 +521,8 @@ def command_for(role, write=False, smoke=False, compaction=None, workspace=None,
         command += ['--effort', spec['effort'], '--max-budget-usd',
                     str(budget_override if budget_override is not None else
                         (0.25 if smoke else spec['max_budget_usd']))]
+    if native_schema is not None:
+        command += ['--effort', 'low', '--json-schema', native_schema]
     return command
 
 
@@ -545,7 +552,9 @@ def task_prompt(role, task, workspace=None, scoped=False):
                 'The orchestrator owns validation.\n' if workspace is not None else '', instructions, task)
 
 
-def response_text(provider, output):
+def response_text(provider, output, *, discovery_schema=None):
+    if discovery_schema is not None:
+        return _structured_response_text(provider, output, discovery_schema)
     def parse(value):
         try:
             return json.loads(value)
@@ -576,6 +585,33 @@ def response_text(provider, output):
             or not any(event.get('type') == 'turn.completed' for event in events)):
         raise _failure('Codex returned no completed turn with a final response.', 'response_incomplete', 'response')
     return messages[-1], None
+
+
+def _structured_response_text(provider, output, request):
+    from harness import improvement_report as contract, improvement_schema
+    limit = improvement_schema.response_limit(request)
+    if provider != 'zai':
+        raise _failure('discovery_schema_scope_invalid', 'envelope_invalid', 'response')
+    try:
+        # Bound the whole envelope as well as the canonical structured body.
+        # Strict parsing sees duplicates/non-finite values before a dict exists.
+        data = contract.parse_json(output, min(contract.MAX_RESPONSE_BYTES, limit + 8192))
+    except ValueError as exc:
+        diagnostics.attach(exc, diagnostics.detail('role_json_invalid', 'json_invalid', phase='json'))
+        raise
+    if (type(data) is not dict or data.get('type') != 'result' or
+            data.get('subtype') != 'success' or data.get('is_error') is not False):
+        raise _failure('Model CLI reported an unsuccessful structured run.', 'envelope_invalid', 'response')
+    structured = data.get('structured_output')
+    if (type(structured) is not dict or set(structured) != {'candidates'} or
+            type(structured['candidates']) is not list):
+        raise _failure('Model CLI returned no structured candidates.', 'envelope_invalid', 'response')
+    body = contract.canonical_json(structured)
+    if len(body) > limit:
+        raise _failure('Structured response exceeds its bound.', 'response_too_large', 'response')
+    # No result-string fallback. Final candidate validation occurs only after
+    # the parent has checked role identity and unchanged read-only snapshots.
+    return body.decode('utf-8'), None
 
 
 def _review_subprocess(command, prompt, cwd, env, timeout):
@@ -649,7 +685,7 @@ def _review_subprocess(command, prompt, cwd, env, timeout):
 
 
 def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None, workspace=None,
-        scoped=False, *, max_budget_usd=None, discovery_review=None):
+        scoped=False, *, max_budget_usd=None, discovery_review=None, discovery_schema=None):
     """Run one role; invalid budget overrides raise before any runtime or model call.
 
     Exploration callers must persist their reservation before entry. Ordinary
@@ -660,7 +696,10 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
     enabled = uses_compaction(provider, smoke, compaction)
     work_root = Path(workspace) if workspace is not None else ROOT
     command = command_for(role, write=write, smoke=smoke, compaction=compaction, workspace=workspace,
-                          scoped=scoped, max_budget_usd=max_budget_usd)
+                          scoped=scoped, max_budget_usd=max_budget_usd,
+                          discovery_schema=discovery_schema)
+    if discovery_schema is not None and discovery_review is not None:
+        raise ValueError('discovery_schema_scope_invalid')
     if discovery_review is not None:
         from harness import review_coverage as coverage
         if (type(discovery_review) is not coverage.Capture or role != 'reviewer' or
@@ -733,6 +772,19 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                             collector.finish('spawn_failed')
                         collector = None
                         report['telemetry'] = agent_telemetry.unavailable()
+                if discovery_schema is not None:
+                    # command_for already validated the native Zai capability.
+                    # Apply after child/telemetry sanitation, only to this child.
+                    # GLM thinking is forced; low effort does not disable it.
+                    env.update({
+                        'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT': '1',
+                        'CLAUDE_CODE_EFFORT_LEVEL': 'low',
+                        'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '8192',
+                        # Installed CLI needs 1 for Read turns before its first
+                        # structured attempt; invalid output gets no repair turn.
+                        'MAX_STRUCTURED_OUTPUT_RETRIES': '1',
+                        'CLAUDE_CODE_MAX_RETRIES': '0',
+                    })
                 execution_error = None
                 try:
                     if discovery_review is not None:
@@ -834,7 +886,8 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                     response_output = json.dumps(final)
                     if 'total_cost_usd' in final:
                         report['cli_estimated_cost_usd'] = final['total_cost_usd']
-                response, cost = response_text(provider, response_output)
+                response, cost = response_text(provider, response_output,
+                                               discovery_schema=discovery_schema)
                 if discovery_review is not None:
                     try:
                         discovery_review.accept(result.stdout)

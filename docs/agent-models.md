@@ -1,5 +1,74 @@
 # 에이전트 모델 연결
 
+## Discovery native schema와 실패 경계
+
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)는 반복 `role_json_invalid`에 대해
+Z.ai specialist discovery만 native structured output을 명시 요청한다. `agent_models.run`과
+`command_for`의 optional `discovery_schema`는 임의 JSON을 받지 않고
+[improvement_schema.py](../harness/improvement_schema.py)의 준비된 승인 snapshot/경로/config 계약만
+받는다. discovery guard·정확한 provider/role/workspace·scoped read-only·non-smoke를 확인한 뒤
+`--json-schema`를 전달한다. bounded full candidates root/required/additionalProperties=false,
+private prose/collection 상한·edit_files scope·실제 evidence source별 줄 상한을 표현한다.
+canonical schema CLI 인자는 UTF-8 65536bytes 이내이며 초과 시 모델 호출 없이 실패한다.
+end>=start·중복/총 문자·원문 및 의미 판정은 client/reviewer 검증을 계속 요구한다.
+
+명시 요청의 type=result/subtype=success/is_error=false envelope에서 structured_output만
+canonical JSON으로 사용한다.
+누락/null/불명 root·비성공·중복키·비유한·bytes 초과와 CLI 옵션 미지원은 실패다. result 문자열
+fallback·문법 자동 수선·모델 재시도·유료 fallback은 없다. 기존 `response_text(provider, output)`의
+tuple/legacy result 동작, 일반 workflow/smoke, reviewer의 실제 Read stream은 유지한다.
+모델/forced thinking/인증·비용/usage/telemetry·identity/context·최초 진단은 유지한다. CLI 성공이나
+native 형식은 후보 의미·근거·전체 review 성공이 아니다. 최종 후보 검증은 identity/context 뒤다.
+
+검증된 `discovery_schema` Z.ai specialist 호출에만 `--effort low`를 붙이고, 환경 정화와 telemetry
+설정 뒤 실제 subprocess env에 아래 고정값을 적용한다. parent 환경이나 역할 설정은 수정하지 않는다.
+
+| 환경 변수 | 값 | 의미 |
+| --- | --- | --- |
+| CLAUDE_CODE_ALWAYS_ENABLE_EFFORT | 1 | unknown custom model에도 effort 전송 |
+| CLAUDE_CODE_EFFORT_LEVEL | low | 추론 effort 축소, thinking 비활성화 아님 |
+| CLAUDE_CODE_MAX_OUTPUT_TOKENS | 8192 | 요청당 출력 상한, 전체 호출 토큰/시간 보장 아님 |
+| MAX_STRUCTURED_OUTPUT_RETRIES | 1 | 정상 Read 흐름과 첫 구조화 시도 허용, 불량 구조화 응답 뒤 repair 요청 없음 |
+| CLAUDE_CODE_MAX_RETRIES | 0 | CLI transport 자동 재시도 금지 |
+
+설치 CLI와 localhost 합성 서버를 사용한 parent 재현(외부 모델 호출0)에서 budget0도 첫 응답이
+바로 유효 StructuredOutput이면 HTTP1회로 성공했다. 그러나 첫 응답이 Read이면 Read1개 뒤
+`Failed to provide valid structured output after 0 attempts`로 끝나 다음 구조화 요청에 도달하지
+못했다. budget1은 Read3개 뒤 유효 StructuredOutput까지 HTTP4회로 성공했으며 결과는
+`structured_output={candidates:[]}`였다. Read2개 뒤 불량 StructuredOutput은 HTTP3회 후
+1attempts/schema candidates must be array로 즉시 실패했고 추가 repair 요청은0이었다.
+따라서0이 첫 호출을 항상 막는다는 뜻은 아니며,1은 이 CLI에서 첫 구조화 시도까지 정상 도구
+대화를 허용하는 값이다. 같은 CLI1 invocation 안의 정상 Read 대화는 실패 후 새 CLI 호출이나
+자동 재시도와 구분한다. transport의 `CLAUDE_CODE_MAX_RETRIES=0`과 실패 뒤 무재호출을 유지한다.
+
+parent가 확인한 [Z.ai thinking 문서](https://docs.z.ai/guides/capabilities/thinking-mode)와
+[chat completion 문서](https://docs.z.ai/api-reference/llm/chat-completion)에 따르면 GLM5.3/Flash는
+forced thinking이며 disabled를 지원하지 않는다. reasoning_effort는 low/high/max이고 기본 max다.
+[Claude Code 환경 변수 문서](https://code.claude.com/docs/en/env-vars)의 force effort와 상한을
+사용한다. 일반 Z.ai/Claude reviewer/Codex는 기존 설정을 유지한다. cap 잘림·프로토콜 거절·
+timeout은 실패이며 추가 호출·경로 보정·후보 합성으로 복구하지 않는다.
+
+parent 제공 2026-10-26 downloader(Z.ai/GLM) 4/9단계의 두 `role_json_invalid`는 JSON 경계 거절이다.
+원문 미보존이므로 fence·잘림·특정 문자를 확정하지 않는다. 실패/원래 오전 partial은 보존하며
+run1793029835254678756-74e8c1의 새 Claude 전체diff 승인·focused68/68·full6251/6251·apply19개 뒤
+별도 실제 native GLM probe는 2026-10-27 01:07:45.791706~01:15:45.965393 KST,
+480.172811초 timeout으로 실패했다. 상세 telemetry와 Git 중단은 ADR0034에 보존한다.
+후속 run1793031743543582459-d3598c는 새 Claude 전체diff 승인·표적422/422 통과 후 최초 전체검사
+프로세스가 중단됐다. parent가 원본/후보/검토 digest 일치와 원래 PID/하위검사 부재를 확인하고
+같은 run의 native 전체검사를 재개해6263/6263(실패/오류/skip0), scoped apply19개와 기존 Git 역할을
+완료했다. 그러나 GitHub request 전 실제 GLM gate는 2026-10-27 01:53:10.860694~01:53:18.299834
+KST,7.437927초에 실패했다. quota ready1%, 같은 provider/model과 원래 수집담당9파일이었다.
+정제 진단은 role_execution_failed/cli_failed이며 private CLI envelope는
+terminal_reason=structured_output_retry_exhausted, subtype=error_max_structured_output_retries,
+`Failed to provide valid structured output after 0 attempts`, Read1개였다. stderr의
+unrecognized_model 경고는 원인으로 쓰지 않는다. API usage0/duration_api0은 CLI 관측값이며 실제
+API 미호출을 단정하지 않는다. 원격 요청 events0·PR없음으로 중단했으며 상세 보존은 ADR0034를 따른다.
+이번1/0 계약의 새 실제 GLM 성공은 아직 미검증이다. parent가 새 전체diff/documentation 검토·
+GIT=1 full check·apply 후 새 입력 fingerprint·quota 확인과 동일480초 단1회 probe를 수행한다.
+기존 hourly tick은 최종 save/잠금·deadline 해제 뒤 별도 health를 전달하며 모델 호출을 추가하지 않는다.
+별도 health의 고정
+cloud 코드만 owner-private Sites로 전달하고 provider/model 자유문자열·비용·local endpoint는 제외한다.
+
 discovery reviewer의 source 확인은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다.
 이 호출만 parent Capture와 Claude stream-json/verbose·Read 단일 도구를 쓴다. canonical 승인 경로,
 성공 structured Read result와 원래 bytes/줄 범위의 pairing이 필수다. prompt/result의 read_files는

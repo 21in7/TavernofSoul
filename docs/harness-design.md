@@ -1,5 +1,29 @@
 # 전체 하네스 설계
 
+## 반복 JSON 실패와 세 번째 health 계약
+
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)에 schema·health wire와 복구 결정을 둔다.
+Z.ai specialist의 승인 snapshot 기반 full schema와 scoped/read-only/native envelope·최종 client
+semantic/evidence 검증을 유지한다. fallback·수선·재호출 없이 최초 오류/usage/telemetry를 보존한다.
+검증된 discovery_schema Z.ai child만 정화 후 low effort·force effort·요청당8192 출력을 고정한다.
+`MAX_STRUCTURED_OUTPUT_RETRIES=1`은 설치 CLI에서 같은1 invocation의 정상 Read 도구 대화와
+첫 구조화 시도를 허용한다. parent 합성 재현에서0은 즉시 유효 구조화 응답이면 성공했으나
+Read1개 뒤0attempts로 실패했다.1은 Read3개 뒤 유효 구조화 응답에 성공하고, Read2개 뒤
+불량 구조화 응답에는 추가 repair 요청0으로 실패했다. `CLAUDE_CODE_MAX_RETRIES=0`과 실패 후
+새 CLI 호출/재시도 금지를 유지한다. GLM forced thinking과480초 deadline·strict schema·최종 후보
+검증은 유지하며 cap/프로토콜 거절도 실패다. 일반 Z.ai/Claude/Codex·parent 환경에는 적용하지 않는다.
+환경 변수와 이전480.172811초 timeout·7.437927초 구조화 실패/검사 중단·새1/0 설정 검증 대기는
+[모델 연결](agent-models.md)과 ADR0034에 둔다. 새 실제 GLM 성공은 아직 미검증이다.
+별도 health는 cloud5역할의 고정 실패와 후속 성공을 구분하며 local/원문/키·비용은 private다.
+
+기존 CLI tick의 정상 최종 save 뒤 discovery/state/source 잠금과 deadline 해제 후에만 기존
+Store/sender/inbox로 health를 전달한다. 역할 실패 정산도 대상이나 초기 config/storage/lock/bootstrap
+실패·rollback·같은 slot·no-deliver·조회/publish-morning은 대상이 아니다. qualified unattended 전송은
+승인/실행 권한이 아니며 수동 trusted-parent/child/discovery 경계를 유지한다. 별도 trace/outbox/반환으로
+원래 실패·ledger·불변 morning/completion을 보존한다. unknown은 GET만, 같은 digest의 명시 reconcile은
+GET404 뒤 재POST한다. 새 cron·모델·source scan·fallback·Git 연결은 없다. runtime37와 상한을 유지하고
+새 helper를 연구 승인에 넣지 않는다. 새 검토/full check·GLM probe·Sites 관측은 parent 책임이다.
+
 검사 선택·CI 증명은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)의 check_selection에 위임한다.
 pytest_support의 실행·집계·worker 격리·정리와 runner 지연 import는 [ADR0032](adr/0032-parallel-local-regressions.md)를 따른다.
 

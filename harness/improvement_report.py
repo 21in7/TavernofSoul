@@ -1,6 +1,8 @@
 """Pure, Python 3.8 contracts for approval-gated improvement discovery.
 
 No filesystem, environment, model, workflow or network access occurs here.
+Owner-private improvement-health-v1 lives in improvement_health, separately
+from this unchanged web-v1 payload/digest and the completion-v1 contract.
 Task-2 integration contract (validators use ValidationError for contract failures):
 
 * validate_config(parsed_json) checks exact version/keys and hard ceilings.
