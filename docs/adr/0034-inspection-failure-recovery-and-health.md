@@ -1,9 +1,74 @@
 # 0034. 반복 점검 JSON 실패의 경계 수리와 별도 owner-private health
 
-- 상태: 제안(proposed), 명시 직접 개발 요청 구현안·새 의미 검토/전체 검증/운영 관측 대기
+- 상태: 제안(proposed)
+- 최초 작성 시점: 명시 직접 개발 요청 구현안·새 의미 검토/전체 검증/운영 관측 대기였으며, 후속 구현·운영 관측은 아래 2026-10-27 최신 main 관측 절 참조
 - 기록일: 2026-10-26
 - 기록 성격: 새 결정
 - 대체 관계: 0020의 두 전송 계약 제한을 세 번째 고정 health 계약에 한해 정밀화. 기존 보고·완료·승인 계약 유지
+
+## 2026-10-27 최신 main 관측
+
+아래 사실은 신뢰한 parent가 직접 확인해 제공했다. 이 문서를 편집·검토하는 worker/reviewer가
+직접 실행하거나 검증한 결과가 아니다. 아래 문맥·수리·인계의 미검증/대기 진술은 각 작성 당시의
+역사적 상태이며 현재 관측은 이 절과 [모델 문서](../agent-models.md#2026-10-27-최신-main-관측)를 따른다.
+과거 실패를 새 성공으로 덮거나 이번 변경의 승인·검증 증거로 재사용하지 않는다.
+
+### 구현 검토·개발 probe·GitHub 완료
+
+구현 native run1793034139378468813-c521fa는 새 Claude 전체 diff/documentation 승인,
+표적422/422, full6263/6263(다운로더129, parser/harness5984, Django회귀67, Django11,
+연결부72), 실패/오류/skip0을 기록했다. scoped apply19개와 기본 Git 역할도 완료했다.
+
+별도 명시 개발 GLM probe는 2026-10-27 02:15:55.183424~02:18:11.012133 KST,
+elapsed135.827822초였다. provider=zai/model=glm-5.3-flash, 원래 수집담당9파일,
+native 구조 budget1/transport0/low effort/8192 경로에서 succeeded와 telemetry success를
+관측했고 candidate validator가2후보를 받아들였다. 이는 각 후보의 새 Claude 독립검토·공식
+hourly proposal·사용자 승인·execute를 뜻하지 않는다. 이 probe는 hourly 상태를 수정하지 않았다.
+
+구현 [PR81](https://github.com/21in7/TavernofSoul/pull/81)은 GitHub merged=true,
+mergeSHA `310485c1e3303b587c1e2cb61d6484c02ca04350`이다. Offline harness (SQLite),
+MySQL harness, Chromium browser harness가 모두 실제 success였다. native cleanup은
+complete이며 remote deleted/local absent/prune complete/sync complete/completion complete다.
+실제 terminal archive는 archived, bundle93806bytes,
+SHA `a138cbfa4630538ed4c528ff1faaef24f659fb342feb7d58274dee80d1895fc0`이다.
+상대 증거 참조는 `logs/harness/inspection-success-observations-evidence.json`과
+`logs/harness/inspection-native-attempt-live-probe-20261027.json`이다.
+
+### 정규03시 역할과 기존 health 전달
+
+별도 개발 probe와 다른 실제 정규 hourly에서 2026-10-27 03:00:02.516543~03:02:23.280518 KST
+수집담당 succeeded, stage index3→4, last slot03, inflight없음을 관측했다. 이 성공은 다른 stage나
+새 전체9단계 완료를 뜻하지 않는다.
+
+기존03tick의 자동 improvement-health-v1 outbox는 delivered이며 digest는
+`c899d5f842d7d503156405619dcc21050ff44652ee631ce89041edb7b02c645d`다.
+main의 KST03:07:22 관측(UTC2026-10-26T18:07:22.293626+00:00)에서 GET200과 outbox
+frozen payload 전체 일치를 확인했다. 관측 명령이 새로 POST/모델/tick을 호출한 횟수는 각각0이다.
+상대 증거 참조는 `logs/harness/inspection-hourly-03-health-observation.json`이다.
+
+### 보존된 과거와 남은 관측 한계
+
+원래2026-10-26 day/web/loop publication 세 원본의 bytes/SHA가 모두 불변임을 재확인했다.
+원래 web digest는 `6b39c37d67fad984be50e26a582738d0a9e24ba667c05b06f984ef5aa81ede50`다.
+과거00/09실패와 원문 미보존 한계, 별도18:06성공, 480.172811초 timeout, 7.437927초 CLI
+budget0 실패, 최초 full검사 중단과 같은 후보의 native 재개 기록은 보존한다. 새 성공은 이들
+기록을 소급 변경하거나 과거 partial 보고를 성공으로 바꾸는 근거가 아니다.
+
+새 전체9단계와 다음09시 게시 성공은 아직 미관측이며 정규03역할 성공/health 전달과 구분한다.
+Site 추가 인쇄 화면 소스는 로컬 새 Claude/6Node모듈/TS/build/A4한장·모바일 overflow0 검증을
+마쳤지만 게시 자동승인검토에 막혀 사용자 응답 대기다. 추가 인쇄 화면 배포 성공은 주장하지
+않는다. 기존 health 전달 성공은 위 실제 관측으로 별도 기록한다.
+
+### 이번 관측 문서 변경의 영향과 인계
+
+이번 변경은 docs/agent-models.md와 이 ADR의 최신 관측 정리다. 구현·구조·책임·데이터 계약·
+격리·권한·실패 복구·검증정책·GitHub 게시 정책·모델/인증·스케줄·설정은 바꾸지 않으므로
+다른 설계/경계 문서 갱신이나 새 ADR은 필요하지 않다. 매 review는 최종 두 문서의 의미적
+완전성을 새로 판단해 `documentation={status,files,reason}`을 반환한다. 앞선
+documentation.updated나 위 구현의 검사 통과를 이번 변경의 승인 근거로 삼지 않는다.
+parent가 실제 baseline→candidate diff로 docs-only 여부를 판단하고 ADR0031/0022의 check-docs
+및 GIT=1·기존 GitHub CI/merge/cleanup/archive 경로로 전달한다. worker/reviewer는 검사·Git·
+네트워크·SSH·재위임·workflow를 실행하지 않는다.
 
 ## 문맥
 
@@ -178,10 +243,11 @@ runtime37목록·128KiB/1.5MiB source 상한, 일24회/tick1회·GLM80% gate·�
 runtime 읽기 승인에 자동 추가하지 않는다. schema 오류/미지원은 한 번 실패로 끝나며 정상 다음
 slot/회차의 관측은 별도다. health history는 bounded 요약이며 전체 실패 원장은 기존 private다.
 
-Sites `/api/health` 구현/배포·UI는 parent의 별도 작업이다. parent가 새 Claude 의미 검토와
+다음은 최초 작성 당시의 인계이며 후속 실제 성공은 [최신 main 관측](#2026-10-27-최신-main-관측)에 구분한다.
+Sites `/api/health` 구현/배포·UI는 parent의 별도 작업이었다. 당시 parent에게 새 Claude 의미 검토와
 documentation={status,files,reason}, full make check, scoped apply, 기존 Git 역할·실제 CI3 success/
-merge/cleanup/archive를 수행한다. 정확한 최종 코드로 GLM 실패 단계를 단1회 개발 재검증한
-결과와 실제 후속 hourly 성공·동일 GET 전달은 아직 미관측이다. worker는 검사를 실행하지 않았다.
+merge/cleanup/archive 수행을 인계했다. 정확한 최종 코드로 GLM 실패 단계를 단1회 개발 재검증한
+결과와 실제 후속 hourly 성공·동일 GET 전달은 당시 아직 미관측이었다. worker는 검사를 실행하지 않았다.
 
 ## 이전 parent 검증과 native timeout 기록 (2026-10-27)
 
@@ -257,10 +323,12 @@ worker가 재실행한 검사가 아니다.
 
 기존 subprocess 환경 회귀의 기대값만1로 고치며 성공/cap/프로토콜/timeout의 단1회 CLI 호출,
 일반 역할·Codex·parent 환경 격리 assertion을 보존한다. worker는 검사하지 않았다. 이번1/0 설정의
-새 실제 GLM 성공은 아직 미검증이다. parent가 새 최종전체diff의 Claude 의미 검토와 필수
-`documentation={status,files,reason}` 판단, GIT=1 full make check·scoped apply·기존 Git 역할을
-수행하고 새 입력 fingerprint와 quota 확인 뒤 동일480초 단1회 실제 GLM gate를 검증한다.
-이후 기존 앱 Git/CI3/merge/cleanup/archive도 parent 책임이다. 과거 승인/전체검사/합성 성공은
+새 실제 GLM 성공은 이 절 작성 당시 아직 미검증이었다. 이후 실제 성공은
+[최신 main 관측](#2026-10-27-최신-main-관측)에 별도 기록한다. 당시 parent에게 새 최종전체diff의
+Claude 의미 검토와 필수 `documentation={status,files,reason}` 판단, GIT=1 full make check·
+scoped apply·기존 Git 역할 수행, 새 입력 fingerprint와 quota 확인 뒤 동일480초 단1회 실제
+GLM gate 검증을 인계했다.
+이후 기존 앱 Git/CI3/merge/cleanup/archive도 parent 책임이었다. 과거 승인/전체검사/합성 성공은
 이 새 실제 성공을 대신하지 않는다. day/frozen/publication/hourly 상태·cron/private config·예산·
 모델/인증·37scope·128KiB/1.5MiB는 유지한다. runtime 승인10개 외27개 합773709bytes는 parent
 제공 상수로 유지하며 그 소스를 외부 모델에 제공하지 않는다.
@@ -298,7 +366,8 @@ GET-only 및 frozen web/history/ledger 보존을 다룬다. worker는 검사·�
 parent의 새 full check·실제37개 재측정·새 독립 Claude documentation 판단이 필요하다.
 정확한 새 코드 apply 뒤 Git 게시 전에 단1회 GLM 개발 probe를 수행하고 실제 결과를 기록한다.
 그 뒤 기존 Git 역할/CI3/merge/cleanup/archive와 별도 Sites parity/build/deploy/readback도 parent
-책임이다. 새 실제 GLM 성공·후속 hourly 성공·Sites 전달은 아직 미관측이다.
+책임이다. 이 수리 기록 작성 당시에는 새 실제 GLM 성공·후속 hourly 성공·Sites 전달이 아직
+미관측이었다. 이후 관측 범위와 남은 한계는 [최신 main 관측](#2026-10-27-최신-main-관측)을 따른다.
 
 ### 후속 sender 회귀 실패 수리 (2026-10-27)
 
@@ -332,10 +401,12 @@ POST→GET delivered·후속 별도 health 전달을 요구한다. 기존 OSErro
 worker는 검사를 실행하지 않았다. 앞선 실패는 보존하며 parent의 표적 회귀·새 full make check·
 실제37개 bytes·전체diff Claude review와 새 documentation 판단·실호출/게시/관측이 필요하다.
 
+```text
 documentation={status: updated, files: [docs/improvements.md,
 docs/adr/0034-inspection-failure-recovery-and-health.md], reason: morning sender 진단과
 health 자격의 경계를 정정하고 새 process 회귀의 검증 대기를 기록했다. 기존 계약 복원이므로
 새 ADR 결정은 없으며 모델/권한/Git/전달 schema 정책은 유지한다. 최종 reviewer는 새로 판단한다.}
+```
 
 ### process 재현 callback 위치 정정 (2026-10-27)
 
