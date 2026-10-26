@@ -1982,7 +1982,7 @@ def test_operating_cli_tick_reaches_default_publisher_and_no_deliver_is_explicit
     calls, payloads = [], []
     monkeypatch.setattr(imp, '_inbox_config', lambda path: ('https://synthetic.invalid', SECRET))
     def transport(method, origin, path, headers, body, timeout, max_bytes):
-        calls.append(method)
+        calls.append((method, path))
         if method == 'POST':
             payloads.append(json.loads(body))
             return 200, b'{}'
@@ -1993,15 +1993,18 @@ def test_operating_cli_tick_reaches_default_publisher_and_no_deliver_is_explicit
         return actual_tick(selected=lab.selected, clock=lab.clock, keys={'ZAI_API_KEY': SECRET},
                            runner=lab.cloud, local_runner=lab.local, quota_transport=lab.quota, **options)
     monkeypatch.setattr(imp, 'deliver_report', safe_default_delivery)
+    monkeypatch.setattr(imp, 'http_transport', transport)
     monkeypatch.setattr(loop, 'tick', injected_tick)
     lab.clock.at(9)
     assert loop.main(['tick']) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result['publication']['status'] == 'delivered' and calls == ['POST', 'GET']
+    assert result['publication']['status'] == result['health_publication']['status'] == 'delivered'
+    assert calls == [('POST', '/api/reports'), ('GET', '/api/reports/2026-10-15'),
+                     ('POST', '/api/health'), ('GET', '/api/health')]
     lab.clock.at(10)
     loop.main(['tick', '--no-deliver'])
     result = json.loads(capsys.readouterr().out)
-    assert 'publication' not in result and calls == ['POST', 'GET']
+    assert 'publication' not in result and 'health_publication' not in result and len(calls) == 4
 
 def test_status_is_read_only_and_korean_status_explains_next_role_budget_and_report(lab):
     result = loop.status(now=START, selected=lab.selected)
@@ -2507,6 +2510,139 @@ def test_legacy_participation_without_diagnostics_remains_compatible(status):
     assert 'error_type' not in safe
     assert 'reason' not in loop._safe_participation(dict(legacy, status='succeeded',
                                                        reason='role_json_invalid', error_type=RAW + SECRET))
+
+def test_discovery_schema_is_not_forwarded_to_codex_local_or_reviewer(lab):
+    lab.models['roles']['coordinator']['provider'] = 'codex'
+    local_roles, excluded_cloud_roles, native_roles = [], [], []
+
+    def local(role, paths, snapshots, **options):
+        assert 'discovery_schema' not in options
+        local_roles.append(role)
+        return lab.local(role, paths, snapshots, **options)
+
+    def cloud(role, prompt, keys, **options):
+        provider = lab.models['roles'][role]['provider']
+        if role == 'reviewer' or provider != 'zai':
+            assert 'discovery_schema' not in options
+            excluded_cloud_roles.append((role, provider))
+        else:
+            assert 'discovery_schema' in options
+            native_roles.append(role)
+        return lab.cloud(role, prompt, keys, **options)
+
+    for hour in range(9):
+        lab.tick(hour, runner=cloud, local_runner=local)
+
+    assert local_roles == list(contract.SPECIALIST_ROLES)
+    assert excluded_cloud_roles == [('coordinator', 'codex'), ('parser', 'codex'),
+                                    ('django', 'codex'), ('reviewer', 'claude')]
+    assert native_roles == [role for role in contract.SPECIALIST_ROLES
+                            if lab.models['roles'][role]['provider'] == 'zai']
+    assert lab.calls() == 9 and len(lab.events) == 9
+    assert lab.report()['review_complete'] is True
+    assert all(agent['status'] == 'succeeded' for agent in lab.report()['agents'])
+
+
+@pytest.mark.parametrize('mode,expected,cause', [
+    ('success', 'succeeded', None), ('missing', 'failed', 'envelope_invalid'),
+    ('error', 'failed', 'envelope_invalid'), ('duplicate', 'failed', 'json_invalid'),
+    ('unsupported', 'failed', 'cli_failed'), ('candidate', 'failed', 'validation'),
+    ('line_range', 'failed', 'validation'),
+    ('identity', 'failed', 'identity_mismatch'), ('context', 'failed', 'context_changed'),
+])
+def test_zai_specialist_native_adapter_through_tick(lab, monkeypatch, mode, expected, cause):
+    from harness import improvement_health as health
+    lab.hours(count=3)
+    seen = []
+    def cli(command, **options):
+        assert '--json-schema' in command and command[0] == 'claude'
+        schema = json.loads(command[command.index('--json-schema') + 1])
+        assert schema['required'] == ['candidates']
+        seen.append(command)
+        lab.clock.at(3, seconds=7)
+        body = {'candidates': []}
+        if mode == 'candidate':
+            body = {'candidates': [draft('outside.py')]}
+        if mode == 'line_range':
+            body = {'candidates': [draft('downloader/example.py', end=999)]}
+        envelope = dict(type='result', subtype='error_max_turns' if mode == 'error' else 'success',
+                        is_error=False, result='{}', structured_output=body)
+        if mode == 'missing':
+            envelope.pop('structured_output')
+        text = json.dumps(envelope)
+        if mode == 'duplicate':
+            text = '{"type":"result","subtype":"success","is_error":false,"structured_output":{"candidates":[],"candidates":[]}}'
+        return subprocess.CompletedProcess(command, 2 if mode == 'unsupported' else 0, text, '')
+    def adapter(role, prompt, keys, **options):
+        assert role == 'downloader' and 'discovery_schema' in options
+        result = run_synthetic_loop_adapter(lab, monkeypatch, forbidden, cli,
+                                             role, prompt, keys, **options)
+        if mode == 'identity':
+            result['model'] = 'forged'
+        if mode == 'context':
+            target = options['workspace'] / 'downloader/example.py'
+            target.chmod(0o600)
+            target.write_text('changed', encoding='utf-8')
+        return result
+    lab.tick(3, runner=adapter)
+    assert len(seen) == 1
+    entry = next(e for e in lab.state()['participation'] if e['role'] == 'downloader')
+    assert entry['status'] == expected and entry['stage_index'] == 3
+    if cause is not None:
+        assert entry['failure_detail']['cause'] == cause
+        projected = health.project(lab.state(), lab.clock().isoformat())
+        failed = projected['recent_failures'][-1]['attempt']
+        assert failed['role'] == 'downloader' and failed['stage_index'] == 3
+        assert failed['cause'] == cause and failed['call_finished_at'].endswith('07+09:00')
+        if mode == 'line_range':
+            assert (failed['field'], failed['rule']) == ('evidence.end_line', 'range')
+        lab.hours(start=4, count=6)
+        frozen = lab.store.path('web/2026-10-15.json').read_bytes()
+        lab.hours(start=10, count=4)
+        final = health.project(lab.state(), lab.clock().isoformat())
+        original = next(row for row in final['recent_failures'] if row['attempt'] == failed)
+        assert original['subsequent_success_at'] is not None
+        assert entry in lab.state()['participation']
+        assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
+
+
+def test_cloud_health_times_bracket_adapter_not_admission_preparation_or_settlement(lab, monkeypatch):
+    lab.hours(count=3)
+    call = imp._call_role
+    def preparation(*args, **options):
+        lab.clock.at(3, seconds=2)
+        value = call(*args, **options)
+        lab.clock.at(3, seconds=9)
+        return value
+    def runner(*args, **options):
+        result = lab.cloud(*args, **options)
+        result.update(call_started_at='1900-01-01T00:00:00+09:00',
+                      call_finished_at='1900-01-01T00:00:01+09:00')
+        lab.clock.at(3, seconds=7)
+        return result
+    monkeypatch.setattr(imp, '_call_role', preparation)
+    lab.tick(3, runner=runner)
+    entry = next(e for e in lab.state()['participation'] if e['role'] == 'downloader')
+    assert entry['started_at'].endswith('00+09:00')
+    assert entry['call_started_at'].endswith('02+09:00')
+    assert entry['call_finished_at'].endswith('07+09:00')
+    assert entry['finished_at'].endswith('09+09:00')
+
+
+def test_native_preparation_failure_has_no_invented_call_times_or_fallback(lab, monkeypatch):
+    from harness import improvement_schema as schema, improvement_health as health
+    lab.hours(count=3)
+    def invalid_schema(*args, **options):
+        raise ValueError('discovery_schema_invalid')
+    monkeypatch.setattr(schema, 'prepare', invalid_schema)
+    lab.tick(3, runner=forbidden)
+    entry = next(e for e in lab.state()['participation'] if e['role'] == 'downloader')
+    assert entry['status'] == 'unavailable'
+    assert entry['failure_detail']['phase'] == 'preparation'
+    failed = health.project(lab.state(), lab.clock().isoformat())['recent_failures'][-1]['attempt']
+    assert failed['call_started_at'] is None and failed['call_finished_at'] is None
+    assert lab.calls() == 4 and lab.state()['stage_index'] == 4
+
 
 @pytest.mark.parametrize('role,mode,cause', [
     ('coordinator', 'words', 'cli_failed'), ('coordinator', 'auth', 'authentication_failed'),

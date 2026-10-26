@@ -22,7 +22,7 @@ _native_loop_run = models.run  # Capture before the shared offline fixture patch
 def run_synthetic_loop_adapter(lab, monkeypatch, blocked, cli, role, prompt, keys, **options):
     """Exercise the real adapter using only the loop Lab's synthetic I/O."""
     from harness import workflow, local_model
-    assert role in ('coordinator', 'reviewer')
+    assert role in ('coordinator', 'downloader', 'reviewer')
     guards = ((models, 'run'), (models, 'load_keys'), (subprocess, 'Popen'),
               (workflow, 'execute'), (workflow, 'run_check'), (workflow.git_publish, 'prepare'),
               (http.client, 'HTTPConnection'), (http.client, 'HTTPSConnection'),
@@ -47,7 +47,7 @@ def run_synthetic_loop_adapter(lab, monkeypatch, blocked, cli, role, prompt, key
         return lab.selected
 
     def process(command, **kwargs):
-        assert command[0] == '/synthetic/codex'
+        assert command[0] == ('claude' if role == 'downloader' else '/synthetic/codex')
         if 'login' not in command:
             assert kwargs['cwd'] == workspace
         return cli(command, **kwargs)
@@ -65,10 +65,17 @@ def run_synthetic_loop_adapter(lab, monkeypatch, blocked, cli, role, prompt, key
             patch.setattr(models, 'codex_runtime', lambda *a: nullcontext(runtime))
             patch.setattr(models.shutil, 'which', lambda *a: '/synthetic/codex')
             patch.setattr(subprocess, 'run', process)
-        else:
+        elif role == 'reviewer':
             patch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
             patch.setattr(models, 'child_environment', lambda *a, **k: {})
             patch.setattr(models, '_review_subprocess', review)
+        else:
+            patch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+            patch.setattr(models, 'child_environment', lambda *a, **k: {})
+            patch.setattr(subprocess, 'run', process)
+            def unavailable_collector(*args):
+                raise OSError('Synthetic telemetry unavailable; no listener')
+            patch.setattr(models.agent_telemetry, 'Collector', unavailable_collector)
         assert_blocked(guards + (((subprocess, 'run'),) if role == 'reviewer' else ()))
         result = _native_loop_run(role, prompt, keys, compaction=False, **options)
     assert_blocked(guards + io_guards)
@@ -1830,8 +1837,178 @@ def test_private_usage_records_actual_final_and_transmitted_prompt_size(
     assert 'PRIVATE-OBSERVER-FAILURE' not in json.dumps(unchanged)
 
 
+@pytest.mark.parametrize('output,cause', [
+    ('{"type":"result","subtype":"success","is_error":false,"result":"{\\"candidates\\":[]}"}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"success","is_error":false,"structured_output":null,"result":"legacy"}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"success","is_error":false,"structured_output":[]}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"success","is_error":false,"structured_output":{"other":[]}}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"error_max_turns","is_error":false,"structured_output":{"candidates":[]}}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"success","is_error":true,"structured_output":{"candidates":[]}}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"success","is_error":false,"structured_output":{"candidates":[],"candidates":[]}}', 'json_invalid'),
+    ('{"type":"result","subtype":"success","is_error":false,"structured_output":{"candidates":[]},"cost":NaN}', 'json_invalid'),
+    ('{"type":"result","subtype":"success","is_error":false,"structured_output":{"candidates":[]},"cost":1e999}', 'json_invalid'),
+    ('{"subtype":"success","is_error":false,"structured_output":{"candidates":[]}}', 'envelope_invalid'),
+    ('{"type":"assistant","subtype":"success","is_error":false,"structured_output":{"candidates":[]}}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"success","structured_output":{"candidates":[]}}', 'envelope_invalid'),
+    ('{"type":"result","subtype":"success","is_error":0,"structured_output":{"candidates":[]}}', 'envelope_invalid'),
+])
+def test_native_response_rejects_ambiguity_without_result_fallback(tmp_path, output, cause):
+    from harness.test_improvement_schema import prepared
+    with pytest.raises(ValueError) as error:
+        models.response_text('zai', output, discovery_schema=prepared(tmp_path))
+    assert diag.exception_detail(error.value)['cause'] == cause
+
+
+def test_native_response_returns_only_canonical_structured_candidates_and_bounds(tmp_path):
+    from harness.test_improvement_schema import prepared, configuration
+    request = prepared(tmp_path)
+    output = '{"type":"result","subtype":"success","is_error":false,"structured_output":{"candidates":[]},"result":"broken text","total_cost_usd":5}'
+    assert models.response_text('zai', output, discovery_schema=request) == ('{"candidates":[]}', None)
+    config = configuration()
+    config['limits']['max_response_bytes'] = 10
+    with pytest.raises(ValueError) as error:
+        models.response_text('zai', output, discovery_schema=prepared(tmp_path, config))
+    assert diag.exception_detail(error.value)['cause'] == 'response_too_large'
+    with pytest.raises(ValueError):
+        models.response_text('zai', output + ' ' * 65536, discovery_schema=request)
+
+
+def test_native_schema_command_requires_discovery_and_exact_scope(tmp_path, monkeypatch):
+    from harness.test_improvement_schema import prepared
+    request = prepared(tmp_path)
+    with pytest.raises(ValueError):
+        models.command_for('downloader', workspace=tmp_path, scoped=True, discovery_schema=request)
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    command = models.command_for('downloader', workspace=tmp_path, scoped=True, discovery_schema=request)
+    value = json.loads(command[command.index('--json-schema') + 1])
+    assert value['required'] == ['candidates']
+    assert command[command.index('--output-format') + 1] == 'json'
+    assert command[command.index('--permission-mode') + 1] == 'dontAsk'
+    for options in ({'write': True}, {'smoke': True}, {'scoped': False},
+                    {'workspace': tmp_path / 'other'}):
+        args = dict(workspace=tmp_path, scoped=True, discovery_schema=request)
+        args.update(options)
+        with pytest.raises(ValueError):
+            models.command_for('downloader', **args)
+    for role in ('coordinator', 'reviewer', 'git'):
+        with pytest.raises(ValueError):
+            models.command_for(role, workspace=tmp_path, scoped=True, discovery_schema=request)
+    assert '--json-schema' not in models.command_for('downloader', workspace=tmp_path, scoped=True)
+
+
 def test_legacy_response_text_signature_and_tuple_remain_compatible():
     assert models.response_text('claude', '{"result":"legacy","total_cost_usd":0.1}') == ('legacy', .1)
     assert models.response_text('zai', '{"result":"legacy","total_cost_usd":0.1}') == ('legacy', None)
     assert models.response_text('codex', '{"type":"item.completed","item":{"type":"agent_message","text":"legacy"}}\n'
                                 '{"type":"turn.completed"}') == ('legacy', None)
+
+
+@pytest.mark.parametrize('change', ['schema', 'role', 'provider', 'workspace', 'write',
+                                    'smoke', 'scoped', 'guard', 'dict'])
+def test_native_run_rejects_tampering_before_runtime_auth_or_cli(tmp_path, monkeypatch, change):
+    from harness.test_improvement_schema import prepared
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    request = prepared(tmp_path)
+    options = dict(role='downloader', workspace=tmp_path, scoped=True)
+    if change == 'schema':
+        weakened = json.loads(request._schema)
+        weakened['properties']['candidates']['maxItems'] = 999
+        object.__setattr__(request, '_schema', json.dumps(weakened).encode())
+    elif change == 'provider':
+        config = models.load_config()
+        config['roles']['downloader']['provider'] = 'claude'
+        monkeypatch.setattr(models, 'load_config', lambda: config)
+    elif change == 'guard':
+        monkeypatch.delenv('TAVERN_IMPROVEMENT_DISCOVERY')
+    elif change == 'dict':
+        request = {'type': 'object'}
+    else:
+        options[change] = dict(role='reviewer', workspace=tmp_path / 'other',
+                               write=True, smoke=True, scoped=False)[change]
+    def forbidden(*args, **kwargs):
+        pytest.fail('Invalid schema reached runtime/auth/CLI')
+    monkeypatch.setattr(storage, 'resolve_storage', forbidden)
+    monkeypatch.setattr(models, 'connection_status', forbidden)
+    monkeypatch.setattr(models, 'child_environment', forbidden)
+    monkeypatch.setattr(models.subprocess, 'run', forbidden)
+    with pytest.raises(ValueError, match='discovery_schema_(invalid|scope_invalid)'):
+        models.run(task='fixture', keys={}, discovery_schema=request, **options)
+
+
+@pytest.mark.parametrize('outcome', ['success', 'cap', 'protocol', 'timeout'])
+def test_native_child_limits_survive_sanitation_without_leaking(
+        tmp_path, monkeypatch, local_keys, outcome):
+    from harness.test_improvement_schema import prepared
+    settings = {'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT': '1', 'CLAUDE_CODE_EFFORT_LEVEL': 'low',
+                'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '8192', 'MAX_STRUCTURED_OUTPUT_RETRIES': '1',
+                'CLAUDE_CODE_MAX_RETRIES': '0'}
+    for name in settings:
+        monkeypatch.setenv(name, '99')
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    monkeypatch.setenv('HTTPS_PROXY', 'synthetic-unchanged-proxy')
+    parent = dict(os.environ)
+    config = models.load_config()
+    config['roles']['reviewer'] = dict(provider='claude', model='fixture-model',
+                                       effort='medium', max_budget_usd=2)
+    monkeypatch.setattr(models, 'load_config', lambda: config)
+    monkeypatch.setattr(storage, 'resolve_storage',
+                        lambda *a: SimpleNamespace(check_ready=lambda: None))
+    monkeypatch.setattr(models, 'credential_runtime_directory',
+                        lambda **kw: tmp_path / 'runtime' / kw['provider'])
+    monkeypatch.setattr(models, 'connection_status', lambda *a: {'status': 'ready'})
+    def no_listener(*args):
+        raise OSError('Synthetic collector unavailable')
+    monkeypatch.setattr(models.agent_telemetry, 'Collector', no_listener)
+    calls = []
+    def cli(command, **options):
+        calls.append((command, dict(options['env'])))
+        assert options['timeout'] == 480 and options['cwd'] == str(tmp_path)
+        env = options['env']
+        assert env['HTTPS_PROXY'] == parent['HTTPS_PROXY']
+        if '--json-schema' in command:
+            assert all(env.get(k) == v for k, v in settings.items())
+            assert command[command.index('--effort') + 1] == 'low'
+            assert command[command.index('--model') + 1] == config['roles']['downloader']['model']
+            assert command[command.index('--permission-mode') + 1] == 'dontAsk'
+            assert command[command.index('--tools') + 1] == 'Read,Glob,Grep'
+            assert env['ANTHROPIC_BASE_URL'] == config['providers']['zai']['base_url']
+            assert env['ANTHROPIC_AUTH_TOKEN'] == local_keys['ZAI_API_KEY']
+            assert 'ANTHROPIC_API_KEY' not in env
+            if outcome == 'timeout':
+                raise subprocess.TimeoutExpired(command, 480)
+            output = dict(type='result', subtype='success', is_error=False,
+                          structured_output={'candidates': []}, result='no fallback')
+            if outcome == 'cap':
+                output['subtype'] = 'error_max_output_tokens'
+            if outcome == 'protocol':
+                return subprocess.CompletedProcess(command, 1, '{}', 'unsupported native request')
+        else:
+            assert all(k not in env for k in settings if k.startswith('CLAUDE_CODE_'))
+            assert env['MAX_STRUCTURED_OUTPUT_RETRIES'] == parent['MAX_STRUCTURED_OUTPUT_RETRIES']
+            output = {'result': 'ordinary'}
+        return subprocess.CompletedProcess(command, 0, json.dumps(output), '')
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    report = models.run('downloader', 'fixture', local_keys, compaction=False,
+        workspace=tmp_path, scoped=True, timeout=480, discovery_schema=prepared(tmp_path))
+    assert len(calls) == 1  # Even on failure; normal Read turns stay inside this CLI invocation.
+    assert report['status'] == ('passed' if outcome == 'success' else 'failed')
+    if outcome == 'success':
+        assert report['response'] == '{"candidates":[]}'
+    else:
+        assert 'response' not in report
+        assert diag.result_detail(report)['cause'] == {
+            'cap': 'envelope_invalid', 'protocol': 'cli_failed', 'timeout': 'timeout'}[outcome]
+    for role in ('downloader', 'reviewer'):
+        ordinary = models.run(role, 'fixture', local_keys, compaction=False,
+                              workspace=tmp_path, scoped=True, timeout=480)
+        assert ordinary['status'] == 'passed' and ordinary['response'] == 'ordinary'
+    assert len(calls) == 3
+    assert '--effort' not in calls[1][0]
+    assert calls[2][0][calls[2][0].index('--effort') + 1] == 'medium'
+    assert calls[2][1]['ANTHROPIC_API_KEY'] == local_keys['ANTHROPIC_API_KEY']
+    assert 'ANTHROPIC_AUTH_TOKEN' not in calls[2][1]
+    codex_env = models.child_environment('codex', local_keys)
+    assert all(k not in codex_env for k in settings if k.startswith('CLAUDE_CODE_'))
+    assert codex_env['MAX_STRUCTURED_OUTPUT_RETRIES'] == parent['MAX_STRUCTURED_OUTPUT_RETRIES']
+    assert os.environ == parent
+    assert all(secret not in json.dumps(report) for secret in local_keys.values())

@@ -546,6 +546,11 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     diagnostics.detail('role_preparation_failed', 'context_too_large', phase='preparation'))
             safe_prompt = agent_models.redact(prompt, keys)
             timeout = config['limits']['call_timeout_seconds']
+            native_schema = None
+            if role in contract.SPECIALIST_ROLES and spec['provider'] == 'zai':
+                from harness import improvement_schema
+                native_schema = improvement_schema.prepare(role, model_root, paths,
+                    {p: snapshots[p] for p in paths}, config)
             # The environment guard also rejects accidental in-process workflow
             # entry from an injected runner. Existing runner sets CHILD on CLIs.
             preparation_ms = (time.monotonic() - start) * 1000
@@ -556,6 +561,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                 result = runner(role, safe_prompt, keys, write=False,
                                 timeout=timeout,
                                 workspace=model_root, scoped=True,
+                                **({'discovery_schema': native_schema} if native_schema is not None else {}),
                                 **({'discovery_review': capture} if capture is not None else {}))
             finally:
                 if previous is None:

@@ -1,5 +1,50 @@
 # 승인 대기 시간별 연구와 오전 개선 보고
 
+## 반복 role_json_invalid의 경계 수리
+
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)에 parent 제공 실제 실패 시각/원인,
+full bounded schema·native envelope·strict client 후보/evidence 검증과 실패 복구 결정을 둔다.
+Z.ai specialist discovery만 opt-in하며 legacy/reviewer Read stream·모델/인증/예산은 유지한다.
+result fallback·문법 수선·모델 retry는 없다. native 형식은 의미적 정확성 증거가 아니다.
+과거 downloader role_json_invalid와 오전 partial/frozen digest를 새 성공으로 바꾸지 않는다.
+
+## 별도 owner-private health 계약
+
+세 번째 고정 `improvement-health-v1`의 wire/allowlist·privacy·frozen outbox·동일 POST/GET 및
+same-digest reconcile은 [ADR0034](adr/0034-inspection-failure-recovery-and-health.md#health-wire-계약)에 둔다.
+cloud5역할의 실패 단계·고정 원인·실제 call 시각·후속 같은 역할 성공만 투영한다. legacy 결손은
+unknown/unavailable/null이다. local 상세·자유 provider/model·비용·예외·원문·키·절대경로는 보내지 않는다.
+후속 성공으로 과거 실패를 지우거나 freshness·승인·전체 review 성공을 주장하지 않는다.
+
+기존 단일 hourly tick은 정상 최종 save와 discovery/state/source lock·deadline 해제 뒤 별도
+health를 전달한다. 정산된 역할 실패도 대상이며 초기 config/Store/readiness/binding/lock/bootstrap
+실패·시계 역전·같은 slot 재실행은 보내지 않는다. 추가 모델·source scan·storage fallback은 없다.
+같은 slot도 morning sender 잠금은 확인하며 실제 `sender_lock_busy`를 보존한다. 이 경로는
+health 자격과 별개이고 bootstrap/save 실패의 publication 금지는 유지한다. sender 충돌은 별도
+catch로 처리한다. process/동일 slot·두 sender 잠금·정산 실패 보존 회귀는 parent 새 검증 대기다.
+`--no-deliver`와 status/query/publish-morning도 자동 health를 보내지 않는다. 이 qualified 경로만
+unattended 전송을 허용하며 수동 trusted-parent CLI와 child/discovery 거절은 유지한다.
+환경/CLI는 인간 신원·approval/execute 권한이 아니다. health 실패는 별도 health_publication/outbox에
+남기고 최초 실패·회계·stage·morning/frozen 결과를 덮지 않는다. unknown/sending은 GET만,
+명시 frozen digest reconcile+GET404만 재POST한다. delivered 뒤 다음 정상 tick은 새 관측을 전송한다.
+[운영 명령](harness.md#실패-복구-health의-parent-운영)은 기존 private storage/credential을 사용한다.
+
+runtime37·128KiB/1.5MiB·일24회/tick1회·GLM80%/Claude 예산·wrapper/cron/ledger는 유지한다.
+새 helper는 runtime 승인에 추가하지 않는다. run1793024077756804485-d143a3의 새 검토 뒤 full check는
+parser2개 assertion 실패/skip0이었다. 적용/GitHub dispatch는 없었고 세부 수치는 ADR0034에 보존한다.
+이번 worker는 fake/Lab 명세만 추가하며 실행하지 않았다. 새 Claude 의미/documentation 판단·full check·
+실제37개 재측정·apply 뒤 단1회 GLM probe와 Git/CI3/merge/cleanup/archive·Sites 배포/readback은
+parent 책임이며 새 실제 성공은 미관측이다.
+
+### Parent 조회와 고정 digest 전달
+
+[운영 명령](harness.md#실패-복구-health의-parent-운영)과
+[전달 계약](adr/0034-inspection-failure-recovery-and-health.md#parent-전용-독립-전달)을 따른다.
+
+### 이번 범위의 검토와 미관측 상태
+
+최종 코드·문서의 새 documentation 판단과 full check는 parent가 수행하며 과거 검토/검사는 재사용하지 않는다.
+
 ## 잠금 격리와 실제 실패 관측
 
 최신 잠금/복구 계약은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
@@ -317,60 +362,8 @@ CLI result를 복사하지 않는다. 기존 provider별 기본 예산·compacti
 
 ## 2026-10-20 parser 편집 목록 중복과 수리 인계
 
-parent가 제공한 최초 관측은 run `1792483202194321920-447ddb`의 2026-10-20 21:00 KST
-정규 `local(parser)` 호출이다. Qwen3.5-9B-4bit가 AGENTS.md 원문1..96줄로 실제 실행된 뒤
-client가 `candidate_edit_files_duplicate`로 거절했다. 이전 local(coordinator)·Codex·
-local(downloader)·GLM은 실제 성공했고 GLM 후보2개가 있으나 정규 전체 성공은 아니다.
-
-후속 run `1792500541005476257-a59052` round1은 오프라인 full4895개를 모두 통과했다.
-그러나 2026-10-20 22:06 KST parent의 같은 실제 로컬 서버 parser/AGENTS.md1..96/동일 config
-개발 검증 HTTP1회는 `called=true`, `reason=candidate_edit_files_duplicate`,
-`verification=failed`였다. request18724bytes, 134.805초, 운영 state 불변이었다.
-기존 세 문장을 보존하고 필요한 경로를 한 번 쓰라는 설명을 추가한 뒤에도 실제 중복은 지속됐다.
-두 실패의 원문은 저장하지 않아 반복 경로·개수·정확한 후보 값은 알 수 없으며 추측하지 않는다.
-
-이후 순서 지침을 반영한 PR59(`65c19f53cfaa461cd994cf61d435a32ae9b609a9`)는 오프라인
-4895개를 통과했고, 2026-10-20 22:37 KST parser/AGENTS.md1..96 개발 HTTP1회에서 유효
-초안2개(각각 edit_files1개)가 확인됐다. 이는 한 owner의 단일 성공이며 전체 역할의 해소가 아니다.
-같은 mlx-vlm/Qwen3.5-9B-4bit 서버의 2026-10-20 23:00 정규 run
-`1792504802000339115-d6a0c0`에서 local(coordinator)는 AGENTS.md1..96으로 실제 호출됐고
-`called=true`, `reason=candidate_edit_files_duplicate`로 다시 거절됐다. parent 관측 시각은
-시작23:00:01.927730·종료23:01:16.865115 KST다. 원문 미보존으로 이번 반복 경로·개수도
-알 수 없으며 추측하지 않는다. 과거 테스트 문구 누락과 구분되는 실제 생성 중복의 재발이다.
-
-이번 coordinator 수리는 순서 지침에 현재 owner의 실제 승인 경로로 만든 단일·두 파일 JSON
-필드 예시를 추가한다. 승인 파일 하나에는 단일 예시만 제공하며 예시는 형식 설명이고 실제
-후보는 필요한 편집 파일만 선택한다. 생성과 정확한 canonical system 검증을 같은 승인 목록에
-맞춘다. 중복 방지나 실제 추론 성공을 보장하지 않는다. native schema/owner enum,
-원문 window, enable_thinking=false, 배열1..12·문자열 합600, client 최종 검증과 고정 duplicate
-진단, request24576bytes 내 whole-line 선택·canonical binding·출력·timeout은 유지한다.
-uniqueItems·decoder/validator 완화·자동 dedup·경로/줄/후보 보정·원문/출력 재작성·재시도·
-fallback은 추가하지 않는다. 모델·인증·예산·시간당1회/일24회·원래37개 source scope·
-보고·승인·Git·스토리지 정책도 유지한다.
-
-현재 변경의 최종 full/live 및 PR/CI/머지는 parent 관측 전까지 pending이다. 실제 정규9단계 및
-2026-10-21 09:00 KST 오전 보고 성공 역시 별도로 pending이다. 작업자는 검사·모델 호출·
-네트워크·SSH·서비스·Git·workflow·재위임을 실행하지 않으며 새 mirror/프롬프트 문자열 검사를
-추가하지 않는다. 합성 snapshot·주입 transport로 owner 승인 범위·단일/다중 목록·실제 중복
-거절·요청 변조 no-call·전체 byte 예산·whole-line 경계를 검증하는 동작 회귀를 작성하되 실행하지
-않는다. parent가 full `make check`를 통과하고 과거 실패본 대비 실제 코드와 정확한 HTTP
-요청이 달라졌음을 확인한 뒤에만 같은 실제 로컬 서버에 동일 coordinator/AGENTS.md1..96/config로
-개발 검증 HTTP를 단1회 수행한다. 문서만 바뀐 같은 실패 요청을 재호출하지 않는다.
-운영 state와 정규23시 slot을 재실행·변경하지 않으며 이 개발 검증은 전체9단계 성공을 대체하지 않는다.
-
-parent는 raw/prompt/source를 저장하지 않고 고정 결과 코드·owner/window·해시와 필요한 경우
-숫자형 중복 개수만 기록한다. client 검증을 통과한 빈 초안은 정상 빈 결과로 구분하며
-후보를 강제하지 않는다. 새 live 실패는 실제 fixed reason과 owner/window를 같은 coordinator
-담당자에게 돌려준다. 실제 검증·GitHub·CI·머지·정리는 parent가 담당한다.
-
-문서 영향 판단: 기존 계약의 생성 안내를 명확히 하므로 두 운영 문서에 지침·관측·검증 대기를
-기록한다. 구조·책임·데이터 계약·격리·검증·실패 복구·GitHub 게시 정책은 바뀌지 않아
-`docs/harness-design.md` 수정이나 새 ADR은 필요하지 않다. 예시는 기존 owner 승인 경로만
-설명하고 native schema·immutable binding·client 최종 검증·실패 시 무보정 단1회 호출을
-유지하며 새로운 역할·저장 필드·승인·공개 경로를 만들지 않기 때문이다. 매 fresh reviewer는 최종 코드와
-문서의 의미를 새로 평가해 `documentation={status,files,reason}`을 반환하며 앞선 문서 판단이나
-회귀 통과를 재사용하지 않는다. 추가 문서가 실제 필요하면 승인 밖 파일을 읽거나 만들지 않고
-정확한 경로와 기존 승인 파일에 귀속한 finding을 보고한다.
+[당시 인계 원문](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-parser)에 실패·관측·검증 대기와
+기존 요구를 그대로 보존한다. 현재 작업의 성공이나 권한으로 재해석하지 않는다.
 
 ## Hourly private 실패 진단과 인계
 
@@ -1036,173 +1029,21 @@ claims/workflow/GitHub를 시작하지 않는다.
 
 ## 현재 검토·검증 인계
 
-문서 영향은 구조·책임·데이터 계약·격리·예산·시간·복구 전반이다. 전체33개 구현 초안의
-승인 Markdown 검토 범위는
-`AGENTS.md`, `docs/architecture.md`, `docs/harness-design.md`, `docs/harness.md`,
-`docs/workflow.md`, `docs/agent-models.md`, `docs/improvements.md`, `docs/local-models.md`,
-`docs/adr/0015-approval-gated-improvement-discovery.md`,
-`docs/adr/0016-bounded-private-improvement-text.md`,
-`docs/adr/0017-budgeted-continuous-improvement.md`, `docs/adr/README.md`다.
-이 후속 문서 보정은 나머지10개를 정정하고 ADR0015의 승인 결정·대체 범위와 ADR0016의
-기존 서술/envelope 변경·역사적 거부 기록은 그대로 보존한다. 두 ADR은 이미 최신 운영 상태를
-0017/운영 문서로 연결하므로 추가 수정이 필요하지 않다.
-매 reviewer는 이 최종 코드와 실제 수정 문서의 의미를 독립 평가해
-`documentation={status,files,reason}`을 반환한다. updated files는 실제 changed .md만 열거하며
-확장자/존재 확인만으로 내용의 완전성을 주장하지 않는다. 부족한 승인 밖 파일은 읽거나 추가하지
-않고 정확 경로를 기존 승인 파일 finding에 귀속해 changes_requested/missing으로 남긴다.
-
-기존 harness runner는 parser group에서 `harness/test_*.py`를 수집하며 pytest.ini는 이 경로를
-제외하지 않는다. 따라서 test_agent_models/test_local_model/test_improvement_loop/test_improvements가
-전체 make check에 자동 포함된다. 의미 있는 offline 회귀는 fake clock/modeled runner/HTTP와
-isolated temporary storage로 반복/restart/동시lock/같은slot·clock rollback·자정09:00·legacy
-carry-in/day 보존·publication exactly-once 확정/unknown/동시sender·실제 prompt feedback·cursor·
-source/config 변경·초안 실패·reserve 실패/crash/settlement/overrun·GLM 두 형식/weekly/unknown/
-80%·비밀/public 미노출·approve invariants를 다룬다. 명세 존재는 성공 결과가 아니다.
-
-아래는 종전 기반 구현의 인계 기록이며 이번21개 파일 수리의 범위·운영 상태·검증 결과가 아니다.
-worker는 실모델/네트워크/검사/테스트/Git/cron/workflow/재위임을 실행하지 않았다.
-이전 run1792072384459739669-64629e의900초 timeout/applied=[] 기록은 유지한다. 그 다음
-run1792078026182747557-b4f614은8개 구현 작업과 Claude 검토를 마쳤으나 NFS full check가
-1800초에 timeout되어 failed/applied=[]였다. 원본은 시작 baseline 그대로이고 GitHub 게시·
-당시 운영 활성화는 없었다. 메인이 bytes/mode를 확인해 당시 격리 context에 복원한33개 초안은
-새 승인이나 전체 검증 성공의 증거가 아니다.
-
-메인 제공 실제 결과는 doctor passed, downloader103/103 passed, parser+harness3502개 중
-3439 passed/63 failed/skip0이다. timeout 뒤 남은 parser 결과이며 Django/pipeline 검증은
-확인되지 않았다. 별도 메모리 진단에서 정상 local HTTP fixture의 JSON Content-Type만 보완한
-loop138개는137 passed/1 failed였고 남은 실패는 Store 준비 예외 전파였다. 별도 합성9단계의
-완료·후보4개·review_complete=true·추정비용0.04 관측도 전체 검사 성공은 아니다.
-
-당시 좁은 수리는 정상 HTTP/Korean 후보·trusted-parent CLI 환경·독립 feedback/context 제한
-fixture와 Store 준비 실패 처리, zero-idle quota 및 reviewer 대기를 다룬다. 공개 권한 거부
-fixture는 합성 두 디렉터리에 chmod0755를 명시해 umask 의존성을 없애며 production 권한 검사는
-유지한다. 새 full check와 umask077/022의 해당 회귀 검증은 메인/실행기가 담당한다.
-메인은 이번 실행에만 agent_timeout_seconds=1800/check_timeout_seconds=3600/max_rounds=3을
-선택하며 저장소 workflow-config·다른 한도·모델·기존 NFS/temporary 정책은 변경하지 않는다.
-새 Claude 의미검토·전체 diff/의미 검토·full make check·scoped apply·기존 Git 역할이 모두
-남아 있다. 실제 repository 첫9단계·hourly 활성화·검증된 GitHub 전달·아침 게시 확인은 메인 책임이다.
-
-기존 create_tree의 automatic approval review 거부(명시 공개 동의 부족) 기록은 아래와 ADR0016에
-보존한다. 이번 직접 요청의 구현·전달은 기존 Git 역할과 검증된 앱 요청을 메인에게 인계한다.
-원격 baseline 불일치나 명시 승인 거부 시 중단하고 worker가 쓰기/공개 요청을 재실행하지 않는다.
-현재 문서 편집·합성 MLX 관측·과거 doctor/check 성공을 이번 최종 검토/검사/게시 성공으로 쓰지 않는다.
-
-이번 native schema 수리는 coordinator 단일 작업으로 승인21개만 다룬다. 세 테스트 파일의
-오프라인 회귀는 실제 window/schema 일치·양쪽 evidence/편집 목록 거절·tampering no-transport·
-전체 bytes/whole-line·schema overhead 초과·서버 무시 응답 거절·유효 후보/empty_draft·단1회·
-v1/v2/provider/digest/loop fingerprint·specialist skip·진단 privacy를 다룬다. 실행하지 않았으며
-전체 make check는 메인 하네스 대상이다. 검증 사본 이동·재사용은 parent가 NFS 원본 baseline과
-같음을 재확인한 준비 절차일 뿐 검증 성공이나 local fallback이 아니다. 운영 상수·37개 scope·
-승인 게이트는 보존하며 스케줄·ledger·확정 보고서·게임 cron·runtime private config는 수정하지 않는다.
-
-전달된 회귀 실패 위치를 이번 승인 소스와 대조해 테스트 입력만 바로잡았다. schema/window
-사례는 `[SOURCE,DOC,OTHER]` 순서에서 한 줄 DOC의2행을 요청했으므로 OTHER의2행으로
-옮기고 DOC의1행 사례도 둔다. 정확한 요청 경계와 schema-only 초과 사례는 feedback 상한1byte가
-빈 `[]`의2bytes를 거절해 본래 예산 검사에 이르지 못하므로2bytes로 바꾼다. 기존 stale cursor와
-feedback 초과 거절·운영 상한은 유지한다. 예외 정보가 unavailable인 항목의 전체 원인을
-확정하지 않으며 새 독립 검토·전체 make check 결과는 대기다. worker는 검사를 실행하지 않았다.
+[원문 인계 보존](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-current)에 당시 기록을 옮겼다.
+새 검토는 최종 코드·문서에 documentation={status,files,reason}을 독립 판단하며 과거 결과를 재사용하지 않는다.
 
 ## 이번 프로토콜 수리의 문서 영향
 
 아래는 이전21개 프로토콜/진단 수리 당시 판단이다. 이번32개 진행 보존 수리의 문서 판단과
 신규 ADR 여부는 [최신 인계](#진행-보존-수리의-문서-영향과-실행기-인계)를 따른다.
 
-시작 시 10개 문서 모두 요청 계약·검증·책임/배포 설명의 일치 여부를 검토 대상으로 판단했다.
-이번 진단 수리의 최종 자체 판단은 `updated`이며 실제 문서 수정은 local-models/harness/이 문서다.
-다른 문서는 보존 초안이 이미 최종 계약과 일치해 유지했다. 독립 Claude의 승인이나 하네스
-성공 판정은 아니며 각 후속 review는 최종 코드와 문서의 의미를 새로 판단한다.
-이번21개는 coordinator 단일 작업으로 다룬다.
-
-| 승인 문서 | 시작 영향·최종 자체 검토 이유 |
-| --- | --- |
-| AGENTS.md | 유지: 최종 protocol·작업자/메인 책임·관측 한계와 운영 상수가 이미 일치 |
-| docs/adr/0017-budgeted-continuous-improvement.md | 유지: native schema·v2 이행·컴파일 제약·검증 대기를 이미 기록; 이번 입력 수리는 새 결정이 아니며 새 ADR 없음 |
-| docs/adr/README.md | 유지: 결정 목록/상태가 ADR0017의 최종 경계·검증 대기와 일치 |
-| docs/agent-models.md | 유지: mlx-vlm/v2/repository API model·구조화 출력과 기존 cloud 책임이 이미 일치 |
-| docs/architecture.md | 유지: schema/request/source 격리·최종 client 검증·설정 digest·승인 경계에 동작 변경 없음 |
-| docs/harness-design.md | 유지: prepared request 결합·두 transport seam·bytes/window·실패/진단 책임에 변경 없음 |
-| docs/harness.md | 수정: 회귀의 유효 cursor·빈 feedback2bytes와 미실행/전체 make check 인계 명시 |
-| docs/improvements.md | 수정: 입력 수리의 근거·미확정 예외 한계·현재 인계 및 파일별 시작/최종 판단 기록 |
-| docs/local-models.md | 수정: feedback 선행 예산과 회귀 입력 수정 설명; wire/schema/config·null metadata/uniqueItems·메인 관측 한계 보존 |
-| docs/workflow.md | 유지: coordinator1작업·독립 검토/full check/scoped apply/Git 순서와 검증 사본 경계에 변경 없음 |
-
-비문서11개도 같은 시작/최종 영향 판단으로 검토했다.
-
-| 승인 파일 | 변경/유지 이유와 문서 반영 |
-| --- | --- |
-| harness/local_model.py | 유지: native schema/v2/전송 결합·bytes·null 도구 구현은 계약에 일치; stale cursor/feedback 거절을 테스트에 맞춰 완화하지 않음 |
-| harness/local-model-config.json.example | 유지: 이미 v2/mlx-vlm/api_model==model; 명시 이행 계약은 local-models/agent-models에 기록 |
-| harness/improvement_loop.py | 유지: 새 provider 검증/참여·local digest fingerprint·당시 provider를 보존하는 중단 복구가 이미 일치 |
-| harness/improvement_report.py | 유지: 새/과거 local provider의 public cloud 참여 위장 거절·공유 후보 진단/수용 계약이 이미 일치 |
-| harness/improvements.py | 유지: 기존 freshness/서명 승인·cloud 후보 경로가 local config digest를 결합; 기존 승인 경계 보존 |
-| harness/improvement-config.json | 기존 cloud 후보 상한·shared scope·승인 계약 보존; 운영 문서의 상수와 일치해 유지 |
-| harness/improvement-loop-config.json | 하루24회/Claude$1/09:00/한 hourly slot 등 기존 운영 상수 보존으로 유지 |
-| harness/improvement-scope.txt | 기존37개 읽기 승인 유지; 이번21개 개발 scope와 혼동해 늘리지 않음 |
-| harness/test_local_model.py | 수정: 재정렬 목록의 실제 cursor·원문 비교·문서1행 사례, 요청/schema 예산 사례의 빈 feedback2bytes; 기존 schema/변조/privacy/v2 회귀 보존·미실행 |
-| harness/test_improvement_loop.py | 유지: native fixture·specialist skip/진단 privacy·migration fingerprint·복구 provider 회귀가 이미 포함; 실행은 하네스 책임 |
-| harness/test_improvements.py | 유지: public projection의 새/과거 local provider 거절·기존 승인·cloud 후보 진단/수용 회귀가 이미 포함 |
+[원문 인계 보존](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-protocol)에 당시 기록을 옮겼다.
+새 검토는 최종 코드·문서에 documentation={status,files,reason}을 독립 판단하며 과거 결과를 재사용하지 않는다.
 
 ## 이전 수리의 검토·검증 인계 기록
 
-아래는 2026-10-15 수리 당시의 GIT=0·문서 영향·자동승인 거부 이력이다. 현재 작업의
-파일 변경 목록/운영 상태/공개 전달 권한으로 재해석하지 않으며 최신 인계는 위 절을 따른다.
-
-2026-10-15 후보·reviewer 길이/모델 transport 수리의 문서 판단은 `documentation.updated`이며 실제 변경 문서는
-`docs/improvements.md`, `docs/architecture.md`, `docs/harness-design.md`,
-`docs/adr/0016-bounded-private-improvement-text.md`, `docs/adr/README.md`다.
-후보·reviewer 수용/표시 데이터 계약·전체 private review 승인 결합·검토 입력·모델 전용
-envelope/원래 byte 검사·실패 경계를 기록한다. 아래 기반 구현의
-역사적 인계 목록은 이번 변경 목록과 구분한다. `docs/harness.md`는 명령·검증 실행 책임·환경
-설명이 바뀌지 않아 수정하지 않으며 AGENTS와 ADR0015의 권한 정책도 그대로 유지한다.
-
-메인 제공 원인 관찰은 첫 실제 scan에서 419자 issue가 기존 400자 표시 한도로 거부되어
-두 후보가 사라졌다는 것이다. raw 응답 64KiB 초과는 아니었다. 원문이나 credential을 fixture에
-옮기지 않았다. 합성 오프라인 회귀에는 419자/279자 두 후보의 전체 독립 검토·private 저장·
-재검증·명시 승인 후 task 전달, 4배 ceiling의 정확/초과 경계, 표시 말줄임과 suffix별 원본 ID,
-정상 digest를 가진 oversized public 카드 거부, invalid 구조의 전체 거부·partial daily 재사용을 둔다.
-기존 daily 날짜 idempotency·명시 same-day discover·human 기록 보존·authority guard 회귀도 유지한다.
-새 retry·역할 호출·provider/context 예산·storage 변경은 없다. worker는 검사를 실행하지 않았다.
-이번 local continuation은 `GIT=0`이다. 오케스트레이터의 새 Claude 문서/구현 검토·전체
-`make check`·local apply
-뒤 승인된 수동 실제 재점검과 정제 private 보고함 전달은 메인이 수행한다.
-이 수리는 새 실제 점검 성공이나 보고 전달 완료의 증거가 아니며 발견 제안은 별도 사용자 승인 대상이다.
-
-메인 제공 후속 관찰: 기존 8파일 길이 patch는 Claude 검토와 selected 3158 tests를 통과했다.
-실제 재점검에서 GLM runner는 passed였지만 전체 응답이 단일 json fence여서 transport 파싱이
-실패했다. 메인의 내부 strict JSON/승인 source 검사는 두 후보가 유효함을 확인했지만 이를
-보고에 승격하거나 승인/claim/실행하지 않았고 partial 보고를 정직하게 전달했다. 이 worker는
-그 private 원문을 읽거나 fixture에 복사하지 않았다. 이 관찰은 이번 변경의 검증 성공이 아니다.
-추가 합성 명세는 bare/fenced 내용·ID/digest 동등성, fenced 419자 후보 전체 독립 review와
-bounded 웹 출력, fenced reviewer, LF/CRLF·문자열 backtick, 잘못된 container/strict JSON의
-partial 및 daily 재사용, wrapper/공백 포함 원래 UTF-8 byte 경계와 config/public/storage의
-strict parsing을 대상으로 한다. worker는 새 명세를 실행하지 않았다.
-
-최신 메인 제공 관찰 `1792065346555306548-d8a875`: GLM을 포함한 네 specialist는 모두
-성공하고 두 후보를 만들었으며 Claude reviewer runner도 passed였다. 첫 review reason
-416자가 private/display 공유 360자 검증에서 거부되어 완료 review가 되지 않았다.
-두 번째 reason 351자, 전체 documentation reason 176자와 후보별 142/159자는 기존 한도
-안이었고 문서 경로도 승인 scope 안이었다. 원문은 fixture로 복사하지 않았다. 후보는
-승인·claim·실행되지 않았으며 partial 보고만 전달했다는 메인 제공 근거다.
-이번 합성 명세는 정확히 specialist 4회+reviewer 1회의 416자 scan 완료, 세 private reason
-1440자 수용/1441자 거부와 저장 후 eligibility/authorization 재검증, full review의 명시 승인
-후 mocked task 전달, 표시 prefix 밖 suffix의 review_digest 결합 및 기존 승인 무효화,
-public 360/361자와 재계산 digest의 검증·render 거부를 포함한다. 구조·문서 최소 길이·scope·
-coverage·verdict·필수 문서 edit_files·byte/fence/short digest 회귀는 유지한다.
-이전 3215 passed는 새 수리의 검증이 아니다. 새 Claude 검토·전체 make check는 실행기,
-local apply·새 읽기 전용 실점검·정제 private inbox 전달은 메인 소유이며 아직 대기다.
-
-GitHub `create_tree`는 명시적 공개 동의 부족으로 automatic approval review가 거부했다는
-메인 제공 상태를 유지한다. 모든 Git 쓰기/재요청은 중단되어 있으며 이번 `GIT=0` 수리는
-공개 게시 승인이나 journal 변경이 아니다. 메인은 영향 없는 local 수리/보고 전달을 마친 뒤
-별도 공개 승인을 요청한다. 이 문서는 공개/CI/merge/cleanup 완료를 주장하지 않는다.
-
-아래는 기반 구현 당시의 역사적 문서 영향 기록이며 이번 변경/열람 목록이 아니다.
-당시 권한·책임·격리·schema·검증·실패 복구·게시 정책 변경은
-`documentation={status:updated,files:[AGENTS.md,docs/architecture.md,docs/harness-design.md,
-docs/harness.md,docs/workflow.md,docs/improvements.md,docs/adr/README.md,
-docs/adr/0015-approval-gated-improvement-discovery.md],reason:...}`에 해당하는 실제 Markdown을 수정했다.
-이 목록은 worker의 변경 인계이며 최종 reviewer의 의미적 승인이나 문서 완전성 증명이 아니다.
-docs/agent-models.md는 참조만 했고 기존 설정을 유지하므로 수정하지 않았다.
+[원문 인계 보존](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-history)에 당시 기록을 옮겼다.
+새 검토는 최종 코드·문서에 documentation={status,files,reason}을 독립 판단하며 과거 결과를 재사용하지 않는다.
 
 오프라인 회귀 명세는 [test_improvements.py](../harness/test_improvements.py)와
 [test_workflow.py](../harness/test_workflow.py)에 있다. fake 모델/HTTP를 사용하여 역할별 scope,

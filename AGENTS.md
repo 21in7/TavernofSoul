@@ -109,8 +109,15 @@ loop 제안은 loop/local/agent/workflow 설정 digest까지 freshness와 서명
 못하며 같은 OS 계정을 장악한 공격자까지 방어하는 경계가 아니다. scheduler는 반드시
 `TAVERN_IMPROVEMENT_UNATTENDED=1`로 새 `tick`만 호출하며 approve/reject/execute를 호출하지 않는다.
 `TAVERN_WORKFLOW_CHILD` 또는 `TAVERN_IMPROVEMENT_DISCOVERY` 세션은 개선 orchestration을 금지한다.
-owner-private Sites 보고함에는 두 정제 계약만 전달한다. 불변 오전 보고는 `improvement-web-v1`,
-사용자가 별도로 전송을 허용한 승인 제안 완료는 `improvement-completion-v1`이다. 승인 지시·키·절대 호스트
+owner-private Sites 보고함에는 세 정제 계약만 전달한다. 불변 오전 보고는 `improvement-web-v1`,
+사용자가 별도로 전송을 허용한 승인 제안 완료는 `improvement-completion-v1`, 이번 직접 개발 요청의
+실패·후속 성공 상태는 [ADR0034](docs/adr/0034-inspection-failure-recovery-and-health.md)의
+`improvement-health-v1`이다. health는 cloud5역할·9단계 위치·고정 코드·실제 호출 시각만 투영하며
+local 상세·provider/model 자유 문자열·비용은 제외한다. 정상 tick의 durable 최종 save와 모든 연구
+잠금/deadline 해제 뒤 기존 parent sender로 별도 전송한다. 초기 config/storage/lock/bootstrap 실패·
+rollback·no-deliver·조회/publish-morning은 보내지 않는다. qualified unattended 전송은 인간 신원이나
+승인/실행 권한이 아니며 수동 trusted-parent CLI와 child/discovery 거절은 유지한다. 별도 전달 오류는
+원래 실패/회계/frozen 결과를 덮지 않는다. 새 cron·모델·scan·approval/execute·Git 연결은 없다. 승인 지시·키·절대 호스트
 경로·소스·diff·프롬프트·원문 응답·로그는 보내지 않는다. credential은 메인만 관리하며 모델에 제공하지 않는다.
 사용자 최신 선택은 [ADR 0017](docs/adr/0017-budgeted-continuous-improvement.md)의 bounded hourly
 tick이다. 기존 daily-only/하루 5회/one-pass 정책을 이 자동 탐색에 한해 대체한다. 각 tick은 모델
@@ -148,9 +155,17 @@ runner diagnostic/예외문이나
 stdout의 인증/readonly/401 문구를 실패 근거로 삼지 않는다. CLI 경고와 실제 실패를 구별하며
 명확한 증거가 없으면 cli_failed/unavailable이다. 공유 후보 검증의 field/rule과 기존 편집 목록
 세 reason을 유지하고 원문·소스·prompt·credential·절대 경로·provider 자유 문자열을 새 진단에 넣지 않는다.
-private 참여/slot/history/status/다음-round feedback만 상세를 전달하고 public web-v1/completion-v1·
+private 참여/slot/history/status/다음-round feedback은 상세를 보존한다. 별도 health만 고정 cloud
+코드를 투영하며 public web-v1/completion-v1·
 digest·journal·과거 frozen 보고는 그대로다. 최초 예외/진단·identity/context/비용/중단 의미와 기존
 후보·review·한국어/근거 검증을 보존한다. fake/Lab 회귀는 작성만 하며 실제 hourly 성공은 미관측이다.
+
+Z.ai specialist discovery만 승인 snapshot/경로/config로 만든 bounded schema를 명시 요청한다.
+CLI의 성공 structured_output만 strict JSON으로 받고 누락/null/실패/중복키/비유한/초과는 실패다.
+legacy response_text와 reviewer 실제 Read stream은 유지하며 후보 의미 검증을 생략하지 않는다.
+text fallback·문법 수선·추가 모델 호출·유료 fallback은 없다. 과거 role_json_invalid는 보존하고
+실제 후속 성공은 별도 관측한다. health 전송 불명은 GET만, 명시 same-digest reconcile의 GET404
+후에만 POST한다. 최신 구현의 실제 GLM 단1회 개발 재검증·Sites 배포/관측은 parent 책임이다.
 
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도

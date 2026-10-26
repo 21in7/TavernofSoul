@@ -100,7 +100,7 @@ Ubuntu 20.04 ARM 호스트에서는 엔진만 지원 Ubuntu 컨테이너로 실�
 | 개선 발견·승인 | 개별 승인 소스의 읽기 전용 역할 점검, 독립 검토, private 승인/claim 및 기존 workflow 연결 | `harness/improvements.py` |
 | 시간별 개선 연구 | durable slot/예산·9단계 local/owner 검토·오전 보고 journal과 상태 | `harness/improvement_loop.py`, `harness/improvement-loop-config.json` |
 | 로컬 초안 전송 | 승인 snapshot의 작은 연속 line window·정제 feedback만 loopback text HTTP로 전송 | `harness/local_model.py` |
-| 개선 보고·전달 | 불변 web-v1 오전 보고와 별도 completion-v1 완료 증거만 private Sites로 HTTP 전달 | `harness/improvement_report.py`, `harness/improvements.py`, `harness/improvement_completion.py` |
+| 개선 보고·전달 | 불변 web-v1 오전 보고, 별도 completion-v1 완료 증거와 health-v1 cloud 실패·후속 성공을 private Sites로 전달 | `harness/improvement_report.py`, `harness/improvements.py`, `harness/improvement_completion.py`, `harness/improvement_health.py` |
 
 ### 자율 개선의 별도 권한 경계
 
@@ -225,7 +225,8 @@ approved decision·독립 검토·허용 scope·실제 적용/review/final valid
 head/merge SHA가 일치하는 verified cleanup proof와 cleanup complete가 모두 필요하다.
 실행 전 freshness와 claim 당시 승인 유효기간은 구분하며, 완료 시 현재 source/만료로 재승인하지 않는다.
 
-웹 경계는 기존 `improvement-web-v1`과 사용자 승인된 `improvement-completion-v1` 두 계약이다.
+웹 경계는 기존 `improvement-web-v1`, 사용자 승인된 `improvement-completion-v1`과
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)의 별도 `improvement-health-v1` 세 계약이다.
 완료에는 proposal ID/status/PR/merge SHA/최초 고정 UTC 시각/canonical digest만 보낸다.
 승인 지시·원문·키·절대경로·source/diff/prompt/log는 제외한다. 같은 inbox 인증·TLS/no-redirect
 transport를 사용하고 16384 bytes·기존 private timeout 이하로 제한한다. outbox는 0600 canonical
@@ -234,6 +235,20 @@ delivered로 인정한다. unknown/sending은 자동 GET만, 명시 reconcile은
 POST만 허용하며 conflict는 보존한다. 보고 본문·digest·publication journal과 workflow passed/
 merge/cleanup은 전달 실패로 바뀌지 않는다. scheduler/37개 discovery scope/개별 승인·claim/
 CI·merge·cleanup 게이트는 유지한다. Sites 소스/API/UI 구현·배포는 메인 책임이다.
+
+### Discovery 구조화 응답과 별도 health
+
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)가 full schema·native envelope·strict
+후보 검증과 별도 health wire/allowlist·동일 digest 전달의 권위다. Z.ai specialist discovery만 opt-in하고
+legacy와 reviewer 실제 Read를 유지한다. 형식은 의미적 정확성을 증명하지 않는다. health는 cloud
+실패 단계/원인/실제 시각과 별도 후속 성공을 투영하며 local/원문/비용/키는 보내지 않는다.
+
+기존 CLI tick은 정상 durable save와 모든 연구 잠금·deadline 해제 뒤 기존 Store/sender/inbox로
+별도 health를 보낸다. startup/lock/bootstrap 실패·rollback·no-deliver·조회/publish-morning은 제외한다.
+qualified unattended 전송도 인간 승인/실행 권한이 아니다. child/discovery와 수동 trusted 검사는 유지한다.
+별도 오류/outbox는 원래 실패·회계·frozen morning/completion을 바꾸지 않는다. unknown은 GET-only,
+재POST는 명시 same-digest reconcile+GET404뿐이다. 새 모델/scan/cron/Git 연결·권한 확대는 없다.
+실제 새 코드 GLM probe·Sites 구현/배포와 후속 관측은 parent 책임이다.
 
 ### 기존 private 서술과 공개 projection 검증
 
