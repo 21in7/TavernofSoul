@@ -63,8 +63,9 @@ terminal_reason=structured_output_retry_exhausted, subtype=error_max_structured_
 `Failed to provide valid structured output after 0 attempts`, Read1개였다. stderr의
 unrecognized_model 경고는 원인으로 쓰지 않는다. API usage0/duration_api0은 CLI 관측값이며 실제
 API 미호출을 단정하지 않는다. 원격 요청 events0·PR없음으로 중단했으며 상세 보존은 ADR0034를 따른다.
-이번1/0 계약의 새 실제 GLM 성공은 아직 미검증이다. parent가 새 전체diff/documentation 검토·
-GIT=1 full check·apply 후 새 입력 fingerprint·quota 확인과 동일480초 단1회 probe를 수행한다.
+당시 작성 시점에는 이번1/0 계약의 새 실제 GLM 성공이 아직 미검증이었다. 당시 인계는 parent의
+새 전체diff/documentation 검토·GIT=1 full check·apply 후 새 입력 fingerprint·quota 확인과
+동일480초 단1회 probe 수행이었다. 이후 결과는 [2026-10-27 최신 main 관측](#2026-10-27-최신-main-관측)을 따른다.
 기존 hourly tick은 최종 save/잠금·deadline 해제 뒤 별도 health를 전달하며 모델 호출을 추가하지 않는다.
 별도 health의 고정
 cloud 코드만 owner-private Sites로 전달하고 provider/model 자유문자열·비용·local endpoint는 제외한다.
@@ -133,6 +134,55 @@ Claude Code 기반 역할은 [Jev 대화 기록 압축](compaction.md)을 기본
 로컬은 승인된 작은 소스 구간의 개선 초안을 만들고, 기존 담당 모델의 검토·정식 후보화와
 Claude 독립 검토로 이어진다. 일반 구현 역할을 대체하거나 실행을 승인하지 않는다.
 상세는 [로컬 모델 문서](local-models.md)와 [자동 개선 연구의 모델·비용 계약](#자동-개선-연구의-모델비용-계약)을 참고한다.
+
+## 2026-10-27 최신 main 관측
+
+아래는 신뢰한 parent가 직접 확인해 제공한 관측이다. 이 문서를 편집·검토하는 worker/reviewer가
+직접 실행하거나 검증한 결과가 아니다. 당시 미검증 진술과 과거 실패는 역사적 기록으로 보존하며,
+상세는 [ADR0034의 같은 날짜 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)을 따른다.
+
+구현 native run1793034139378468813-c521fa는 새 Claude 전체 diff/documentation 승인,
+표적422/422 및 full6263/6263(다운로더129, parser/harness5984, Django회귀67, Django11,
+연결부72), 실패/오류/skip0 뒤 scoped apply19개와 기본 Git 역할을 완료했다.
+별도 명시 개발 GLM probe는 2026-10-27 02:15:55.183424~02:18:11.012133 KST,
+elapsed135.827822초에 provider=zai/model=glm-5.3-flash, 원래 수집담당9파일,
+native 구조 budget1/transport0/low effort/8192 경로에서 succeeded와 telemetry success였다.
+candidate validator가2후보를 받아들였지만 각 후보의 새 Claude 독립검토·공식 hourly proposal·
+사용자 승인·execute를 뜻하지 않는다. 이 probe는 hourly 상태를 수정하지 않았다.
+
+구현 [PR81](https://github.com/21in7/TavernofSoul/pull/81)은 GitHub merged=true,
+mergeSHA `310485c1e3303b587c1e2cb61d6484c02ca04350`이며 Offline harness (SQLite),
+MySQL harness, Chromium browser harness가 모두 실제 success였다. native cleanup은 complete,
+실제 terminal archive는 archived다. 상세 정리 상태·bundle bytes/SHA는 ADR0034에 기록한다.
+상대 증거 참조는 `logs/harness/inspection-success-observations-evidence.json`과
+`logs/harness/inspection-native-attempt-live-probe-20261027.json`이다.
+
+이와 별개인 실제 정규 hourly는 2026-10-27 03:00:02.516543~03:02:23.280518 KST에
+수집담당 succeeded, stage index3→4, last slot03, inflight없음을 관측했다. 기존03tick의 자동
+improvement-health-v1 outbox는 delivered였고 digest는
+`c899d5f842d7d503156405619dcc21050ff44652ee631ce89041edb7b02c645d`다.
+main의 KST03:07:22 관측(UTC2026-10-26T18:07:22.293626+00:00)에서 GET200과 outbox
+frozen payload 전체 일치를 확인했다. 이 관측 명령의 새 POST/모델/tick 호출은 각각0회다.
+상대 증거 참조는 `logs/harness/inspection-hourly-03-health-observation.json`이다.
+
+원래2026-10-26 day/web/loop publication 세 원본의 bytes/SHA는 모두 불변이며 원래 web digest는
+`6b39c37d67fad984be50e26a582738d0a9e24ba667c05b06f984ef5aa81ede50`다.
+과거00/09실패·원문 미보존 한계·별도18:06성공·480.172811초 timeout·7.437927초 CLI budget0
+실패·최초 full검사 중단과 같은 후보 native 재개는 보존하며 새 성공의 검증 증거로 재사용하지 않는다.
+
+정규03역할 성공과 health 전달은 다른 stage나 새 전체9단계 완료가 아니다. 새 전체9단계와
+다음09시 게시 성공은 아직 미관측이다. Site 추가 인쇄 화면 소스는 로컬 새 Claude/6Node모듈/
+TS/build/A4한장·모바일 overflow0 검증을 마쳤으나 게시 자동승인검토에 막혀 사용자 응답 대기다.
+추가 인쇄 화면 배포 성공은 주장하지 않으며 위 기존 health 전달 성공과 구분한다.
+
+이번 변경은 두 승인 문서의 관측 갱신이며 구현·구조·책임·데이터 계약·격리·권한·실패 복구·
+검증정책·GitHub 게시 정책·모델/인증·스케줄·설정 변경이 아니다. 새 ADR이나 승인 밖 문서
+갱신은 필요하지 않다. 매 review는 최종 두 문서의 의미적 완전성을 새로 판단해
+`documentation={status,files,reason}`을 반환하며 앞선 documentation.updated를 승인 근거로
+삼지 않는다. parent가 실제 baseline→candidate diff로 docs-only 여부를 판단하고 ADR0031/0022의
+check-docs 및 GIT=1·기존 GitHub CI/merge/cleanup/archive 경로로 전달한다. 위 구현의 통과를
+이번 문서 변경의 검증으로 재사용하지 않는다. worker/reviewer는 검사·Git·네트워크·SSH·
+재위임·workflow를 실행하지 않는다.
 
 ## 인증 등록
 
