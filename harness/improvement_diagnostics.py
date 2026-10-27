@@ -56,7 +56,10 @@ FIELDS = frozenset(('schema', 'sources', 'scope', 'candidates', 'title', 'priori
     'benefit.text', 'benefit.evidence', 'benefit.evidence.path',
     'benefit.evidence.start_line', 'benefit.evidence.end_line',
     'benefit.evidence.summary', 'risk', 'edit_files', 'validation_plan',
-    'documentation_impact'))
+    'documentation_impact', 'review.plan', 'review.capture', 'review.stream',
+    'review.metadata', 'review.read_request', 'review.read_pair', 'review.read_content',
+    'review.result', 'review.coverage', 'review.assessments', 'review.documentation',
+    'review.proof'))
 RULES = frozenset(('type', 'fields', 'empty', 'length', 'control', 'encoding',
     'range', 'allowlist', 'duplicate', 'path', 'outside_scope',
     'source_unavailable', 'korean', 'byte_limit'))

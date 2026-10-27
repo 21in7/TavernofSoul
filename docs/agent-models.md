@@ -91,6 +91,18 @@ AGENTS·안내 문서·설정은 코드 확인으로 세지 않는다. 함수 �
 파싱 불가·header만 존재하거나 기존32KiB/32window 한도를 넘으면 coverage는 미완료다.
 표본은 전체 파일·저장소 완독이 아니다. 후보가 있으면 모든 evidence/benefit.evidence와 필요한
 문서 Read 요구는 그대로다.
+2026-10-27 호환 수리안은 전용 stream의 event framing과 최종 result/비용 탐색 양쪽에 LF만
+사용한다. 마지막 LF 하나는 framing이고 CRLF도 허용하지만 빈 record는 거절한다. JSON 문자열의
+U+0085/U+2028/U+2029를 str.splitlines처럼 event 경계로 자르지 않는다. 새 envelope/tool 허용이나
+JSON 수선은 없다. prompt는 처음부터 reviews/documentation/assessments를 요구하고 두 문서
+판단의 files를 documentation 목적 Read window로 제한한다. 기존 실제 Read/정확한 bytes·줄/
+모든 window/유일한 정상 final과 1회 Capture는 유지한다.
+validator가 거절한 실제 경계만 기존 capability의 source_review_unverified/validation/review 및
+고정 review.* field/rule로 보존한다. runner JSON·예외문·metadata로 원인을 분류하지 않으며
+private512bytes/최초 실패·identity·실제 final 비용 정산과 health/public 계약을 유지한다.
+세부 코드는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)에 둔다.
+08시 운영 실패는 원문/proof가 없어 원인 미확인이다. 이 코드 결함과 합성 회귀는 당시 원인의
+관측 증거가 아니며 worker 검사·새 실모델 호출·후속 reviewer 성공은 없다. parent 검증을 남긴다.
 일반 workflow/GLM telemetry·compaction·identity/cost/interrupt와 인증/provider/model/예산은 보존한다.
 
 2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)에 따라 local은 선택적

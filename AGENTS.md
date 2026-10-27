@@ -167,6 +167,15 @@ text fallback·문법 수선·추가 모델 호출·유료 fallback은 없다. �
 실제 후속 성공은 별도 관측한다. health 전송 불명은 GET만, 명시 same-digest reconcile의 GET404
 후에만 POST한다. 최신 구현의 실제 GLM 단1회 개발 재검증·Sites 배포/관측은 parent 책임이다.
 
+2026-10-27 source reviewer 호환 수리안은 ADR0026을 따른다. 전용 stream-json의 LF만 event
+경계로 사용하고 정상 JSON 문자열의 U+0085/U+2028/U+2029는 source/응답 데이터로 보존한다.
+실제 validator 발생 경계의 기존 private capability에 고정 review.* field/rule만 보완하며
+runner dictionary/예외문·metadata는 진단 권위가 아니다. 최초 실패·identity·비용/예약과 기존
+Read pairing/원래 줄·내용/모든 window/문서/assessment·한 번 소비를 유지한다. health/public,
+상한/예산·승인 freshness는 그대로다. 08시 실패 원문은 없어 원인이 미확인이고 이번 합성 회귀와
+동일 원인이라고 단정하지 않는다. worker는 검사하지 않으며 새 전체 diff Claude 검토의
+documentation 판단·full make check와 실제 후속 reviewer 관측은 parent가 별도로 확인한다.
+
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
 대기가 풀릴 때까지 멈춘다. 09:00 보고 확정은 이 대기와 독립적이다.

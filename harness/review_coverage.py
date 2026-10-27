@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 
 from harness import improvement_report as contract
+from harness import improvement_diagnostics as diagnostics
 
 VERSION = 'source-read-review-v1'
 MAX_STDOUT = 524288
@@ -27,8 +28,23 @@ MAX_RATE_LIMIT_NODES = 256
 MAX_RATE_LIMIT_DEPTH = 8
 
 
-def fail():
-    raise ValueError('source_review_unverified')
+def fail(field='review.proof', rule='fields'):
+    # Fixed validator-owned codes only; never derive detail from CLI metadata.
+    raise diagnostics.attach(ValueError('source_review_unverified'), diagnostics.detail(
+        'source_review_unverified', 'validation', phase='review', field=field, rule=rule))
+
+
+def stream_lines(stdout):
+    """NDJSON uses LF, not Python's wider Unicode line-separator set.
+
+    A single terminal LF is framing; blank records remain invalid JSON. CRLF
+    works through JSON whitespace without changing any bytes inside strings.
+    Capture and final-cost extraction must agree on these record boundaries.
+    """
+    lines = stdout.split('\n')
+    if lines[-1] == '':
+        lines.pop()
+    return lines
 
 
 def _sha(body):
@@ -41,18 +57,20 @@ def event_json(value):
         result = {}
         for key, item in items:
             if key in result:
-                fail()
+                fail('review.stream', 'duplicate')
             result[key] = item
         return result
     try:
         if type(value) is not str or len(value.encode('utf-8')) > MAX_STDOUT:
-            fail()
+            fail('review.stream', 'byte_limit')
         result = json.loads(value, object_pairs_hook=pairs,
-                            parse_constant=lambda _: fail())
+                            parse_constant=lambda _: fail('review.stream', 'encoding'))
         contract.canonical_json(result)
         return result
-    except (ValueError, TypeError, RecursionError):
-        fail()
+    except (ValueError, TypeError, RecursionError) as exc:
+        diagnostics.attach(exc, diagnostics.detail('source_review_unverified', 'validation',
+            phase='review', field='review.stream', rule='encoding'))
+        raise diagnostics.inherit(ValueError('source_review_unverified'), exc) from None
 
 
 def _rate_limit_metadata(event, line):
@@ -65,17 +83,17 @@ def _rate_limit_metadata(event, line):
             set(event) != {'type', 'rate_limit_info', 'uuid', 'session_id'} or
             any(type(event[k]) is not str or not 1 <= len(event[k].encode('utf-8')) <= 128
                 for k in ('uuid', 'session_id'))):
-        fail()
+        fail('review.metadata', 'fields')
     info = event['rate_limit_info']
     if (not isinstance(info, dict) or type(info.get('status')) is not str or
             info['status'] not in ('allowed', 'allowed_warning', 'rejected')):
-        fail()
+        fail('review.metadata', 'allowlist')
     stack, nodes = [(event, 0)], 0
     while stack:
         value, depth = stack.pop()
         nodes += 1
         if nodes > MAX_RATE_LIMIT_NODES or depth > MAX_RATE_LIMIT_DEPTH:
-            fail()
+            fail('review.metadata', 'length')
         if isinstance(value, dict):
             stack.extend((item, depth + 1) for item in value.values())
         elif isinstance(value, list):
@@ -84,7 +102,12 @@ def _rate_limit_metadata(event, line):
 
 def _lines(source):
     # Original range bytes for hashes/evidence; never use as CLI projection.
-    body = source['content'].decode('utf-8')
+    try:
+        body = source['content'].decode('utf-8')
+    except UnicodeError as exc:
+        diagnostics.attach(exc, diagnostics.detail('source_review_unverified', 'validation',
+            phase='review', field='review.plan', rule='encoding'))
+        raise
     if not body:
         return []
     pieces = body.split('\n')
@@ -117,7 +140,7 @@ def _code_sample(source):
     try:
         tree = ast.parse(source['content'].decode('utf-8-sig'))
     except (UnicodeError, SyntaxError, ValueError, RecursionError):
-        fail()
+        fail('review.plan', 'encoding')
 
     def first_body(nodes):
         for node in nodes:
@@ -142,7 +165,7 @@ def _code_sample(source):
     if line is None:
         line = first_body(tree.body)
     if line is None:
-        fail()
+        fail('review.plan', 'empty')
     # Include nearby context, but anchor the window on an actual body statement
     # even when an import/header/docstring is longer than the sample budget.
     start = max(1, line - 8)
@@ -161,11 +184,11 @@ def plan(paths, snapshots, records, owners, shared):
 
     def add(path, start, end, purpose):
         if path not in paths or not snapshots[path]['exists']:
-            fail()
+            fail('review.plan', 'source_unavailable')
         lines = _lines(snapshots[path])
         if (type(start) is not int or type(end) is not int or
                 not 1 <= start <= end <= len(lines) or end - start >= 256):
-            fail()
+            fail('review.plan', 'range')
         ranges.append((path, start, end, purpose))
 
     if records:
@@ -183,16 +206,16 @@ def plan(paths, snapshots, records, owners, shared):
             # or ownership. Domain AGENTS/config order cannot certify coverage.
             members.sort(key=lambda p: ('/tests/' in p or Path(p).name.startswith('test_')))
             if not members:
-                fail()  # absent/empty/no program target is incomplete coverage
+                fail('review.plan', 'empty')  # no program target is incomplete
             path = members[0]
             if not snapshots[path]['exists'] or not _lines(snapshots[path]):
-                fail()  # do not mask the selected program's absence with docs/tests
+                fail('review.plan', 'source_unavailable')
             start, end = _code_sample(snapshots[path])
             add(path, start, end, role)
     docs = [p for p in paths if p in shared and p.endswith('.md') and
             snapshots[p]['exists'] and _lines(snapshots[p])]
     if not docs:
-        fail()
+        fail('review.plan', 'empty')
     add(docs[0], 1, min(12, len(_lines(snapshots[docs[0]]))), 'documentation')
     merged = []
     for path, start, end, purpose in sorted(ranges):
@@ -205,12 +228,12 @@ def plan(paths, snapshots, records, owners, shared):
     fingerprints = contract.fingerprint_sources(snapshots)
     for window in merged:
         if window['end_line'] - window['start_line'] >= 256:
-            fail()
+            fail('review.plan', 'range')
         data = ''.join(_lines(snapshots[window['path']])[window['start_line'] - 1:window['end_line']]).encode('utf-8')
         total += len(data)
         window.update(sha256=_sha(data), size=len(data), source=fingerprints[window['path']])
     if not 1 <= len(merged) <= MAX_WINDOWS or total > MAX_SOURCE:
-        fail()
+        fail('review.plan', 'length' if len(merged) > MAX_WINDOWS else 'byte_limit')
     return merged
 
 
@@ -225,74 +248,75 @@ class Capture:
 
     def accept(self, stdout):
         if self.consumed:
-            fail()
+            fail('review.capture', 'duplicate')
         self.consumed = True
         # Parse only real top-level events; strings containing traces are data.
         if not isinstance(stdout, str) or len(stdout.encode('utf-8')) > MAX_STDOUT:
-            fail()
-        lines = stdout.splitlines()
+            fail('review.stream', 'byte_limit')
+        lines = stream_lines(stdout)
         if not 1 <= len(lines) <= MAX_EVENTS:
-            fail()
+            fail('review.stream', 'length')
         events = [event_json(line) for line in lines]
         pending, seen, receipts, final = {}, set(), [], None
         for event, line in zip(events, lines):
             if not isinstance(event, dict):
-                fail()
+                fail('review.stream', 'type')
             kind = event.get('type')
             if kind == 'rate_limit_event':
                 _rate_limit_metadata(event, line)
                 continue
             if final is not None:
-                fail()
+                fail('review.result', 'duplicate')
             if kind == 'result':
                 if event.get('is_error') is not False or event.get('subtype') != 'success' or pending:
-                    fail()
+                    fail('review.result', 'fields')
                 final = event
                 continue
             if kind not in ('assistant', 'user'):
                 if kind != 'system':
-                    fail()
+                    fail('review.stream', 'allowlist')
                 continue
             message = event.get('message')
             if not isinstance(message, dict) or message.get('role') != kind:
-                fail()
+                fail('review.stream', 'fields')
             content = message.get('content')
             if not isinstance(content, list):
-                fail()
+                fail('review.stream', 'type')
             for block in content:
                 if not isinstance(block, dict):
-                    fail()
+                    fail('review.stream', 'type')
                 if block.get('type') == 'tool_use':
                     identity = block.get('id')
                     if (kind != 'assistant' or type(identity) is not str or
                             not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', identity) or identity in seen or
                             block.get('name') != 'Read'):
-                        fail()
+                        fail('review.read_pair', 'fields')
                     seen.add(identity)
                     request = block.get('input')
                     if not isinstance(request, dict) or set(request) != {'file_path', 'offset', 'limit'}:
-                        fail()
+                        fail('review.read_request', 'fields')
                     path = request['file_path']
                     matches = [p for p in self.snapshots if path in (p, self.root + '/' + p)]
                     if len(matches) != 1:
-                        fail()  # no path aliases, normalization or traversal
+                        fail('review.read_request', 'path')  # no aliases/traversal
                     path = matches[0]
                     start, limit = request['offset'], request['limit']
                     if type(start) is not int or type(limit) is not int or not 1 <= limit <= 256:
-                        fail()
+                        fail('review.read_request', 'range')
                     target = [w for w in self.windows if w['path'] == path and
                               w['start_line'] == start and w['end_line'] == start + limit - 1]
                     if len(target) != 1:
-                        fail()
+                        fail('review.read_request', 'range')
                     pending[identity] = target[0]
                 elif block.get('type') == 'tool_result':
                     identity = block.get('tool_use_id')
-                    if kind != 'user' or identity not in pending or block.get('is_error', False) is not False:
-                        fail()
+                    if (kind != 'user' or type(identity) is not str or identity not in pending or
+                            block.get('is_error', False) is not False):
+                        fail('review.read_pair', 'fields')
                     window = pending.pop(identity)
                     result = event.get('tool_use_result')
                     if not isinstance(result, dict) or set(result) != {'type', 'file'} or result['type'] != 'text':
-                        fail()
+                        fail('review.read_content', 'fields')
                     file = result['file']
                     expected_path = self.root + '/' + window['path']
                     source = _cli_lines(self.snapshots[window['path']])
@@ -305,29 +329,29 @@ class Capture:
                             file['startLine'] != window['start_line'] or
                             file['numLines'] != window['end_line'] - window['start_line'] + 1 or
                             file['totalLines'] != len(source) or file['content'] != expected):
-                        fail()
+                        fail('review.read_content', 'fields')
                     # Raw structured successful result is authoritative. Rendered
                     # tool text is never parsed for events, ranges or authority.
                     if any(r['window'] == window for r in receipts):
-                        fail()
+                        fail('review.read_pair', 'duplicate')
                     receipts.append({'window': window, 'tool_id_sha256': _sha(identity.encode('ascii'))})
                 elif block.get('type') not in ('text', 'thinking'):
-                    fail()
+                    fail('review.stream', 'allowlist')
         if final is None or pending or len(receipts) != len(self.windows):
-            fail()
+            fail('review.coverage', 'length')
         self.receipts = sorted(receipts, key=lambda r: self.windows.index(r['window']))
         return final
 
 
 def assessments(value, windows):
     if not isinstance(value, list) or len(value) != len(windows):
-        fail()
+        fail('review.assessments', 'length')
     result = []
     for index, item in enumerate(value):
         if (not isinstance(item, dict) or set(item) != {'window', 'assessment'} or
                 type(item['window']) is not int or item['window'] != index or
                 type(item['assessment']) is not str or not 24 <= len(item['assessment'].strip()) <= 720):
-            fail()
+            fail('review.assessments', 'fields')
         result.append(dict(window=index, assessment=contract.redact_text(item['assessment'].strip())))
     return result
 
@@ -343,7 +367,7 @@ def document_reads(review, windows):
         required.update(item['documentation']['files'])
     covered = {w['path'] for w in windows if 'documentation' in w['purposes']}
     if not required.issubset(covered):
-        fail()
+        fail('review.documentation', 'outside_scope')
 
 
 def attach(scan, proof):
@@ -417,5 +441,7 @@ def validate(scan, snapshots=None, owners=None, shared=None):
                    for a in scan['agents']):
             fail()
         return True
-    except (KeyError, TypeError, ValueError, AttributeError, RecursionError):
-        fail()
+    except (KeyError, TypeError, ValueError, AttributeError, RecursionError) as exc:
+        diagnostics.attach(exc, diagnostics.detail('source_review_unverified', 'validation',
+            phase='review', field='review.proof', rule='fields'))
+        raise diagnostics.inherit(ValueError('source_review_unverified'), exc) from None

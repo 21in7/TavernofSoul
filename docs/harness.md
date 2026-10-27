@@ -39,6 +39,13 @@ harness/test_*.py 수집·공유 offline guard를 유지한다. fake/Lab만 허�
 Lab 조회/합성 승인 파일 helper는 반복만 줄이며 기존 assertion·offline guard를 유지한다.
 기존 window/예산/quota·daily24/tick1·빈 pool reviewer·Read/provenance·제안 보존·frozen/public payload
 회귀를 유지한다. 검사는 미실행이며 테스트 삭제/skip/상한/정책 완화로 해결하지 않는다.
+2026-10-27 source reviewer 후속 회귀는 정상 JSON의 U+0085/U+2028/U+2029가 Read content와
+최종 result 안에 있을 때 LF/CRLF NDJSON framing을 유지하는 경로를 추가한다. 정상/거짓/누락/
+부분/오류 Read, 재소비 거절, assessment/문서 coverage 거절의 고정 private 경계 진단과 native
+adapter→_call_role→loop 정산/재시작/status/feedback·실제 final 비용 초과 보존을 명세한다.
+private 원문·metadata/public 배제 및 frozen 불변도 유지한다. 이는 작성된 합성 명세이며 검사
+통과나 실제 08시 실패 원인의 재현이 아니다. 운영 원문/proof 부재와 후속 reviewer 미관측은
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md), [ADR0034](adr/0034-inspection-failure-recovery-and-health.md)에 구분한다.
 전체 diff의 새 Claude 의미 검토·documentation 판단, GIT=1 full make check·scoped apply·기존 Git 역할과
 parent 전용 게시/CI3/merge/cleanup·frozen digest/스케줄 독립 확인을 남긴다. 합성 명세는 실제 hourly 관측이 아니다.
 

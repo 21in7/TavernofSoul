@@ -870,7 +870,7 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                 if discovery_review is not None:
                     # Retain actual final CLI cost even if receipt validation
                     # fails afterwards; never refund a failed discovery call.
-                    stream_lines = result.stdout.splitlines()
+                    stream_lines = coverage.stream_lines(result.stdout)
                     final = None
                     for line in reversed(stream_lines):
                         event = coverage.event_json(line)

@@ -8,6 +8,27 @@
 
 ## 2026-10-27 최신 main 관측
 
+### 08시 독립 검토 실패 후속: source 계약 호환 수리안
+
+추가로 parent가 제공한 실제 관측에서 같은 scan `1793026802215716805-c162f5`는 후보2개와
+01시 coordinator·03시 downloader·05시 parser·07시 django 성공 뒤 08시 reviewer가 실패했다.
+08:00:01.940372~08:00:30.957424 KST, claude/claude-sonnet-5-5,
+reason/cause=source_review_unverified, phase=review, error_type=ValueError,
+cost0.078057(cli_estimated_usd), read_files=[]다. source_review proof·stdout·응답이 없어
+거절된 실제 필드/Read/assessment와 역사적 근본 원인은 미확인이다. 09시 state의 stage_index=1,
+last_slot=2026-10-27T09,pause_reason=null은 후속 reviewer 성공을 뜻하지 않는다.
+
+[ADR0026의 이번 인계](0026-source-verified-retained-improvement-reports.md#2026-10-27-호환-수리private-검증-경계-진단-인계)는
+정상 JSON 문자열의 유니코드 구분자를 splitlines가 NDJSON 경계로 잘못 나누는 소스상 결함의
+LF framing 수리와 검증기 발생 경계의 고정 private field/rule을 명세한다. 새 합성 회귀는 이
+결함과 진단 보존 경로의 검증 인계이며 08시 원인의 실제 재현이나 운영 성공 관측이 아니다.
+진단은 기존 capability/identity/first-failure/비용 정산을 유지하고 health/public schema와
+노출 코드를 늘리지 않는다. 과거 실패·frozen 보고·승인/claim도 바꾸지 않는다.
+별도로 준비된 parent의 실모델 probe는 정식 workflow 밖 호출로 자동승인이 거절되어 실행되지
+않았다. 이번 worker는 probe/private 설정을 읽거나 검사·모델·Git·네트워크를 실행하지 않았다.
+새 전체 diff Claude 의미 검토/documentation 판단·full make check·CI3/merge/cleanup/archive와
+별도 실제 hourly 후속 확인은 parent 책임이며 아직 이번 수리의 검증·후속 성공 증거는 없다.
+
 아래 사실은 신뢰한 parent가 직접 확인해 제공했다. 이 문서를 편집·검토하는 worker/reviewer가
 직접 실행하거나 검증한 결과가 아니다. 아래 문맥·수리·인계의 미검증/대기 진술은 각 작성 당시의
 역사적 상태이며 현재 관측은 이 절과 [모델 문서](../agent-models.md#2026-10-27-최신-main-관측)를 따른다.

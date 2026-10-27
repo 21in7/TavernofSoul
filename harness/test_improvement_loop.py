@@ -2711,3 +2711,98 @@ def test_native_adapter_failure_survives_tick_restart_feedback_and_later_success
     assert next(a for a in saved['agents'] if a['role'] == role)['failure_detail'] == detail
     assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
     assert_private(lab.state())
+
+
+@pytest.mark.parametrize('mode,field,estimate', [
+    ('verified', None, .04), ('no_read', 'review.coverage', .04),
+    ('partial', 'review.read_content', .04), ('failed_read', 'review.read_pair', .04),
+    ('assessments', 'review.assessments', .04),
+    ('documentation', 'review.documentation', .04),
+    ('overrun', 'review.read_content', .27),
+])
+def test_native_review_unicode_framing_and_failure_detail_survive_settlement(
+        lab, monkeypatch, mode, field, estimate):
+    # Synthetic document data and final JSON both contain a legal U+2028.
+    # Exercise the real adapter, then the existing private settlement path.
+    document = lab.root / 'AGENTS.md'
+    document.write_text(document.read_text(encoding='utf-8') + '문서\u2028문맥\n', encoding='utf-8')
+    lab.hours(count=8)
+    calls, contexts = [], []
+
+    def adapter(role, prompt, keys, **options):
+        capture = options['discovery_review']
+        contexts.append(options['workspace'])
+        prior = json.loads(prompt.split('\nPrior candidates: ', 1)[1])
+        assert prior and role == 'reviewer'
+        response = dict(reviews=[dict(candidate_id=r['id'], verdict='eligible',
+            reason=REVIEW_REASON, documentation=deepcopy(DOC)) for r in prior],
+            documentation=dict(DOC, reason=DOC['reason'] + '\u2028별도 합성 문맥입니다.'))
+        add_assessments(response, capture)
+        if mode == 'assessments':
+            response['assessments'] = []
+        elif mode == 'documentation':
+            response['documentation'] = dict(status='required', files=['docs/architecture.md'],
+                reason='승인된 문서이지만 지정 Read 계획에서 확인하지 않은 문서입니다.')
+        events = read_events(capture, json.dumps(response, ensure_ascii=False))
+        if mode == 'no_read':
+            events = events[-1:]
+        elif mode in ('partial', 'overrun'):
+            events[1]['tool_use_result']['file']['partial'] = True
+        elif mode == 'failed_read':
+            events[1]['message']['content'][0]['is_error'] = True
+        events[-1]['total_cost_usd'] = estimate
+
+        def cli(command, **kwargs):
+            calls.append(command)
+            lab.clock.at(8, seconds=7)
+            return subprocess.CompletedProcess(command, 0,
+                stdout(with_rate_limit_events(events)) + '\n', RAW + SECRET)
+
+        return run_synthetic_loop_adapter(lab, monkeypatch, forbidden, cli,
+                                          role, prompt, keys, **options)
+
+    outcome = lab.tick(8, runner=adapter)
+    assert len(calls) == 1 and lab.calls() == 9
+    state = lab.state()
+    scan = state['round']['report']
+    agent = next(a for a in scan['agents'] if a['role'] == 'reviewer')
+    attempt = next(a for a in state['participation'] if a['role'] == 'reviewer')
+    slot = lab.slots()['2026-10-15T08']
+    assert scan['review_complete'] is (field is None)
+    assert state['stage_index'] == 9 and state['inflight'] is None
+    assert agent['cost'] == slot['actual_estimated_usd'] == estimate
+    assert lab.spent() == approx(estimate if field is None or estimate > .2 else .2)
+    assert attempt['call_started_at'].endswith('00+09:00')
+    assert attempt['call_finished_at'].endswith('07+09:00')
+    assert all(not request['options']['workspace'].exists() for request in lab.cloud_requests)
+    assert len(contexts) == 1 and not contexts[0].exists()
+    if field is None:
+        assert agent['status'] == 'succeeded' and coverage.validate(scan)
+        assert len(scan['source_review']['reads']) == len(scan['source_review']['plan'])
+        assert slot['cost_status'] == 'cli_estimated_usd'
+    else:
+        detail = agent['failure_detail']
+        assert (detail['reason'], detail['cause'], detail['phase'], detail['field']) == (
+            'source_review_unverified', 'validation', 'review', field)
+        assert slot['failure_detail'] == attempt['failure_detail'] == detail
+        assert outcome['diagnostic']['detail'] == detail
+        assert slot['cost_status'] == ('cli_estimated_usd' if estimate > .2 else 'reservation_consumed_failed')
+        assert agent['read_files'] == [] and 'source_review' not in scan
+        assert all('review' not in record for record in scan['proposals'])
+    lab.store = imp.Store(lab.selected)
+    assert next(a for a in loop.status(now=lab.clock(), selected=lab.selected)['participation']
+                if a['role'] == 'reviewer') == attempt
+    saved = lab.store.read('scans/' + scan['scan_id'] + '.json')
+    assert next(a for a in saved['agents'] if a['role'] == 'reviewer') == agent
+    lab.tick(9)
+    frozen = lab.store.path('web/2026-10-15.json').read_bytes()
+    public = lab.store.read('web/2026-10-15.json')
+    contract.validate_web_report(public)
+    assert all(private not in json.dumps(public) for private in (
+        'review.coverage', 'review.read_content', 'review.assessments',
+        'review.documentation', 'failure_detail', 'PRIVATE_RATE_METADATA'))
+    if field is not None and estimate <= .2:
+        assert lab.local_requests[-1]['feedback'][0]['review_failure_detail'] == detail
+    lab.tick(9, 1, runner=forbidden, local_runner=forbidden)
+    assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
+    assert_private(lab.state())
