@@ -1,5 +1,14 @@
 # 0026: 실제 source Read 검증과 유효 제안 보존 보고
 
+## 2026-10-27 완료 관측 연결
+
+PR84 완료와 별도 reviewer 개발 검증 성공은
+[ADR0034 최신 완료 관측](0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)에
+모은다. 아래 수리·대기·성공 미관측은 작성 당시 인계 기록이다. 개발 검증의 succeeded와
+두 후보 needs_evidence/전체 documentation=missing은 양립하며 hourly 후속 성공·문서 완비·
+구현 허가를 뜻하지 않는다. 이번 변경은 관측 사실 연결뿐이며 기존 계약과 과거 실패는 보존한다.
+이번 문서 diff의 새 의미/documentation 판단·필수 검증·Git 전달은 parent가 별도로 수행한다.
+
 ## 2026-10-27 최종 review 문서 계약 정합 수리
 
 앞 실행1793063968874360416-bbac98은 최종 changes_requested·applied=[]·GitHub 요청 없음으로

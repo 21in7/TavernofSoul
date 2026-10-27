@@ -32,6 +32,10 @@ reconcile+GET404만 재POST한다. delivered 뒤 다음 정상 tick은 새 관�
 
 ### 이번 범위의 검토와 미관측 상태
 
+현재 PR84 완료·별도 reviewer 개발 성공과 후속 hourly 성공 미관측은
+[ADR0034 최신 완료 관측](adr/0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)에 둔다.
+아래 실패·대기는 당시 인계 기록이다.
+
 run1793024077756804485-d143a3의 full check parser2실패/skip0·apply/dispatch없음과 상세 수치는
 [ADR0034](adr/0034-inspection-failure-recovery-and-health.md#이번-재개-수리와-검증-실패-기록)에 보존한다.
 worker는 회귀 작성만 하며 새 Claude 의미/documentation 검토·full check·실제37개 측정·apply·
@@ -339,8 +343,9 @@ Read 진단의 고정 review.* field/rule과 최종 계약 경계는
 review_invalid/validation/review를 발급하고 review.documentation의 empty는 빈 required/missing,
 fields는 상태/문서/eligible 모순이다. 구조/ID/verdict/reason은 review.result다. 묶인 fields 거절은
 특정 값이나 근본 원인을 확정하지 않는다. allowlist·health/public은 확대하지 않는다.
-PR83 이후 두 실패/두 번째 missing·빈 files 확정·첫 번째/08시 원인 미확인과 새 성공 미관측은
-[ADR0034](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)에 구분한다.
+PR83 이후 두 실패/두 번째 missing·빈 files 확정·첫 번째/08시 원인 미확인과 PR84 후 별도 개발 성공은
+[ADR0034 최신 완료 관측](adr/0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)에 구분한다.
+개발 성공의 needs_evidence/전체 documentation=missing은 문서 완비·eligible·hourly 성공이 아니다.
 
 `_safe_participation`은 reason(내장str/64자 allowlist)·error_type(내장str/32자 고정목록)·detail만
 재정제하고 raw result를 복사하지 않는다. 미인식 reason/type은 role_failed/Exception이며
@@ -357,8 +362,8 @@ private 결과만 남을 수 있고 fallback/잠금 밖 쓰기/retry는 없다. 
 feedback은 candidate_id/draft_digest·redaction/bytes·최대4개 요약을 유지해 다음 local prompt에
 상세를 전달하며 원본 scan은 남는다. public payload/digest/journal·오전 선택은 바꾸지 않는다.
 Lab의 adapter→_call_role→tick→Store 재개/status/feedback·비용/최초실패·위조/원문 배제·후속 성공
-보존은 작성된 명세다. worker는 실행하지 않으며 parent의 새 전체 diff 의미/documentation 검토·
-full check·실제37개 측정·scoped apply·기존 Git/게시·운영 관측을 기다린다.
+보존은 기존 회귀 명세다. 당시 worker의 미실행·full check 인계와 이후 완료는 위 최신 완료 관측에
+구분하며 이번 문서 diff의 새 의미/documentation 검토·필수 검증·Git 전달은 parent 책임이다.
 
 ## Claude 추정 ledger·GLM 구독 quota
 
@@ -959,8 +964,10 @@ claims/workflow/GitHub를 시작하지 않는다.
 
 ## 현재 검토·검증 인계
 
-이번16파일 초안의 문서 보정·strict 계약은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md#2026-10-27-최종-review-문서-계약-정합-수리),
-실패 이력과 미관측 상태는 [ADR0034 최신 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)을 따른다.
+기존16파일 수리의 strict 계약은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md#2026-10-27-최종-review-문서-계약-정합-수리),
+실패 이력·PR84 완료·별도 개발 성공·hourly 관측 한계는
+[ADR0034 최신 완료 관측](adr/0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)을 따른다.
+이번 변경은 관측 연결만이며 최종 문서 diff의 기존 check-docs 검증과 Git 전달은 parent 책임이다.
 [과거 인계 원문](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-current)은 당시 기록으로 보존한다.
 새 검토는 최종 코드·문서에 documentation={status,files,reason}을 독립 판단하며 과거 결과를 재사용하지 않는다.
 

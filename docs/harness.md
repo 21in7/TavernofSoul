@@ -17,7 +17,7 @@ python -m harness.improvement_health publish --reconcile --digest FROZEN_HEALTH_
 
 query는 키/HTTP 없는 조회다. reconcile은 이전 outbox의 정확한 digest와 GET404 뒤에만 동일 POST를
 허용한다. strict schema/digest/전체 GET 일치만 delivered다. 실패로 tick을 재실행하지 않는다.
-[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)의 계약/미관측 상태를 따른다.
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md)의 계약과 시점별 관측을 따른다.
 worker는 실행하지 않으며 새 검토/full check·GLM probe와 Sites 구현/배포/readback은 parent 책임이다.
 
 자동 검사 선택은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
@@ -47,11 +47,11 @@ reason=review_invalid/cause=validation/phase=review/field=review.documentation/r
 native adapter→_call_role→loop의 비용/최초 detail·정산/재시작/feedback·후속 성공의 실패 보존도
 명세한다. 테스트 삭제/skip·상한/정책 완화는 없다. 작성된 합성 명세는 실행 결과가 아니다.
 
-[ADR0034의 최신 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)은
-parent 제공 PR83 full6324·CI3·merge·cleanup/archive 성공과 이후 두 실제 실패를 구분한다.
-두 번째만 missing/빈 files가 확정됐고 첫 번째/08시 원인은 미확인이다. 이번 수리의 새 실제
-성공은 미관측이다. 매 review는 전체 diff의 documentation={status,files,reason}을 새로 판단한다.
-worker는 검사하지 않으며 새 Claude 의미 검토·GIT=1 full make check·실제37개 byte 측정·scoped
+[ADR0034 최신 완료 관측](adr/0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)은
+parent 제공 PR84 완료·별도 reviewer 개발 성공과 과거 실패·후속 hourly 성공 미관측을 구분한다.
+PR83 뒤 두 실패 중 두 번째만 missing/빈 files가 확정됐고 첫 번째/08시 원인은 미확인이다.
+매 review는 전체 diff의 documentation={status,files,reason}을 새로 판단한다.
+worker는 검사하지 않으며 새 Claude 의미 검토·최종 diff에 따른 필수 검증·GIT=1·실제37개 byte 측정·scoped
 apply·기존 Git 역할과 실제 독립 검토/GitHub/CI3/merge/cleanup/archive·스케줄/frozen 확인은 parent 책임이다.
 
 [전체 설계](harness-design.md)·[ADR](adr/README.md)은 목표·책임·격리·검토·게시, 이 문서는 환경·명령을 다룬다.
