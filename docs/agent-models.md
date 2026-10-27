@@ -63,9 +63,10 @@ Read 검증은 source_review_unverified, 최종 validator는 review_invalid/vali
 identity-bound capability를 발급한다. 기존 review.documentation/result와 rule만 사용하며
 빈 required/missing은 empty다. runner 사전/예외문/metadata는 권위가 아니다. private512bytes·
 최초 실패·identity·비용/중단/정산·status/feedback·health/public 계약을 유지한다.
-PR83 full6324/CI3/merge/cleanup/archive는 역사적 성공이며 이후 실제 두 review 실패 중 두 번째만
-missing/빈 files가 확정됐다. 첫 번째/08시 원인은 미확인이고 이번 수리 뒤 실제 성공은 미관측이다.
-새 Claude 의미/documentation 검토·full check·실제 재검증은 parent 책임이다.
+PR83 이후 두 review 실패 중 두 번째만 missing/빈 files가 확정됐고 첫 번째/08시 원인은 미확인이다.
+이후 PR84 완료·별도 개발 검증 성공과 hourly 후속 성공 미관측의 구분은
+[ADR0034 최신 완료 관측](adr/0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)을 따른다.
+새 Claude 의미/documentation 검토·최종 diff의 필수 검증·실제 재검증은 parent 책임이다.
 
 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)의 local 실패 뒤 정규 독립 점검·
 source-only sealed 진행 보존/별도 live freshness·control 변경 무효화를 유지한다. cloud/private
@@ -106,7 +107,9 @@ Claude 독립 검토로 이어진다. 일반 구현 역할을 대체하거나 �
 
 ## 2026-10-27 최신 main 관측
 
-신뢰한 parent 제공 관측이며 worker의 실행 결과가 아니다. 정확한 시각·run/merge SHA·검사 수·
+신뢰한 parent 제공 관측이며 worker의 실행 결과가 아니다. PR84 완료와 별도 reviewer 개발 성공은
+[최신 완료 관측](adr/0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)을 따른다.
+아래는 앞선 관측 기록이다. 정확한 시각·run/merge SHA·검사 수·
 증거 참조·archive와 frozen digest는
 [ADR0034 최신 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)에 보존한다.
 
@@ -127,7 +130,8 @@ frozen payload 전체 일치는 parent 관측이다. 조회의 새 POST/모델/t
 이 관측 정리 자체는 구현/권한/설정/스케줄 변경이 아니다. 매 review는 최종 diff와 실제 변경
 문서의 documentation={status,files,reason}을 새로 판단한다. parent가 baseline→candidate로
 검증 종류를 선택하고 GIT=1·기존 CI/merge/cleanup/archive로 전달하며 과거 검사를 재사용하지 않는다.
-이번 코드 수리의 문서 영향과 full check 인계는 ADR0026을 따른다. worker/reviewer는 검사·Git·
+기존 코드 수리의 문서 영향과 full check 인계는 ADR0026에 보존한다. 이번 관측 연결은 문서 변경뿐이다.
+worker/reviewer는 검사·Git·
 네트워크·SSH·workflow·재위임을 실행하지 않는다.
 
 ## 인증 등록

@@ -27,11 +27,13 @@ status·bounded feedback에 보존한다. cloud192건과 별도 local192건은 �
 review.documentation/result·고정 rule을 발급한다. missing/required의 빈 files 거절(empty)은
 유지하며 문서 files는 실제 documentation Read window만 쓴다. 승인 밖 필요 경로는 reason에
 밝히고 needs_evidence/rejected와 문서 필요성을 일관되게 판단한다. 읽기 전용이라는 이유로
-not_required를 강제하지 않는다. PR83의 full6324/CI3/merge/cleanup/archive는 과거 근거이며
-그 뒤 새 두 실제 review 실패·두 번째 missing/빈 files 확정과 이번 수리의 성공 미관측은
-ADR0026/0034에 구분한다. 매 새 review의 문서 판단과 parent의 실제 재검증은 별도다.
+not_required를 강제하지 않는다. PR83 뒤 두 실제 review 실패·두 번째 missing/빈 files 확정과
+PR84 완료·별도 개발 검증 성공은
+[ADR0034 최신 완료 관측](docs/adr/0034-inspection-failure-recovery-and-health.md#pr84-완료와-별도-reviewer-개발-검증-성공)에 구분한다.
+08시 원인은 미확인이며 개발 성공은 hourly 후속 성공이 아니다. 매 새 review의 문서 판단과
+parent의 실제 재검증은 별도다.
 runtime37개·128KiB/1.5MiB·9단계·예산/auth·승인/실행 scope와 스케줄·frozen 보고는 유지한다.
-전체 diff의 새 Claude 의미 검토·GIT=1 full make check·scoped apply·기존 Git 역할 및 parent의
+전체 diff의 새 Claude 의미 검토·실제 diff에 따른 필수 검증·scoped apply·기본 GIT=1의 기존 Git 역할 및 parent의
 GitHub 게시/CI3/merge/cleanup·실제 hourly 관측은 별도 필수다. worker는 검사하지 않는다.
 
 이 저장소는 Tree of Savior 게임 데이터를 수집·파싱하고 Django로 제공한다.

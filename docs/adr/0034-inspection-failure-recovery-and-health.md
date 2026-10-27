@@ -8,6 +8,61 @@
 
 ## 2026-10-27 최신 main 관측
 
+### PR84 완료와 별도 reviewer 개발 검증 성공
+
+아래는 이번 요청 시작 시 신뢰한 parent가 직접 확인해 제공한 정제 사실이다. worker가
+실행·검증한 결과가 아니며 이번 문서 변경의 새 검토·검증·Git 전달 결과와도 구분한다.
+아래 기존 인계의 실패·대기·성공 미관측 진술은 각 작성 당시 기록으로 보존한다.
+
+parent 확인 baseline은 master clean, HEAD `f59ce61d7ed1ffd1fff8272239f396c93afb9757`이다.
+PR83의 LF-only NDJSON/private Read 진단과 PR84의 최종 review 문서 계약/validator 진단이
+이미 반영됐다. native run `1793065815950900823-86da6c`의 completion evidence는
+report.status=passed, [PR84](https://github.com/21in7/TavernofSoul/pull/84),
+merged_sha=`f59ce61d7ed1ffd1fff8272239f396c93afb9757`이다. Offline harness (SQLite),
+MySQL harness, Chromium browser harness가 각각 success였으며 cleanup은 remote=deleted,
+prune=complete, sync=complete, local=absent, completion=complete다. 이 완료 증거를 이번
+문서 변경의 검증 성공으로 재사용하지 않는다.
+
+PR84 후 별도 개발 검증 `attempt1793066740418614904-live-review`는 retained input
+`1793026802215716805-c162f5`로 정식 improvement_loop._cloud_call→improvements._call_role→
+agent_models.run→review_coverage.Capture 경로를 사용했다. 2026-10-27
+11:05:40.454408~11:06:07.560055 KST, reviewer claude/claude-sonnet-5-5,
+model_calls=1, elapsed=27.208341초, cli_estimated_usd=0.0755381이었다.
+승인37소스/후보2개에서 실제 read_windows=11/assessments=11, proof_validated=true,
+status=succeeded다. 두 후보 verdict는 모두 needs_evidence, 전체 documentation.status=missing이다.
+이는 유효한 검토 응답·Read 증거의 성공이며 문서 완비·eligible·구현 허가가 아니다.
+
+당시 current_scope_admission_passed=true, current_scope_bytes=1554467(<1572864),
+engine_unchanged=true였다. 저장한 proof/readback도 새 모델 호출0으로 validated=true였고,
+현재 엔진6파일 bytes/mode와 성공 당시 fingerprint는 각각 최종 merge 코드에 일치했다.
+hourly_state_written=false, hourly_state_unchanged=true, immutable_records_unchanged=true,
+original_records_unchanged=true다. 이 별도 개발 성공을 hourly 참여 history나 frozen 오전
+보고에 삽입하지 않았으므로 화면의 마지막 reviewer 실패만으로 미수리나 새 실패라고 판단하지 않는다.
+
+이번 parent 상태 조회는 last_slot=2026-10-27T14, status=researching, 다음 django
+local_explorer(7/9), 보류 없음, 오늘 호출15/24, Claude 추정 잔액$0.80이다. 최신 cloud
+specialist는 coordinator10시/downloader12시/parser14시/django07시 성공이며 reviewer는08시
+실패다. 2026-10-27 오전 보고는 delivered,
+digest=`646273e6d37aeb889b5afb79c251aac7b9996da1a17d968efddcdac21e74d63c`다.
+이는 전체9단계의 후속 hourly reviewer 성공 관측이 아니며 과거 실패·오전 보고를 덮지 않는다.
+사용자가 제시한 downloader의 10-26 09시/00시·10-25 06시 JSON 실패, 10-25 11시 검토 실패·
+02시 reviewer JSON 실패, 10-24 21시 downloader timeout에는 각각 별도 후속 성공이 있다.
+10-23 이전 legacy unknown/unavailable는 실제 호출 시각·원인이 없어 추정하지 않는다.
+
+08시 실패는 원문 부재로 계속 원인 미확인이다. PR83 뒤 두 개발 실패 중 두 번째의
+missing/files=[]만 확정됐으며 첫 번째 원인도 미확인이다. 문자 손상·잘림·fence나 LF framing
+결함을 과거 원인으로 소급하지 않는다. 이번 승인 소스·회귀 검토에서 추가 수리가 필요한
+구체적 잔여 코드 결함은 확인하지 못했으므로 코드/테스트·검증·health/state는 변경하지 않는다.
+
+문서 영향은 완료·성공 관측과 당시 인계의 연결뿐이다. 정책·권한·설계 결정은 바꾸지 않아
+신규 ADR이나 승인 밖 문서는 필요하지 않다. runtime37/owner/shared·파일128KiB/합계1.5MiB·
+stdout512KiB/256events/32windows/32KiB/96code-lines·정확한 bytes/ranges/pairing·모든
+window/assessment/문서 Read/Capture1회와 private capability/identity/최초 실패/비용·정산·
+health/public/frozen·승인/claim/freshness·예산/인증/모델/cron/저장/Git 경계는 유지한다.
+매 새 review는 documentation={status,files,reason}을 독립 판단한다. 이번 최종 diff의
+새 의미 검토와 기존 문서 전용 check-docs 정책에 따른 필수 검증·scoped apply·기본 GIT=1의
+기존 GitHub 앱/CI3/merge/cleanup/archive 전달은 parent 책임이며 worker는 실행하지 않았다.
+
 ### PR83 이후 실제 최종 review 실패와 문서 계약 수리 인계
 
 후속 초안의 실패 이력도 보존한다. parent 제공 실행1793063968874360416-bbac98은 최종
