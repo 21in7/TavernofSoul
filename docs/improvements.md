@@ -10,31 +10,20 @@ result fallback·문법 수선·모델 retry는 없다. native 형식은 의미�
 
 ## 별도 owner-private health 계약
 
-세 번째 고정 `improvement-health-v1`의 wire/allowlist·privacy·frozen outbox·동일 POST/GET 및
-same-digest reconcile은 [ADR0034](adr/0034-inspection-failure-recovery-and-health.md#health-wire-계약)에 둔다.
-cloud5역할의 실패 단계·고정 원인·실제 call 시각·후속 같은 역할 성공만 투영한다. legacy 결손은
-unknown/unavailable/null이다. local 상세·자유 provider/model·비용·예외·원문·키·절대경로는 보내지 않는다.
+세 번째 고정 `improvement-health-v1`의 wire/allowlist·privacy·outbox·동일 POST/GET·reconcile은
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md#health-wire-계약)에 둔다. cloud5역할의
+실패 단계·고정 원인·실제 call 시각·후속 같은 역할 성공만 투영하며 legacy 결손은
+unknown/unavailable/null이다. local·provider/model 자유문자열·비용·원문·키·절대경로는 보내지 않는다.
 후속 성공으로 과거 실패를 지우거나 freshness·승인·전체 review 성공을 주장하지 않는다.
 
-기존 단일 hourly tick은 정상 최종 save와 discovery/state/source lock·deadline 해제 뒤 별도
-health를 전달한다. 정산된 역할 실패도 대상이며 초기 config/Store/readiness/binding/lock/bootstrap
-실패·시계 역전·같은 slot 재실행은 보내지 않는다. 추가 모델·source scan·storage fallback은 없다.
-같은 slot도 morning sender 잠금은 확인하며 실제 `sender_lock_busy`를 보존한다. 이 경로는
-health 자격과 별개이고 bootstrap/save 실패의 publication 금지는 유지한다. sender 충돌은 별도
-catch로 처리한다. process/동일 slot·두 sender 잠금·정산 실패 보존 회귀는 parent 새 검증 대기다.
-`--no-deliver`와 status/query/publish-morning도 자동 health를 보내지 않는다. 이 qualified 경로만
-unattended 전송을 허용하며 수동 trusted-parent CLI와 child/discovery 거절은 유지한다.
-환경/CLI는 인간 신원·approval/execute 권한이 아니다. health 실패는 별도 health_publication/outbox에
-남기고 최초 실패·회계·stage·morning/frozen 결과를 덮지 않는다. unknown/sending은 GET만,
-명시 frozen digest reconcile+GET404만 재POST한다. delivered 뒤 다음 정상 tick은 새 관측을 전송한다.
-[운영 명령](harness.md#실패-복구-health의-parent-운영)은 기존 private storage/credential을 사용한다.
-
-runtime37·128KiB/1.5MiB·일24회/tick1회·GLM80%/Claude 예산·wrapper/cron/ledger는 유지한다.
-새 helper는 runtime 승인에 추가하지 않는다. run1793024077756804485-d143a3의 새 검토 뒤 full check는
-parser2개 assertion 실패/skip0이었다. 적용/GitHub dispatch는 없었고 세부 수치는 ADR0034에 보존한다.
-이번 worker는 fake/Lab 명세만 추가하며 실행하지 않았다. 새 Claude 의미/documentation 판단·full check·
-실제37개 재측정·apply 뒤 단1회 GLM probe와 Git/CI3/merge/cleanup/archive·Sites 배포/readback은
-parent 책임이며 새 실제 성공은 미관측이다.
+단일 tick의 정상 최종 save·모든 연구 잠금/deadline 해제 뒤 정산된 역할 실패도 전달한다.
+초기 config/Store/readiness/binding/lock/bootstrap 실패·rollback·같은 slot·no-deliver·조회/
+publish-morning은 자동 health 대상이 아니다. 같은 slot의 morning sender 잠금 확인 및 실제
+sender_lock_busy는 별개로 보존한다. health 자격은 인간 신원/approval/execute 권한이 아니다.
+수동 CLI의 child/discovery/unattended 거절은 유지한다. 별도 전송 실패는 health_publication/outbox에
+남기며 최초 실패·회계·stage·morning을 덮지 않는다. unknown/sending은 GET만, 명시 frozen digest
+reconcile+GET404만 재POST한다. delivered 뒤 다음 정상 tick은 새 관측을 보낸다.
+추가 모델/scan·storage fallback·runtime37/상한·예산/quota·wrapper/cron 변경은 없다.
 
 ### Parent 조회와 고정 digest 전달
 
@@ -43,7 +32,11 @@ parent 책임이며 새 실제 성공은 미관측이다.
 
 ### 이번 범위의 검토와 미관측 상태
 
-최종 코드·문서의 새 documentation 판단과 full check는 parent가 수행하며 과거 검토/검사는 재사용하지 않는다.
+run1793024077756804485-d143a3의 full check parser2실패/skip0·apply/dispatch없음과 상세 수치는
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md#이번-재개-수리와-검증-실패-기록)에 보존한다.
+worker는 회귀 작성만 하며 새 Claude 의미/documentation 검토·full check·실제37개 측정·apply·
+개발 probe·Git/CI3/merge/cleanup/archive·Sites 배포/readback은 parent 책임이다. 이전 검토를
+재사용하지 않고 후속 실제 성공은 각 해당 관측으로만 기록한다.
 
 ## 잠금 격리와 실제 실패 관측
 
@@ -83,51 +76,34 @@ slot/claim/outbox를 먼저 확인하며 실패를 중복 호출/중복 POST 허
 09:00 보고·09:20 같은 채팅 알림 성공은 미관측이다. 매시00분·기존 at→codex queue job1,
 runtime37개·owner/shared·model/provider/auth·9단계·slot/예산·승인 범위는 유지한다.
 
-2026-10-22 현재 계약은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)이다.
-parent가 discovery reviewer의 실제 성공 Read를 bytes/줄 범위에 묶어 검증한다. 빈 pool은 각 승인
-owner의 non-shared Python 프로그램을 테스트보다 우선 선택한다. AGENTS·안내 문서·설정만으로
-코드 점검을 인증하지 않는다. 함수 본문 우선(없으면 script 실행문)의 앞 문맥 최대8줄을 포함한
-연속 최대96줄 표본과 별도 shared 문서 최대12줄 Read·구체적 assessment가 필요하다. 선택 프로그램
-부재/빈 파일/읽기·파싱 불가/header-only와 기존32KiB/32window 초과는 coverage 미완료다.
-표본은 전체 파일·저장소 완독이 아니며 후보의 모든 evidence/benefit.evidence·필요 문서 Read는 유지한다.
-원래 proof/검토/전체 scope와 protocol을
-private에 보존하고 완료·오전 선택·approve/execute에서 재검증한다. legacy 자기 보고는 권한이 아니다.
-loop 승인 context의 proof 거절도 API에서 `ImprovementError`와 고정 메시지
-`Independent source Read evidence is required.`로 정제한다. 외부 예외 원문을 노출하지 않으며
-거절 시 instruction 파일 접근·권한 생성을 하지 않는다. 별도 review prose 검증의 `ValidationError` 계약은 유지한다.
-Read content는 원본 UTF-8의 최초 BOM 한 번 제외·LF split·각 줄 끝 CR 하나 제거 후 선택 줄의 LF join과
-정확히 같아야 하며 LF를 임의로 덧붙이지 않는다. totalLines는 끝 LF 뒤 빈 줄도 포함한 전체 split 길이다.
-마지막 빈 줄만 읽으면 content는 빈 문자열이다. 원본 bytes/hash/POSIX mode·evidence 줄 번호는 유지하고
-range bytes/hash와 CLI 표현은 별도로 계산한다.
-Claude Code2.1.294 headless stdout의 `rate_limit_event`는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)의
-정확한 envelope·세 status·줄8192bytes/JSON value256개/깊이8(root=0) 한도 안에서만 버리는 안내다.
-uuid/session_id는 각각 UTF-8 1~128bytes다. Read 전·사이·유일한 정상 result 뒤에도 허용하지만
-metadata는 Read/성공/비용·예산/provider identity/진단의 권위가 아니며 원문을 보존하지 않는다.
-응답과 비용은 실제 result에서만 가져오며 Read/안내 검증 실패에도 기존 비용 정산을 보존한다.
-2026-10-27 호환 수리안은 Capture와 final result/비용 탐색에 공통 LF record 경계를 사용한다.
-마지막 LF 하나만 framing으로 제외하고 CRLF도 JSON whitespace로 처리한다. 정상 JSON 문자열의
-U+0085/U+2028/U+2029는 Read/응답 데이터로 보존하며 빈 record·raw control·중복키·비유한은
-여전히 거절한다. source bytes/hash/원래 LF 줄과 실제 Read projection은 그대로다.
-prompt의 응답 키는 처음부터 reviews/documentation/assessments이며, documentation.files는
-기존 검증기처럼 documentation 목적 window 안에서만 명시한다. 다른 필요한 경로는 reason에
-기술하고 읽지 않는다. 모든 window/assessment·실제 pairing·정상 final·Capture 1회는 필수다.
-기존 source_review_unverified 상세는 validator 발생 경계의 고정 private review.* field/rule로
-정밀화한다. 세부 계약과 과거08시 원인 미확인·이번 합성 회귀/미실행 인계는
-[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다. 후속 reviewer 성공을 추정하지 않는다.
-실제 실패·미완료 pairing·result 뒤 assistant/user/tool·중복 result·unknown/malformed/과대 안내는
-성공으로 바뀌지 않는다. receipt/저장 보고/public payload에는 안내를 추가하지 않는다.
-오전은 현재 전체 의존성 일치 완료 회차의 ID별 최신 명시 verdict를 보존한다. 뒤 빈/실패 회차는 앞
-eligible을 지우지 않고 후속 rejected/needs_evidence는 이전 eligible을 대체한다. 원본 scan pointer로
-승인하며 합성 morning은 새 검토/서명/claim을 만들지 않는다. 최신 참여 실패는 별도로 표시한다.
-검증된 정상 0개만 `점검 완료 · 확인한 범위에서 제안 없음`이다. 표본 밖 무결함은 주장하지 않는다.
-web-v1과 frozen 과거 digest, runtime37개/owner/shared/예산/slot은 유지한다. Sites는 parent 소유다.
-아래32개/21개 승인·관측·미실행 인계는 당시 이력이며 이번 범위를 대체하지 않는다.
+source Read·coverage·완료·제안 보존의 상세 계약은
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다. parent Capture는
+모든 계획 window의 실제 성공 structured Read·원본 bytes/줄 범위·ID pairing·순서별 assessment·
+문서 Read·유일한 정상 final과 1회 소비를 검증한다. 빈 pool도 owner non-shared Python 본문을
+테스트보다 우선하며 AGENTS/안내/설정으로 코드 점검을 인증하지 않는다. 본문96줄/문서12줄 표본은
+전체 파일/저장소 완독이 아니다. 부재/빈/읽기·파싱 실패/header-only·32KiB/32window 초과는 미완료다.
 
-새 reviewer는 전체 baseline→최종본의 Read 증빙·제안 보존·결과 구분·CLI metadata 호환과
-`documentation={status,files,reason}`을 독립 판단한다. 이전 approved/5097개 통과·초안 복원은
-새 성공 근거가 아니다. Sites 배포/검증은 parent의 별도 관측이다. 미병합 종료된 PR63을 대체하는
-새 PR의 제목/본문에는 위 네 동작, 원본 proof/승인 gate·provenance, bounded rate_limit_event의
-무동작 처리와 실제 result 권위, 대체 관계 및 최종본의 실제 검토/검사 결과를 담는다.
+정확한 BOM/LF/CR Read projection·totalLines/마지막 빈 줄과 별도의 원본 hash/mode/range 계약,
+bounded rate_limit_event 무동작 예외는 ADR0026에 둔다. 안내·모델 주장은 Read/성공/비용/identity/
+진단 권위가 아니며 receipt/public에 넣지 않는다. Capture와 final 응답/비용 탐색은 LF만 NDJSON
+경계로 사용해 U+0085/U+2028/U+2029를 데이터로 보존한다. 빈 record·잘못된 pairing·result 뒤
+도구·중복 final·unknown/malformed/과대 안내는 거절한다. 모든 documentation.files는 문서
+목적 window만 고르고 창 밖 필요 경로는 reason에만 밝힌다. 상세 상태 규칙은 아래 후보·검토 절을 따른다.
+
+proof는 private에 보존해 완료/오전 선택/approve/execute에서 재검증한다. 승인 context proof
+거절은 `ImprovementError('Independent source Read evidence is required.')`로 정제하며
+instruction 접근/권한 생성에 이르지 않는다. 별도 최종 prose 검증의 ValidationError는 유지한다.
+실제 validator 경계의 고정 private review.* 진단만 쓰며 08시 원인 미확인·합성 명세·실제 관측은
+[ADR0034 최신 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)에 구분한다.
+
+오전은 현재 의존성 일치 완료 회차의 ID별 최신 명시 verdict를 모은다. 뒤 빈/실패 회차는 앞
+eligible을 지우지 않고 후속 rejected/needs_evidence는 대체한다. 원본 scan pointer로 승인하며
+합성 morning은 새 검토/서명/claim을 만들지 않는다. 최신 참여 실패는 별도 표시한다. 검증된
+정상0개만 `점검 완료 · 확인한 범위에서 제안 없음`이다. 과거 frozen/public·runtime37/owner/shared/
+예산/slot은 유지하며 Sites는 parent 소유다. 아래32/21개 승인·미실행 인계는 당시 이력이다.
+새 reviewer는 전체 diff의 Read 증빙·제안 보존·결과 구분·CLI metadata와 documentation을
+독립 판단한다. 앞선 approved/5097통과·복원 초안은 새 성공 증거가 아니다. 미병합 종료 PR63의
+대체 PR에는 위 동작·proof/승인 gate·provenance·metadata의 무동작/실제 result 권위와 새 검증을 적는다.
 
 자동 점검은 정비사의 점검표처럼 개선 후보를 발견하고 서로 검토하여 한국어 비유를 담은
 한 장 보고서를 제공한다. 실제 수리는 차주가 특정 항목을 승인한 뒤에 시작한다.
@@ -140,90 +116,57 @@ hourly 연구와 09:00 once 보고로 대체한다. 보고를 보고 고칠 항�
 
 ## 진행 보존 수리의 문서 영향과 실행기 인계
 
-2026-10-21 진행 보존 결정과 실제 local/cloud/09시 전달 관측은
-[ADR0025](adr/0025-progress-preserving-improvement-reviews.md), source Read/제안 보존의 후속 결정은
-[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)에 보존한다. 당시 승인32개/
-coordinator1작업과 run1792547845263535412-a3f550의900초 종료/applied=[]는 과거 이력이다.
-parent의 baseline/checkpoint 확인·초안 준비는 새 구현·검토·검증·적용 증거가 아니다.
-worker는 private 원문/운영 기록을 읽지 않았다. frozen 2026-10-21 failed/0카드 전달은 재작성하지 않는다.
+2026-10-21 결정·local/cloud/09시 관측은 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md),
+Read/제안 보존은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)에 둔다.
+당시 승인32/coordinator1·run1792547845263535412-a3f550의900초 종료/applied=[]와 frozen
+2026-10-21 failed/0카드 전달은 과거 이력이다. parent의 baseline/checkpoint/초안 준비는 새
+검토/검증/적용 증거가 아니며 worker는 private 원문을 읽거나 frozen 보고를 재작성하지 않았다.
 
-현재 loop는 cloud192건의 admission history와 완료 index32건 이내를 분리하고 ID별 최신 명시
-verdict/provenance를 유지한다. local history192건은 별도 private 배열이며 오전 cloud 집계에 합치지 않는다.
-진단 detail은 후속 ADR0027 정밀화에 따라 함께 저장하되 source/원문/cost는 history에 추가하지 않는다.
-legacy 최대4096개 scan 이름의 한 번 이행, 이후 exact pointer carry-in과 비용 중복 방지·미상 비용의
-보수적 소비는 그대로다. timestamp 없는 과거 활동과 local 원인은 복원하지 않는다.
+cloud admission history192·완료 index32와 별도 private local history192를 분리한다.
+최대4096 scan의 한 번 legacy 이행·exact pointer carry-in·scan_id 비용 중복 방지와 unknown의
+보수적 소비를 유지한다. 과거 timestamp/local 원인을 복원하지 않는다. snapshot 두 bank의
+manifest/fingerprint/no-follow/owner/mode/nlink·128KiB/1.5MiB·bounded staging/unsafe partial
+no-call은 그대로다. source-only stage/pool/feedback/cursor 보존과 control 변경 무효화는 아래
+freshness 절을 따른다. 유효한 seal도 live eligible/approve/execute 권한은 아니며 source
+unavailable과 lock busy는 구분한다. local 실패/빈 초안은 정규 독립 점검을 생략하지 않는다.
 
-두 private bank의 승인37개 snapshot·manifest/fingerprint/no-follow/owner/mode/nlink와128KiB/1.5MiB
-검증, 고정 bounded staging·unsafe partial no-call·source-only stage/pool/feedback/cursor 보존은 ADR0025를 따른다.
-control 변경은 진행을 무효화하지만 참여를 지우지 않는다. legacy active에 현재 bytes를 붙이지 않는다.
-seal이 유효한 active 검토도 live freshness·eligible·approve·execute 권한은 아니다. source unavailable과
-source lock busy를 구별한다. local 실패/빈 초안·긴 줄/준비 skip은 정규 specialist와 빈 pool reviewer의
-독립 점검을 생략하지 않는다. 기존 strict validator/한국어/근거·예산/quota/guard·승인/Git 정책을 유지한다.
-
-당시 수리의 세 회귀 입력은 local만 호출된 날 cloud 전원 not_called/failed, 초안 없는 specialist
-결과 뒤 이전 local 진단 보존, parser provider를 기존 codex에서 서로 다른 zai로 변경하는 control
-무효화다. source-only9단계·stale 승인·snapshot tamper/crash/상한·legacy/window·frozen/privacy 회귀와
-현재 schema/diagnostic 회귀를 실행기가 full make check로 함께 검증한다. 작성은 통과 증거가 아니다.
-
-문서 영향과 매 reviewer의 의미적 완결성 판단은 `documentation={status,files,reason}`으로 남긴다.
-앞선 updated/approved/검사 결과를 재사용하지 않는다. 전체 diff 새 Claude 검토→GIT=1 full make check→
-scoped apply→기존 Git 역할→parent 전용 GitHub 게시/CI3/merge/cleanup이 필수다. 승인 밖 문서가 필요하면
-정확한 경로를 기존 승인 파일 finding에 귀속해 새 범위를 요청하며 leaf가 읽거나 생성하지 않는다.
+당시 회귀 입력 정정(local-only 날 cloud 전원 not_called/failed, 초안 없는 specialist 뒤 local
+진단 보존, parser codex→zai control 변경)과 snapshot/source/window/frozen/privacy 회귀는
+parent full check 대상이다. 매 review는 최종 diff의 documentation={status,files,reason}을
+새로 판단하고 새 Claude 검토→GIT=1 full make check→scoped apply→기존 Git 역할→parent의
+GitHub/CI3/merge/cleanup을 거친다. 승인 밖 필요 문서는 정확 경로를 기존 승인 파일 finding에
+귀속해 새 범위를 요청하며 leaf가 열거나 생성하지 않는다. 작성은 검사 통과가 아니다.
 
 ## 구현 책임과 읽기 범위
 
-Python 3.8의 [improvement_report.py](../harness/improvement_report.py)는 I/O 없는 엄격한
-schema·fingerprint·정제·HTML/Markdown renderer다. [improvements.py](../harness/improvements.py)는
-기존 model/storage/workspace API로 legacy 발견·기록·승인·일회성 실행·HTTP 전달을 담당한다.
-[improvement_loop.py](../harness/improvement_loop.py)는 재시작 가능한 `tick/status/publish`,
-일일 ledger·9단계 round·불변 오전 보고 journal을 담당한다. [local_model.py](../harness/local_model.py)는
-숫자 loopback의 text mlx-vlm HTTP adapter이며 파일 열람·상태 저장·승인 권한이 없다.
-[workflow.py](../harness/workflow.py)는 선택적 `_improvement_guard(run_id)`로 승인 provenance를
-project lock 안에서 재확인한다. 일반 직접 요청 workflow의 권한·검증·게시 정책은 유지한다.
-[improvement_completion.py](../harness/improvement_completion.py)는 parent의 run 완료 증거 검증과
-별도 completion-v1 outbox/전달·복구만 담당한다. Sites 소스/API/UI 구현·배포는 메인 책임이다.
-기존 cloud 모델/provider/effort/compaction/auth는 유지한다. 별도 로컬 mlx-vlm 초안 참여만 추가하며
-새 cloud provider/요금제/유료 balance fallback·계정 구매는 없다. 설치와 실제 탐색 검증은
-[로컬 모델 운영](local-models.md)에서 구분한다.
-Cloudflare 자원·유료/무료 인프라·credential의 자동 생성도 없다.
+Python3.8 `improvement_report.py`는 I/O 없는 strict 계약/fingerprint/정제/renderer,
+`improvements.py`는 기존 model/storage/workspace API의 발견/기록/승인/일회성 실행/HTTP,
+`improvement_loop.py`는 tick/status/publish·ledger/9단계/오전 journal을 담당한다.
+`local_model.py`는 숫자 loopback text mlx-vlm adapter이며 파일/상태/승인 권한이 없다.
+workflow의 `_improvement_guard(run_id)`는 project lock 안에서 승인 provenance를 재검증한다.
+completion은 parent의 run 완료 검증/별도 outbox 복구만 맡는다. 일반 직접 요청의 기존 권한과
+cloud provider/model/effort/compaction/auth는 그대로며 Sites 구현/배포·로컬 설치/실추론은 parent 책임이다.
+새 요금제/계정/인프라/credential 생성·유료 fallback은 없다.
 
-[improvement-scope.txt](../harness/improvement-scope.txt)는 개별 저장소 상대 파일을 한 줄씩
-명시한 승인 목록이다. glob·디렉터리 재귀·Git enumeration·모델에 의한 범위 확대는 없다.
-이 목록의 경로 문자열은 향후 발견 시 읽기 권한이며 구현 worker의 현재 읽기 권한을 확대하지 않는다.
-수동 `discover --scope-file PATH`도 사용자 승인 개별 목록만 받아야 한다. 절대 host 경로는
-private scope provenance에만 보존하고 모델/웹에 전달하지 않는다.
+[improvement-scope.txt](../harness/improvement-scope.txt)는 개별 저장소 상대 경로의 승인 목록이다.
+glob/재귀/Git enumeration/모델 범위 확대는 없다. 향후 runtime 읽기 목록은 현재 worker의
+승인 범위를 넓히지 않는다. discover --scope-file도 사용자 승인 개별 목록만 받으며 절대 host
+경로는 private provenance에만 둔다. specialist는 `workflow.owner(path)`의 승인 파일과
+shared_files 중 scope에도 있는 파일만 받고 reviewer는 별도 context에서 전체 승인 scope를 받는다.
+예를 들어 parser_tidy/tests/test_import_safety.py의 owner는 django다. shared 후보는
+AGENTS.md·docs/architecture.md·docs/harness-design.md·docs/improvements.md·docs/data-contracts.md다.
+missing은 근거로 쓸 수 없다. 필요한 scope 밖 경로는 승인 파일 finding에 귀속해
+needs_evidence/ineligible로 남기고 parent가 새 실행을 준비한다. repair는 권한을 넓히지 않는다.
 
-| 호출 순서 | 해당 모델이 받는 개별 파일 |
-| --- | --- |
-| coordinator | `workflow.owner(path)==coordinator`인 공통 하네스·문서·Makefile 및 승인 shared 문서 |
-| downloader | owner가 downloader인 승인 파일 및 승인 shared 문서 |
-| parser | owner가 parser인 승인 파일 및 승인 shared 문서 |
-| django | owner가 django인 승인 파일 및 승인 shared 문서 |
-| reviewer | 별도의 격리 context에서 승인 scope 전체 |
-
-owner는 기존 함수를 그대로 쓴다. 예를 들어 `parser_tidy/tests/test_import_safety.py`는 django다.
-`shared_files`는 설정에 명시한 `AGENTS.md`, `docs/architecture.md`, `docs/harness-design.md`,
-`docs/improvements.md`, `docs/data-contracts.md` 중 해당 승인 scope에도 있는 파일만 포함한다.
-없는 파일은 missing으로 표시하며 근거로 인용할 수 없다. 필요한 테스트·문서가 scope 밖이면
-추가 필요 경로를 승인된 파일의 finding/설명에 귀속하고 제안을 ineligible/needs_evidence로 남긴다.
-메인이 범위를 확인해 새 실행을 준비하며 repair나 모델 판단으로 승인 범위를 늘리지 않는다.
-
-legacy discover에서 각 specialist는 앞선 정제 ID/title/issue/analogy/edit_files 요약을 받는다.
-hourly에서는 각 owner의 local 초안을 기존 specialist가 자기 승인 소스로 확인·거부·보완하여
-정식 후보로 만든다. 이전 round의 정제 issue·specialist 설명·독립 review.reason도 실제 prompt로
-이어받는다. 다른 owner의 정제 후보 요약은 공유하되 해당 소스를 자동 추가하지 않는다.
-reviewer는 모든 후보의 정제된 구조화 내용과 승인 소스를 별도 context에서 독립 검토한다.
-다른 역할의 의견은 근거 검증이나 성공 합의를 대신하지 않는다.
-source snapshot은 symlink·비정규 파일·보호 경로·private 설정을 거부하고 UTF-8/bytes 상한을 검사한다.
-존재하는 모델 사본은 0400이며 기존 runner를 `write=False, scoped=True`로 호출한다.
-원본·전체 검증 사본·키·host 로그·운영 데이터·private config는 모델 context에 넣지 않는다.
-기존 공급자 인증은 신뢰한 runner의 분리 runtime 책임이며 모델 도구에는 공개하지 않는다.
-
-발견은 `workflow.execute`, checks/doctor, Git, cron, 운영 downloader/importAll이나 쓰기 모델을
-호출하지 않는다. 허용 쓰기는 자체 private 기록·보고서·lock과 격리 임시 context/runtime뿐이다.
-일반 workflow의 `READ_ONLY=1`은 검사를 수행하므로 일일 발견에 재사용하지 않는다.
-격리는 모델 도구 권한과 신뢰한 parent에 의존한다. 같은 OS 계정을 가진 임의 프로그램까지
-통제하는 범용 VM 경계나 인간 신원 증명으로 해석하지 않는다.
+legacy specialist는 앞선 정제 ID/title/issue/analogy/edit_files 요약을 받고 hourly specialist는
+local 초안을 자기 승인 소스로 검증/거부/보완한다. 다음 round에 정제 issue·담당 설명·독립
+review.reason을 전달하되 다른 owner 소스는 자동 추가하지 않는다. 의견은 근거나 합의를 대신하지 않는다.
+source snapshot은 symlink/비정규/보호/private 경로를 거절하고 UTF-8/bytes를 검증한다.
+모델 사본은0400, runner는 write=False/scoped=True이며 원본/전체 검증 사본·키·host 로그·운영
+데이터/private config는 context에 넣지 않는다. 인증은 trusted runner의 분리 runtime 책임이다.
+허용 쓰기는 자체 private 기록/보고/lock·격리 context/runtime뿐이다. 발견은 checks/doctor·Git·
+workflow·cron·운영 downloader/importAll을 호출하지 않는다. 검사하는 일반 READ_ONLY workflow와
+구분하며 동일 OS 계정의 임의 프로그램까지 통제하는 VM이나 인간 신원 증명은 아니다.
 
 ## 시간별 단계·의견 계승·freshness
 
@@ -377,88 +320,45 @@ CLI result를 복사하지 않는다. 기존 provider별 기본 예산·compacti
 
 ## Hourly private 실패 진단과 인계
 
-[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)의 후속 정밀화다. broad reason과
-구체 cause/phase/field/rule을 구별하며 API/CLI·telemetry 성공은 후보·독립 검토 성공이 아니다.
-과거22시 coordinator/02시 parser의 role_execution_failed/ImprovementError·stage_invalid,01시 local의
-candidate_invalid는 제공된 관측일 뿐 구체 원인은 미확인이다. v3의 보존 path_aliases_read_only도
-원문이 없어 실제 근본 원인으로 확정하지 않는다. 과거 기록·frozen 보고를 고쳐 쓰거나 재전송하지 않는다.
+[ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)의 identity-bound private 진단을
+유지한다. `detail`→`attach`/`inherit`→`exception_detail`과 adapter의 `attach_result`/`result_detail`은
+실제 trusted 발생 경계만 연결한다. configured identity 확인 뒤 읽고, runner JSON/예외문/이름/
+attributes·allowlist reason 자체는 provenance가 아니다. `sanitize_detail`은 저장/feedback
+재검증이며 권한을 만들지 않는다. API/CLI/telemetry 성공도 후보/검토 성공이 아니다.
 
-`improvement_diagnostics.detail`→`attach`/`inherit`→`exception_detail`은 실제 경계에서 생성한
-예외 identity-bound 표식만 전달한다. adapter 결과는 `attach_result`/`result_detail`로 연결하며
-`_call_role`과 local loop는 configured identity 확인 뒤에만 읽는다. runner의 JSON diagnostic/
-failure_detail/reason·예외 class/str/attributes는 신뢰하지 않는다. `sanitize_detail`은 이미 신뢰한
-private 저장/feedback 값의 재검증이며 provenance나 실행 권한을 만들지 않는다.
+`improvement-failure-v1`의 9키·512bytes·exact dict/str/int·고정 코드와 실제 관측한 숫자만 허용한다.
+exit0..255/errno0..4095/HTTP100..599 외 숫자나 bool은 null이며 validation field/rule이 부족하면
+unavailable다. 동적 field/path·값·구문 위치·원문/소스/prompt·키·절대 호스트 경로·provider
+자유문자열은 넣지 않는다. broad reason은 기존 준비/실행/응답/JSON/identity/context/cleanup/
+중단/후보/Read/review를 구별하고 공통 후보 field/rule과 edit_files 세 reason을 유지한다.
+명확한 nonzero CLI stderr 인증 증거만 분류하며 stdout/tool/소스/경고·모호한 provenance는
+cli_failed/unavailable다. legacy나 원문 없는 과거 원인을 새 진단으로 확정하지 않는다.
 
-고정 `improvement-failure-v1`은 정확한 version/reason/cause/phase/field/rule/exit_code/errno/http_status
-아홉 키만 가진다. exact dict/str/int와 allowlist만 받고 bool/큰 값/잘못된 숫자는 null이다.
-exit_code0..255, errno0..4095, HTTP100..599는 실제 해당 경계에서 관측한 경우만 기록한다.
-최대512bytes의 고정 구조이며 validation 원인에는 허용 field와 rule 둘 다 필요하고 부족하면
-unavailable이다. 동적 field/path·구문 위치·후보 값·원문 stdout/stderr/응답·prompt·source·credential·
-절대 호스트 경로·provider 자유 문자열은 새 진단에 넣지 않는다. 기존 private result 보존과 별개다.
+Read 진단의 고정 review.* field/rule과 최종 계약 경계는
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다. 최종 validator는
+review_invalid/validation/review를 발급하고 review.documentation의 empty는 빈 required/missing,
+fields는 상태/문서/eligible 모순이다. 구조/ID/verdict/reason은 review.result다. 묶인 fields 거절은
+특정 값이나 근본 원인을 확정하지 않는다. allowlist·health/public은 확대하지 않는다.
+PR83 이후 두 실패/두 번째 missing·빈 files 확정·첫 번째/08시 원인 미확인과 새 성공 미관측은
+[ADR0034](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)에 구분한다.
 
-| broad reason | 실제 경계와 상세 |
-| --- | --- |
-| role_preparation_failed / role_execution_failed | 준비·CLI spawn/종료/timeout·transport; 명확한 증거만 cause로 전달 |
-| role_result_invalid / role_json_invalid | envelope·JSON parsing 실패 |
-| role_identity_mismatch / role_context_changed / role_context_cleanup_failed | configured identity·read-only 사본·정상 결과 뒤 cleanup |
-| candidate_invalid | shared validator의 실제 schema/title/analogy/evidence/benefit/validation_plan 등 field와 type/length/range/allowlist 등 rule |
-| candidate_edit_files_invalid / candidate_edit_files_duplicate / candidate_edit_files_outside_scope | 기존 세 reason·모든 거절 semantics 유지 |
-| review_invalid / source_review_unverified | 독립 review 계약·실제 Read 증거 검증 |
-| role_interrupted | 실제 interruption; 비용·원래 예외와 첫 실패 유지 |
-| role_failed / unknown | legacy broad fallback / 구체 cause unavailable; 원문 추정 없음 |
+`_safe_participation`은 reason(내장str/64자 allowlist)·error_type(내장str/32자 고정목록)·detail만
+재정제하고 raw result를 복사하지 않는다. 미인식 reason/type은 role_failed/Exception이며
+legacy 상세는 unknown/unavailable다. 성공의 허위 failure metadata는 버린다. local도 identity 뒤
+표식과 shared/window validator가 권위며 두 evidence의 window 위반은 evidence_outside_window다.
 
-source-review validator는 기존 source_review_unverified reason과 cause=validation/phase=review에
-고정 field를 붙인다. review.plan/capture/stream/metadata는 계획·1회 소비·strict record·안내
-경계, review.read_request/read_pair/read_content는 정확한 경로/범위·ID pairing·structured 내용,
-review.result/coverage/assessments/documentation/proof는 정상 final·전체 window·순서별 판단·문서
-Read·보관 proof 경계다. rule은 기존 fields/type/range/path/length/byte_limit/encoding/duplicate/
-allowlist/empty/source_unavailable/outside_scope 등 allowlist 안에서만 선택한다. 여러 조건을 묶은
-fields 코드는 해당 경계의 거절이며 특정 값이나 역사적 근본 원인까지 설명하지 않는다.
-원문/소스/prompt/경로/동적 필드/provider 문자열·새 schema 키는 추가하지 않는다. 기존512bytes와
-capability·configured identity 뒤 전달·최초 detail/비용 정산 및 private scan/slot/history/status/
-feedback 보존만 사용한다. health/public 노출은 늘리지 않고 과거 unknown을 재해석하지 않는다.
-
-Codex 실패는 nonzero CLI 경계의 신뢰 가능한 명확한 stderr 인증 형식만 고정 분류한다.
-stdout의 모델 설명·tool 출력·읽은 소스에 authentication/readonly/401/quota 등이 있어도 증거가 아니다.
-실행 출력이 있으면 stderr provenance도 모호해 cli_failed다. PATH alias 경고는 경고이며 실패 원인을
-입증하지 않는다. 명확한 실제 증거가 없으면 cli_failed/unavailable를 남긴다. auth/permissions 정책과
-유효 경고·진짜 인증 실패·timeout·response 검증은 유지한다. generic 실패를 quota/lock으로 추정하지 않는다.
-
-loop의 `_safe_participation`은 `_call_role`이 전달한 reason/detail을 재정제하고 raw result를 복사하지 않는다.
-reason은 내장 str/64자 allowlist, 선택적 error_type은 기존 내장 str/32자 고정 목록이며 그 밖은
-role_failed/Exception이다. local runner의 plain reason은 allowlist 코드여도 원인 증거가 아니다.
-adapter 표식은 identity 뒤에만 읽고 성공 응답도 기존 shared
-validator·prepared window로 검증한다. 두 evidence 배열의 window 위반은 evidence_outside_window다.
-legacy 상세는 unknown/unavailable이며 성공 참여의 허위 failure metadata는 버린다.
-
-private scan 참여·day.slots는 scan_id/slot/stage_index(0..8)/stage/owner_role과 broad reason/detail을
-남긴다. admission started_at은 기존 오전 `[전날09시,당일09시)` 기준이다. 신뢰한 clock의 실제
-call_started_at/call_finished_at은 시계 rollback에도 보존하고 finished_at의 기존 보수적 회계 보정과 구분한다.
-state.participation은 기존 cloud192건, local_history는 별도192건이며 `(scan_id,slot,stage_index)`로
-중복 제거한다. local은 실제 새 scan/slot의 예약·정산/복구에만 기록하며 과거 local을 새로 추정 이행하지 않는다.
-status는 detached 재정제 history를 반환하고 legacy 결손은 조회 투영에서만 unknown/unavailable로 표시한다.
-회차 교체·후속 성공·재이행은 기존 실패를 지우지 않는다. bounded history 밖의 원본 scan은 기존대로 남는다.
-
-정산 crash 뒤 이미 관측·저장된 실패의 사유·상세·초안 digest·실제 호출 시각은 복구와 feedback에도 유지한다. 실행 결과가 없는
-예약의 복구는 기존 interrupted_unknown과 상세 unknown/unavailable이며 추가 실행/환불이 아니다.
-trace의 첫 실패는 뒤 cleanup/정산/진단 저장 오류가 덮지 못한다. 가능한 기존 state lock 트랜잭션만
-사용하며 정산 보류도 완료된 slot의 원래 결과·사유·단계를 덮지 않는다. 최초 storage/lock/config 실패는
-private CLI 결과만 남을 수 있다. fallback·잠금 밖 쓰기·retry는 없다.
-no-call quota/budget/source-lock 보류는 기존 실제 reason을 유지하고 실행 실패 history로 만들지 않는다.
-
-기존 bounded feedback에 specialist_failure_detail/review_failure_detail을 추가해 실제 다음 local
-요청까지 전달한다. candidate_id/draft_digest·redaction/bytes 상한은 유지한다. 후속 정제 의견은
-이전 실패 항목을 최대4개 요약 안에서 보존하며 상한 밖 전체 원본은 scan/history에 남는다.
-public improvement-web-v1/completion-v1·payload/digest·POST/GET journal·오전 선택·카드/제안 보존은
-그대로다. 새 진단은 private status/참여/slot/history/feedback에만 있다.
-
-native Lab 회귀는 실제 adapter→_call_role→tick과 Store 재개→status/feedback의 동일 상세,
-모델/tool 문구와 실제 CLI 실패 구분·경고·인증·timeout/spawn·후보 field/rule·review 실패,
-local 뒤 정규 cloud·다음 회차 성공에도 이전 원인 보존·legacy unknown·원문/위조/큰 값/bool 배제와
-비용/중단/first failure·public/frozen 및 기존 제안/전달 보존을 명세한다. 검사는 실행하지 않았다.
-전체 diff 새 Claude 의미 검토·필수 documentation 판단→GIT=1 full make check→scoped apply→기존
-Git 역할→parent 전용 게시/CI3/merge/cleanup을 남긴다. parent는 스케줄·보호 파일·오늘 frozen digest를
-독립 확인한다. 향후 실제 hourly 진단 관측은 구현/합성 검증 완료와 별도다. 운영 실패를 인위적으로 만들지 않는다.
+scan/slot/history는 scan_id/slot/stage_index0..8/stage/owner_role에 결합한다. cloud192/local192는
+별도이고 (scan_id,slot,stage_index)로 중복 제거한다. 실제 call 시각은 rollback에도 보존해
+admission 집계/보수적 회계 시각과 구분한다. 과거 timestamp/local은 추정 이행하지 않는다.
+status는 detached 재정제 투영이다. 정산 crash 뒤 저장된 최초 detail·draft digest·실제 시각은
+복구/feedback에도 보존하고 후속 성공/cleanup/정산 오류가 덮지 못한다. 실행 결과 없는 예약은
+interrupted_unknown/unavailable이며 재호출/환불 허가가 아니다. 초기 storage/lock/config 실패는
+private 결과만 남을 수 있고 fallback/잠금 밖 쓰기/retry는 없다. no-call 보류는 실행 실패가 아니다.
+feedback은 candidate_id/draft_digest·redaction/bytes·최대4개 요약을 유지해 다음 local prompt에
+상세를 전달하며 원본 scan은 남는다. public payload/digest/journal·오전 선택은 바꾸지 않는다.
+Lab의 adapter→_call_role→tick→Store 재개/status/feedback·비용/최초실패·위조/원문 배제·후속 성공
+보존은 작성된 명세다. worker는 실행하지 않으며 parent의 새 전체 diff 의미/documentation 검토·
+full check·실제37개 측정·scoped apply·기존 Git/게시·운영 관측을 기다린다.
 
 ## Claude 추정 ledger·GLM 구독 quota
 
@@ -554,7 +454,9 @@ private ceiling 초과·빈 문자열·잘못된 타입/UTF-8/제어문자·unkn
 전체 해당 specialist 출력을 거부한다. 구조가 잘못된 후보를 잘라 살리지 않으며 기존 partial
 처리를 유지한다. 나머지 source/context·배열·enum·경로·권한 상한은 그대로다.
 
-reviewer 응답은 정확히 `reviews,documentation`이다. reviews는 각 후보를 한 번씩
+discovery reviewer의 원래 응답은 정확히 `reviews,documentation,assessments`다. 실제 Read와
+순서별 assessments를 검증한 뒤 최종 `validate_review`에 전달·보존하는 본문은
+`reviews,documentation` 두 필드다. reviews는 각 후보를 한 번씩
 `{candidate_id,verdict,reason,documentation}`으로 판단하고 verdict는
 `eligible|rejected|needs_evidence`, reason은 비어 있지 않은 private 1440자 이하이다.
 각 후보와 전체의 documentation은 `{status,files,reason}`이며 status는
@@ -564,8 +466,15 @@ reviewer 응답은 정확히 `reviews,documentation`이다. reviews는 각 후�
 소비자는 올바르게 재계산한 digest가 있어도 세 위치의 public 361자 reason을 거부한다.
 특히 top-level documentation도 private validator의 확대된 상한을 사용하지 않는다.
 required/missing은 승인된 Markdown 경로가 필요하고 not_required는 빈 files를 요구한다.
-읽기 전용 분석만 수행하여 문서를 바꾸지 않았다는 구체적인 not_required는 허용된다.
+required/missing의 files는 반드시 비어 있지 않아야 하며 missing/빈 files는 계속 거절한다.
+두 수준의 files 모두 실제 documentation Read window 경로만 담는다. 승인 밖 필요 문서는
+reason에 누락 경로를 밝히고 files에는 경계 보완이 필요한 관련 승인 문서를 지목한다.
+진실하게 지목할 수 없다면 scope 부족을 드러내 미완료로 남기며 경로를 합성하지 않는다.
+읽기 전용 자문에서도 제안 구현의 문서 필요성을 평가한다. 필요한 변경이 없는 구체적인
+analysis-only not_required는 허용되지만 문서를 실제 수정하지 않았다는 사실만으로는 부족하다.
 구현에 필요한 문서는 eligible 제안의 edit_files에 있어야 하며 missing과 eligible은 양립하지 않는다.
+전체 missing도 모든 eligible을 금지한다. 근거/범위 부족은 needs_evidence/rejected와 문서 판단에
+일관되게 남기며 문서 필요성을 숨겨 통과시키지 않는다.
 승인 밖 필요 문서는 열람하지 않고 explanation에 누락 경로를 보고한다.
 이 자문 계약의 required는 '문서를 이미 수정했다'는 뜻이 아니다. 이후 실제 구현 reviewer는
 기존 `documentation.updated`와 실제 changed Markdown으로 의미적 완전성을 판단한다.
@@ -1050,13 +959,15 @@ claims/workflow/GitHub를 시작하지 않는다.
 
 ## 현재 검토·검증 인계
 
-[원문 인계 보존](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-current)에 당시 기록을 옮겼다.
+이번16파일 초안의 문서 보정·strict 계약은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md#2026-10-27-최종-review-문서-계약-정합-수리),
+실패 이력과 미관측 상태는 [ADR0034 최신 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)을 따른다.
+[과거 인계 원문](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-current)은 당시 기록으로 보존한다.
 새 검토는 최종 코드·문서에 documentation={status,files,reason}을 독립 판단하며 과거 결과를 재사용하지 않는다.
 
 ## 이번 프로토콜 수리의 문서 영향
 
-아래는 이전21개 프로토콜/진단 수리 당시 판단이다. 이번32개 진행 보존 수리의 문서 판단과
-신규 ADR 여부는 [최신 인계](#진행-보존-수리의-문서-영향과-실행기-인계)를 따른다.
+아래는 이전21개 프로토콜/진단 수리 당시 판단이다. 이후32개 진행 보존 수리 당시 문서 판단과
+신규 ADR 여부는 [당시 인계](#진행-보존-수리의-문서-영향과-실행기-인계)에 보존한다.
 
 [원문 인계 보존](adr/0034-inspection-failure-recovery-and-health.md#보존-인계-protocol)에 당시 기록을 옮겼다.
 새 검토는 최종 코드·문서에 documentation={status,files,reason}을 독립 판단하며 과거 결과를 재사용하지 않는다.

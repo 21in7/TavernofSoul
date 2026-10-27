@@ -31,89 +31,46 @@ native 형식은 후보 의미·근거·전체 review 성공이 아니다. 최�
 | MAX_STRUCTURED_OUTPUT_RETRIES | 1 | 정상 Read 흐름과 첫 구조화 시도 허용, 불량 구조화 응답 뒤 repair 요청 없음 |
 | CLAUDE_CODE_MAX_RETRIES | 0 | CLI transport 자동 재시도 금지 |
 
-설치 CLI와 localhost 합성 서버를 사용한 parent 재현(외부 모델 호출0)에서 budget0도 첫 응답이
-바로 유효 StructuredOutput이면 HTTP1회로 성공했다. 그러나 첫 응답이 Read이면 Read1개 뒤
-`Failed to provide valid structured output after 0 attempts`로 끝나 다음 구조화 요청에 도달하지
-못했다. budget1은 Read3개 뒤 유효 StructuredOutput까지 HTTP4회로 성공했으며 결과는
-`structured_output={candidates:[]}`였다. Read2개 뒤 불량 StructuredOutput은 HTTP3회 후
-1attempts/schema candidates must be array로 즉시 실패했고 추가 repair 요청은0이었다.
-따라서0이 첫 호출을 항상 막는다는 뜻은 아니며,1은 이 CLI에서 첫 구조화 시도까지 정상 도구
-대화를 허용하는 값이다. 같은 CLI1 invocation 안의 정상 Read 대화는 실패 후 새 CLI 호출이나
-자동 재시도와 구분한다. transport의 `CLAUDE_CODE_MAX_RETRIES=0`과 실패 뒤 무재호출을 유지한다.
+설치 CLI/localhost 합성 재현(외부 모델0)에서 budget0은 첫 유효 구조화에는 성공했지만
+첫 Read 뒤 구조화 시도에 도달하지 못했다. budget1은 정상 Read 뒤 첫 구조화 시도를 허용하며
+불량 구조화 뒤 repair는0이었다. 정확한 HTTP/Read 수와 envelope는
+[ADR0034의 0/1 계약](adr/0034-inspection-failure-recovery-and-health.md#설치-cli의-확정-합성-재현과-01-계약)에 보존한다.
+[Z.ai thinking](https://docs.z.ai/guides/capabilities/thinking-mode)·
+[chat completion](https://docs.z.ai/api-reference/llm/chat-completion)의 GLM5.3/Flash forced thinking은
+disabled를 지원하지 않는다. [Claude Code 환경 변수](https://code.claude.com/docs/en/env-vars)의
+low effort/상한은 검증된 native specialist에만 적용한다. 일반 역할 설정·무재호출 정책은 유지한다.
 
-parent가 확인한 [Z.ai thinking 문서](https://docs.z.ai/guides/capabilities/thinking-mode)와
-[chat completion 문서](https://docs.z.ai/api-reference/llm/chat-completion)에 따르면 GLM5.3/Flash는
-forced thinking이며 disabled를 지원하지 않는다. reasoning_effort는 low/high/max이고 기본 max다.
-[Claude Code 환경 변수 문서](https://code.claude.com/docs/en/env-vars)의 force effort와 상한을
-사용한다. 일반 Z.ai/Claude reviewer/Codex는 기존 설정을 유지한다. cap 잘림·프로토콜 거절·
-timeout은 실패이며 추가 호출·경로 보정·후보 합성으로 복구하지 않는다.
+과거 두 role_json_invalid의 구문 원인은 원문 부재로 미확인이다. 이후 실제 GLM
+480.172811초 timeout과7.437927초 budget0 실패·full검사 중단/동일 run 재개·원격 events0/PR없음은
+[ADR0034의 과거 검증 기록](adr/0034-inspection-failure-recovery-and-health.md#이전-parent-검증과-native-timeout-기록-2026-10-27)에 보존한다.
+경고나 usage0으로 근본 원인/API 미호출을 단정하지 않는다. 후속 성공은 아래 최신 관측과 구분한다.
 
-parent 제공 2026-10-26 downloader(Z.ai/GLM) 4/9단계의 두 `role_json_invalid`는 JSON 경계 거절이다.
-원문 미보존이므로 fence·잘림·특정 문자를 확정하지 않는다. 실패/원래 오전 partial은 보존하며
-run1793029835254678756-74e8c1의 새 Claude 전체diff 승인·focused68/68·full6251/6251·apply19개 뒤
-별도 실제 native GLM probe는 2026-10-27 01:07:45.791706~01:15:45.965393 KST,
-480.172811초 timeout으로 실패했다. 상세 telemetry와 Git 중단은 ADR0034에 보존한다.
-후속 run1793031743543582459-d3598c는 새 Claude 전체diff 승인·표적422/422 통과 후 최초 전체검사
-프로세스가 중단됐다. parent가 원본/후보/검토 digest 일치와 원래 PID/하위검사 부재를 확인하고
-같은 run의 native 전체검사를 재개해6263/6263(실패/오류/skip0), scoped apply19개와 기존 Git 역할을
-완료했다. 그러나 GitHub request 전 실제 GLM gate는 2026-10-27 01:53:10.860694~01:53:18.299834
-KST,7.437927초에 실패했다. quota ready1%, 같은 provider/model과 원래 수집담당9파일이었다.
-정제 진단은 role_execution_failed/cli_failed이며 private CLI envelope는
-terminal_reason=structured_output_retry_exhausted, subtype=error_max_structured_output_retries,
-`Failed to provide valid structured output after 0 attempts`, Read1개였다. stderr의
-unrecognized_model 경고는 원인으로 쓰지 않는다. API usage0/duration_api0은 CLI 관측값이며 실제
-API 미호출을 단정하지 않는다. 원격 요청 events0·PR없음으로 중단했으며 상세 보존은 ADR0034를 따른다.
-당시 작성 시점에는 이번1/0 계약의 새 실제 GLM 성공이 아직 미검증이었다. 당시 인계는 parent의
-새 전체diff/documentation 검토·GIT=1 full check·apply 후 새 입력 fingerprint·quota 확인과
-동일480초 단1회 probe 수행이었다. 이후 결과는 [2026-10-27 최신 main 관측](#2026-10-27-최신-main-관측)을 따른다.
-기존 hourly tick은 최종 save/잠금·deadline 해제 뒤 별도 health를 전달하며 모델 호출을 추가하지 않는다.
-별도 health의 고정
-cloud 코드만 owner-private Sites로 전달하고 provider/model 자유문자열·비용·local endpoint는 제외한다.
+source reviewer는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)의 parent
+Capture·Claude stream-json/verbose·Read 단일 도구를 쓴다. 모든 window의 실제 성공 Read·원본
+bytes/ranges·paired receipt·assessment·문서 Read·유일한 정상 final·1회 소비가 필수다.
+빈 pool도 Python 본문과 별도 shared 문서를 읽고 AGENTS/설정만으로 코드 점검을 인증하지 않는다.
+표본은 전체 저장소 완독이 아니다. 정확한 BOM/LF/CR projection·totalLines·bounded 안내와
+불완전 coverage 거절은 ADR0026을 따른다. LF만 NDJSON 경계로 쓰며 U+0085/U+2028/U+2029는
+데이터로 보존한다. 안내·모델 자기 주장은 Read/비용/identity/진단 권위가 아니다.
 
-discovery reviewer의 source 확인은 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다.
-이 호출만 parent Capture와 Claude stream-json/verbose·Read 단일 도구를 쓴다. canonical 승인 경로,
-성공 structured Read result와 원래 bytes/줄 범위의 pairing이 필수다. prompt/result의 read_files는
-권위가 아니다. bounded 수집 실패·알 수 없는 CLI 형식은 fail-closed이며 retry/fallback하지 않는다.
-Claude Code2.1.294 headless stdout에서 관측된 `rate_limit_event`만 무동작 안내로 받는다.
-정확한 envelope(type/object rate_limit_info/string uuid·session_id)와 status
-allowed/allowed_warning/rejected를 요구하며 원래 줄8192bytes·JSON value256개·깊이8(root=0),
-uuid/session_id 각각 UTF-8 1~128bytes로 제한한다. Read 전·사이·정상 result 뒤에도 안내만 버린다.
-모든 metadata 값은 Read/성공/비용·예산/identity/진단의 권위가 아니며 원문을 보존하지 않는다.
-응답·비용은 실제 result에서만 추출하고 전체 pairing과 유일한 정상 final을 계속 검증한다.
-malformed/과대 안내·unknown event·result 뒤 assistant/user/tool·중복 result·pending tool은 거절한다.
-Read content는 원본 UTF-8의 최초 BOM 한 번 제외 → LF split → 각 줄 끝 CR 하나 제거 → 선택 줄 LF
-join의 정확한 값만 허용하며 LF를 덧붙이지 않는다. totalLines는 끝 LF 뒤 빈 줄까지 포함한 전체 split
-길이다. 마지막 빈 줄만 선택하면 content는 빈 문자열이다. 원본 bytes/hash/POSIX mode·evidence 줄 번호와
-range bytes/hash는 별도로 보존한다. Read 표본은 표본 밖이나 저장소 전체의 무결함을 보장하지 않는다.
-빈 pool은 owner membership 안의 non-shared Python 프로그램을 테스트보다 우선 선택한다.
-AGENTS·안내 문서·설정은 코드 확인으로 세지 않는다. 함수 본문(없으면 script 실행문) 주변의
-연속 최대96줄과 별도 shared 문서 최대12줄을 실제 Read한다. 선택 프로그램 부재·빈 파일·읽기/
-파싱 불가·header만 존재하거나 기존32KiB/32window 한도를 넘으면 coverage는 미완료다.
-표본은 전체 파일·저장소 완독이 아니다. 후보가 있으면 모든 evidence/benefit.evidence와 필요한
-문서 Read 요구는 그대로다.
-2026-10-27 호환 수리안은 전용 stream의 event framing과 최종 result/비용 탐색 양쪽에 LF만
-사용한다. 마지막 LF 하나는 framing이고 CRLF도 허용하지만 빈 record는 거절한다. JSON 문자열의
-U+0085/U+2028/U+2029를 str.splitlines처럼 event 경계로 자르지 않는다. 새 envelope/tool 허용이나
-JSON 수선은 없다. prompt는 처음부터 reviews/documentation/assessments를 요구하고 두 문서
-판단의 files를 documentation 목적 Read window로 제한한다. 기존 실제 Read/정확한 bytes·줄/
-모든 window/유일한 정상 final과 1회 Capture는 유지한다.
-validator가 거절한 실제 경계만 기존 capability의 source_review_unverified/validation/review 및
-고정 review.* field/rule로 보존한다. runner JSON·예외문·metadata로 원인을 분류하지 않으며
-private512bytes/최초 실패·identity·실제 final 비용 정산과 health/public 계약을 유지한다.
-세부 코드는 [ADR0026](adr/0026-source-verified-retained-improvement-reports.md)에 둔다.
-08시 운영 실패는 원문/proof가 없어 원인 미확인이다. 이 코드 결함과 합성 회귀는 당시 원인의
-관측 증거가 아니며 worker 검사·새 실모델 호출·후속 reviewer 성공은 없다. parent 검증을 남긴다.
-일반 workflow/GLM telemetry·compaction·identity/cost/interrupt와 인증/provider/model/예산은 보존한다.
+prompt는 reviews/documentation/assessments를 요구한다. 후보/전체 documentation의
+required/missing은 실제 documentation window의 nonempty unique Markdown files,
+not_required는 빈 files와 구체적 이유다. 창 밖 필요 경로는 reason에만 밝히고 읽지 않는다.
+읽기 전용도 제안 구현의 문서 필요성을 평가하며 부족하면 needs_evidence/rejected로 남긴다.
+missing/eligible·global missing/eligible·eligible 문서/edit_files 모순을 거절한다.
+구현 reviewer의 updated/실제 변경 문서 판단과 사람 승인은 별도다.
+Read 검증은 source_review_unverified, 최종 validator는 review_invalid/validation/review의
+identity-bound capability를 발급한다. 기존 review.documentation/result와 rule만 사용하며
+빈 required/missing은 empty다. runner 사전/예외문/metadata는 권위가 아니다. private512bytes·
+최초 실패·identity·비용/중단/정산·status/feedback·health/public 계약을 유지한다.
+PR83 full6324/CI3/merge/cleanup/archive는 역사적 성공이며 이후 실제 두 review 실패 중 두 번째만
+missing/빈 files가 확정됐다. 첫 번째/08시 원인은 미확인이고 이번 수리 뒤 실제 성공은 미관측이다.
+새 Claude 의미/documentation 검토·full check·실제 재검증은 parent 책임이다.
 
-2026-10-21 [ADR0025](adr/0025-progress-preserving-improvement-reviews.md)에 따라 local은 선택적
-참고 자료다. duplicate/empty/exception/긴 줄 때문에 paired specialist나 빈 pool reviewer를
-생략하지 않으며 각 정규 slot에서 동일 sealed 승인 source를 독립 점검한다. 추가 call·재시도·
-새 provider/model fallback은 없다. 실패/부분 coverage는 전체 정상 점검으로 보고하지 않는다.
-source-only 변화에는 sealed 회차/cursor 진행을 유지하되 현재 freshness는 별도 검사하고,
-scope/ownership/config/provider/model/protocol 변화는 진행을 무효화한다. 실제 cloud 참여는
-회차와 독립된 bounded history로 오전 window에 집계한다. private local·cost·진단·원문은
-web-v1에 추가하지 않는다. 기존 인증·모델·GLM>=80%·Claude$1/reviewer$.20·틱1회/하루24회와
-승인/게시 경계는 유지한다. 최종 의미 검토·full check·실제 hourly 관측은 별도 증거가 필요하다.
+[ADR0025](adr/0025-progress-preserving-improvement-reviews.md)의 local 실패 뒤 정규 독립 점검·
+source-only sealed 진행 보존/별도 live freshness·control 변경 무효화를 유지한다. cloud/private
+local history와 health/public 투영은 구분하며 provider/model/auth·compaction·예산·승인 경계를
+바꾸지 않는다. health는 정상 최종 save/잠금 해제 뒤 고정 cloud 코드만 전달하고 모델을 추가 호출하지 않는다.
 
 `harness/agent-models.json`은 역할별 공급자·모델·추론 수준과 관련 검증 명령을 지정한다.
 `harness/agent_models.py`는 기존 Codex/Claude Code CLI를 실행한다. 별도 Python SDK 설치는 필요 없다.
@@ -149,52 +106,29 @@ Claude 독립 검토로 이어진다. 일반 구현 역할을 대체하거나 �
 
 ## 2026-10-27 최신 main 관측
 
-아래는 신뢰한 parent가 직접 확인해 제공한 관측이다. 이 문서를 편집·검토하는 worker/reviewer가
-직접 실행하거나 검증한 결과가 아니다. 당시 미검증 진술과 과거 실패는 역사적 기록으로 보존하며,
-상세는 [ADR0034의 같은 날짜 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)을 따른다.
+신뢰한 parent 제공 관측이며 worker의 실행 결과가 아니다. 정확한 시각·run/merge SHA·검사 수·
+증거 참조·archive와 frozen digest는
+[ADR0034 최신 관측](adr/0034-inspection-failure-recovery-and-health.md#2026-10-27-최신-main-관측)에 보존한다.
 
-구현 native run1793034139378468813-c521fa는 새 Claude 전체 diff/documentation 승인,
-표적422/422 및 full6263/6263(다운로더129, parser/harness5984, Django회귀67, Django11,
-연결부72), 실패/오류/skip0 뒤 scoped apply19개와 기본 Git 역할을 완료했다.
-별도 명시 개발 GLM probe는 2026-10-27 02:15:55.183424~02:18:11.012133 KST,
-elapsed135.827822초에 provider=zai/model=glm-5.3-flash, 원래 수집담당9파일,
-native 구조 budget1/transport0/low effort/8192 경로에서 succeeded와 telemetry success였다.
-candidate validator가2후보를 받아들였지만 각 후보의 새 Claude 독립검토·공식 hourly proposal·
-사용자 승인·execute를 뜻하지 않는다. 이 probe는 hourly 상태를 수정하지 않았다.
+run1793034139378468813-c521fa는 새 Claude 승인·표적422/full6263(실패/오류/skip0)·apply19/Git
+역할을 완료했다. 별도02:15:55~02:18:11 KST GLM 개발 probe는135.827822초·원래9파일·
+budget1/transport0/low/8192에서 succeeded/telemetry success·2후보 수용이었다.
+[PR81](https://github.com/21in7/TavernofSoul/pull/81)은 CI3 success·merged·cleanup complete·archive archived다.
+이 probe는 hourly 상태를 수정하거나 후보 독립검토/사용자 승인/execute를 만들지 않았다.
 
-구현 [PR81](https://github.com/21in7/TavernofSoul/pull/81)은 GitHub merged=true,
-mergeSHA `310485c1e3303b587c1e2cb61d6484c02ca04350`이며 Offline harness (SQLite),
-MySQL harness, Chromium browser harness가 모두 실제 success였다. native cleanup은 complete,
-실제 terminal archive는 archived다. 상세 정리 상태·bundle bytes/SHA는 ADR0034에 기록한다.
-상대 증거 참조는 `logs/harness/inspection-success-observations-evidence.json`과
-`logs/harness/inspection-native-attempt-live-probe-20261027.json`이다.
+별도 정규03시 수집담당 succeeded·stage3→4·inflight없음과 기존 health delivered/GET200·
+frozen payload 전체 일치는 parent 관측이다. 조회의 새 POST/모델/tick은 각각0이다.
+2026-10-26 day/web/loop publication 원본은 불변이며 과거00/09실패·18:06성공·timeout·budget0
+실패·중단/재개를 새 성공으로 덮지 않는다. 새 전체9단계/다음09시 게시 성공은 미관측이다.
+추가 Sites 인쇄 화면은 로컬 검증 뒤 게시 자동승인 거부로 사용자 응답 대기였으며 배포 성공은
+미관측이다. 기존 health 전달 성공과 구분한다. PR83과 이후 두 실제 review 실패는 위 ADR의
+별도 후속 기록이며 이번 수리 성공으로 재사용하지 않는다.
 
-이와 별개인 실제 정규 hourly는 2026-10-27 03:00:02.516543~03:02:23.280518 KST에
-수집담당 succeeded, stage index3→4, last slot03, inflight없음을 관측했다. 기존03tick의 자동
-improvement-health-v1 outbox는 delivered였고 digest는
-`c899d5f842d7d503156405619dcc21050ff44652ee631ce89041edb7b02c645d`다.
-main의 KST03:07:22 관측(UTC2026-10-26T18:07:22.293626+00:00)에서 GET200과 outbox
-frozen payload 전체 일치를 확인했다. 이 관측 명령의 새 POST/모델/tick 호출은 각각0회다.
-상대 증거 참조는 `logs/harness/inspection-hourly-03-health-observation.json`이다.
-
-원래2026-10-26 day/web/loop publication 세 원본의 bytes/SHA는 모두 불변이며 원래 web digest는
-`6b39c37d67fad984be50e26a582738d0a9e24ba667c05b06f984ef5aa81ede50`다.
-과거00/09실패·원문 미보존 한계·별도18:06성공·480.172811초 timeout·7.437927초 CLI budget0
-실패·최초 full검사 중단과 같은 후보 native 재개는 보존하며 새 성공의 검증 증거로 재사용하지 않는다.
-
-정규03역할 성공과 health 전달은 다른 stage나 새 전체9단계 완료가 아니다. 새 전체9단계와
-다음09시 게시 성공은 아직 미관측이다. Site 추가 인쇄 화면 소스는 로컬 새 Claude/6Node모듈/
-TS/build/A4한장·모바일 overflow0 검증을 마쳤으나 게시 자동승인검토에 막혀 사용자 응답 대기다.
-추가 인쇄 화면 배포 성공은 주장하지 않으며 위 기존 health 전달 성공과 구분한다.
-
-이번 변경은 두 승인 문서의 관측 갱신이며 구현·구조·책임·데이터 계약·격리·권한·실패 복구·
-검증정책·GitHub 게시 정책·모델/인증·스케줄·설정 변경이 아니다. 새 ADR이나 승인 밖 문서
-갱신은 필요하지 않다. 매 review는 최종 두 문서의 의미적 완전성을 새로 판단해
-`documentation={status,files,reason}`을 반환하며 앞선 documentation.updated를 승인 근거로
-삼지 않는다. parent가 실제 baseline→candidate diff로 docs-only 여부를 판단하고 ADR0031/0022의
-check-docs 및 GIT=1·기존 GitHub CI/merge/cleanup/archive 경로로 전달한다. 위 구현의 통과를
-이번 문서 변경의 검증으로 재사용하지 않는다. worker/reviewer는 검사·Git·네트워크·SSH·
-재위임·workflow를 실행하지 않는다.
+이 관측 정리 자체는 구현/권한/설정/스케줄 변경이 아니다. 매 review는 최종 diff와 실제 변경
+문서의 documentation={status,files,reason}을 새로 판단한다. parent가 baseline→candidate로
+검증 종류를 선택하고 GIT=1·기존 CI/merge/cleanup/archive로 전달하며 과거 검사를 재사용하지 않는다.
+이번 코드 수리의 문서 영향과 full check 인계는 ADR0026을 따른다. worker/reviewer는 검사·Git·
+네트워크·SSH·workflow·재위임을 실행하지 않는다.
 
 ## 인증 등록
 

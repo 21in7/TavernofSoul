@@ -23,6 +23,13 @@ unknown 자동 POST·fallback 저장·잠금 밖 state 쓰기·추가 scan/자�
 private 최초 실패의 정제 detail은 scan/slot/9단계 owner·call_started_at/call_finished_at에 연결해 참여·history·
 status·bounded feedback에 보존한다. cloud192건과 별도 local192건은 같은 state 트랜잭션에 있다.
 후속 성공은 이전 실패를 지우지 않는다. legacy 상세는 unknown/unavailable이며 과거 원인을 추정하지 않는다.
+최종 discovery review도 실제 validator 거절에서 review_invalid/validation/review와 기존
+review.documentation/result·고정 rule을 발급한다. missing/required의 빈 files 거절(empty)은
+유지하며 문서 files는 실제 documentation Read window만 쓴다. 승인 밖 필요 경로는 reason에
+밝히고 needs_evidence/rejected와 문서 필요성을 일관되게 판단한다. 읽기 전용이라는 이유로
+not_required를 강제하지 않는다. PR83의 full6324/CI3/merge/cleanup/archive는 과거 근거이며
+그 뒤 새 두 실제 review 실패·두 번째 missing/빈 files 확정과 이번 수리의 성공 미관측은
+ADR0026/0034에 구분한다. 매 새 review의 문서 판단과 parent의 실제 재검증은 별도다.
 runtime37개·128KiB/1.5MiB·9단계·예산/auth·승인/실행 scope와 스케줄·frozen 보고는 유지한다.
 전체 diff의 새 Claude 의미 검토·GIT=1 full make check·scoped apply·기존 Git 역할 및 parent의
 GitHub 게시/CI3/merge/cleanup·실제 hourly 관측은 별도 필수다. worker는 검사하지 않는다.
@@ -167,14 +174,13 @@ text fallback·문법 수선·추가 모델 호출·유료 fallback은 없다. �
 실제 후속 성공은 별도 관측한다. health 전송 불명은 GET만, 명시 same-digest reconcile의 GET404
 후에만 POST한다. 최신 구현의 실제 GLM 단1회 개발 재검증·Sites 배포/관측은 parent 책임이다.
 
-2026-10-27 source reviewer 호환 수리안은 ADR0026을 따른다. 전용 stream-json의 LF만 event
-경계로 사용하고 정상 JSON 문자열의 U+0085/U+2028/U+2029는 source/응답 데이터로 보존한다.
-실제 validator 발생 경계의 기존 private capability에 고정 review.* field/rule만 보완하며
-runner dictionary/예외문·metadata는 진단 권위가 아니다. 최초 실패·identity·비용/예약과 기존
-Read pairing/원래 줄·내용/모든 window/문서/assessment·한 번 소비를 유지한다. health/public,
-상한/예산·승인 freshness는 그대로다. 08시 실패 원문은 없어 원인이 미확인이고 이번 합성 회귀와
-동일 원인이라고 단정하지 않는다. worker는 검사하지 않으며 새 전체 diff Claude 검토의
-documentation 판단·full make check와 실제 후속 reviewer 관측은 parent가 별도로 확인한다.
+2026-10-27 source reviewer 계약과 관측은 ADR0026/0034를 따른다. LF-only NDJSON은 문자열의
+U+0085/U+2028/U+2029를 보존하고 실제 pairing/bytes/ranges/모든 window/assessment·문서 Read와
+Capture1회를 유지한다. 최종 review의 required/missing은 nonempty 승인 Markdown 문서 window,
+not_required는 빈 files다. 창 밖 필요 경로는 reason에만 밝히며 문서 필요성/독립 verdict를
+숨겨 통과시키지 않는다. validator 발급 private capability만 권위이며 최초 실패·identity·
+비용/중단/정산·health/public 경계는 그대로다. 새 전체 diff의 documentation 판단·full check·
+실제 재검증은 parent 책임이고 과거 PR83 성공/원인 미확인 실패는 이번 성공 증거가 아니다.
 
 잔액 판정은 reviewer admission에 적용한다. 그 차례 전 역할은 다른 gate 내 진행하지만 예산
 보류는 stage를 유지하므로 이후 새 slot에서도 reviewer를 재판단하고 다음 local/구독 역할도
@@ -198,7 +204,7 @@ evidence 합성 실험은 실패했고 구현하지 않는다. canonical 경로�
 [로컬 관측](docs/local-models.md#메인이-제공한-서버-호환-관측과-남은-검증)의 근거 수준으로 한정한다.
 정상 assistant의 tool_calls:null/tool_call_id:null만 무동작 metadata로 받고 non-null/다른 도구
 필드는 거절한다. uniqueItems는 서버 미지원이므로 client 중복 검증을 유지한다.
-현재 승인21개는 coordinator 작업1개로 완성한다. 검증 사본 재사용은 parent의 NFS 원본 baseline
+당시 승인21개는 coordinator 작업1개 범위였다. 검증 사본 재사용은 parent의 NFS 원본 baseline
 동일성 재확인 후 준비 절차이며 성공이나 local fallback이 아니다. 새 Claude 의미검토·full make
 check·두 umask077/022 권한 fixture 검증·scoped apply와 메인의 최종 추론/서비스·private config
 전환은 별도 필수다. 다른 jobs·게임 cron·명시 daily local storage·persistent NFS default를 보존한다.

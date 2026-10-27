@@ -8,6 +8,64 @@
 
 ## 2026-10-27 최신 main 관측
 
+### PR83 이후 실제 최종 review 실패와 문서 계약 수리 인계
+
+후속 초안의 실패 이력도 보존한다. parent 제공 실행1793063968874360416-bbac98은 최종
+changes_requested·applied=[]·GitHub 요청 없음이다. 첫 전체검사는 parser/harness6085중6084통과·
+기본37소스 bound1실패이며 합계1,573,337bytes로1,572,864bytes 상한을473bytes 초과했다.
+별도 generic worker 오류는 상세 미상이며 실제 crash 원인으로 추정하지 않는다. round2는
+승인6문서 중복 압축으로 parent metadata 합산1,554,188bytes였으나 최종 Claude가 harness의
+IPF 준비 헤딩3회, agent-models 인증 헤딩2회, improvements의 단계/quota 헤딩2~3회와
+AGENTS reviewer admission 문장 중복을 발견했다. 2회 한도 소진으로 실패했으며 round2
+전체검사는 실행되지 않았다. 아래 두 실제 모델 review 실패와 이 검사/문서 실패는 별개다.
+
+parent가 baseline bytes/mode 동일성을 확인한 뒤 보존16파일 초안을 새 scoped 모델 context에만
+재사용했다. 이번 문서 보정은 중복 헤딩/문장과 문단 연결을 복구하고 ADR0026의 strict 계약·
+이 ADR의 과거 원문 부록 연결을 유지한다. 한도/목록/코드·회귀 조건은 완화하지 않는다.
+원본 반영은 없으며 기존 실패·첫 검토/검사 결과도 그대로다. worker는 검사·실모델·Git을
+실행하지 않았다. 새 전체 baseline→candidate diff의 Claude 의미/documentation 검토·실제37개
+측정·full make check와 parent 실제 독립 검토 성공은 아직 미관측이다.
+
+아래는 parent가 확인해 제공한 사실이며 worker의 직접 관측이 아니다. HEAD
+`f06e3c17568d2ede1ce80c06d477109749571914`, master clean에서 PR83은 full6324·CI3 success·
+merge·cleanup/archive를 완료했다. PR83은 LF-only NDJSON과 private Read 진단 수리이며
+08시 원인을 확정하거나 이번 최종 review 계약 수리를 검증한 기록이 아니다.
+
+새 사용자 직접 요청으로 parent는 기존 정식 improvement_loop._cloud_call→improvements._call_role→
+agent_models.run→review_coverage.Capture를 실제 호출했다. 보존된 08시 scan
+`1793026802215716805-c162f5`의 동일 승인37소스·2후보와 현재 하네스 코드,
+reviewer claude/claude-sonnet-5-5를 사용했다. cap$0.20·480초·각1call·자동retry0이다.
+hourly tick/state·기존 scan/day/web/morning publication은 변경하지 않았고 두 시도 모두
+original_records_unchanged=true였다.
+
+| 시도 (2026-10-27 KST) | parent가 확인한 결과 | 확정 범위 |
+| --- | --- | --- |
+| 10:11:26.756551~10:11:46.817510 | review_invalid / ValidationError / phase=review / cause=unavailable, cost0.064898 | 응답 원문 미보존으로 어느 계약 조건인지 미확인 |
+| 10:15:09.128576~10:15:32.980770 | 같은 review_invalid, cost0.0462977 | 원문 없는 validator 경계 진단에서 status=missing, files count0, reason100문자 확인 |
+
+두 번째 진단은 신뢰한 실제 validate_documentation의 당시397줄에서 실패하고
+_review_item510→validate_review536으로 전파됐으며 expected2/seen1이었다. 이는 Read stream
+증거 검증을 지난 실제 최종 응답의 missing/빈 files 모순이다. 진단에는 scope/소스/원문/
+프롬프트/credential을 넣지 않았다. 함수/줄번호는 parent의 이 관측 설명이며 새로운 failure
+authority로 사용하지 않는다. 첫 번째와 같은 원인이라고 단정하지 않고, 두 새 시도를 08시
+source_review_unverified 실패의 원인으로 소급하지 않는다. 08시 원인은 계속 미확인이다.
+
+이번 수리는 [ADR0026](0026-source-verified-retained-improvement-reports.md)의 최종 review
+문서 계약 정합화다. required/missing의 nonempty Markdown 문서 window, not_required의 빈 files,
+reason 길이·한글 지침·정확한 후보 ID·eligible/edit_files·global missing 모순을 유지한다.
+문서 필요성을 숨기거나 고정 verdict/빈 후보를 강제하지 않는다. 실제 최종 validator 거절에서만
+review_invalid/validation/review와 기존 review.documentation 또는 review.result 및 기존 rule을
+발급한다. missing/빈 files의 rule은 empty다. 공통 후보 진단·Read 진단과 기존 capability/identity/
+최초 실패·중단·비용·정산·status/feedback을 보존하며 health/public schema·payload/digest·legacy/
+frozen은 확대하거나 재작성하지 않는다. 원문/소스/prompt/키/호스트 절대경로/provider 자유문자열을
+새 진단에 저장·노출하지 않는다. 자동 재호출·fallback·문법 수선·자료 합성은 없다.
+
+작성한 회귀는 합성 명세이며 worker는 실행하지 않았다. 새 최종 전체 diff Claude 의미 검토와
+documentation 판단·GIT=1 full make check·scoped apply·기존 Git 역할이 필요하다. 실제 독립 검토
+재검증과 GitHub/CI/merge/cleanup/archive·운영 관측은 parent 책임이며 이번 수리 뒤 실제 성공은
+미관측이다. 별도 개발 검증은 hourly/오전 보고/eligible 승인권한을 만들지 않는다. 이후 절의
+대기·실행되지 않은 probe 진술은 해당 과거 시점이며 PR83이나 이번 두 호출과 구분한다.
+
 ### 08시 독립 검토 실패 후속: source 계약 호환 수리안
 
 추가로 parent가 제공한 실제 관측에서 같은 scan `1793026802215716805-c162f5`는 후보2개와

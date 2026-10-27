@@ -2718,6 +2718,12 @@ def test_native_adapter_failure_survives_tick_restart_feedback_and_later_success
     ('partial', 'review.read_content', .04), ('failed_read', 'review.read_pair', .04),
     ('assessments', 'review.assessments', .04),
     ('documentation', 'review.documentation', .04),
+    ('missing', None, .04), ('required', None, .04),
+    ('missing_empty', 'review.documentation', .04),
+    ('required_empty', 'review.documentation', .04),
+    ('not_required_nonempty', 'review.documentation', .04),
+    ('global_missing_eligible', 'review.documentation', .04),
+    ('eligible_doc_edit_mismatch', 'review.documentation', .04),
     ('overrun', 'review.read_content', .27),
 ])
 def test_native_review_unicode_framing_and_failure_detail_survive_settlement(
@@ -2734,6 +2740,13 @@ def test_native_review_unicode_framing_and_failure_detail_survive_settlement(
         contexts.append(options['workspace'])
         prior = json.loads(prompt.split('\nPrior candidates: ', 1)[1])
         assert prior and role == 'reviewer'
+        assert 'status:required|missing|not_required,files:[]' not in prompt
+        assert '- required: files is a NONEMPTY list of unique approved Markdown paths.' in prompt
+        assert '- missing: files is a NONEMPTY list of unique approved Markdown paths; never [].' in prompt
+        assert '- not_required: files MUST be [].' in prompt
+        assert 'top-level missing forbids ANY eligible verdict' in prompt
+        assert 'read-only execution alone does not justify not_required' in prompt
+        assert 'Both required and missing require nonempty files' in prompt
         response = dict(reviews=[dict(candidate_id=r['id'], verdict='eligible',
             reason=REVIEW_REASON, documentation=deepcopy(DOC)) for r in prior],
             documentation=dict(DOC, reason=DOC['reason'] + '\u2028별도 합성 문맥입니다.'))
@@ -2743,6 +2756,23 @@ def test_native_review_unicode_framing_and_failure_detail_survive_settlement(
         elif mode == 'documentation':
             response['documentation'] = dict(status='required', files=['docs/architecture.md'],
                 reason='승인된 문서이지만 지정 Read 계획에서 확인하지 않은 문서입니다.')
+        elif mode in ('missing', 'required', 'missing_empty', 'required_empty',
+                      'not_required_nonempty', 'global_missing_eligible', 'eligible_doc_edit_mismatch'):
+            status = 'not_required' if mode == 'not_required_nonempty' else (
+                'required' if mode in ('required', 'required_empty', 'eligible_doc_edit_mismatch') else 'missing')
+            documentation = dict(status=status, files=[] if mode.endswith('_empty') else ['AGENTS.md'],
+                reason='승인된 경계 문서의 보완과 승인 밖 docs/missing-boundary.md 확인이 필요합니다.')
+            assert any(w['path'] == 'AGENTS.md' and 'documentation' in w['purposes']
+                       for w in capture.windows)
+            if mode == 'global_missing_eligible':
+                response['documentation'] = documentation
+            else:
+                response['reviews'][0]['documentation'] = documentation
+                if mode != 'eligible_doc_edit_mismatch':
+                    for review in response['reviews']:
+                        review['verdict'] = 'needs_evidence'
+                if mode in ('missing', 'required'):
+                    response['documentation'] = deepcopy(documentation)
         events = read_events(capture, json.dumps(response, ensure_ascii=False))
         if mode == 'no_read':
             events = events[-1:]
@@ -2780,10 +2810,18 @@ def test_native_review_unicode_framing_and_failure_detail_survive_settlement(
         assert agent['status'] == 'succeeded' and coverage.validate(scan)
         assert len(scan['source_review']['reads']) == len(scan['source_review']['plan'])
         assert slot['cost_status'] == 'cli_estimated_usd'
+        if mode in ('missing', 'required'):
+            assert scan['documentation']['status'] == mode
+            assert scan['documentation']['files'] == ['AGENTS.md']
+            assert all(p['review']['verdict'] == 'needs_evidence' for p in scan['proposals'])
     else:
         detail = agent['failure_detail']
+        final_contract = mode in ('missing_empty', 'required_empty', 'not_required_nonempty',
+                                  'global_missing_eligible', 'eligible_doc_edit_mismatch')
         assert (detail['reason'], detail['cause'], detail['phase'], detail['field']) == (
-            'source_review_unverified', 'validation', 'review', field)
+            'review_invalid' if final_contract else 'source_review_unverified', 'validation', 'review', field)
+        if final_contract:
+            assert detail['rule'] == ('empty' if mode.endswith('_empty') else 'fields')
         assert slot['failure_detail'] == attempt['failure_detail'] == detail
         assert outcome['diagnostic']['detail'] == detail
         assert slot['cost_status'] == ('cli_estimated_usd' if estimate > .2 else 'reservation_consumed_failed')
@@ -2805,4 +2843,14 @@ def test_native_review_unicode_framing_and_failure_detail_survive_settlement(
         assert lab.local_requests[-1]['feedback'][0]['review_failure_detail'] == detail
     lab.tick(9, 1, runner=forbidden, local_runner=forbidden)
     assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
+    if field is not None and final_contract:
+        # A later successful independent review keeps the original failed scan,
+        # status/history and frozen publication, with no automatic replay.
+        lab.hours(start=10, count=9)
+        assert attempt in lab.state()['participation']
+        assert any(a['role'] == 'reviewer' and a['status'] == 'succeeded'
+                   and a['started_at'] > attempt['finished_at'] for a in lab.state()['participation'])
+        assert next(a for a in lab.store.read('scans/' + scan['scan_id'] + '.json')['agents']
+                    if a['role'] == 'reviewer')['failure_detail'] == detail
+        assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
     assert_private(lab.state())

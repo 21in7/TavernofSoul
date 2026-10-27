@@ -155,8 +155,12 @@ def _invalid(message, field, rule, reason=None):
     error = ValidationError(message, reason=reason)
     if field is not None:
         try:
-            diagnostics.attach(error, diagnostics.detail(error.reason or 'candidate_invalid',
-                'validation', phase='candidate', field=field, rule=rule))
+            # These literal fields are supplied by the final review validators,
+            # never selected from model metadata or exception attributes/text.
+            review = field in ('review.result', 'review.documentation')
+            diagnostics.attach(error, diagnostics.detail(
+                'review_invalid' if review else error.reason or 'candidate_invalid',
+                'validation', phase='review' if review else 'candidate', field=field, rule=rule))
         except (Exception, KeyboardInterrupt):
             pass  # Keep this exact validation failure if diagnostics fail.
     return error
@@ -367,9 +371,9 @@ def _fingerprints(value: Mapping[str, dict]) -> dict:
 
 
 def _paths(value: Any, allowed: Iterable[str], maximum: int = 12,
-           minimum: int = 0, *, edit_targets: bool = False) -> list:
+           minimum: int = 0, *, edit_targets: bool = False, field=None) -> list:
     allowed = set(allowed)
-    field = 'edit_files' if edit_targets else None
+    field = 'edit_files' if edit_targets else field
     try:
         paths = [validate_path(x, field=field) for x in _list(value, maximum, minimum, field=field)]
     except ValidationError as exc:
@@ -387,16 +391,17 @@ def _paths(value: Any, allowed: Iterable[str], maximum: int = 12,
 
 def validate_documentation(value: Any, allowed_files: Iterable[str], private: bool = True) -> dict:
     """Retain private reasons losslessly; public callers must use private=False."""
-    value = _object(value, ("status", "files", "reason"))
-    status = _enum(value["status"], ("required", "missing", "not_required"))
-    files = _paths(value["files"], allowed_files)
-    reason = _text(value["reason"], REVIEW_PRIVATE_LIMIT if private else REVIEW_DISPLAY_LIMIT)
+    field = 'review.documentation'
+    value = _object(value, ("status", "files", "reason"), field=field)
+    status = _enum(value["status"], ("required", "missing", "not_required"), field=field)
+    files = _paths(value["files"], allowed_files, field=field)
+    reason = _text(value["reason"], REVIEW_PRIVATE_LIMIT if private else REVIEW_DISPLAY_LIMIT, field=field)
     if len(reason) < 12:
-        raise ValidationError("documentation needs a specific explanatory reason")
+        raise _invalid("documentation needs a specific explanatory reason", field, 'length')
     if (status == "not_required" and files) or (status != "not_required" and not files):
-        raise ValidationError("documentation status/files contradict")
+        raise _invalid("documentation status/files contradict", field, 'fields' if files else 'empty')
     if any(not path.endswith(".md") for path in files):
-        raise ValidationError("documentation judgment must name Markdown files")
+        raise _invalid("documentation judgment must name Markdown files", field, 'path')
     return {"status": status, "files": files, "reason": reason}
 
 
@@ -506,45 +511,46 @@ def proposal_record(candidate: dict, source_fingerprints: Mapping[str, dict]) ->
 
 
 def _review_item(value: Any, allowed_files: Iterable[str], private: bool = True) -> dict:
-    value = _object(value, ("verdict", "reason", "documentation"))
+    value = _object(value, ("verdict", "reason", "documentation"), field='review.result')
     documentation = validate_documentation(value["documentation"], allowed_files, private=private)
-    verdict = _enum(value["verdict"], VERDICTS)
+    verdict = _enum(value["verdict"], VERDICTS, field='review.result')
     if verdict == "eligible" and documentation["status"] == "missing":
-        raise ValidationError("missing documentation cannot be eligible")
+        raise _invalid("missing documentation cannot be eligible", 'review.documentation', 'fields')
     return {"verdict": verdict, "reason": _text(
-                value["reason"], REVIEW_PRIVATE_LIMIT if private else REVIEW_DISPLAY_LIMIT),
+                value["reason"], REVIEW_PRIVATE_LIMIT if private else REVIEW_DISPLAY_LIMIT, field='review.result'),
             "documentation": documentation}
 
 
 def validate_review(value: Any, proposals: Sequence[dict], allowed_files: Iterable[str],
                     private: bool = True) -> dict:
     """Require exact coverage; retain private prose or enforce public bounds."""
-    value = _object(value, ("reviews", "documentation"))
-    allowed = validate_scope_paths(allowed_files)
+    value = _object(value, ("reviews", "documentation"), field='review.result')
+    allowed = validate_scope_paths(allowed_files, field='review.result')
     if len(proposals) > MAX_CANDIDATES:
-        raise ValidationError("too many review candidates")
+        raise _invalid("too many review candidates", 'review.result', 'length')
     expected = {x["id"]: x for x in proposals}
     if len(expected) != len(proposals):
-        raise ValidationError("duplicate proposal identities")
+        raise _invalid("duplicate proposal identities", 'review.result', 'duplicate')
     result, seen = [], set()
-    for item in _list(value["reviews"], MAX_CANDIDATES):
-        item = _object(item, ("candidate_id", "verdict", "reason", "documentation"))
-        candidate_id = _text(item["candidate_id"], 20)
+    for item in _list(value["reviews"], MAX_CANDIDATES, field='review.result'):
+        item = _object(item, ("candidate_id", "verdict", "reason", "documentation"), field='review.result')
+        candidate_id = _text(item["candidate_id"], 20, field='review.result')
         if candidate_id not in expected or candidate_id in seen:
-            raise ValidationError("unknown or duplicate review candidate")
+            raise _invalid("unknown or duplicate review candidate", 'review.result',
+                           'duplicate' if candidate_id in seen else 'allowlist')
         seen.add(candidate_id)
         review = _review_item({k: item[k] for k in ("verdict", "reason", "documentation")},
                               allowed, private=private)
         doc = review["documentation"]
         if review["verdict"] == "eligible" and not set(doc["files"]).issubset(
                 expected[candidate_id]["candidate"]["edit_files"]):
-            raise ValidationError("eligible proposal omits required document edits")
+            raise _invalid("eligible proposal omits required document edits", 'review.documentation', 'fields')
         result.append(dict(review, candidate_id=candidate_id))
     if seen != set(expected):
-        raise ValidationError("incomplete independent review")
+        raise _invalid("incomplete independent review", 'review.result', 'fields')
     documentation = validate_documentation(value["documentation"], allowed, private=private)
     if documentation["status"] == "missing" and any(x["verdict"] == "eligible" for x in result):
-        raise ValidationError("global missing documentation contradicts eligibility")
+        raise _invalid("global missing documentation contradicts eligibility", 'review.documentation', 'fields')
     return {"reviews": result, "documentation": documentation}
 
 
