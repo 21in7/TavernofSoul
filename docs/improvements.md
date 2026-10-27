@@ -104,6 +104,16 @@ Claude Code2.1.294 headless stdout의 `rate_limit_event`는 [ADR0026](adr/0026-s
 uuid/session_id는 각각 UTF-8 1~128bytes다. Read 전·사이·유일한 정상 result 뒤에도 허용하지만
 metadata는 Read/성공/비용·예산/provider identity/진단의 권위가 아니며 원문을 보존하지 않는다.
 응답과 비용은 실제 result에서만 가져오며 Read/안내 검증 실패에도 기존 비용 정산을 보존한다.
+2026-10-27 호환 수리안은 Capture와 final result/비용 탐색에 공통 LF record 경계를 사용한다.
+마지막 LF 하나만 framing으로 제외하고 CRLF도 JSON whitespace로 처리한다. 정상 JSON 문자열의
+U+0085/U+2028/U+2029는 Read/응답 데이터로 보존하며 빈 record·raw control·중복키·비유한은
+여전히 거절한다. source bytes/hash/원래 LF 줄과 실제 Read projection은 그대로다.
+prompt의 응답 키는 처음부터 reviews/documentation/assessments이며, documentation.files는
+기존 검증기처럼 documentation 목적 window 안에서만 명시한다. 다른 필요한 경로는 reason에
+기술하고 읽지 않는다. 모든 window/assessment·실제 pairing·정상 final·Capture 1회는 필수다.
+기존 source_review_unverified 상세는 validator 발생 경계의 고정 private review.* field/rule로
+정밀화한다. 세부 계약과 과거08시 원인 미확인·이번 합성 회귀/미실행 인계는
+[ADR0026](adr/0026-source-verified-retained-improvement-reports.md)을 따른다. 후속 reviewer 성공을 추정하지 않는다.
 실제 실패·미완료 pairing·result 뒤 assistant/user/tool·중복 result·unknown/malformed/과대 안내는
 성공으로 바뀌지 않는다. receipt/저장 보고/public payload에는 안내를 추가하지 않는다.
 오전은 현재 전체 의존성 일치 완료 회차의 ID별 최신 명시 verdict를 보존한다. 뒤 빈/실패 회차는 앞
@@ -396,6 +406,17 @@ unavailable이다. 동적 field/path·구문 위치·후보 값·원문 stdout/s
 | review_invalid / source_review_unverified | 독립 review 계약·실제 Read 증거 검증 |
 | role_interrupted | 실제 interruption; 비용·원래 예외와 첫 실패 유지 |
 | role_failed / unknown | legacy broad fallback / 구체 cause unavailable; 원문 추정 없음 |
+
+source-review validator는 기존 source_review_unverified reason과 cause=validation/phase=review에
+고정 field를 붙인다. review.plan/capture/stream/metadata는 계획·1회 소비·strict record·안내
+경계, review.read_request/read_pair/read_content는 정확한 경로/범위·ID pairing·structured 내용,
+review.result/coverage/assessments/documentation/proof는 정상 final·전체 window·순서별 판단·문서
+Read·보관 proof 경계다. rule은 기존 fields/type/range/path/length/byte_limit/encoding/duplicate/
+allowlist/empty/source_unavailable/outside_scope 등 allowlist 안에서만 선택한다. 여러 조건을 묶은
+fields 코드는 해당 경계의 거절이며 특정 값이나 역사적 근본 원인까지 설명하지 않는다.
+원문/소스/prompt/경로/동적 필드/provider 문자열·새 schema 키는 추가하지 않는다. 기존512bytes와
+capability·configured identity 뒤 전달·최초 detail/비용 정산 및 private scan/slot/history/status/
+feedback 보존만 사용한다. health/public 노출은 늘리지 않고 과거 unknown을 재해석하지 않는다.
 
 Codex 실패는 nonzero CLI 경계의 신뢰 가능한 명확한 stderr 인증 형식만 고정 분류한다.
 stdout의 모델 설명·tool 출력·읽은 소스에 authentication/readonly/401/quota 등이 있어도 증거가 아니다.

@@ -1,5 +1,6 @@
 """Private diagnostic validation/failure specifications, never operator data."""
 from contextlib import contextmanager
+from copy import deepcopy
 import datetime as dt
 import errno
 import json
@@ -337,6 +338,37 @@ def test_exception_link_rejects_forged_attributes_and_preserves_original_wrapper
     assert first['detail']['reason'] == 'role_execution_failed'
     assert first['detail']['cause'] == 'cli_failed' and first['detail']['exit_code'] == 7
     assert SECRET not in json.dumps(first) and RAW not in json.dumps(first)
+
+
+@pytest.mark.parametrize('field', [
+    'review.plan', 'review.capture', 'review.stream', 'review.metadata',
+    'review.read_request', 'review.read_pair', 'review.read_content', 'review.result',
+    'review.coverage', 'review.assessments', 'review.documentation', 'review.proof',
+])
+def test_review_boundary_codes_use_existing_private_capability_and_first_failure(field):
+    value = private_detail(reason='source_review_unverified', cause='validation',
+                           phase='review', field=field, rule='fields')
+    assert diag.sanitize_detail(value) == value
+    assert len(json.dumps(value).encode('utf-8')) <= diag.MAX_DETAIL_BYTES
+    forged = dict(role='reviewer', provider='claude', model='synthetic',
+                  status='failed', failure_detail=value)
+    assert diag.result_detail(forged) == diag.sanitize_detail(None)
+    original = ValueError(RAW + SECRET)
+    original.failure_detail = value
+    assert diag.exception_detail(original) == diag.sanitize_detail(None)
+    diag.attach(original, diag.detail('source_review_unverified', 'validation',
+        phase='review', field=field, rule='fields'))
+    wrapped = diag.inherit(RuntimeError(RAW), original)
+    with diag.Trace() as trace:
+        diag.record('stage', wrapped)
+        first = deepcopy(trace.first)
+        diag.record('settlement', OSError(errno.ENOSPC, SECRET))
+        assert trace.first == first
+    linked = diag.attach_result(forged, source=wrapped)
+    linked['failure_detail'] = dict(value, field='/private/source')
+    assert diag.result_detail(linked) == first['detail'] == value
+    assert diag.result_detail(json.loads(json.dumps(linked))) == diag.sanitize_detail(None)
+    assert diag.sanitize_detail(dict(value, field='review.' + SECRET))['cause'] == 'unavailable'
 
 
 def test_exception_metadata_uses_native_storage_without_invoking_provider_properties():

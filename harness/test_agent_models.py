@@ -315,6 +315,60 @@ def test_discovery_capture_is_unavailable_to_other_roles_or_unscoped_calls(tmp_p
                        discovery_review=capture, **options)
 
 
+@pytest.mark.parametrize('separator', ['\u0085', '\u2028', '\u2029'])
+@pytest.mark.parametrize('damage,field', [
+    ('verified', None), ('no_read', 'review.coverage'),
+    ('partial', 'review.read_content'), ('failed_read', 'review.read_pair'),
+    ('wrong_content', 'review.read_content'),
+])
+def test_discovery_unicode_ndjson_preserves_response_cost_and_strict_receipts(
+        local_keys, tmp_path, monkeypatch, separator, damage, field):
+    raw = ('value = "left' + separator + 'right"\n').encode('utf-8')
+    snapshots = {'AGENTS.md': dict(exists=True, mode=0o644, content=b'document\n'),
+                 'harness/example.py': dict(exists=True, mode=0o644, content=raw)}
+    owners = {r: ['harness/example.py'] for r in coverage.contract.SPECIALIST_ROLES}
+    windows = coverage.plan(list(snapshots), snapshots, [], owners, ['AGENTS.md'])
+    capture = coverage.Capture(tmp_path, snapshots, windows)
+    response = json.dumps({'model_text': 'left' + separator + 'right'}, ensure_ascii=False)
+    calls = []
+
+    def synthetic(command, prompt, cwd, env, timeout):
+        calls.append(command)
+        events = read_events(capture, response)
+        if damage == 'no_read':
+            events = events[-1:]
+        elif damage == 'partial':
+            events[1]['tool_use_result']['file']['partial'] = True
+        elif damage == 'failed_read':
+            events[1]['message']['content'][0]['is_error'] = True
+        elif damage == 'wrong_content':
+            events[1]['tool_use_result']['file']['content'] = 'PRIVATE_RAW /private/source'
+        events[-1]['total_cost_usd'] = .27  # Over cap remains visible on failure.
+        return subprocess.CompletedProcess(command, 0,
+            stdout(with_rate_limit_events(events)) + '\n', 'PRIVATE_RAW /private/source')
+
+    monkeypatch.setattr(models.shutil, 'which', lambda cli: '/fake/' + cli)
+    monkeypatch.setattr(models, '_review_subprocess', synthetic)
+    monkeypatch.setattr(models.subprocess, 'run', lambda *a, **k: pytest.fail('ordinary subprocess used'))
+    report = models.run('reviewer', 'synthetic inspection', local_keys, compaction=False,
+                        workspace=tmp_path, scoped=True, max_budget_usd=.2, discovery_review=capture)
+    assert len(calls) == 1 and report['cli_estimated_cost_usd'] == .27
+    assert report['status'] == ('passed' if field is None else 'failed')
+    assert (capture.receipts is not None) is (field is None)
+    if field is None:
+        assert report['response'] == response
+        assert len(capture.receipts) == len(windows)
+    else:
+        assert 'response' not in report
+        detail = diag.result_detail(report)
+        assert (detail['reason'], detail['cause'], detail['phase'], detail['field']) == (
+            'source_review_unverified', 'validation', 'review', field)
+        # A serializable lookalike lacks the adapter's in-process capability.
+        assert diag.result_detail(dict(report)) == diag.sanitize_detail(None)
+    assert all(private not in json.dumps(report) for private in (
+        'PRIVATE_RAW', '/private/source', 'PRIVATE_RATE_METADATA', 'private-session'))
+
+
 def test_ordinary_reviewer_command_and_json_parser_stay_unchanged():
     command = models.command_for('reviewer', compaction=False)
     assert command[command.index('--output-format') + 1] == 'json'

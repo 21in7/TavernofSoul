@@ -407,7 +407,8 @@ Supplied candidates retain all accepted prose, with sensitive text redacted;
 their narrative fields may be up to 4x the concise public display targets.
 Read-only advisory review: never approve execution, edit, run checks/Git or
 pipelines. Verify evidence semantics to the extent actually possible. Return
-ONLY strict JSON with EXACTLY reviews,documentation. reviews must cover each
+ONLY strict JSON with EXACTLY reviews,documentation,assessments. The source Read
+instructions below define assessments. reviews must cover each
 candidate_id once: {candidate_id,verdict:eligible|rejected|needs_evidence,
 reason,documentation:{status:required|missing|not_required,files:[],reason}}.
 Top-level documentation has that same shape. Write concise Korean explanations
@@ -509,7 +510,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                 owners = {r: role_scope(r, paths, config) for r in contract.SPECIALIST_ROLES}
                 windows = coverage.plan(paths, snapshots, records, owners, config['shared_files'])
                 capture = coverage.Capture(model_root, snapshots, windows)
-                prompt += ('\nDiscovery source-read-review-v1 overrides the response keys above: '
+                prompt += ('\nDiscovery source-read-review-v1 response contract: '
                            'return exactly reviews,documentation,assessments. Use actual Read tools '
                            'for EVERY numbered window below, with exact file_path, offset=start_line, '
                            'limit=end_line-start_line+1. No other reads or tools. '
@@ -519,7 +520,9 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                            'sample executable Python bodies (at most 96 continuous lines each), '
                            'separately from shared documentation. A sample is not a complete file '
                            'or repository read and cannot establish absence of defects outside it. Model read claims are '
-                           'not evidence. If coverage cannot be completed, do not claim success.\n'
+                           'not evidence. documentation.files in both top-level and candidate judgments '
+                           'must name only windows marked documentation; describe other needed paths '
+                           'in reason without reading them. If coverage cannot be completed, do not claim success.\n'
                            'Required Read windows: ' + json.dumps(windows, ensure_ascii=False))
             prompt += '\nApproved readable files (exact paths): ' + json.dumps(paths)
             prompt += '\nMissing files: ' + json.dumps([p for p in paths if not snapshots[p]['exists']])
@@ -635,7 +638,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     raise contract.ValidationError('Invalid discovery review contract.')
                 failure_reason = 'source_review_unverified'
                 if capture.receipts is None:
-                    coverage.fail()
+                    coverage.fail('review.coverage', 'empty')
                 assessed = coverage.assessments(parsed['assessments'], windows)
                 review_body = {k: parsed[k] for k in ('reviews', 'documentation')}
                 failure_reason = 'review_invalid'

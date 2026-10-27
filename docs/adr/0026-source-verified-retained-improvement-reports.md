@@ -1,5 +1,52 @@
 # 0026: 실제 source Read 검증과 유효 제안 보존 보고
 
+## 2026-10-27 호환 수리·private 검증 경계 진단 인계
+
+이번 변경은 기존 Read 증거 계약 안의 NDJSON framing 수리와 private 진단 정밀화다.
+`Capture.accept`와 `agent_models.run`의 최종 result/비용 탐색이 사용하던 `str.splitlines()`는
+JSON 문자열 안에 그대로 허용되는 U+0085/U+2028/U+2029까지 이벤트 경계로 분리했다.
+승인 소스의 정상 Read content 또는 최종 result 문자열에 이 문자가 있으면 JSON을 조각내
+거절하거나 실제 final cost를 찾지 못할 수 있다. 두 경로는 이제 LF만 record 경계로 사용하고
+마지막 LF 하나만 framing으로 제외한다. CRLF의 CR은 JSON 바깥 whitespace로 처리한다.
+빈 record·raw control 문자·중복 key·비유한 값은 계속 거절한다. source의 원래 LF 줄 번호와
+bytes/hash, CLI Read projection은 바꾸지 않는다. 새로운 event/tool/envelope를 허용하지 않는다.
+
+review prompt는 처음부터 정확히 reviews/documentation/assessments를 요구하며, 기존 검증기처럼
+두 documentation.files는 documentation 목적의 계획 window 안에서만 고르도록 명시한다.
+그 밖의 필요한 문서는 reason에 기술하고 읽지 않는다. 모든 evidence/benefit.evidence·문서
+window와 순서별 assessment, paired 실제 성공 Read, 유일한 정상 final, 한 번만 소비하는
+Capture와 신뢰 provenance는 계속 필수다. plan과 검증을 줄이거나 모델 주장을 증거로 삼지 않는다.
+
+동일 source_review_unverified만으로 거절 경계를 알 수 없었으므로 validator의 실제 fail 지점에서
+기존 identity-bound diagnostics capability를 만든다. broad reason은 그대로 두고 기존 private
+improvement-failure-v1의 cause=validation/phase=review 및 고정 field/rule만 사용한다.
+field는 review.plan/capture/stream/metadata/read_request/read_pair/read_content/result/coverage/
+assessments/documentation/proof 중 하나(각각 review. 접두사 포함)다. rule은 기존 allowlist만 쓴다.
+일부 fields 거절은 여러 조건을 묶은 경계이며 특정 응답 값이나 근본 원인을 확정하지 않는다.
+원래 예외 type/고정 메시지와 최초 detail은 wrapper/cleanup/정산에서 덮지 않는다.
+runner dictionary·예외문·CLI metadata는 코드 선택 권위가 아니다. 새로운 키·원문·소스·prompt·
+절대경로·provider 자유 문자열은 보존하지 않으며 최대512bytes다. private scan/slot/history/status/
+feedback의 기존 저장 경로만 사용하고 health/public 계약은 확대하지 않는다. legacy 상세는
+unknown/unavailable로 남긴다. 실제 final 비용의 보존은 실패의 성공 전환이나 예약 환불이 아니다.
+
+parent가 제공한 같은 scan `1793026802215716805-c162f5`의 후보2개와 08:00:01.940372~
+08:00:30.957424 KST reviewer 실패는 source_review_unverified/ValueError,
+cost0.078057(cli_estimated_usd), read_files=[]였다. proof/raw stdout/응답이 없어 당시 어느
+Read·필드·assessment가 거절됐는지 알 수 없다. 위 유니코드 결함이나 새 합성 사례를 그 역사적
+원인이라고 단정하지 않는다. 01시 coordinator·03시 downloader·05시 parser·07시 django 성공은
+parent의 별도 관측이다. 09시 stage_index=1/last_slot=2026-10-27T09/pause_reason=null은
+후속 reviewer 성공 증거가 아니다. 과거 실패·frozen 보고·서명 승인·claim은 불변이다.
+
+새 offline 회귀는 literal source/응답 유니코드와 LF/CRLF framing, 정상 pairing, 누락/부분/오류/
+거짓 Read, strict JSON, 재소비 거절, 비용 초과 보존 및 실제 adapter→_call_role→loop의 private
+정산/재시작/status/feedback·frozen/public 배제를 명세한다. worker는 작성만 했으며 실행하지 않았다.
+별도 parent probe는 승인 거절로 실행되지 않았고 새 실제 API 증거는 없다. 전체 diff의 새 Claude
+의미 검토는 documentation={status,files,reason}을 새로 판단해야 한다. parent의 기본 Git 경로
+GIT=1 full make check·CI3·merge·cleanup/archive와 실제 후속 hourly 관측 전에는 검증/운영
+성공을 주장하지 않는다. stdout512KiB/256events/32windows/32KiB/코드96줄, runtime37·
+128KiB/1.5MiB, reviewer$.20/하루$1/하루24회/tick1/9stage 및 scope/identity/cleanup/lock/
+승인 freshness는 유지한다. 재시도·추가 호출·JSON 수선·fallback은 없다.
+
 2026-10-23 진단 후속은 [ADR0027](0027-inspection-lock-isolation-and-diagnostics.md)을 따른다.
 기존 cloud history192건/오전 선택과 진행·검토·승인 결정은 유지하고 고정 실패 detail을 연결한다.
 별도 local history192건은 private 전용이며 과거 원인·기록·frozen 보고를 재구성하지 않는다.

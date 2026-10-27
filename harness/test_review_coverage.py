@@ -10,6 +10,7 @@ import pytest
 
 from harness import review_coverage as coverage
 from harness import agent_models, git_publish, improvements as imp, storage, triage, workflow
+from harness import improvement_diagnostics as diagnostics
 
 contract = coverage.contract
 SOURCE_DOC = {"status": "not_required", "files": [],
@@ -426,6 +427,131 @@ def test_raw_size_event_count_and_duplicate_json_keys_are_bounded(capture):
         assert fresh.receipts is None
 
 
+@pytest.mark.parametrize('separator', ['\u0085', '\u2028', '\u2029'])
+@pytest.mark.parametrize('ending', ['', '\n', '\r\n'])
+def test_ndjson_unicode_separators_are_source_and_response_data(tmp_path, separator, ending):
+    # JSON permits these unescaped characters. They are neither source LF line
+    # boundaries nor NDJSON record boundaries (unlike str.splitlines()).
+    content = 'value = "left' + separator + 'right"'
+    raw = (content + '\n').encode('utf-8')
+    capture = fixed_capture(tmp_path, raw, 1, 1, raw)
+    response = '검토 문자열 ' + separator + ' 그대로 보존'
+    events = read_events(capture, response, files=[dict(
+        content=content, numLines=1, startLine=1, totalLines=2)])
+    wire = ('\r\n' if ending == '\r\n' else '\n').join(
+        json.dumps(event, ensure_ascii=False) for event in events) + ending
+    final = capture.accept(wire)
+    assert final['result'] == response and final['total_cost_usd'] == .04
+    assert capture.receipts == [dict(window=capture.windows[0],
+        tool_id_sha256=hashlib.sha256(b'read_0').hexdigest())]
+    assert capture.windows[0]['sha256'] == hashlib.sha256(raw).hexdigest()
+    assert capture.snapshots['harness/example.py']['content'] == raw
+    with pytest.raises(ValueError, match='source_review_unverified') as caught:
+        capture.accept(wire)
+    assert diagnostics.exception_detail(caught.value)['field'] == 'review.capture'
+
+
+@pytest.mark.parametrize('damage,field,rule', [
+    ('no_read', 'review.coverage', 'length'),
+    ('failed_read', 'review.read_pair', 'fields'),
+    ('partial', 'review.read_content', 'fields'),
+    ('wrong_content', 'review.read_content', 'fields'),
+    ('wrong_range', 'review.read_request', 'range'),
+    ('alias', 'review.read_request', 'path'),
+    ('failed_final', 'review.result', 'fields'),
+    ('unknown_event', 'review.stream', 'allowlist'),
+    ('metadata', 'review.metadata', 'allowlist'),
+    ('unhashable_id', 'review.read_pair', 'fields'),
+])
+def test_rejected_read_has_bounded_validator_owned_diagnostic(capture, damage, field, rule):
+    events = read_events(capture)
+    if damage == 'no_read':
+        events = events[-1:]
+    elif damage == 'failed_read':
+        events[1]['message']['content'][0]['is_error'] = True
+    elif damage == 'partial':
+        events[1]['tool_use_result']['file']['partial'] = True
+    elif damage == 'wrong_content':
+        events[1]['tool_use_result']['file']['content'] += 'PRIVATE_RAW /private/source'
+    elif damage == 'wrong_range':
+        events[0]['message']['content'][0]['input']['offset'] += 1
+    elif damage == 'alias':
+        events[0]['message']['content'][0]['input']['file_path'] = '/private/source'
+    elif damage == 'failed_final':
+        events[-1]['is_error'] = True
+    elif damage == 'unknown_event':
+        events.insert(0, dict(type='unobserved_envelope', reason='quota'))
+    elif damage == 'metadata':
+        events.insert(0, rate_limit_event('PRIVATE_RAW /private/source'))
+    elif damage == 'unhashable_id':
+        events[1]['message']['content'][0]['tool_use_id'] = []
+    with pytest.raises(ValueError, match='source_review_unverified') as caught:
+        capture.accept(stdout(events))
+    detail = diagnostics.exception_detail(caught.value)
+    assert (detail['reason'], detail['cause'], detail['phase'], detail['field'], detail['rule']) == (
+        'source_review_unverified', 'validation', 'review', field, rule)
+    assert capture.receipts is None and capture.consumed is True
+    assert len(json.dumps(detail).encode('utf-8')) <= diagnostics.MAX_DETAIL_BYTES
+    assert all(text not in json.dumps(detail) for text in (
+        'PRIVATE_RAW', '/private/source', capture.root, 'unobserved_envelope'))
+    original = dict(detail)
+    diagnostics.attach(caught.value, diagnostics.detail('role_execution_failed', 'cli_failed'))
+    assert diagnostics.exception_detail(caught.value) == original
+
+
+@pytest.mark.parametrize('wire,rule', [
+    ('{"type":"result","type":"result"}', 'duplicate'),
+    ('{"type":"result","cost":NaN}', 'encoding'),
+    ('{"type":"result","result":"raw\u000bcontrol"}', 'encoding'),
+    ('{}\n\n', 'encoding'),
+    ('{}\u2028{}', 'encoding'),
+])
+def test_stream_diagnostic_keeps_strict_json_and_blank_record_rejection(capture, wire, rule):
+    with pytest.raises(ValueError, match='source_review_unverified') as caught:
+        capture.accept(wire)
+    detail = diagnostics.exception_detail(caught.value)
+    assert (detail['field'], detail['rule']) == ('review.stream', rule)
+    assert capture.receipts is None
+
+
+@pytest.mark.parametrize('overflow', [False, True])
+def test_unicode_content_does_not_change_the_256_record_limit(tmp_path, overflow):
+    raw = 'value = "one\u2028two"\n'.encode('utf-8')
+    capture = fixed_capture(tmp_path, raw, 1, 1, raw)
+    events = read_events(capture, '최종\u2029응답')
+    events = [dict(type='system', subtype='init')] * (256 - len(events) + overflow) + events
+    if overflow:
+        with pytest.raises(ValueError, match='source_review_unverified') as caught:
+            capture.accept(stdout(events) + '\n')
+        assert diagnostics.exception_detail(caught.value)['rule'] == 'length'
+        assert capture.receipts is None
+    else:
+        assert capture.accept(stdout(events) + '\n')['result'] == '최종\u2029응답'
+        assert len(capture.receipts) == 1
+
+
+def test_assessment_and_documentation_rejections_have_separate_private_boundaries(capture):
+    capture.accept(stdout(read_events(capture)))
+    valid = dict(reviews=[], documentation=dict(SOURCE_DOC))
+    add_assessments(valid, capture)
+    assert len(coverage.assessments(valid['assessments'], capture.windows)) == len(capture.windows)
+    coverage.document_reads(valid, capture.windows)
+    for values, rule in (([], 'length'),
+                         ([dict(window=0, assessment='short')] * len(capture.windows), 'fields'),
+                         (list(reversed(valid['assessments'])), 'fields')):
+        with pytest.raises(ValueError, match='source_review_unverified') as caught:
+            coverage.assessments(values, capture.windows)
+        detail = diagnostics.exception_detail(caught.value)
+        assert (detail['field'], detail['rule']) == ('review.assessments', rule)
+    valid['documentation'] = dict(status='required', files=['docs/not-read.md'],
+        reason='계획에서 실제로 읽지 않은 문서는 확인된 문서로 판단할 수 없습니다.')
+    with pytest.raises(ValueError, match='source_review_unverified') as caught:
+        coverage.document_reads(valid, capture.windows)
+    detail = diagnostics.exception_detail(caught.value)
+    assert (detail['field'], detail['rule']) == ('review.documentation', 'outside_scope')
+    assert 'docs/not-read.md' not in json.dumps(detail)
+
+
 # Source/context ceilings stay covered here so the approved runtime test source
 # remains within its unchanged per-file byte limit. No test imports back from
 # test_improvements: its shared candidate/FixtureFS are re-exported from here.
@@ -699,8 +825,9 @@ def test_unavailable_owner_program_never_becomes_false_empty_success(damage):
         }[damage]
     # A test/document may still be readable; it cannot conceal the selected
     # production target's unavailability. No model or partial proof is admitted.
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as caught:
         coverage.plan(list(snapshots), snapshots, [], owners, ['AGENTS.md'])
+    assert diagnostics.exception_detail(caught.value)['field'] == 'review.plan'
 
 
 @pytest.mark.parametrize('excess', [0, 1])
