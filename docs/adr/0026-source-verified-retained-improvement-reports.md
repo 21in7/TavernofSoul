@@ -1,5 +1,71 @@
 # 0026: 실제 source Read 검증과 유효 제안 보존 보고
 
+## 2026-10-27 최종 review 문서 계약 정합 수리
+
+앞 실행1793063968874360416-bbac98은 최종 changes_requested·applied=[]·GitHub 요청 없음으로
+종료됐다. parent 제공 첫 전체검사는 parser/harness6085중6084통과·기본37소스 bound1실패이며,
+1,573,337bytes로1,572,864bytes 상한을473bytes 초과했다. 별도 generic worker 오류는 상세
+미상이며 crash 원인으로 추정하지 않는다. round2는 문서 중복 압축 뒤 parent metadata 합산
+1,554,188bytes였으나 Claude가 헤딩/문장 중복 손상을 발견했다. 2회 한도 소진으로 실패했고
+round2 전체검사는 실행되지 않았다. 이 기록은 아래 두 실제 review 실패와 별개다.
+
+parent는 원래 baseline bytes/mode 동일성 확인 뒤 보존16파일 초안을 새 scoped 모델 context에만
+재사용했다. 이번 보정은 기존 코드/회귀·strict 거절·상한·scope를 유지하며 AGENTS의 반복 문장,
+모델/하네스/개선 안내의 반복 헤딩과 문단 경계를 복구한다. 압축한 계약은 이 ADR, 과거 인계
+원문은 ADR0034의 보존 부록에 연결한다. 원본 소스에는 반영하지 않았으며 초안 재사용·문서
+보정은 승인이나 검증 성공이 아니다. 새 역할/권한/복구 정책 결정이 없어 신규 ADR이나 승인
+밖 문서 열람은 요구하지 않는다. 매 새 review는 전체 baseline→candidate diff의 documentation을
+다시 판단한다. 실제37목록/설정은 읽기 승인 밖이므로 최종 전체37개 측정·새 Claude 의미 검토·
+full check·실제 독립 검토 성공은 parent가 확인한다. worker는 검사하지 않았다.
+
+이 절은 아래 LF framing 수리 이후의 새 인계다. parent가 확인한 PR83의 full6324·CI3 success·
+merge·cleanup/archive는 역사적 성공으로 보존한다. 그 변경은 LF-only NDJSON과 private Read
+진단 수리였으며 08시 최초 실패 원인을 확정하지 않았다. 이번 최종 review 계약 수리의
+검토·검사·실모델 성공 근거로 재사용하지 않는다. 새 실제 두 실패의 시각·비용과 관측 한계는
+[ADR0034](0034-inspection-failure-recovery-and-health.md)의 최신 main 관측에 둔다.
+
+최종 review prompt의 `{status:required|missing|not_required,files:[],reason}` 표기는 모든 status에
+빈 files가 유효한 것처럼 읽힐 수 있었다. 생성 지침과 discovery Read 설명 양쪽에 기존 계약을
+명시한다. 후보별·전체 `documentation` 모두 required/missing은 비어 있지 않은 중복 없는 승인
+Markdown 경로 목록, not_required는 빈 목록이다. files는 실제 documentation 목적 window만
+가리킨다. missing에서 승인 밖 필요 경로는 reason에만 밝히고, files에는 경계 보완이 필요한
+관련 승인 문서를 지목한다. 창 밖 경로를 읽거나 files에 넣지 않고, 적절한 승인 문서 판단이
+불가능하면 scope 부족을 드러내 미완료로 남긴다. 임의 경로·not_required·빈 후보를 합성하지 않는다.
+
+읽기 전용 자문은 문서 수정 완료 주장이 아니다. 제안 구현에 필요한 문서 변경은 그대로
+평가하며, 읽기 전용이라는 사실만으로 not_required로 재분류하지 않는다. 진실한 analysis-only
+판단은 허용하되 필요 문서·근거 부족은 needs_evidence/rejected와 일관되게 기록한다.
+후보 missing은 eligible 금지, 전체 missing은 모든 eligible 금지다. eligible 후보의 문서 목록은
+그 후보의 edit_files에도 포함해야 한다. 정확한 후보 ID별 1회 판단·문서 reason12..1440자와
+간결한 한글 설명·공개360자·64KiB 응답, 모든 Read/assessment 검증을 유지한다. 구현 reviewer의
+updated 판단과 실제 변경 문서 확인은 별도이며 자문 verdict는 사람의 승인이나 실행권한이 아니다.
+
+`validate_documentation`/`validate_review`의 실제 거절 지점에서 기존 identity-bound capability를
+발급한다. reason=review_invalid, cause=validation, phase=review이며 문서 상태/목록 모순은
+기존 field=review.documentation, 빈 required/missing은 rule=empty, not_required의 비어 있지
+않은 목록이나 eligibility 모순은 fields다. 타입·길이·경로·중복·scope·encoding 등은 해당 검사에서
+기존 rule을 선택한다. 나머지 최종 review 구조/ID/coverage/verdict/reason 거절은 기존
+review.result를 사용한다. Read 검증의 source_review_unverified와 구분하며 allowlist·schema·
+512bytes·health/public wire·payload/digest는 확대하지 않는다. 공통 후보의 reason/field/rule과
+edit_files 세 reason은 그대로다. CLI metadata·runner 사전·예외문/이름/줄번호를 권위로 삼지 않는다.
+최초 실패·configured identity 뒤 provenance 전달·비용/중단/정산·재시작/status/feedback은 보존한다.
+
+회귀는 두 후보 중 첫 문서 missing/빈 files 거절의 정확한 capability, 정상 missing/비어 있지
+않은 files와 not_required/빈 files 및 반대 조합, 문서/ID/eligible 모순을 명세한다. 실제 adapter→
+_call_role→loop의 정상·실패 비용, 최초 detail·재시작/status/feedback·후속 성공의 실패 보존,
+frozen/public 불변도 합성 입력으로 작성한다. worker는 검사·실모델·네트워크·Git을 실행하지
+않았다. 새 실제 성공과 운영 성공은 parent 확인 전까지 미관측이다.
+
+문서 영향 판단: 기존 strict 계약의 안내와 private 발생 경계 진단만 정합화하므로 이 ADR과
+ADR0034·AGENTS·agent-models/harness/improvements를 갱신한다. 새 역할·격리·승인·공개 계약이나
+복구 정책 결정은 없어 새 ADR이나 승인 밖 설계 문서 열람/수정은 요구하지 않는다. 매 최종
+review는 최종 diff의 documentation={status,files,reason}을 새로 판단하며 과거 updated·PR83·
+Markdown 확장자 검사로 대체하지 않는다. 새 Claude 의미 검토·GIT=1 full make check·scoped apply·
+기존 Git 역할과 실제 독립 검토 재검증·GitHub/CI/merge/cleanup/archive는 parent 책임이다.
+runtime37·owner/shared/scope·128KiB/1.5MiB·64KiB·Read exact bytes/ranges/paired receipt·모든
+window·$.20/$1/day24/tick1/9stage·readonly/cleanup/lock/freshness·승인/claim·cron/모델/인증/설정/
+원격저장 정책을 유지한다. 자동 재호출·fallback·문법 수선·자료 합성·hourly 기록 재작성은 없다.
+
 ## 2026-10-27 호환 수리·private 검증 경계 진단 인계
 
 이번 변경은 기존 Read 증거 계약 안의 NDJSON framing 수리와 private 진단 정밀화다.

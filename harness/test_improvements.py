@@ -71,10 +71,11 @@ def test_candidate_edit_budget_metadata_does_not_relax_existing_limit():
     assert str(error.value) == 'edit file list exceeds one-page character budget'
 
 
-def test_edit_diagnostics_leave_documentation_and_unknown_failures_unclassified():
+def test_edit_reason_metadata_stays_separate_from_documentation_failure_detail():
     with pytest.raises(contract.ValidationError) as error:
         contract.validate_documentation(dict(DOC, files=['docs/outside.md']), ['docs/architecture.md'])
     assert error.value.reason is None
+    assert diag.exception_detail(error.value)['field'] == 'review.documentation'
     item = candidate()
     item['priority'] = 'unknown'
     with pytest.raises(contract.ValidationError) as error:

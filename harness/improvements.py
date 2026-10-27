@@ -410,17 +410,32 @@ pipelines. Verify evidence semantics to the extent actually possible. Return
 ONLY strict JSON with EXACTLY reviews,documentation,assessments. The source Read
 instructions below define assessments. reviews must cover each
 candidate_id once: {candidate_id,verdict:eligible|rejected|needs_evidence,
-reason,documentation:{status:required|missing|not_required,files:[],reason}}.
-Top-level documentation has that same shape. Write concise Korean explanations
+reason,documentation:{status,files,reason}}. Top-level documentation has that
+same shape. For BOTH candidate and top-level documentation:
+- required: files is a NONEMPTY list of unique approved Markdown paths.
+- missing: files is a NONEMPTY list of unique approved Markdown paths; never [].
+- not_required: files MUST be []. Give a concrete reason why docs are unnecessary.
+Every files entry must belong to an actual Read window marked documentation.
+Write concise Korean explanations
 targeting <=360 characters for review.reason, per-candidate documentation.reason
 and top-level documentation.reason. Each has a PRIVATE hard maximum of 1440
 characters; public display stays <=360 with visible ellipsis. Review reasons
 must be nonempty; documentation reasons must be specific and at least 12 characters.
-A specific analysis-only reason
-with not_required and files=[] is acceptable for discovery. For implementation,
-required design/boundary/test updates must be in the exact proposal edit_files;
-missing approved scope makes the candidate needs_evidence or rejected. Name
-missing paths in explanation without reading them. Missing evidence, unavailable
+These are advisory documentation plans, not claims that documents were edited.
+Assess the proposed implementation's documentation needs even in read-only review;
+read-only execution alone does not justify not_required or hide required updates.
+A specific analysis-only not_required judgment is valid when no implementation
+documentation update is needed. For eligible candidates every documentation.files
+path must also be in that candidate's exact edit_files. Candidate missing forbids
+eligible; top-level missing forbids ANY eligible verdict. Missing evidence or scope
+requires truthful needs_evidence or rejected, with the documentation need retained.
+When needed documents are outside the documentation Read windows, name those
+missing paths only in reason, without reading them or listing them in files.
+For missing, files must still identify relevant approved documentation windows
+whose boundary is incomplete; do not invent a path or switch to not_required to
+pass validation. If no truthful in-window judgment is possible, report the scope
+limitation and leave review incomplete; never fabricate contract compliance.
+Missing evidence, unavailable
 models or other candidates' opinions never prove consensus. An eligible verdict
 is advisory, never a human approval. Return bare JSON with no extra fields or
 code fences. Transport tolerates only one whole-response lowercase json-tagged
@@ -522,7 +537,11 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                            'or repository read and cannot establish absence of defects outside it. Model read claims are '
                            'not evidence. documentation.files in both top-level and candidate judgments '
                            'must name only windows marked documentation; describe other needed paths '
-                           'in reason without reading them. If coverage cannot be completed, do not claim success.\n'
+                           'in reason without reading them or adding them to files. Both required and missing '
+                           'require nonempty files of relevant approved Markdown documentation windows; '
+                           'not_required requires empty files and a truthful no-update reason. '
+                           'Missing scope/evidence means needs_evidence or rejected, never fabricated eligibility '
+                           'or concealed documentation needs. If coverage cannot be completed, do not claim success.\n'
                            'Required Read windows: ' + json.dumps(windows, ensure_ascii=False))
             prompt += '\nApproved readable files (exact paths): ' + json.dumps(paths)
             prompt += '\nMissing files: ' + json.dumps([p for p in paths if not snapshots[p]['exists']])
@@ -635,7 +654,9 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             if role == 'reviewer':
                 failure_reason = 'review_invalid'
                 if not isinstance(parsed, dict) or set(parsed) != {'reviews', 'documentation', 'assessments'}:
-                    raise contract.ValidationError('Invalid discovery review contract.')
+                    raise diagnostics.attach(contract.ValidationError('Invalid discovery review contract.'),
+                        diagnostics.detail('review_invalid', 'validation', phase='review',
+                                           field='review.result', rule='fields'))
                 failure_reason = 'source_review_unverified'
                 if capture.receipts is None:
                     coverage.fail('review.coverage', 'empty')

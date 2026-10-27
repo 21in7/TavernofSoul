@@ -678,3 +678,152 @@ def test_private_detail_does_not_change_public_projection_or_digest():
     assert contract.canonical_json(after) == contract.canonical_json(before)
     assert after['digest'] == before['digest']
     assert 'failure_detail' not in json.dumps(after) and 'candidate_invalid' not in json.dumps(after)
+
+
+def review_case():
+    """Two independent synthetic identities; no model or stored scan input."""
+    documentation = dict(status='not_required', files=[],
+                         reason='지역 동작 보존 제안이며 구조나 권한 계약의 변경은 없습니다.')
+    proposals = [dict(id='IMP-' + str(i) * 16,
+                      candidate=dict(edit_files=['harness/example.py'])) for i in (1, 2)]
+    response = dict(reviews=[dict(candidate_id=p['id'], verdict='needs_evidence',
+        reason='실제 구현 전 추가 근거의 독립 확인이 필요합니다.', documentation=deepcopy(documentation))
+        for p in proposals], documentation=deepcopy(documentation))
+    return response, proposals, ['harness/example.py', 'AGENTS.md']
+
+
+@pytest.mark.parametrize('where', ['candidate', 'global'])
+def test_missing_empty_review_is_validator_owned_and_keeps_first_failure(where):
+    response, proposals, allowed = review_case()
+    target = response['reviews'][0] if where == 'candidate' else response
+    target['documentation'].update(status='missing', reason='가' * 100)
+    assert len(proposals) == len(response['reviews']) == 2
+    if where == 'candidate':
+        # First candidate fails after its ID was seen; a later defect must not
+        # displace the observed expected=2/seen=1 documentation rejection.
+        response['reviews'][1]['candidate_id'] = 'IMP-' + 'f' * 16
+    original = deepcopy(response)
+    with diag.Trace() as trace:
+        with pytest.raises(contract.ValidationError, match='documentation status/files contradict') as caught:
+            with diag.boundary('stage'):
+                contract.validate_review(response, proposals, allowed)
+        failure = diag.exception_detail(caught.value)
+        assert (failure['reason'], failure['cause'], failure['phase'], failure['field'], failure['rule']) == (
+            'review_invalid', 'validation', 'review', 'review.documentation', 'empty')
+        assert caught.value.reason is None  # Existing edit_files metadata is unchanged.
+        assert len(json.dumps(failure).encode('utf-8')) <= diag.MAX_DETAIL_BYTES
+        forged = contract.ValidationError(SECRET)
+        forged._improvement_failure = caught.value._improvement_failure
+        assert diag.exception_detail(forged) == diag.sanitize_detail(None)
+        wrapped = diag.inherit(RuntimeError(RAW), diag.attach_result({}, source=caught.value))
+        assert diag.exception_detail(wrapped) == failure
+        first = deepcopy(trace.first)
+        diag.record('settlement', OSError(errno.ENOSPC, SECRET))
+        valid, _, _ = review_case()
+        assert contract.validate_review(valid, proposals, allowed) == valid
+        assert trace.first == first and first['detail'] == failure
+    assert response == original
+    assert all(value not in json.dumps(failure) for value in (SECRET, RAW, 'AGENTS.md'))
+
+
+@pytest.mark.parametrize('status,files,rule', [
+    ('required', ['AGENTS.md'], None), ('missing', ['AGENTS.md'], None),
+    ('not_required', [], None), ('required', [], 'empty'), ('missing', [], 'empty'),
+    ('not_required', ['AGENTS.md'], 'fields'),
+    ('missing', ['harness/example.py'], 'path'), ('missing', ['docs/outside.md'], 'outside_scope'),
+    ('missing', ['AGENTS.md', 'AGENTS.md'], 'duplicate'), ('missing', 'AGENTS.md', 'type'),
+])
+def test_documentation_status_files_contract_is_unchanged_at_both_levels(status, files, rule):
+    response, proposals, allowed = review_case()
+    documentation = dict(status=status, files=files, reason='추가 설계 문서가 누락되어 구현 근거의 보완이 필요합니다.')
+    response['documentation'] = deepcopy(documentation)
+    response['reviews'][0]['documentation'] = deepcopy(documentation)
+    if rule is None:
+        assert contract.validate_review(response, proposals, allowed) == response
+    else:
+        with pytest.raises(contract.ValidationError) as caught:
+            contract.validate_review(response, proposals, allowed)
+        detail = diag.exception_detail(caught.value)
+        assert (detail['reason'], detail['field'], detail['rule']) == ('review_invalid', 'review.documentation', rule)
+
+
+def test_required_documents_allow_eligible_only_with_exact_candidate_edit_scope():
+    response, proposals, allowed = review_case()
+    first = response['reviews'][0]
+    first.update(verdict='eligible', documentation=dict(status='required', files=['AGENTS.md'],
+        reason='제안된 구현의 경계 설명을 승인된 문서에 함께 보완해야 합니다.'))
+    proposals[0]['candidate']['edit_files'].append('AGENTS.md')
+    response['documentation'] = deepcopy(first['documentation'])
+    assert contract.validate_review(response, proposals, allowed) == response
+
+
+@pytest.mark.parametrize('private,limit', [(True, 1440), (False, 360)])
+def test_documentation_reason_keeps_private_and_public_bounds(private, limit):
+    documentation = dict(status='missing', files=['AGENTS.md'], reason='가' * limit)
+    assert contract.validate_documentation(documentation, ['AGENTS.md'], private=private) == documentation
+    with pytest.raises(contract.ValidationError) as caught:
+        contract.validate_documentation(dict(documentation, reason='가' * (limit + 1)),
+                                        ['AGENTS.md'], private=private)
+    detail = diag.exception_detail(caught.value)
+    assert (detail['reason'], detail['field'], detail['rule']) == ('review_invalid', 'review.documentation', 'length')
+
+
+@pytest.mark.parametrize('interrupt', [False, True])
+def test_review_diagnostic_failure_never_replaces_missing_empty_rejection(monkeypatch, interrupt):
+    response, proposals, allowed = review_case()
+    response['reviews'][0]['documentation']['status'] = 'missing'
+    def broken(*args, **kwargs):
+        if interrupt:
+            raise KeyboardInterrupt(SECRET)
+        raise OSError(errno.ENOSPC, SECRET)
+    monkeypatch.setattr(diag, 'detail', broken)
+    with pytest.raises(contract.ValidationError, match='documentation status/files contradict') as caught:
+        contract.validate_review(response, proposals, allowed)
+    assert diag.exception_detail(caught.value)['cause'] == 'unavailable'
+
+
+@pytest.mark.parametrize('mutation,field,rule', [
+    ('doc_fields', 'review.documentation', 'fields'), ('doc_status', 'review.documentation', 'allowlist'),
+    ('doc_reason_short', 'review.documentation', 'length'), ('doc_reason_long', 'review.documentation', 'length'),
+    ('doc_reason_type', 'review.documentation', 'type'), ('doc_reason_control', 'review.documentation', 'control'),
+    ('doc_reason_utf8', 'review.documentation', 'encoding'),
+    ('missing_eligible', 'review.documentation', 'fields'), ('global_missing', 'review.documentation', 'fields'),
+    ('doc_edit_omitted', 'review.documentation', 'fields'),
+    ('unknown_id', 'review.result', 'allowlist'), ('duplicate_id', 'review.result', 'duplicate'),
+    ('incomplete', 'review.result', 'fields'), ('extra_key', 'review.result', 'fields'),
+    ('verdict', 'review.result', 'allowlist'), ('reason', 'review.result', 'empty'),
+])
+def test_final_review_strict_rejections_have_fixed_provenance(mutation, field, rule):
+    response, proposals, allowed = review_case()
+    first = response['reviews'][0]
+    documentation = first['documentation']
+    if mutation == 'doc_fields':
+        documentation['unknown'] = SECRET
+    elif mutation == 'doc_status':
+        documentation['status'] = SECRET
+    elif mutation.startswith('doc_reason_'):
+        documentation['reason'] = {'short': '짧음', 'long': '가' * 1441, 'type': False,
+                                   'control': '가' * 12 + '\x01', 'utf8': '가' * 12 + '\ud800'}[
+                                       mutation[len('doc_reason_'):]]
+    elif mutation in ('missing_eligible', 'global_missing', 'doc_edit_omitted'):
+        first['verdict'] = 'eligible'
+        target = response['documentation'] if mutation == 'global_missing' else documentation
+        target.update(status='required' if mutation == 'doc_edit_omitted' else 'missing', files=['AGENTS.md'])
+    elif mutation == 'unknown_id':
+        first['candidate_id'] = 'IMP-' + 'f' * 16
+    elif mutation == 'duplicate_id':
+        response['reviews'][1]['candidate_id'] = first['candidate_id']
+    elif mutation == 'incomplete':
+        response['reviews'].pop()
+    elif mutation == 'extra_key':
+        response['unknown'] = SECRET
+    elif mutation == 'verdict':
+        first['verdict'] = SECRET
+    elif mutation == 'reason':
+        first['reason'] = ''
+    with pytest.raises(contract.ValidationError) as caught:
+        contract.validate_review(response, proposals, allowed)
+    detail = diag.exception_detail(caught.value)
+    assert (detail['reason'], detail['cause'], detail['phase'], detail['field'], detail['rule']) == (
+        'review_invalid', 'validation', 'review', field, rule)
+    assert SECRET not in json.dumps(detail)
