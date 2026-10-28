@@ -607,6 +607,45 @@ def code(value):
     return value if isinstance(value, str) and value in allowed | ROLE_FAILURE_REASONS else 'unknown'
 
 
+def candidate_origin(scan, record):
+    """Read explicit first-production provenance; never infer an absent origin."""
+    if 'proposal_origins' not in scan:
+        # Compatibility for older fixtures/records with an explicit role only.
+        role = record.get('origin_role')
+        return role if role in contract.SPECIALIST_ROLES else None
+    origins = scan['proposal_origins']
+    if (not isinstance(origins, dict) or len(origins) > 8 or
+            not set(origins) <= {p.get('id') for p in scan.get('proposals', [])
+                                 if isinstance(p, dict) and isinstance(p.get('id'), str)}):
+        return None
+    origin = origins.get(record['id'])
+    if (not isinstance(origin, dict) or set(origin) != {
+            'version', 'digest', 'scan_id', 'role', 'stage', 'stage_index', 'slot'} or
+            origin['version'] != 'improvement-proposal-origin-v1' or
+            origin['digest'] != record['digest'] or origin['scan_id'] != scan['scan_id'] or
+            origin['role'] not in contract.SPECIALIST_ROLES or origin['stage'] != 'specialist' or
+            type(origin['stage_index']) is not int or
+            origin['stage_index'] != 2 * contract.SPECIALIST_ROLES.index(origin['role']) + 1 or
+            not isinstance(origin['slot'], str) or
+            not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}', origin['slot']) or
+            timestamp(origin['slot'] + ':00:00+09:00') is None):
+        return None
+    # Check the original scan's actual successful attempt, never a morning
+    # representative, current history or an owner inferred from edit paths.
+    agents = scan.get('agents')
+    if not isinstance(agents, list):
+        return None
+    matching = [a for a in agents if isinstance(a, dict) and a.get('role') == origin['role']]
+    if len(matching) != 1:
+        return None
+    attempt = matching[0]
+    if (attempt.get('status') != 'succeeded' or attempt.get('owner_role') != origin['role'] or
+            type(attempt.get('stage_index')) is not int or
+            any(attempt.get(key) != origin[key] for key in ('scan_id', 'stage', 'stage_index', 'slot'))):
+        return None
+    return origin['role']
+
+
 def candidate_rows(scans, bounds, role):
     """Admission cohort; verdicts observed before period end only. OR union is transitive."""
     occurrences = []
@@ -652,9 +691,7 @@ def candidate_rows(scans, bounds, role):
         first = group[0]
         if not inside(first['at'], bounds):
             continue
-        # Only explicit retained provenance fields support an origin role.
-        origin = first['record'].get('origin_role')
-        origin = origin if origin in contract.SPECIALIST_ROLES else None
+        origin = candidate_origin(first['scan'], first['record'])
         if role and origin != role:
             continue
         verified = [e for e in group if e['proof'] and e['record'].get('review', {}).get('verdict') in VERDICTS[:3]]

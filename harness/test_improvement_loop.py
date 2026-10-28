@@ -14,6 +14,7 @@ import pytest
 from pytest import approx
 
 from harness import agent_models, improvement_loop as loop
+from harness import improvement_metrics as metrics
 from harness import improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import review_coverage as coverage
@@ -504,7 +505,13 @@ def quota_body(now=START, kind='TOKENS_LIMIT', percentage=1, weekly=None):
     return {'data': {'level': 'lite', 'limits': limits}}
 
 def test_nine_stages_real_validation_and_private_local_provenance(lab):
-    results = lab.hours()
+    results = []
+    for hour in range(9):
+        results.append(lab.tick(hour))
+        scan = lab.report()
+        assert len(scan.get('proposal_origins', {})) == min((hour + 1) // 2, 4)
+        assert lab.store.read('scans/' + scan['scan_id'] + '.json') == scan
+        lab.store = imp.Store(lab.selected)
     expected = [(stage, role) for role in contract.SPECIALIST_ROLES
                 for stage in ('local_explorer', 'specialist')] + [('independent_reviewer', 'reviewer')]
     assert lab.events == expected
@@ -523,7 +530,17 @@ def test_nine_stages_real_validation_and_private_local_provenance(lab):
         assert local['stage'] == 'local_explorer' and local['called'] is True
         assert local['cost'] is None and local['cost_status'] == 'not_metered'
         assert local['read_windows'] and 'request' not in local and 'response' not in local
-    for record in report['proposals']:
+    for index, record in enumerate(report['proposals']):
+        role = contract.SPECIALIST_ROLES[index]
+        assert report['proposal_origins'][record['id']] == {
+            'version': 'improvement-proposal-origin-v1', 'digest': record['digest'],
+            'scan_id': report['scan_id'], 'role': role, 'stage': 'specialist',
+            'stage_index': 2 * index + 1, 'slot': (START + dt.timedelta(hours=2 * index + 1)).strftime('%Y-%m-%dT%H')}
+        assert metrics.candidate_origin(report, record) == role
+        identity = contract.proposal_record(record['candidate'], record['source_fingerprints'])
+        assert {k: record[k] for k in identity} == identity
+        assert set(record) == {'id', 'digest', 'candidate', 'source_fingerprints', 'review'}
+        assert 'origin_role' not in record['candidate']
         saved = lab.store.read('proposals/' + record['id'] + '.json')
         assert saved['proposal'] == record and saved['scan_id'] == report['scan_id']
         assert imp._eligible(lab.store, record['id']) == record
@@ -534,6 +551,74 @@ def test_nine_stages_real_validation_and_private_local_provenance(lab):
         assert not entry['options']['workspace'].exists()
     for directory in ('decisions', 'approvals', 'claims', 'executions'):
         assert not lab.store.path(directory).exists()
+
+
+def test_private_origins_do_not_change_read_authority_or_frozen_public_digest(lab):
+    lab.hours()
+    report = lab.report()
+    legacy = deepcopy(report)
+    legacy.pop('proposal_origins')
+    coverage.validate(report)
+    coverage.validate(legacy)
+    assert report['proposals'] == legacy['proposals']
+    assert report['source_review_binding'] == legacy['source_review_binding']
+    assert coverage.review_result(report) == coverage.review_result(legacy)
+    assert loop.authorization_context(report) == loop.authorization_context(legacy)
+    assert contract.build_web_report(report, 3) == contract.build_web_report(legacy, 3)
+    scan_name = 'scans/' + report['scan_id'] + '.json'
+    original = lab.store.path(scan_name).read_bytes()
+    lab.store = imp.Store(lab.selected)
+    lab.tick(9)
+    journal = lab.store.read('loop/publications/2026-10-15.json')
+    without_origins = deepcopy(journal['report'])
+    without_origins.pop('proposal_origins')
+    assert contract.build_web_report(without_origins, journal['projection_limit']) == journal['payload']
+    assert journal['digest'] == journal['payload']['digest']
+    assert 'proposal_origins' not in json.dumps(journal['payload'])
+    assert lab.store.path(scan_name).read_bytes() == original
+    frozen = lab.store.path('loop/publications/2026-10-15.json').read_bytes()
+    lab.tick(10)
+    assert lab.store.path('loop/publications/2026-10-15.json').read_bytes() == frozen
+
+
+@pytest.mark.parametrize('legacy_gap', [False, True])
+def test_duplicate_id_neither_overwrites_first_specialist_nor_backfills_gap(lab, monkeypatch, legacy_gap):
+    lab.hours(count=2)
+    state = lab.state()
+    first = deepcopy(state['round']['report']['proposals'][0])
+    origins = deepcopy(state['round']['report']['proposal_origins'])
+    if legacy_gap:
+        state['round']['report'].pop('proposal_origins')
+        lab.store.write(loop.STATE_FILE, state)
+    actual = loop._cloud_call
+
+    def duplicate(role, *args, **kwargs):
+        participation, parsed = actual(role, *args, **kwargs)
+        if role == 'downloader':
+            # Exercise duplicate admission after the real synthetic call's
+            # validation, independent of the specialists' disjoint scopes.
+            return participation, [deepcopy(first['candidate'])] * 2
+        return participation, parsed
+
+    monkeypatch.setattr(loop, '_cloud_call', duplicate)
+    lab.store = imp.Store(lab.selected)
+    lab.hours(start=2, count=2)
+    report = lab.report()
+    assert report['proposals'] == [first]
+    assert report.get('proposal_origins', {}) == ({} if legacy_gap else origins)
+    assert metrics.candidate_origin(report, first) == (None if legacy_gap else 'coordinator')
+
+
+def test_private_origin_map_is_bounded_by_eight_admitted_candidates(lab):
+    lab.config.update(max_candidates=8, max_candidates_per_specialist=2)
+    lab.save_loop()
+    lab.local_transform = lambda user, cs: [dict(cs[0], title=cs[0]['title'] + str(i)) for i in range(2)]
+    lab.hours()
+    report = lab.report()
+    assert len(report['proposals']) == len(report['proposal_origins']) == 8
+    assert set(report['proposal_origins']) == {p['id'] for p in report['proposals']}
+    assert [metrics.candidate_origin(report, p) for p in report['proposals']] == [
+        role for role in contract.SPECIALIST_ROLES for _ in range(2)]
 
 def test_same_slot_restart_and_clock_rollback_never_replay(lab):
     lab.tick(0)

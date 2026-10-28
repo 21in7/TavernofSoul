@@ -1932,6 +1932,15 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                         if len(report['proposals']) >= config['max_candidates']:
                             break
                         report['proposals'].append(record)
+                        # Private executor provenance, outside candidate identity,
+                        # review/approval bindings and public projections. Only a
+                        # newly admitted specialist candidate gets an origin;
+                        # duplicates and legacy gaps must never be backfilled.
+                        report.setdefault('proposal_origins', {}).setdefault(record['id'], {
+                            'version': 'improvement-proposal-origin-v1',
+                            'digest': record['digest'], 'scan_id': report['scan_id'],
+                            'role': role, 'stage': stage,
+                            'stage_index': pending['stage_index'], 'slot': pending['slot']})
                         refined.append(record)
             entries = [_feedback_entry(r['candidate'], reason=contract.redact_text(r['candidate']['issue']),
                 candidate_id=r['id'], draft_digest=contract.digest(drafts)) for r in refined]
