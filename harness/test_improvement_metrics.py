@@ -1150,3 +1150,19 @@ def test_unsafe_or_changed_attachments_are_unavailable(tmp_path, damage):
             elif damage == 'inventory':
                 write_private(root / 'new.json', {})
             reader.verify()
+
+
+def test_bare_make_returns_help_without_running_python(tmp_path):
+    makefile = Path(__file__).resolve().parents[1] / 'Makefile'
+    (tmp_path / 'Makefile').write_bytes(makefile.read_bytes())
+    python_stub = tmp_path / 'python-must-not-run'
+    python_stub.write_text('#!/bin/sh\nexit 97\n', encoding='utf-8')
+    python_stub.chmod(0o700)
+    env = dict(os.environ, PYTHON=str(python_stub), MAKEFLAGS='', GNUMAKEFLAGS='',
+               MFLAGS='', MAKEFILES='', MAKEOVERRIDES='')
+    result = subprocess.run(['make'], cwd=tmp_path, env=env, capture_output=True,
+                            text=True, timeout=10, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'doctor          Check the offline harness environment' in result.stdout
+    assert 'improvement-metrics' in result.stdout
+    assert 'Override the interpreter with: make check PYTHON=/path/to/python' in result.stdout
