@@ -14,6 +14,7 @@ PYTEST_WORKERS ?= 2
 .PHONY: agent-improve agent-improve-daily agent-improve-status agent-improve-approve agent-improve-reject agent-improve-execute
 .PHONY: agent-improve-tick agent-improve-loop-status agent-improve-publish
 .PHONY: agent-improve-completion
+.PHONY: improvement-metrics
 
 # Quote each improvement argument as one literal shell word. Never evaluate it
 # as shell code; the Python CLI validates IDs, paths and trusted-parent authority.
@@ -70,6 +71,7 @@ help:
 	@echo "agent-improve-reject Trusted parent only: PROPOSAL_ID=..."
 	@echo "agent-improve-execute Consume one exact approval: PROPOSAL_ID=..."
 	@echo "agent-improve-completion Resume only completion delivery: RUN_ID=... [RECONCILE=1]"
+	@echo "improvement-metrics Read retained metrics [PERIOD=latest|day|7d|30d FORMAT=text|json]"
 	@echo "Override the interpreter with: make check PYTHON=/path/to/python"
 
 prepare-ipf-unpacker:
@@ -184,3 +186,6 @@ agent-improve-execute:
 
 agent-improve-completion:
 	$(PYTHON) -m harness.improvement_completion --run-id $(call improve_quote,$(RUN_ID)) $(if $(filter 1,$(RECONCILE)),--reconcile)
+
+improvement-metrics:
+	@$(PYTHON) -m harness.improvement_metrics --period $(call improve_quote,$(if $(PERIOD),$(PERIOD),latest)) $(if $(DATE),--date $(call improve_quote,$(DATE))) $(if $(ROLE),--role $(call improve_quote,$(ROLE))) --format $(call improve_quote,$(if $(FORMAT),$(FORMAT),text)) $(if $(WORKFLOW_STORAGE_CONFIG),--workflow-storage-config $(call improve_quote,$(WORKFLOW_STORAGE_CONFIG)))

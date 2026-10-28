@@ -63,6 +63,7 @@ daily/hourly·게임 cron·approval 기록과 모델/역할/인증 설정은 바
 - 승인 대기 개선 연구·오전 보고: `harness/improvement_loop.py`, `harness/local_model.py`,
   `harness/improvements.py`, `harness/improvement_report.py`, [docs/improvements.md](docs/improvements.md),
   [docs/local-models.md](docs/local-models.md). 시간별 연구·09:00 한 번 보고·사람의 승인/실행을 분리한다.
+- 개선 성과 조회: [지표 계약](docs/improvement-metrics.md).
 - GitHub 자동 게시·병합·정리: `harness/git_publish.py`, `harness/git_cleanup.py`, `harness/git-publish-config.json`.
   Git 역할은 PR 설명을 작성하며, 실제 게시와 머지는 메인 Codex의 GitHub 앱 연결을 사용한다.
 - 작업 접수·배정 추천: `harness/triage.py`, `harness/triage-config.json`,
