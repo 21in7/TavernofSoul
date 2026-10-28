@@ -787,6 +787,254 @@ def test_settled_archived_slot_can_retain_a_call_once_without_role_projection(tm
     assert result['rounds']['stages'][1]['calls'] == 1
 
 
+def synthetic_workflow_records(scan, run_id, agents, events, marker):
+    """New signed synthetic bindings, independent of retained private reports."""
+    records = records_for(scan, source=None)
+    records['loop/state.json'] = dict(completed=[dict(scan_id=scan['scan_id'], at=at(8, minute=7))])
+    proposal = scan['proposals'][0]
+    pid = proposal['id']
+    key = hashlib.sha256(b'synthetic-legacy-call-fixtures-01').digest()
+    authorization_id = marker * 48
+    approval = dict(version='improvement-approval-v1', authority='trusted-parent', proposal_id=pid,
+        proposal_digest=proposal['digest'], review_digest=C.digest(proposal['review']),
+        source_fingerprints=proposal['source_fingerprints'], allowed_edit_files=proposal['candidate']['edit_files'],
+        publication=imp.PUBLICATION, instruction='합성 호출 연결의 승인 범위를 확인합니다.',
+        issued_at=at(9, minute=13), expires_at=at(1, 28), authorization_id=authorization_id,
+        consumption='unconsumed', discovery_fingerprint=C.digest(dict(dependencies=scan['loop_dependencies'],
+            scan_id=scan['scan_id'], source_review_binding=scan['source_review_binding'])))
+    task = imp._task(proposal, approval)
+    claim = dict(version='improvement-claim-v1', proposal_id=pid, proposal_digest=proposal['digest'],
+        authorization_id=authorization_id, task_digest=hashlib.sha256(task.encode('utf-8')).hexdigest(),
+        claim_id=hashlib.sha256(run_id.encode('utf-8')).hexdigest()[:48], run_id=run_id,
+        status='consumed', at=at(10, minute=17))
+    prefix = 'workflows/' + run_id + '/'
+    records.update({'authority.key': key, 'approvals/' + pid + '.json': sign(approval, key),
+        'claims/' + pid + '.json': sign(claim, key),
+        'decisions/' + pid + '.json': dict(status='approved', authorization_id=authorization_id,
+                                          at=at(9, minute=14)),
+        prefix + 'report.json': dict(run_id=run_id, status='passed', finished_at=at(14, minute=47),
+            task_sha256=imp.workflow.triage.digest(task), agents=agents, events=events)})
+    return records, prefix
+
+
+def legacy_workflow_seven_fixture(tmp_path):
+    scan = scan_fixture(tmp_path, scan_id='synthetic-call-orchid', title_prefix='합성 호출 라운드 가 ')
+    identities = [('fixture-planner', 'plan', None), ('fixture-builder', 'implement', 0),
+                  ('fixture-builder', 'implement', 1), ('reviewer', 'review', None),
+                  ('fixture-builder', 'implement', 0), ('reviewer', 'review', None),
+                  ('fixture-git', 'github', None)]
+    agents = [dict(role=role, phase=phase, task_id=task, status='passed',
+                   provider='claude' if role == 'reviewer' else 'codex', model='synthetic-orchid',
+                   response='합성 라운드 결과를 기록했습니다.') for role, phase, task in identities]
+    events = [dict(role=role, phase=phase, task_id=task, agent_started=True, time=at(11, minute=3 + 4 * i))
+              for i, (role, phase, task) in enumerate(identities)]
+    return synthetic_workflow_records(scan, 'synthetic-orchid-workflow', agents, events, 'c')
+
+
+def legacy_workflow_six_fixture(tmp_path):
+    scan = scan_fixture(tmp_path, scan_id='synthetic-call-maple', title_prefix='합성 호출 라운드 나 ')
+    identities = [('fixture-designer', 'plan', None), ('fixture-maintainer', 'implement', 0),
+                  ('fixture-maintainer', 'implement', 1), ('fixture-maintainer', 'implement', 0),
+                  ('reviewer', 'review', None), ('fixture-publisher', 'github', None)]
+    agents = [dict(role=role, phase=phase, task_id=task, status='succeeded',
+                   provider='claude' if role == 'reviewer' else 'codex', model='synthetic-maple',
+                   response='합성 변경 라운드의 완료 결과입니다.') for role, phase, task in identities]
+    events = [dict(role=role, phase=phase, task_id=task, agent_started=True, time=at(13, minute=2 + 5 * i))
+              for i, (role, phase, task) in enumerate(identities)]
+    return synthetic_workflow_records(scan, 'synthetic-maple-workflow', agents, events, 'd')
+
+
+def test_legacy_workflow_native_rounds_count_seven_six_and_thirteen(tmp_path):
+    first, first_prefix = legacy_workflow_seven_fixture(tmp_path)
+    second, second_prefix = legacy_workflow_six_fixture(tmp_path)
+    for records, prefix, expected in ((first, first_prefix, 7), (second, second_prefix, 6)):
+        report = records[prefix + 'report.json']
+        assert len(report['agents']) == len(report['events']) == expected
+        assert {type(a['task_id']) for a in report['agents']} == {int, type(None)}
+        assert {a['task_id'] for a in report['agents']} == {None, 0, 1}
+        assert all('call_started_at' not in a and 'elapsed_seconds' not in a for a in report['agents'])
+        result = query(records)
+        assert result['conversion']['unique_runs'] == 1
+        assert result['efficiency']['implementation_slots'] == expected
+        assert result['efficiency']['calls_per_merge']['numerator'] == expected
+        assert sum(row['success'] for row in result['efficiency']['implementation']) == expected
+        for row in result['efficiency']['implementation']:
+            assert row['duration_seconds'] == dict(n=0, median=None, p90=None, max=None)
+            assert row['claude_estimated_usd'] is None
+            assert row['cost_known_calls'] == 0
+            for field in metrics.TOKEN_FIELDS:
+                assert row['tokens'][field] == dict(known_sum=None, known_calls=0, unknown_calls=row['slots'])
+    # Equal terminal payloads are distinct calls when the observed starts differ.
+    assert first[first_prefix + 'report.json']['agents'][1] == first[first_prefix + 'report.json']['agents'][4]
+    assert second[second_prefix + 'report.json']['agents'][1] == second[second_prefix + 'report.json']['agents'][3]
+    combined = dict(first)
+    combined.update(second)
+    combined['loop/state.json'] = dict(completed=(first['loop/state.json']['completed'] +
+                                                 second['loop/state.json']['completed']))
+    result = query(combined)
+    assert result['conversion']['unique_runs'] == 2
+    assert result['efficiency']['implementation_slots'] == 13
+    assert result['efficiency']['calls_per_merge']['numerator'] == 13
+    assert sum(row['success'] for row in result['efficiency']['implementation']) == 13
+
+
+@pytest.mark.parametrize('fixture,expected', [(legacy_workflow_seven_fixture, 7), (legacy_workflow_six_fixture, 6)])
+def test_legacy_workflow_orphan_starts_and_duplicate_transmission_do_not_add_success(tmp_path, fixture, expected):
+    records, prefix = fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    baseline = query(records)['efficiency']
+    # A retransmitted start is one observation; additional starts have no result.
+    report['events'].insert(2, copy.deepcopy(report['events'][1]))
+    report['events'].extend([dict(report['events'][1], time=at(14, minute=1)),
+                             dict(role='unreturned-worker', phase='implement', task_id=1,
+                                  agent_started=True, time=at(14, minute=2))])
+    report['agents'].append(copy.deepcopy(report['agents'][-1]))
+    result = query(records)
+    assert result['efficiency']['implementation_slots'] == expected
+    assert result['efficiency']['calls_per_merge']['numerator'] == expected
+    assert result['efficiency']['implementation'] == baseline['implementation']
+
+
+@pytest.mark.parametrize('status', ['failed', 'unavailable', 'running', 'reserved', 'not_called', 'skipped', None])
+def test_legacy_workflow_requires_terminal_success_without_changing_later_rounds(tmp_path, status):
+    records, prefix = legacy_workflow_seven_fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    report['agents'][1]['status'] = status
+    result = query(records)
+    assert result['efficiency']['implementation_slots'] == 6
+    assert result['efficiency']['calls_per_merge']['numerator'] == 6
+    assert sum(row['success'] for row in result['efficiency']['implementation']) == 6
+    entries = metrics.workflow_entries(report, report['run_id'])
+    assert entries[4]['call_started_at'] == report['events'][4]['time']
+    assert not metrics.called(entries[1])
+    assert entries[1]['call_finished_at'] is None
+
+
+@pytest.mark.parametrize('side', ['agent', 'event'])
+@pytest.mark.parametrize('change', [dict(task_id=True), dict(task_id=False), dict(task_id=0.0),
+    dict(task_id=[]), dict(task_id={}), dict(task_id='0'), dict(task_id=None),
+    dict(role='other-fixture-role'), dict(phase='other-fixture-phase'), dict(run_id='other-fixture-run')])
+def test_legacy_workflow_never_joins_different_or_malformed_identity(tmp_path, side, change):
+    records, prefix = legacy_workflow_six_fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    # task 1 occurs only once, so a wrong identity cannot match another round.
+    target = report['agents' if side == 'agent' else 'events'][2]
+    target.update(change)
+    result = query(records)
+    assert result['efficiency']['implementation_slots'] == 5
+    assert result['efficiency']['calls_per_merge']['numerator'] == 5
+
+
+@pytest.mark.parametrize('change', [dict(time='invalid-clock'), dict(agent_started=False)])
+def test_legacy_workflow_needs_a_valid_observed_start(tmp_path, change):
+    records, prefix = legacy_workflow_six_fixture(tmp_path)
+    records[prefix + 'report.json']['events'][2].update(change)
+    result = query(records)
+    assert result['efficiency']['implementation_slots'] == 5
+    assert result['efficiency']['calls_per_merge']['numerator'] == 5
+
+
+@pytest.mark.parametrize('side', ['agents', 'events'])
+def test_legacy_workflow_run_boundaries_and_absent_task_are_not_null(tmp_path, side):
+    records, prefix = legacy_workflow_six_fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    report[side][0].pop('task_id')
+    assert query(records)['efficiency']['implementation_slots'] == 5
+    report[side][0]['task_id'] = None
+    report['run_id'] = 'unrelated-synthetic-workflow'
+    assert query(records)['efficiency']['implementation_slots'] == 0
+
+
+def test_legacy_workflow_missing_result_and_explicit_not_called_stay_unobserved(tmp_path):
+    records, prefix = legacy_workflow_six_fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    report['agents'].pop(2)
+    report['agents'][0]['called'] = False
+    result = query(records)
+    assert result['efficiency']['implementation_slots'] == 4
+    assert result['efficiency']['calls_per_merge']['numerator'] == 4
+    assert sum(row['success'] for row in result['efficiency']['implementation']) == 4
+
+
+def test_legacy_workflow_modern_calls_failures_filters_and_observed_telemetry(tmp_path):
+    records, prefix = legacy_workflow_seven_fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    # Aggregate role filters also require the existing proposal-origin cohort.
+    origin = C.SPECIALIST_ROLES[0]
+    for name, record in records.items():
+        if name.startswith('scans/'):
+            record['proposals'][0]['origin_role'] = origin
+        elif name.startswith('proposals/'):
+            record['proposal']['origin_role'] = origin
+    for record in report['agents'] + report['events']:
+        if record['role'] == 'fixture-builder':
+            record['role'] = origin
+    # A modern result for the same identity is interleaved with legacy rounds.
+    modern = dict(report['agents'][1], started_at=at(11, minute=10), call_started_at=at(11, minute=11),
+                  finished_at=at(11, minute=13), call_finished_at=at(11, minute=12), status='failed')
+    report['agents'].insert(2, modern)
+    report['events'].insert(2, dict(report['events'][1], time=at(11, minute=11)))
+    # Observed telemetry stays observed; no completion clock is inferred for legacy results.
+    report['agents'][4].update(usage=dict(input_tokens=17), cost=0.25, cost_status='cli_estimated_usd')
+    entries = metrics.workflow_entries(report, report['run_id'])
+    assert entries[1]['call_started_at'] == at(11, minute=7)
+    assert entries[2]['call_started_at'] == at(11, minute=11)
+    assert entries[5]['call_started_at'] == at(11, minute=19)
+    result = query(records)
+    assert result['efficiency']['implementation_slots'] == 8
+    assert result['efficiency']['calls_per_merge']['numerator'] == 8
+    assert sum(row['failed'] for row in result['efficiency']['implementation']) == 1
+    assert sum(row['success'] for row in result['efficiency']['implementation']) == 7
+    assert sum(row['duration_seconds']['n'] for row in result['efficiency']['implementation']) == 1
+    assert next(row for row in result['efficiency']['implementation'] if row['duration_seconds']['n'])['duration_seconds']['median'] == 60
+    reviewer_calls, reviewer_rows = metrics.efficiency(entries, (metrics.timestamp(at()), NOW), 'reviewer')
+    assert len(reviewer_calls) == 2
+    assert reviewer_rows[0]['tokens']['input_tokens'] == dict(known_sum=17, known_calls=1, unknown_calls=1)
+    assert reviewer_rows[0]['claude_estimated_usd'] == 0.25
+    assert reviewer_rows[0]['cost_known_calls'] == 1
+    assert reviewer_rows[0]['duration_seconds']['n'] == 0
+    assert query(records, role='reviewer')['efficiency']['implementation_slots'] == 0
+    author = query(records, role=origin)['efficiency']
+    assert author['implementation_slots'] == author['calls_per_merge']['numerator'] == 4
+    # The period is half open and uses each call's observed admission clock.
+    cutoff = metrics.aggregate(records, period='day', date='2026-10-27',
+                               now=metrics.timestamp(at(11, minute=19)))
+    assert cutoff['efficiency']['implementation_slots'] == 5
+    assert cutoff['efficiency']['calls_per_merge']['numerator'] == 5
+    previous = metrics.aggregate(records, period='day', date='2026-10-26', now=NOW)
+    assert previous['efficiency']['implementation_slots'] == 0
+    # Repeated transmissions with explicit modern clocks are the same call.
+    report['agents'].insert(3, copy.deepcopy(modern))
+    assert query(records)['efficiency'] == result['efficiency']
+
+
+def test_legacy_workflow_orphans_cannot_cross_an_explicit_modern_round(tmp_path):
+    records, prefix = legacy_workflow_six_fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    modern = report['agents'][1]
+    modern.update(started_at=report['events'][1]['time'], finished_at=at(13, minute=8))
+    report['events'].insert(1, dict(report['events'][1], time=at(13, minute=5)))
+    entries = metrics.workflow_entries(report, report['run_id'])
+    assert entries[3]['call_started_at'] == at(13, minute=17)
+    assert query(records)['efficiency']['implementation_slots'] == 6
+
+
+@pytest.mark.parametrize('status', ['passed', 'failed'])
+def test_legacy_workflow_modern_result_needs_no_start_event(tmp_path, status):
+    records, prefix = legacy_workflow_six_fixture(tmp_path)
+    report = records[prefix + 'report.json']
+    # The same identity's later legacy start must remain available to its result.
+    report['agents'].insert(2, dict(report['agents'][1], status=status,
+        call_started_at=at(13, minute=10), call_finished_at=at(13, minute=11)))
+    entries = metrics.workflow_entries(report, report['run_id'])
+    assert entries[4]['call_started_at'] == at(13, minute=17)
+    result = query(records)['efficiency']
+    assert result['implementation_slots'] == result['calls_per_merge']['numerator'] == 7
+    assert sum(row['success'] for row in result['implementation']) == (7 if status == 'passed' else 6)
+    assert sum(row['failed'] for row in result['implementation']) == (1 if status == 'failed' else 0)
+    assert sum(row['duration_seconds']['n'] for row in result['implementation']) == 1
+
+
 def write_private(path, value, *, root=None):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if root is not None:

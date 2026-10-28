@@ -957,6 +957,82 @@ def efficiency(entries, bounds, role):
     return selected, rows
 
 
+def workflow_entries(report, run_id):
+    """Pair retained results with distinct observed starts in invocation order.
+
+    Native task IDs include integers and explicit null. Equal result payloads
+    can be separate repair rounds; only an observed start identifies a call.
+    Starts alone never become results or supply missing completion telemetry.
+    """
+    if not isinstance(report, dict) or report.get('run_id') != run_id:
+        return []
+
+    def key(value):
+        if ('run_id' in value and value['run_id'] != run_id or
+                not isinstance(value.get('role'), str) or not value['role'] or
+                not isinstance(value.get('phase'), str) or not value['phase'] or
+                'task_id' not in value):
+            return None
+        task = value['task_id']
+        if not (task is None or type(task) is int and task >= 0 or
+                type(task) is str and task):
+            return None
+        return value['role'], value['phase'], type(task), task
+
+    starts, seen = {}, set()
+    events = report.get('events', [])
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict) or event.get('agent_started') is not True:
+            continue
+        owner, clock = key(event), timestamp(event.get('time'))
+        if owner is not None and clock and (owner, clock) not in seen:
+            seen.add((owner, clock))
+            starts.setdefault(owner, []).append((clock, event['time']))
+    for queue in starts.values():
+        queue.sort(key=lambda item: item[0])
+
+    agents = report.get('agents', [])
+    agents = agents if isinstance(agents, list) else []
+    results = []
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        call_at = agent.get('call_started_at')
+        if not timestamp(call_at):
+            call_at = agent.get('started_at')
+        results.append((agent, key(agent), call_at, timestamp(call_at)))
+
+    entries, observed = [], set()
+    for i, (agent, owner, call_at, clock) in enumerate(results):
+        if 'run_id' in agent and agent['run_id'] != run_id:
+            continue
+        queue = starts.get(owner, [])
+        matching = None
+        if clock:
+            # Explicit clocks keep modern successes/failures and delimit later
+            # rounds. Earlier orphan starts cannot migrate past this result.
+            while queue and queue[0][0] <= clock:
+                queue.pop(0)
+        elif queue:
+            next_clock = next((later_clock for _, later_owner, _, later_clock in results[i + 1:]
+                               if later_owner == owner and later_clock), None)
+            if next_clock is None or queue[0][0] < next_clock:
+                matching = queue.pop(0)
+            if matching and agent.get('status') in ('passed', 'succeeded'):
+                call_at, clock = matching[1], matching[0]
+        if owner is not None and clock:
+            if (owner, clock) in observed:
+                continue
+            observed.add((owner, clock))
+        at = agent.get('started_at')
+        if not timestamp(at):
+            at = call_at if clock else matching[1] if matching else None
+        entries.append(dict(agent, scan_id=run_id, stage_index=i, local=False,
+                            started_at=at, call_started_at=call_at,
+                            call_finished_at=agent.get('call_finished_at') or agent.get('finished_at')))
+    return entries
+
+
 def aggregate(records, period='latest', date=None, role=None, now=None, errors=()):
     now = now or dt.datetime.now(dt.timezone.utc)
     retained, state = originals(records)
@@ -1009,18 +1085,9 @@ def aggregate(records, period='latest', date=None, role=None, now=None, errors=(
     untimed_implementation = 0
     for run_id in sorted(run_ids):
         report = records.get('workflows/' + run_id + '/report.json', {})
-        running = [e for e in report.get('events', []) if e.get('agent_started') is True]
-        for i, agent in enumerate(report.get('agents', [])):
-            matching = next((e for e in running if e.get('role') == agent.get('role') and
-                             e.get('phase') == agent.get('phase') and e.get('task_id') == agent.get('task_id')), None)
-            if matching:
-                running.remove(matching)
-            at = agent.get('started_at') or (matching or {}).get('time')
-            if not timestamp(at):
-                untimed_implementation += 1
-            implementation.append(dict(agent, scan_id=run_id, stage_index=i, local=False,
-                                       started_at=at, call_started_at=agent.get('started_at'),
-                                       call_finished_at=agent.get('finished_at')))
+        own = workflow_entries(report, run_id)
+        untimed_implementation += sum(not timestamp(e.get('started_at')) for e in own)
+        implementation.extend(own)
     implementation_calls, implementation_costs = efficiency(implementation, bounds, role)
     local = [e for e in research if e.get('local')]
     stages = []
