@@ -347,8 +347,6 @@ def patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_destina
 
     if filesize == 0:
         raise ValueError('Filesize is ZERO: {}'.format(patch_file))
-    else:
-        pass
     # Extract patch
     if(patch_unpack):
         try:
@@ -407,9 +405,6 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
             # Process patch
             patch_name = revision + '_001001' + patch_ext
             patch_file = os.path.join(patch_path, patch_name)
-            filesize = 0
-            if os.path.isfile(patch_file):
-                filesize = os.path.getsize(patch_file)
             
             patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_path)
 
@@ -426,7 +421,7 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
 
 
 
-def do_patch_full(patch_output, url_patch):   
+def do_patch_full(url_patch):
     patch_full(
         os.path.join("..", "{}_patch".format(region)),  url_patch + 'full/data/', '.ipf', False,
         url_patch + 'full/data.file.list.txt',True
@@ -476,7 +471,7 @@ def _run(argv):
     output = os.path.join("..", "{}_patch".format(region))
     
     if ('full' in argv ):
-        do_patch_full(output, url_patch)
+        do_patch_full(url_patch)
         return EXIT_CHANGED
     else:
         version_data, version_data_new, has_data_chages = patch_partial(

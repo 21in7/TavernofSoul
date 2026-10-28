@@ -921,9 +921,9 @@ def install_full_routes(server, revision_text='1\r\n2\r\n', patch_names=('1.ipf'
 def test_do_patch_full_forwards_region_paths_and_repatch(workspace, monkeypatch):
     captured = []
     monkeypatch.setattr(client, 'patch_full', lambda *args: captured.append(args))
-    # The first do_patch_full argument is not forwarded: the patch directory
-    # is derived from the region, and repatch is forwarded as literal True.
-    client.do_patch_full('../elsewhere', 'https://fixture.invalid/patch/')
+    # do_patch_full takes only the patch base URL: the patch directory is
+    # derived from the region, and repatch is forwarded as literal True.
+    client.do_patch_full('https://fixture.invalid/patch/')
     assert captured == [(os.path.join('..', 'itos_patch'),
                          'https://fixture.invalid/patch/full/data/',
                          '.ipf',
