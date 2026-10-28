@@ -87,6 +87,7 @@ from contextlib import contextmanager, nullcontext
 from harness import agent_models, improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import improvement_snapshot as sealed
+from harness import improvement_reference as reference
 from harness import review_coverage as coverage
 from harness import project_lock, improvement_diagnostics as diagnostics
 
@@ -1051,10 +1052,62 @@ def _deadline(seconds):
                             previous_timer[1])
 
 
+def _reference_inputs(store):
+    """One advisory read before either source/state mutex; never retry or write."""
+    records, annotations = {}, []
+    try:
+        # The source mutex can create the legacy directory with only hidden
+        # coordination files. That alone is not a development input. A real
+        # configured policy always goes through resolution, even if invalid.
+        legacy_root = imp.ROOT / 'logs/harness/workflows'
+        try:
+            (imp.ROOT / 'logs/harness/storage-local.json').lstat()
+        except FileNotFoundError:
+            try:
+                fd = os.open(legacy_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                return records, annotations
+            try:
+                with os.scandir(fd) as entries:
+                    for count, entry in enumerate(entries, 1):
+                        if count > reference.MAX_FILES:
+                            return records, annotations
+                        if not entry.name.startswith('.') and entry.name != 'archive':
+                            break
+                    else:
+                        return records, annotations
+            finally:
+                os.close(fd)
+        development = storage.resolve_storage(imp.ROOT, env={})
+        development_root = development.workflow_root(
+            local_default=legacy_root)
+        records, _ = reference.capture_reference_inputs(store.root, development_root)
+    except LoopError:
+        raise  # The existing tick deadline remains authoritative.
+    except Exception:
+        pass  # Optional advice is unavailable; never report raw input/errors.
+    try:
+        annotations = reference.read_annotations(store.path('loop/issue-annotations.jsonl'))
+    except LoopError:
+        raise
+    except Exception:
+        pass  # Missing/invalid/busy annotations cannot establish a grouping.
+    return records, annotations
+
+
 def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
-                keys, runner, selected, config, budget, coverage=None, clock=None):
+                keys, runner, selected, config, budget, coverage=None, clock=None,
+                reference_inputs=None):
     source_bytes = sum(len(snapshots[path]['content'] or b'') for path in own_paths)
     call_times = {}
+    advisory = ''
+    if role != 'reviewer' and reference_inputs is not None:
+        try:
+            advisory = reference.render_reference(*reference_inputs, own_paths)
+        except LoopError:
+            raise
+        except Exception:
+            pass
 
     def observe_time(key):
         try:
@@ -1079,7 +1132,18 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
                        'with an empty pool or failed/missing local drafts. Empty reviews are valid '
                        'only after your own assessment; never infer successful coverage from them.\n'
                        + contract.canonical_json({'coverage': coverage}).decode('utf-8') + '\n' + prompt)
-        prompt = agent_models.redact(prompt + extra, runtime_keys)
+        segment = ''
+        if advisory:
+            segment = agent_models.redact(
+                '\n<reference_advisory>\n' + advisory + '\n</reference_advisory>\n', runtime_keys)
+            # Recheck the complete envelope AFTER sanitization/runtime redaction.
+            # Omit whole advice, never truncate entries or existing model input.
+            if len(segment.encode('utf-8')) > reference.REFERENCE_BYTES:
+                segment = ''
+        # Redact every prompt component, including original source/records and
+        # reviewer coverage, while retaining the native prompt/JSON/Read layout.
+        prompt = (agent_models.redact(prompt, runtime_keys) + segment +
+                  agent_models.redact(extra, runtime_keys))
         if source_bytes + len(prompt.encode('utf-8')) > discovery['limits']['max_context_bytes']:
             raise diagnostics.attach(LoopError('cloud_context_too_large'), diagnostics.detail(
                 'role_preparation_failed', 'context_too_large', phase='preparation'))
@@ -1722,7 +1786,7 @@ def _skip_stage(store, state, day, slot, now, config, reason):
 
 
 def _tick_locked(store, state, now, config, runner, keys, local_runner,
-                 supplied_local_config, quota_transport, finish_clock):
+                 supplied_local_config, quota_transport, finish_clock, reference_inputs):
     date = now.date().isoformat()
     slot = date + 'T{:02d}'.format(now.hour)
     if state['high_water_at'] and now < _stamp(state['high_water_at']):
@@ -1914,7 +1978,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             store.policy, config, budget,
             coverage=[{'role': a['role'], 'status': a['status'],
                        'read_files': a.get('read_files', [])} for a in report['agents'][:-1]],
-            clock=finish_clock)
+            clock=finish_clock, reference_inputs=reference_inputs)
         call_finished = _clock(finish_clock())
         participation.update(provider=provider, model=model,
                              started_at=now.isoformat(), finished_at=call_finished.isoformat())
@@ -2083,6 +2147,9 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
             with diagnostics.boundary('deadline'), _deadline(config['tick_timeout_seconds']):
                 with diagnostics.boundary('storage_readiness'):
                     store.policy.check_ready()
+                # Store.lock spans admission through settlement. Capture first:
+                # its nonblocking probes must not contend with our own mutexes.
+                reference_inputs = _reference_inputs(store)
                 with store.lock():
                     with diagnostics.boundary('storage_binding'):
                         project_lock.bind_discovery_root(store.policy, store.root)
@@ -2090,7 +2157,8 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
                     try:
                         with diagnostics.boundary('stage'):
                             result = _tick_locked(store, state, now, config, runner, keys, local_runner,
-                                                  local_config, quota_transport, finish_clock)
+                                                  local_config, quota_transport, finish_clock,
+                                                  reference_inputs)
                             # A duplicate slot still checks the morning sender mutex.
                             # Bootstrap/persistence exceptions authorize neither sender.
                             morning_ready = True
