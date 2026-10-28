@@ -1,7 +1,10 @@
 """Offline Lab contracts; parent runs checks and semantic review."""
 
 from copy import deepcopy
+from contextlib import ExitStack
 import datetime as dt
+import fcntl
+import hashlib
 import http.client
 import json
 import os
@@ -15,6 +18,7 @@ from pytest import approx
 
 from harness import agent_models, improvement_loop as loop
 from harness import improvement_metrics as metrics
+from harness import improvement_reference as reference
 from harness import improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import review_coverage as coverage
@@ -503,6 +507,555 @@ def quota_body(now=START, kind='TOKENS_LIMIT', percentage=1, weekly=None):
         limits.append({'type': kind, 'unit': 6, 'number': 1, 'percentage': weekly,
                        'nextResetTime': int((now + dt.timedelta(days=7)).timestamp() * 1000)})
     return {'data': {'level': 'lite', 'limits': limits}}
+
+@pytest.fixture
+def reference_case(reference_lab, monkeypatch):
+    return make_reference_case(reference_lab, monkeypatch)
+
+
+@pytest.fixture(scope='module')
+def reference_resolver():
+    # Requested only by reference tests; capture before function-scoped offline
+    # installs its guard. No import-time mutation or shared-fixture change.
+    return storage.resolve_storage
+
+
+def prepare_reference_lab(lab, monkeypatch, resolve):
+    parent = lab.root.parent
+    policy = {'version': 1, **{
+        name: {'path': str(parent / ('reference-' + name)),
+               'required_mount': str(parent), 'min_free_bytes': 0}
+        for name in ('artifacts', 'temporary')}}
+    config_path = lab.root / 'logs/harness/storage-local.json'
+    config_path.write_bytes(encode(policy))
+    config_path.chmod(0o600)
+    lab.storage_resolutions = []
+
+    def synthetic_default(root, *, env=None):
+        assert root == lab.root and env == {}
+        lab.storage_resolutions.append((root, dict(env)))
+        return resolve(root, env=env, fs=FixtureFS(parent))
+
+    development = resolve(lab.root, env={}, fs=FixtureFS(parent))
+    lab.development_root = development.workflow_root(
+        local_default=lab.root / 'logs/harness/workflows')
+    # mkdir(parents=True) on workflows would create the configured artifact
+    # application with the default parent mode, which the real resolver rejects.
+    lab.development_root.parent.mkdir(mode=0o700, parents=True)
+    lab.development_root.mkdir(mode=0o700)
+    monkeypatch.setattr(storage, 'resolve_storage', synthetic_default)
+    return lab
+
+
+@pytest.fixture
+def reference_lab(lab, monkeypatch, reference_resolver):
+    return prepare_reference_lab(lab, monkeypatch, reference_resolver)
+
+
+def make_reference_case(lab, monkeypatch):
+    """Entirely synthetic records; exercise the real read-only helper APIs."""
+    monkeypatch.setattr(reference, 'append_annotation', forbidden)
+    proposals, annotations, previous = [], [], '0' * 64
+    for index in range(1, 11):
+        paths = (list(FILES[:4]) if index <= 5 else
+                 [FILES[index - 6]] if index <= 9 else ['outside/denied.py'])
+        proposal = {'id': 'IMP-{:016x}'.format(index),
+                    'digest': hashlib.sha256(('synthetic-' + str(index)).encode()).hexdigest(),
+                    'candidate': {'title': '합성 참고 공통' if index <= 5 else
+                                  '합성 참고 전용 ' + str(index), 'edit_files': paths},
+                    'review': {'verdict': 'eligible'}}
+        lab.store.write('proposals/' + proposal['id'] + '.json', {'proposal': proposal})
+        proposals.append(proposal)
+        if index in (1, 2, 5):
+            issue = 'synthetic-implemented' if index <= 2 else 'synthetic-open'
+            entry = {'version': reference.VERSION, 'observed_at': '2020-01-01T00:00:00+00:00',
+                     'proposal_id': proposal['id'], 'proposal_digest': proposal['digest'],
+                     'source': 'parent_review', 'issues': [{'issue_key': issue,
+                         'implementation_status': 'implemented' if index <= 2 else 'open',
+                         'matched_prs': [41, 42, 43, 44] if index <= 2 else []}],
+                     'seq': len(annotations) + 1, 'previous_sha256': previous}
+            line = json.dumps(entry, ensure_ascii=False, sort_keys=True,
+                              separators=(',', ':'), allow_nan=False).encode('utf-8') + b'\n'
+            annotations.append(line)
+            previous = hashlib.sha256(line).hexdigest()
+    annotation_path = lab.store.path('loop/issue-annotations.jsonl')
+    annotation_path.parent.mkdir(mode=0o700, exist_ok=True)
+    annotation_path.write_bytes(b''.join(annotations))
+    annotation_path.chmod(0o600)
+
+    for number in range(41, 45):
+        run = 'synthetic-reference-' + str(number)
+        directory = lab.development_root / run
+        directory.mkdir(mode=0o700)
+        changed = list(FILES[:4]) + ['outside/denied.py']
+        checks = {name: 'success' for name in reference.REQUIRED_CI}
+        head, merge = 'a' * 40, 'b' * 40
+        report = {'run_id': run, 'status': 'passed', 'changed_files': changed}
+        github = {'run_id': run, 'status': 'merged', 'step': 'done', 'merge_status': 'merged',
+                  'pr_number': number, 'head_sha': head, 'merge_sha': merge, 'checks': checks,
+                  'files': {path: {'before': 'c' * 64, 'after': 'd' * 64} for path in changed},
+                  'events': [{'step': 'merge', 'time': number * 1000}],
+                  'cleanup_proof': {'verified': True, 'head_sha': head,
+                                    'merge_sha': merge, 'checks': checks},
+                  'cleanup': {'version': 'cleanup-v1', 'status': 'complete',
+                              'remote': {'status': 'deleted'}, 'local': {'status': 'absent'},
+                              **{step: {'status': 'complete'}
+                                 for step in ('prune', 'sync', 'completion')}}}
+        for name, record in (('report.json', report), ('github.json', github)):
+            path = directory / name
+            path.write_bytes(encode(record))
+            path.chmod(0o600)
+
+    # Remember actual Store/source lock inodes, then reopen each independently
+    # during BOTH collector and annotation I/O. dup(fd) would share a flock.
+    flock = fcntl.flock
+    inodes = set()
+
+    def remember(fd, operation):
+        result = flock(fd, operation)
+        if operation & fcntl.LOCK_EX:
+            # flock accepts file objects as well as integer descriptors; Store
+            # uses both forms. Observe the same descriptor without reopening it.
+            descriptor = fd if isinstance(fd, int) else fd.fileno()
+            info = os.fstat(descriptor)
+            inodes.add((info.st_dev, info.st_ino))
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fcntl, 'flock', remember)
+        with lab.store.lock():
+            pass
+        with lab.store.lock(project=True):
+            pass
+    lock_paths = [path for path in lab.root.parent.rglob('*') if path.is_file() and
+                  (path.stat().st_dev, path.stat().st_ino) in inodes]
+    assert len(inodes) >= 2 and len(lock_paths) == len(inodes)
+    identities = {path: (path.stat().st_dev, path.stat().st_ino) for path in lock_paths}
+
+    def unlocked():
+        for path in lock_paths:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                assert (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == identities[path]
+                flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    trace, rendered = [], []
+    capture, read, render = (reference.capture_reference_inputs,
+                             reference.read_annotations, reference.render_reference)
+
+    def capture_actual(root, development_root):
+        unlocked()
+        assert root == lab.store.root and development_root == lab.development_root
+        trace.append(('capture', root, development_root))
+        return capture(root, development_root)
+
+    def read_actual(path):
+        unlocked()
+        assert path == annotation_path
+        trace.append(('annotations', path))
+        return read(path)
+
+    def render_actual(records, entries, paths):
+        trace.append(('render', tuple(paths)))
+        output = render(records, entries, paths)
+        rendered.append(output)
+        return output
+
+    monkeypatch.setattr(reference, 'capture_reference_inputs', capture_actual)
+    monkeypatch.setattr(reference, 'read_annotations', read_actual)
+    monkeypatch.setattr(reference, 'render_reference', render_actual)
+    return {'proposals': proposals, 'annotations': annotation_path, 'trace': trace,
+            'rendered': rendered}
+
+
+def reference_payload(prompt):
+    start, end = '\n<reference_advisory>\n', '\n</reference_advisory>\n'
+    if start not in prompt:
+        return None
+    rendered = prompt.split(start, 1)[1].split(end, 1)[0]
+    assert rendered.startswith(reference.HEADER)
+    assert len((start + rendered + end).encode('utf-8')) <= 8192
+    return json.loads(rendered[len(reference.HEADER):])
+
+
+def test_reference_absent_defaults_preserve_common_offline_guard(lab, monkeypatch):
+    assert storage.resolve_storage is forbidden
+    assert not (lab.root / 'logs/harness/storage-local.json').exists()
+    assert not (lab.root / 'logs/harness/workflows').exists()
+    monkeypatch.setattr(reference, 'capture_reference_inputs', forbidden)
+    monkeypatch.setattr(reference, 'read_annotations', forbidden)
+    assert loop._reference_inputs(lab.store) == ({}, [])
+    lab.hours(count=2)
+    assert not (lab.root / 'logs/harness/storage-local.json').exists()
+    assert (lab.root / 'logs/harness/workflows/.lock').is_file()
+    assert storage.resolve_storage is forbidden
+    assert lab.events == list(loop.STAGES[:2]) and lab.calls() == 2
+
+
+def test_reference_invalid_default_policy_does_not_try_legacy_root(reference_lab, monkeypatch):
+    lab = reference_lab
+    config_path = lab.root / 'logs/harness/storage-local.json'
+    config_path.write_bytes(b'{invalid\n')
+    legacy = lab.root / 'logs/harness/workflows'
+    legacy.mkdir(mode=0o700)
+    monkeypatch.setattr(reference, 'capture_reference_inputs', forbidden)
+    # A bad configured policy cannot authorize collection from a legacy root.
+    # The annotation reader remains optional and is independently attempted.
+    reads = []
+    def unavailable_annotations(path):
+        reads.append(path)
+        raise reference.ReferenceError('annotation_unavailable')
+    monkeypatch.setattr(reference, 'read_annotations', unavailable_annotations)
+    assert loop._reference_inputs(lab.store) == ({}, [])
+    assert lab.storage_resolutions == [(lab.root, {})]
+    assert reads == [lab.store.path('loop/issue-annotations.jsonl')]
+
+
+@pytest.mark.parametrize('mode', ['valid', 'annotation_missing', 'annotation_corrupt',
+                                  'annotation_busy', 'collector_busy', 'collector_missing',
+                                  'collector_unsafe'])
+def test_reference_production_path_preserves_nine_stages_and_unknowns(lab, reference_case,
+                                                                    monkeypatch, mode):
+    annotation = reference_case['annotations']
+    with ExitStack() as held:
+        if mode == 'annotation_missing':
+            annotation.unlink()
+        elif mode == 'annotation_corrupt':
+            annotation.write_bytes(b'{invalid ' + SECRET.encode() + b'\n')
+        elif mode == 'collector_missing':
+            lab.development_root.rename(lab.root.parent / 'unavailable-workflows')
+        elif mode == 'collector_unsafe':
+            lab.development_root.chmod(0o755)
+        if mode in ('annotation_busy', 'collector_busy'):
+            path = annotation if mode == 'annotation_busy' else lab.development_root / '.lock'
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            held.callback(os.close, fd)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # A research-only override must not redirect the default development
+        # policy. The reference fixture invokes the REAL resolver with env={}.
+        monkeypatch.setenv(storage.CONFIG_ENV, str(lab.root.parent / 'do-not-read.json'))
+        original_policy = lab.store.policy
+        results = lab.hours()
+    assert lab.store.policy is original_policy
+    assert lab.selected.workflow_root(local_default=lab.development_root) != lab.development_root
+    assert lab.storage_resolutions == [(lab.root, {})] * 9
+    assert lab.events == list(loop.STAGES)
+    assert [result['calls_today'] for result in results] == list(range(1, 10))
+    assert lab.calls() == 9 and lab.state()['stage_index'] == 9
+    assert lab.report()['review_complete'] is True
+    trace = reference_case['trace']
+    assert [event[0] for event in trace if event[0] != 'render'] == ['capture', 'annotations'] * 9
+    assert [event[1] for event in trace if event[0] == 'render'] == [
+        tuple(imp.role_scope(role, FILES, lab.discovery)) for role in contract.SPECIALIST_ROLES]
+    unavailable = mode.startswith('collector_')
+    for request in lab.cloud_requests:
+        payload = reference_payload(request['prompt'])
+        if request['role'] == 'reviewer':
+            assert payload is None  # Original Prior candidates JSON/Read stream.
+            continue
+        drafts = json.loads(request['prompt'].rsplit('\n', 1)[1])
+        assert set(drafts) == {'local_drafts', 'feedback'}
+        assert bool(payload) is not unavailable
+        if unavailable:
+            continue
+        approved = set(imp.role_scope(request['role'], FILES, lab.discovery))
+        assert 0 < len(payload['issues']) <= 5 and len(payload['merged_prs']) == 3
+        assert [pr['pr_number'] for pr in payload['merged_prs']] == [44, 43, 42]
+        assert all(set(row['edit_files']) <= approved
+                   for row in payload['issues'] + payload['merged_prs'])
+        assert 'outside/denied.py' not in json.dumps(payload)
+        if mode == 'valid':
+            assert payload['issues'][0]['issue_key'] == 'synthetic-open'
+            grouped = [row for row in payload['issues'] if row['issue_key'] == 'synthetic-implemented']
+            assert len(grouped) == 1 and grouped[0]['proposal_count'] == 2
+            assert grouped[0]['implementation_status'] == 'implemented'
+            assert grouped[0]['matched_prs'] == [41, 42, 43, 44]
+            unknown = {row['proposal_id'] for row in payload['issues'] if row['issue_key'] == 'unknown'}
+            assert {reference_case['proposals'][i]['id'] for i in (2, 3)} <= unknown
+            for i in range(5, 9):
+                if FILES[i - 5] not in approved:
+                    assert reference_case['proposals'][i]['candidate']['title'] not in request['prompt']
+        else:
+            assert all(row['issue_key'] == row['implementation_status'] == 'unknown' and
+                       row['proposal_count'] == 1 and row['matched_prs'] == []
+                       for row in payload['issues'])
+            assert {row['proposal_id'] for row in payload['issues']} >= {
+                reference_case['proposals'][i]['id'] for i in (0, 1)}
+    report = lab.report()
+    coverage.validate(report)
+    for record in report['proposals']:
+        identity = contract.proposal_record(record['candidate'], record['source_fingerprints'])
+        assert {key: record[key] for key in identity} == identity
+        assert set(record) == {'id', 'digest', 'candidate', 'source_fingerprints', 'review'}
+        assert record['review']['reason'] == REVIEW_REASON
+    assert '합성 참고' not in json.dumps(report, ensure_ascii=False)
+    assert SECRET not in json.dumps(results)
+    for directory in ('decisions', 'approvals', 'claims', 'executions'):
+        assert not lab.store.path(directory).exists()
+
+
+def test_reference_selects_active_default_development_policy_root(lab, reference_case, monkeypatch):
+    parent = lab.root.parent
+    development = storage.Storage(root=lab.root,
+        artifacts=storage.DirectorySpec(parent / 'development-artifacts', parent, 0),
+        temporary=storage.DirectorySpec(parent / 'development-contexts', parent, 0),
+        config_path=parent / 'synthetic-development-policy.json', env={}, fs=FixtureFS(parent))
+    local_default = lab.root / 'logs/harness/workflows'
+    active = development.workflow_root(local_default=local_default)
+    assert active != local_default
+    active.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lab.development_root.rename(active)
+    lab.development_root = active
+    resolutions, defaults = [], []
+    workflow_root = storage.Storage.workflow_root
+
+    def resolve(root, *, env=None):
+        assert root == lab.root and env == {}
+        resolutions.append((root, env))
+        return development
+
+    def select(policy, *args, **options):
+        if policy is development:
+            assert not args and set(options) == {'local_default'}
+            defaults.append(options['local_default'])
+        return workflow_root(policy, *args, **options)
+
+    monkeypatch.setattr(storage, 'resolve_storage', resolve)
+    monkeypatch.setattr(storage.Storage, 'workflow_root', select)
+    monkeypatch.setenv(storage.CONFIG_ENV, str(parent / 'research-only-policy.json'))
+    original_policy = lab.store.policy
+    lab.hours(count=2)
+    assert resolutions == [(lab.root, {})] * 2 and defaults == [local_default] * 2
+    assert lab.store.policy is original_policy
+    assert [event[2] for event in reference_case['trace'] if event[0] == 'capture'] == [active] * 2
+    payload = reference_payload(lab.cloud_requests[0]['prompt'])
+    assert [row['pr_number'] for row in payload['merged_prs']] == [44, 43, 42]
+    assert lab.events == list(loop.STAGES[:2])
+
+
+def test_reference_legacy_active_runs_are_collected_without_default_policy(lab, reference_case):
+    legacy = lab.root / 'logs/harness/workflows'
+    assert (legacy / '.lock').is_file()
+    for directory in lab.development_root.iterdir():
+        directory.rename(legacy / directory.name)
+    lab.development_root = legacy
+    (lab.root / 'logs/harness/storage-local.json').unlink()
+
+    lab.hours(count=2)
+    assert lab.storage_resolutions == [(lab.root, {})] * 2
+    trace = reference_case['trace']
+    assert [event[0] for event in trace if event[0] != 'render'] == [
+        'capture', 'annotations'] * 2
+    assert [event[2] for event in trace if event[0] == 'capture'] == [legacy] * 2
+    payload = reference_payload(lab.cloud_requests[0]['prompt'])
+    assert [row['pr_number'] for row in payload['merged_prs']] == [44, 43, 42]
+    assert any(row['issue_key'] == 'synthetic-implemented' and
+               row['implementation_status'] == 'implemented' for row in payload['issues'])
+    assert lab.events == list(loop.STAGES[:2]) and lab.calls() == 2
+
+
+@pytest.mark.parametrize('segment_bytes', [8192, 8193])
+def test_reference_complete_multibyte_envelope_is_bounded_after_runtime_redaction(
+        lab, reference_case, monkeypatch, segment_bytes):
+    redact = agent_models.redact
+    observed = []
+
+    def expanding_redaction(text, keys):
+        result = redact(text, keys)
+        if text.startswith('\n<reference_advisory>\n'):
+            # Model a redaction expansion at the connection boundary, without
+            # replacing collector, reader, renderer or _cloud_call.
+            delta = segment_bytes - len(result.encode('utf-8'))
+            assert delta > 0
+            marker = '합성 참고 공통'
+            assert marker in result
+            result = result.replace(marker, marker + '가' * (delta // 3) + 'a' * (delta % 3), 1)
+            observed.append(len(result.encode('utf-8')))
+        return result
+
+    monkeypatch.setattr(agent_models, 'redact', expanding_redaction)
+    lab.hours(count=2)
+    assert observed == [segment_bytes]
+    prompt = lab.cloud_requests[0]['prompt']
+    assert (reference_payload(prompt) is not None) == (segment_bytes == 8192)
+    assert lab.events == list(loop.STAGES[:2]) and lab.calls() == 2
+    assert json.loads(prompt.rsplit('\n', 1)[1])['local_drafts']
+
+
+def test_reference_runtime_keys_and_existing_total_context_guard(lab, reference_case, monkeypatch):
+    call_role = imp._call_role
+    base_prompts = []
+
+    def observe_prepared_prompt(role, paths, snapshots, discovery, records, keys, runner, selected):
+        # Keep production preparation and _cloud_call; observe the original
+        # scoped input before the advisory/drafts connection boundary.
+        def forward(actual_role, prompt, runtime_keys, **options):
+            base_prompts.append(prompt)
+            return runner(actual_role, prompt, runtime_keys, **options)
+        return call_role(role, paths, snapshots, discovery, records, keys, forward, selected)
+
+    monkeypatch.setattr(imp, '_call_role', observe_prepared_prompt)
+    runtime_key = 'syntheticRuntimeCredential42'
+    saved = reference_case['proposals'][0]
+    saved['candidate']['title'] += ' ' + runtime_key
+    lab.store.write('proposals/' + saved['id'] + '.json', {'proposal': saved})
+    lab.hours(count=3)
+    # Additional runtime key, through the normal GLM specialist slot/schema.
+    lab.tick(3, keys={'ZAI_API_KEY': SECRET, 'OPENAI_API_KEY': runtime_key})
+    assert runtime_key in reference_case['rendered'][-1]
+    assert runtime_key not in lab.cloud_requests[-1]['prompt']
+    assert reference_payload(lab.cloud_requests[-1]['prompt']) is not None
+    assert lab.cloud_requests[-1]['prompt'].startswith(base_prompts[-1])
+
+    lab.tick(4)
+    redact = agent_models.redact
+    envelope_bytes = []
+    role = loop.STAGES[5][1]
+    source_bytes = sum(len((lab.root / path).read_bytes())
+                       for path in imp.role_scope(role, FILES, lab.discovery))
+
+    def fill_existing_context(text, keys):
+        result = redact(text, keys)
+        if text.startswith('\n<reference_advisory>\n'):
+            envelope_bytes.append(len(result.encode('utf-8')))
+        elif 'LOCAL DRAFTS' in text:
+            assert envelope_bytes
+            base_bytes = len(base_prompts[-1].encode('utf-8'))
+            remaining = lab.discovery['limits']['max_context_bytes'] - source_bytes - base_bytes
+            padding = remaining - len(result.encode('utf-8')) - envelope_bytes[-1] + 1
+            assert padding > 0
+            result += ' ' * padding
+            assert (source_bytes + base_bytes + len(result.encode('utf-8')) <=
+                    lab.discovery['limits']['max_context_bytes'])
+        return result
+
+    monkeypatch.setattr(agent_models, 'redact', fill_existing_context)
+    previous = len(lab.cloud_requests)
+    lab.tick(5, runner=forbidden)
+    assert len(lab.cloud_requests) == previous and lab.calls() == 6
+    entry = next(item for item in lab.state()['participation'] if item['role'] == role)
+    assert entry['status'] != 'succeeded' and 'call_started_at' not in entry
+    assert entry['failure_detail']['reason'] == 'role_preparation_failed'
+    assert entry['failure_detail']['cause'] == 'context_too_large'
+
+
+@pytest.mark.parametrize('role,hour', [('downloader', 3), ('reviewer', 8)])
+def test_reference_redacts_original_source_and_records_before_model(
+        lab, reference_case, monkeypatch, role, hour):
+    source_key = 'syntheticSourceCredential42'
+    record_key = 'syntheticRecordCredential84'
+    runtime_keys = {'ZAI_API_KEY': SECRET, 'OPENAI_API_KEY': source_key,
+                    'ANTHROPIC_API_KEY': record_key}
+    source = lab.root / 'AGENTS.md'
+    source.write_text(source.read_text(encoding='utf-8') + '# ' + source_key + '\n',
+                      encoding='utf-8')
+
+    def seed_record(actual_role, result, response, options):
+        if actual_role == 'coordinator':
+            assert response['candidates']
+            for candidate in response['candidates']:
+                candidate['issue'] += ' ' + record_key
+            result['response'] = json.dumps(response, ensure_ascii=False)
+        return result
+
+    lab.cloud_transform = seed_record
+    lab.hours(count=hour)
+    assert source_key in (lab.root / 'AGENTS.md').read_text(encoding='utf-8')
+    original_records = deepcopy(lab.report()['proposals'])
+    assert any(record_key in record['candidate']['issue'] for record in original_records)
+    call_role = imp._call_role
+    base_prompts = []
+
+    def observe_prepared_prompt(actual_role, paths, snapshots, discovery, records,
+                                keys, runner, selected):
+        assert actual_role == role and keys == runtime_keys
+        assert source_key.encode() in snapshots['AGENTS.md']['content']
+        assert records == original_records
+
+        def forward(prepared_role, prompt, prepared_keys, **options):
+            # Preparation already redacts the prompt; source content is passed
+            # through approved context files rather than inline prompt text.
+            base_prompts.append(prompt)
+            return runner(prepared_role, prompt, prepared_keys, **options)
+
+        return call_role(actual_role, paths, snapshots, discovery, records,
+                         keys, forward, selected)
+
+    monkeypatch.setattr(imp, '_call_role', observe_prepared_prompt)
+    lab.tick(hour, keys=runtime_keys)
+    assert len(base_prompts) == 1
+    request = lab.cloud_requests[-1]
+    assert request['role'] == role
+    assert source_key not in request['prompt'] and record_key not in request['prompt']
+    native = agent_models.redact(base_prompts[0], runtime_keys)
+    if role == 'reviewer':
+        assert request['prompt'].endswith(native)
+        prior = json.loads(request['prompt'].split('\nPrior candidates: ', 1)[1])
+        raw_prior = json.loads(base_prompts[0].split('\nPrior candidates: ', 1)[1])
+        assert prior == json.loads(agent_models.redact(
+            json.dumps(raw_prior, ensure_ascii=False), runtime_keys))
+        assert [item['id'] for item in prior] == [item['id'] for item in original_records]
+        assert [(item['id'], item['digest']) for item in lab.report()['proposals']] == [
+            (item['id'], item['digest']) for item in original_records]
+        assert lab.report()['review_complete'] is True
+        coverage.validate(lab.report())
+    else:
+        assert request['prompt'].startswith(native)
+        assert reference_payload(request['prompt']) is not None
+        assert json.loads(request['prompt'].rsplit('\n', 1)[1])['local_drafts']
+    assert next(agent for agent in lab.report()['agents'] if agent['role'] == role)[
+        'status'] == 'succeeded'
+
+
+def test_reference_advice_preserves_wire_bindings_public_and_frozen_payloads(
+        tmp_path, monkeypatch, reference_resolver):
+    scan_ids = [loop._id() for _ in range(8)]
+    runs = []
+    directory = tmp_path / 'paired-synthetic'
+    for available in (False, True):
+        directory.mkdir(mode=0o700)
+        with monkeypatch.context() as patch:
+            current = lab.__wrapped__(directory, patch)
+            prepare_reference_lab(current, patch, reference_resolver)
+            ids = iter(scan_ids)
+            patch.setattr(loop, '_id', lambda: next(ids))
+            if available:
+                case = make_reference_case(current, patch)
+            else:
+                current.development_root.rmdir()
+            current.hours()
+            report = current.report()
+            coverage.validate(report)
+            drafts = deepcopy(current.state()['round']['drafts'])
+            feedback = deepcopy(current.state()['feedback'])
+            if available:
+                assert case['rendered'] and all(case['rendered'])
+                assert all(reference_payload(request['prompt']) for request in current.cloud_requests[:-1])
+            else:
+                assert all(reference_payload(request['prompt']) is None for request in current.cloud_requests)
+            current.tick(9)
+            journal = current.store.read('loop/publications/2026-10-15.json')
+            assert contract.build_web_report(journal['report'], journal['projection_limit']) == journal['payload']
+            frozen_path = current.store.path('loop/publications/2026-10-15.json')
+            frozen = frozen_path.read_bytes()
+            current.tick(10)
+            assert frozen_path.read_bytes() == frozen
+            runs.append({'wire': current.wire_requests, 'drafts': drafts, 'feedback': feedback,
+                         'proposals': report['proposals'],
+                         'binding': report['source_review_binding'],
+                         'read_result': coverage.review_result(report),
+                         'authorization': loop.authorization_context(report),
+                         'public': contract.build_web_report(report, 3),
+                         'frozen_payload': journal['payload'], 'frozen_digest': journal['digest']})
+        if not available:
+            # Keep the first synthetic run intact while reusing identical
+            # source/policy path strings for the independent paired run.
+            directory.rename(tmp_path / 'baseline-synthetic-saved')
+    assert runs[0] == runs[1]
+
 
 def test_nine_stages_real_validation_and_private_local_provenance(lab):
     results = []

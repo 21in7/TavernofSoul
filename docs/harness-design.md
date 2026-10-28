@@ -412,6 +412,15 @@ cloud480초/quota15초·자정 guard600초·기본 완료 index16(최대32)이�
 context2MiB(소스+prompt UTF-8)·응답64KiB·scope64·edit_files12·근거/검증 단계 각6을 유지한다.
 exact 필드/type/finite/bounds/관계 검증은 여전하며 호출 한도는 실제 달러 청구 보장이 아니다.
 
+cloud specialist는 승인 경로 교집합의 정제 자문을 별도 구간으로 받는다. runtime key redaction 뒤
+구분자 포함8192 UTF-8 bytes와 기존 전체 context 상한을 적용하며 base prompt도 정제한다. 자문은 증거·승인 권한이 아니다.
+입력은 deadline/readiness 뒤 Store.lock 전, source/state 잠금 밖에서 연구 `store.root`와 `storage.resolve_storage(imp.ROOT, env={})`의
+active `workflow_root(local_default=imp.ROOT/'logs/harness/workflows')`에서만 수집한다.
+archive/fallback 검색은 없다. 그룹·구현 판정은 연구 `loop/issue-annotations.jsonl` 하나의 명시
+annotation만 따른다. annotation 부재·손상·읽기 실패·busy는 []로 처리해 각 항목을 unknown으로,
+collector unavailable은 빈 records로 다룬다. 기본 설정이 없고 legacy root도 부재/잠금 메타데이터뿐이면 입력 unavailable이다.
+재시도 없이 기존 호출 수·순서·예약/정산을 유지한다.
+
 local adapter는 파일을 열지 않고 parent의 승인 snapshot 한 파일의 연속 numbered whole-line
 window만 받는다. [로컬 계약](local-models.md)의 mlx-vlm0.7.8 native strict JSON Schema·
 enable_thinking=false·닫힌 객체·owner edit_files enum과 두 evidence의 실제 window를 요구한다.
