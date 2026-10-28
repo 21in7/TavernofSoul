@@ -94,6 +94,128 @@ def query(records, **kwargs):
     return metrics.aggregate(records, period='day', date='2026-10-27', now=NOW, **kwargs)
 
 
+def explicit_origins(scan):
+    """Synthetic executor metadata, with no role clues in candidate edit paths."""
+    scan['proposal_origins'] = {}
+    for role, record in zip(C.SPECIALIST_ROLES, scan['proposals']):
+        attempt = next(a for a in scan['agents'] if a['role'] == role)
+        attempt.update(scan_id=scan['scan_id'], owner_role=role, stage='specialist')
+        scan['proposal_origins'][record['id']] = dict(
+            version='improvement-proposal-origin-v1', digest=record['digest'],
+            scan_id=scan['scan_id'], role=role, stage='specialist',
+            stage_index=attempt['stage_index'], slot=attempt['slot'])
+    return scan
+
+
+def test_explicit_private_origins_connect_all_four_role_funnels(tmp_path):
+    scan = scan_fixture(tmp_path, count=4)
+    baseline = freeze(scan)
+    explicit_origins(scan)
+    assert coverage.validate(scan) is True
+    assert freeze(scan)['payload'] == baseline['payload']
+    records = records_for(scan)
+    records['loop/publications/2026-10-27.json'] = freeze(scan)
+    result = query(records)
+    assert result['funnel']['validated_retained'] == result['funnel']['reviewed'] == result['funnel']['eligible'] == 4
+    assert {r['origin_role'] for r in result['funnel']['candidates']} == set(C.SPECIALIST_ROLES)
+    for role, record in zip(C.SPECIALIST_ROLES, scan['proposals']):
+        filtered = query(records, role=role)['funnel']
+        assert filtered['validated_retained'] == filtered['reviewed'] == filtered['eligible'] == 1
+        assert filtered['candidates'][0]['id'] == record['id']
+        assert filtered['candidates'][0]['origin_role'] == role
+    assert query(records, role='reviewer')['funnel']['validated_retained'] == 0
+    scan.pop('source_review_binding')
+    unverified = query(records)['funnel']
+    assert unverified['validated_retained'] == 4
+    assert unverified['reviewed'] == unverified['eligible'] == 0
+    assert {r['origin_role'] for r in unverified['candidates']} == set(C.SPECIALIST_ROLES)
+
+
+@pytest.mark.parametrize('damage', [
+    'map_null', 'map_list', 'map_oversize', 'map_orphan', 'entry_missing', 'entry_null',
+    'version', 'digest', 'scan_id', 'role', 'stage', 'stage_index', 'stage_bool',
+    'slot', 'slot_date', 'slot_mismatch', 'attempt_failed', 'attempt_scan', 'attempt_slot',
+    'attempt_stage', 'attempt_owner', 'attempt_missing', 'attempt_duplicate', 'attempt_bool',
+])
+def test_invalid_private_origin_is_unknown_without_legacy_fallback(tmp_path, damage):
+    scan = explicit_origins(scan_fixture(tmp_path))
+    record = scan['proposals'][0]
+    role = C.SPECIALIST_ROLES[0]
+    origin = scan['proposal_origins'][record['id']]
+    attempt = scan['agents'][0]
+    record['origin_role'] = role  # Invalid new metadata must not be hidden by this.
+    if damage == 'map_null':
+        scan['proposal_origins'] = None
+    elif damage == 'map_list':
+        scan['proposal_origins'] = []
+    elif damage == 'map_oversize':
+        scan['proposal_origins'].update({str(i): copy.deepcopy(origin) for i in range(8)})
+    elif damage == 'map_orphan':
+        scan['proposal_origins']['IMP-' + 'f' * 16] = copy.deepcopy(origin)
+    elif damage == 'entry_missing':
+        scan['proposal_origins'].clear()
+    elif damage == 'entry_null':
+        scan['proposal_origins'][record['id']] = None
+    elif damage in ('version', 'digest', 'scan_id', 'role', 'stage', 'stage_index'):
+        origin[damage] = {'version': 'future-v2', 'digest': '0' * 64, 'scan_id': 'other-scan',
+                          'role': 'reviewer', 'stage': 'local_explorer', 'stage_index': 3}[damage]
+    elif damage == 'stage_bool':
+        origin['stage_index'] = True
+    elif damage in ('slot', 'slot_date', 'slot_mismatch'):
+        origin['slot'] = {'slot': None, 'slot_date': '2026-02-30T01', 'slot_mismatch': at(2)[:13]}[damage]
+    elif damage == 'attempt_missing':
+        scan['agents'].pop(0)
+    elif damage == 'attempt_duplicate':
+        scan['agents'].append(copy.deepcopy(attempt))
+    else:
+        field, value = {
+            'attempt_failed': ('status', 'failed'), 'attempt_scan': ('scan_id', 'other-scan'),
+            'attempt_slot': ('slot', at(2)[:13]), 'attempt_stage': ('stage', 'local_explorer'),
+            'attempt_owner': ('owner_role', 'parser'), 'attempt_bool': ('stage_index', True),
+        }[damage]
+        attempt[field] = value
+    assert metrics.candidate_origin(scan, record) is None
+    bounds = (metrics.timestamp(at()), NOW)
+    assert metrics.candidate_rows({scan['scan_id']: scan}, bounds, None)[0]['origin_role'] is None
+    assert metrics.candidate_rows({scan['scan_id']: scan}, bounds, role) == []
+
+
+@pytest.mark.parametrize('damaged_first', [False, True])
+def test_first_unknown_origin_is_not_filled_from_later_round_or_morning(tmp_path, damaged_first):
+    first = scan_fixture(tmp_path, scan_id='first-synthetic', day=26)
+    if damaged_first:
+        explicit_origins(first)
+        first['proposal_origins'][first['proposals'][0]['id']]['digest'] = '0' * 64
+    later = explicit_origins(scan_fixture(tmp_path, scan_id='later-synthetic'))
+    assert first['proposals'] == later['proposals']
+    records = records_for(first)
+    records.update(records_for(later))
+    records['loop/publications/2026-10-27.json'] = freeze(later)
+    records['loop/state.json'] = dict(version=metrics.LOOP_VERSION, round={'report': later}, stage_index=9)
+    result = metrics.aggregate(records, period='7d', date='2026-10-27', now=NOW)
+    rows = result['funnel']['candidates']
+    assert len(rows) == 1 and rows[0]['repetitions'] == 1
+    assert rows[0]['first_at'] == first['started_at'] and rows[0]['origin_role'] is None
+    assert metrics.aggregate(records, period='7d', date='2026-10-27', now=NOW,
+                             role=C.SPECIALIST_ROLES[0])['funnel']['validated_retained'] == 0
+
+
+def test_missing_private_origins_keep_synthetic_history_unknown_and_explicit_legacy_role(tmp_path):
+    scan = scan_fixture(tmp_path, count=4)
+    records = records_for(scan)
+    before = copy.deepcopy(records)
+    result = query(records)
+    assert len(result['funnel']['candidates']) == 4
+    assert all(row['origin_role'] is None for row in result['funnel']['candidates'])
+    for role in C.SPECIALIST_ROLES:
+        assert query(records, role=role)['funnel']['validated_retained'] == 0
+    assert records == before
+    scan['proposals'][0]['origin_role'] = C.SPECIALIST_ROLES[0]
+    compatible = query(records, role=C.SPECIALIST_ROLES[0])['funnel']
+    assert compatible['validated_retained'] == 1
+    assert compatible['candidates'][0]['origin_role'] == C.SPECIALIST_ROLES[0]
+
+
 def freeze(scan, limit=3):
     report = copy.deepcopy(scan)
     report.update(scan_id='morning-' + scan['scan_id'], date='2026-10-27', generated_at=at(9),
