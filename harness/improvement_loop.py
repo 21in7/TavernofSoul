@@ -84,7 +84,7 @@ import threading
 import time
 from contextlib import contextmanager, nullcontext
 
-from harness import agent_models, improvement_report as contract
+from harness import agent_models, agent_usage, improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import improvement_snapshot as sealed
 from harness import improvement_reference as reference
@@ -486,7 +486,7 @@ def _validate_history(entry, local=False):
             'scan_id', 'slot', 'stage_index', 'role', 'provider', 'model',
             'status', 'started_at', 'finished_at'}
     optional = {'reason', 'failure_detail', 'stage', 'owner_role', 'call_started_at', 'call_finished_at',
-                'reference_observation'}
+                'reference_observation', 'usage_observation'}
     if (not isinstance(entry, dict) or not required <= set(entry) or
             set(entry) - required - optional or
             not isinstance(entry['scan_id'], str) or not storage.RUN_ID.fullmatch(entry['scan_id']) or
@@ -545,6 +545,8 @@ def _remember(state, scan_id, role, agent, pending=None, local=False):
             entry[key] = agent[key]
     if not local and 'reference_observation' in agent:
         entry['reference_observation'] = _safe_reference_observation(agent['reference_observation'])
+    if not local and 'usage_observation' in agent:
+        entry['usage_observation'] = _safe_usage_observation(agent['usage_observation'])
     if agent['status'] not in ('reserved', 'succeeded'):
         entry.update(_failure_fields(agent, local=local))
     _validate_history(entry, local=local)
@@ -559,6 +561,8 @@ def _remember(state, scan_id, role, agent, pending=None, local=False):
         # already observed at invocation. It cannot establish new facts either.
         entry.setdefault('reference_observation', _safe_reference_observation(
             old['reference_observation']))
+    if not local and old is not None and 'usage_observation' in old:
+        entry.setdefault('usage_observation', _safe_usage_observation(old['usage_observation']))
     previous = [e for e in state[key] if _history_identity(e) != identity]
     state[key] = sorted(previous + [entry], key=_history_order)[-HISTORY_LIMIT:]
 
@@ -853,6 +857,8 @@ def _safe_participation(participation):
     if 'reference_observation' in participation:
         result['reference_observation'] = _safe_reference_observation(
             participation['reference_observation'])
+    if 'usage_observation' in participation:
+        result['usage_observation'] = _safe_usage_observation(participation['usage_observation'])
     cost = participation.get('cost')
     known = participation.get('cost_status') == 'cli_estimated_usd' and _number(cost)
     result.update(cost=cost if known else None,
@@ -1118,6 +1124,33 @@ def _reference_inputs(store, observation=None):
     return records, annotations
 
 
+def _safe_usage_observation(value):
+    """Private runner numbers only; zero is observed, null is missing/invalid.
+
+    Re-import uses agent_usage's integer bound for sizes and tokens, fixed enums,
+    and supplied totals only. Never infer tokens, cache semantics or billing.
+    """
+    value = value if type(value) is dict else {}
+    sizes = value.get('prompt_size')
+    sizes = sizes if type(sizes) is dict else {}
+    usage = value.get('usage')
+    safe = agent_usage.unavailable()
+    if type(usage) is dict and type(usage.get('version')) is str and usage['version'] == safe['version']:
+        for key in safe:
+            if key not in ('version', 'status', 'source', 'input_tokens_semantics'):
+                safe[key] = agent_usage.number(usage.get(key))
+        for key, allowed in (
+                ('status', ('available', 'partial', 'unavailable')),
+                ('source', ('unknown', 'codex_turn_completed', 'claude_result')),
+                ('input_tokens_semantics', ('unknown', 'cache_inclusive', 'cache_exclusive'))):
+            enum = usage.get(key)
+            if type(enum) is str and enum in allowed:
+                safe[key] = enum
+    return {'prompt_size': {key: agent_usage.number(sizes.get(key))
+                            for key in ('characters', 'utf8_bytes')},
+            'usage': safe}
+
+
 def _safe_reference_observation(value):
     """Private facts only: null is unobserved; zero is observed no attachment."""
     value = value if type(value) is dict else {}
@@ -1183,6 +1216,8 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
     source_bytes = sum(len(snapshots[path]['content'] or b'') for path in own_paths)
     call_times = {}
     reference_facts = _safe_reference_observation(reference_observation)
+    usage_facts = _safe_usage_observation(None)
+    usage_identity = None
     advisory = ''
     rendered = False
     if role != 'reviewer' and reference_inputs is not None:
@@ -1201,6 +1236,7 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
             pass  # Optional observation must never replace the original failure.
 
     def bounded_runner(actual_role, prompt, runtime_keys, **options):
+        nonlocal usage_facts, usage_identity
         # Owner retains full existing ownership/shared context; only local HTTP
         # receives the small line window. Drafts are untrusted advice, not proof.
         extra = ''
@@ -1245,9 +1281,20 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
         # admission, context preparation, settlement or model-reported times.
         observe_time('call_started_at')
         try:
-            return runner(actual_role, prompt, runtime_keys, **options)
+            returned = runner(actual_role, prompt, runtime_keys, **options)
         finally:
             observe_time('call_finished_at')
+        try:
+            # Capture only existing numeric metadata before _call_role's
+            # bounded result retention; never parse response/raw envelopes.
+            if type(returned) is dict:
+                identity = tuple(returned.get(key) for key in ('role', 'provider', 'model'))
+                if all(type(value) is str for value in identity):
+                    usage_identity = identity
+                usage_facts = _safe_usage_observation(returned)
+        except (Exception, KeyboardInterrupt):
+            pass  # Optional usage cannot replace the runner's outcome.
+        return returned
 
     bounded_config = copy.deepcopy(discovery)
     bounded_config['limits']['max_candidates_per_specialist'] = config['max_candidates_per_specialist']
@@ -1257,6 +1304,15 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
     safe = _safe_participation(participation)
     safe.update(call_times)
     safe['reference_observation'] = reference_facts
+    # _call_role owns configured identity validation, including failed results.
+    # Before that check, result retention itself can fail; in that case its
+    # untouched participation identity still has to match the returned metadata.
+    safe['usage_observation'] = (_safe_usage_observation(None)
+                                 if (usage_identity is None or
+                                     usage_identity != tuple(participation.get(key) for key in
+                                                             ('role', 'provider', 'model')) or
+                                     participation.get('reason') == 'role_identity_mismatch')
+                                 else usage_facts)
     return safe, parsed
 
 
@@ -1818,6 +1874,8 @@ def _status_attempt(entry):
         'status', 'started_at', 'call_started_at', 'call_finished_at', 'finished_at') if key in entry})
     if 'reference_observation' in entry:
         result['reference_observation'] = _safe_reference_observation(entry['reference_observation'])
+    if 'usage_observation' in entry:
+        result['usage_observation'] = _safe_usage_observation(entry['usage_observation'])
     if entry['status'] not in ('succeeded', 'reserved'):
         result.update(_failure_fields(entry, local=entry['stage_index'] < 8 and entry['stage_index'] % 2 == 0))
     return result
@@ -2200,7 +2258,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     day['slots'][slot]['status'] = participation['status']
     day['slots'][slot].update({key: participation[key] for key in ('scan_id', 'stage_index',
         'stage', 'owner_role', 'started_at', 'call_started_at', 'call_finished_at', 'finished_at', 'reason',
-        'failure_detail') if key in participation})
+        'failure_detail', 'usage_observation') if key in participation})
     state['pause_reason'] = (day.get('stop_reason', 'daily_budget_overrun') if day['stopped'] else
                              None if participation['status'] == 'succeeded' else
                              participation.get('reason', 'role_failed'))

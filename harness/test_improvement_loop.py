@@ -17,6 +17,7 @@ import pytest
 from pytest import approx
 
 from harness import agent_models, improvement_loop as loop
+from harness import agent_usage
 from harness import improvement_metrics as metrics
 from harness import improvement_reference as reference
 from harness import improvement_report as contract
@@ -3874,3 +3875,429 @@ def test_native_review_unicode_framing_and_failure_detail_survive_settlement(
                     if a['role'] == 'reviewer')['failure_detail'] == detail
         assert lab.store.path('web/2026-10-15.json').read_bytes() == frozen
     assert_private(lab.state())
+
+
+def private_usage_expected(provider):
+    """Independent fixed expectations for the existing provider cache contracts."""
+    return {'version': 'agent-usage-v1', 'status': 'available',
+            'source': 'codex_turn_completed' if provider == 'codex' else 'claude_result',
+            'input_tokens_semantics': 'cache_inclusive' if provider == 'codex' else 'cache_exclusive',
+            'input_tokens': 12, 'cached_input_tokens': 3 if provider == 'codex' else None,
+            'output_tokens': 7, 'reasoning_output_tokens': 2 if provider == 'codex' else None,
+            'cache_read_input_tokens': None if provider == 'codex' else 3,
+            'cache_creation_input_tokens': None if provider == 'codex' else 5,
+            'total_input_tokens': 12 if provider == 'codex' else 20,
+            'uncached_input_tokens': 9 if provider == 'codex' else 12,
+            'total_tokens': 19 if provider == 'codex' else 27}
+
+
+def private_usage_metadata(provider, prompt):
+    raw_usage = {'input_tokens': 12, 'cached_input_tokens': 3, 'output_tokens': 7,
+                 'reasoning_output_tokens': 2, 'cache_read_input_tokens': 3,
+                 'cache_creation_input_tokens': 5, 'raw': RAW + SECRET}
+    envelope = ({'type': 'turn.completed', 'usage': raw_usage} if provider == 'codex' else
+                {'type': 'result', 'subtype': 'success', 'is_error': False,
+                 'result': 'synthetic final', 'usage': raw_usage})
+    usage = agent_usage.observe(provider, json.dumps(envelope))
+    assert usage == private_usage_expected(provider)
+    assert_private(usage)
+    # These untrusted additions exercise the loop's independent allowlist.
+    usage.update(raw=RAW + SECRET, path='/private/usage-source', estimate_usd=99)
+    sizes = dict(agent_usage.prompt_size(prompt), raw=RAW + SECRET)
+    return {'prompt_size': sizes, 'usage': usage}
+
+
+@pytest.fixture
+def private_usage_lab(private_observation_lab):
+    current, case = private_observation_lab
+    current.models['roles']['coordinator']['provider'] = 'codex'
+    current.models['roles']['parser']['provider'] = 'codex'
+
+    def attach(role, result, response, options):
+        return dict(result, **private_usage_metadata(
+            result['provider'], current.cloud_requests[-1]['prompt']))
+
+    current.cloud_transform = attach
+    return current, case
+
+
+def private_usage_without(report):
+    projected = deepcopy(report)
+    for agent in projected['agents']:
+        agent.pop('usage_observation', None)
+    return projected
+
+
+def private_usage_saved(current):
+    """Durable projections agree; unfinished scans still reject authorization."""
+    current.store = imp.Store(current.selected)
+    state, report = current.state(), current.report()
+    saved = current.store.read('scans/' + report['scan_id'] + '.json')
+    status = loop.status(now=current.clock(), selected=current.selected)
+    called = [a for a in report['agents'] if a['status'] != 'not_called']
+    for agent in called:
+        facts = agent['usage_observation']
+        for entries in (saved['agents'], state['participation'], status['participation']):
+            retained = next(a for a in entries if a['role'] == agent['role'])
+            assert retained['usage_observation'] == facts
+            assert retained['status'] == agent['status']
+        assert current.slots()[agent['slot']]['usage_observation'] == facts
+        assert_private(facts)
+        assert 'result' not in agent and 'response' not in agent and 'diagnostics' not in agent
+        assert '/private/usage-source' not in json.dumps(facts)
+    assert all('usage_observation' not in a for a in report['local_participation'])
+    history = deepcopy(state['participation'])
+    loop._import_participation(state, saved)
+    assert state['participation'] == history
+    loop._import_participation(state, private_usage_without(saved))
+    assert state['participation'] == history
+    # Import from an empty history also traverses the actual bounded importer.
+    state['participation'] = []
+    loop._import_participation(state, saved)
+    assert state['participation'] == history
+    loop._write_state(current.store, state)
+    current.store = imp.Store(current.selected)
+    assert current.state()['participation'] == history
+    assert loop.status(now=current.clock(), selected=current.selected)['participation'] == status['participation']
+    baseline = private_usage_without(report)
+    assert contract.build_web_report(report) == contract.build_web_report(baseline)
+    if report['review_complete']:
+        assert loop.authorization_context(report) == loop.authorization_context(baseline)
+    else:
+        # Partial synthetic runs have no verified source review. Usage must
+        # preserve rejection as well as the digest of a completed review.
+        for scan in (report, baseline):
+            with pytest.raises(ValueError, match='source_review_unverified'):
+                loop.authorization_context(scan)
+    for record in report['proposals']:
+        identity = contract.proposal_record(record['candidate'], record['source_fingerprints'])
+        assert all(record[key] == value for key, value in identity.items())
+    return report
+
+
+@pytest.mark.parametrize('failure', ['none', 'cli', 'contract', 'malformed', 'truncated',
+                                   'exception', 'identity'])
+def test_private_usage_real_observations_survive_failures_truncation_and_reimport(
+        private_usage_lab, monkeypatch, failure):
+    current, case = private_usage_lab
+    attach = current.cloud_transform
+    actual_role_call = imp._call_role
+    retentions = []
+
+    def observe_retention(*args, **kwargs):
+        participation, parsed = actual_role_call(*args, **kwargs)
+        retentions.append((participation['role'], participation.get('result_truncated'),
+                           set(participation.get('result', {}))))
+        return participation, parsed
+
+    monkeypatch.setattr(imp, '_call_role', observe_retention)
+
+    def transform(role, result, response, options):
+        result = attach(role, result, response, options)
+        if role == 'downloader':
+            if failure == 'cli':
+                result['status'] = 'failed'
+            elif failure == 'contract':
+                result['response'] = '{"invalid":true}'
+            elif failure == 'malformed':
+                result['response'] = '{broken ' + RAW + SECRET
+            elif failure == 'truncated':
+                result['response'] = 'x' * 100000
+            elif failure == 'exception':
+                raise RuntimeError(RAW + SECRET)
+            elif failure == 'identity':
+                result['model'] = 'forged-model'
+        return result
+
+    current.cloud_transform = transform
+    current.hours()
+    assert current.events == list(loop.STAGES) and current.calls() == 9
+    assert [row[0] for row in case['trace'] if row[0] != 'render'] == ['capture', 'annotations'] * 9
+    assert len([row for row in case['trace'] if row[0] == 'render']) == 4
+    report = private_usage_saved(current)
+    assert {a['provider'] for a in report['agents']} == {'codex', 'zai', 'claude'}
+    for agent, request in zip(report['agents'], current.cloud_requests):
+        if agent['role'] == 'downloader' and failure in ('exception', 'identity'):
+            assert agent['usage_observation'] == {
+                'prompt_size': {'characters': None, 'utf8_bytes': None},
+                'usage': agent_usage.unavailable()}
+        else:
+            assert agent['usage_observation'] == {
+                'prompt_size': agent_usage.prompt_size(request['prompt']),
+                'usage': private_usage_expected(agent['provider'])}
+    agent = report['agents'][1]
+    if failure == 'truncated':
+        retained = next(item for item in retentions if item[0] == 'downloader')
+        assert retained[1] is True
+        assert retained[2] == {'role', 'provider', 'model', 'status'}
+    assert agent['status'] == ('succeeded' if failure == 'none' else
+                               'unavailable' if failure == 'exception' else 'failed')
+    if failure != 'none':
+        assert agent['reason'] == {'cli': 'role_execution_failed', 'contract': 'candidate_invalid',
+                                   'malformed': 'role_json_invalid', 'truncated': 'role_json_invalid',
+                                   'exception': 'role_execution_failed',
+                                   'identity': 'role_identity_mismatch'}[failure]
+
+
+@pytest.mark.parametrize('value,expected', [
+    (7, 7), (0, 0), (1000000000, 1000000000), (None, None), (True, None), (False, None),
+    (-1, None), (float('nan'), None), (float('inf'), None), (float('-inf'), None),
+    (1000000001, None), (2 ** 256, None), (7.0, None), ('7', None), (RAW + SECRET, None),
+], ids=['integer', 'zero', 'limit', 'null', 'true', 'false', 'negative', 'nan', 'inf',
+        'negative-inf', 'over-limit', 'huge', 'float', 'numeric-string', 'arbitrary-string'])
+@pytest.mark.parametrize('failed', [False, True])
+def test_private_usage_numeric_allowlist_through_actual_lab_save_reload(lab, value, expected, failed):
+    """Raw invalid numbers are bounded; the runner supplies existing cleaned numbers."""
+    numeric = tuple(key for key in agent_usage.unavailable() if key not in
+                    ('version', 'status', 'source', 'input_tokens_semantics'))
+    raw = {'usage': dict(private_usage_expected('codex'), **dict.fromkeys(numeric, value)),
+           'prompt_size': {'characters': value, 'utf8_bytes': value}}
+    bounded = loop._safe_usage_observation(raw)
+    assert bounded['prompt_size'] == {'characters': expected, 'utf8_bytes': expected}
+    assert {key: bounded['usage'][key] for key in numeric} == dict.fromkeys(numeric, expected)
+
+    def transform(role, result, response, options):
+        cleaned = agent_usage.number(value)
+        usage = dict(private_usage_expected(result['provider']), **dict.fromkeys(numeric, cleaned))
+        usage.update(raw=RAW + SECRET, path='/private/usage-source')
+        return dict(result, status='failed' if failed else 'passed', usage=usage,
+                    prompt_size={'characters': cleaned, 'utf8_bytes': cleaned, 'raw': RAW + SECRET})
+
+    lab.cloud_transform = transform
+    lab.hours(count=2)
+    agent = private_usage_saved(lab)['agents'][0]
+    assert agent['status'] == ('failed' if failed else 'succeeded')
+    facts = agent['usage_observation']
+    assert facts['prompt_size'] == {'characters': expected, 'utf8_bytes': expected}
+    assert {key: facts['usage'][key] for key in numeric} == dict.fromkeys(numeric, expected)
+    assert facts['usage']['status'] == 'available'
+    assert set(facts['usage']) == set(agent_usage.unavailable())
+    assert set(facts) == {'prompt_size', 'usage'}
+
+
+@pytest.mark.parametrize('shape', ['missing', 'null', 'partial', 'unknown-version', 'enums'])
+def test_private_usage_missing_numbers_and_fixed_enums_are_not_inferred(lab, shape):
+    def transform(role, result, response, options):
+        if shape == 'missing':
+            return result
+        if shape == 'null':
+            return dict(result, prompt_size=None, usage=None)
+        usage = {'version': 'agent-usage-v1', 'status': 'partial', 'source': 'claude_result',
+                 'input_tokens_semantics': 'cache_exclusive', 'input_tokens': 12, 'output_tokens': 7}
+        if shape == 'unknown-version':
+            usage['version'] = RAW + SECRET
+        elif shape == 'enums':
+            usage.update(status=RAW + SECRET, source='/private/usage-source', input_tokens_semantics=True)
+        return dict(result, prompt_size={'characters': 0}, usage=usage)
+
+    lab.cloud_transform = transform
+    lab.hours(count=2)
+    facts = private_usage_saved(lab)['agents'][0]['usage_observation']
+    expected = agent_usage.unavailable()
+    if shape in ('partial', 'enums'):
+        expected.update(input_tokens=12, output_tokens=7)
+        if shape == 'partial':
+            expected.update(status='partial', source='claude_result', input_tokens_semantics='cache_exclusive')
+    assert facts['usage'] == expected
+    assert facts['prompt_size'] == {'characters': None if shape in ('missing', 'null') else 0,
+                                    'utf8_bytes': None}
+    assert facts['usage']['total_tokens'] is None and facts['usage']['total_input_tokens'] is None
+    assert facts['usage']['uncached_input_tokens'] is None
+
+
+@pytest.mark.parametrize('failure', ['none', 'cli', 'exception'])
+@pytest.mark.parametrize('error', [ValueError, KeyboardInterrupt])
+def test_private_usage_optional_observer_failure_preserves_runner_outcome(lab, monkeypatch, failure, error):
+    original_number = agent_usage.number
+
+    def broken_number(value):
+        if type(value) is int and value == 12:
+            raise error(RAW + SECRET)
+        return original_number(value)
+
+    def transform(role, result, response, options):
+        if failure == 'exception':
+            raise RuntimeError(RAW + SECRET)
+        return dict(result, status='failed' if failure == 'cli' else 'passed',
+                    usage=private_usage_expected(result['provider']))
+
+    monkeypatch.setattr(agent_usage, 'number', broken_number)
+    lab.cloud_transform = transform
+    lab.hours(count=2)
+    agent = private_usage_saved(lab)['agents'][0]
+    assert agent['status'] == {'none': 'succeeded', 'cli': 'failed', 'exception': 'unavailable'}[failure]
+    assert agent['usage_observation']['usage'] == agent_usage.unavailable()
+    if failure != 'none':
+        assert agent['reason'] == 'role_execution_failed'
+
+
+@pytest.mark.parametrize('failure', ['none', 'cli', 'exception'])
+def test_private_usage_preserves_inputs_reads_public_payloads_and_digests(
+        tmp_path, monkeypatch, reference_resolver, failure):
+    from harness import improvement_health as health
+    scan_ids = [loop._id() for _ in range(8)]
+    directory = tmp_path / 'private-usage-paired'
+    actual_call = loop._cloud_call
+    comparisons = []
+
+    def without_usage(*args, **kwargs):
+        participation, parsed = actual_call(*args, **kwargs)
+        participation.pop('usage_observation', None)
+        return participation, parsed
+
+    for observed in (False, True):
+        directory.mkdir(mode=0o700)
+        with monkeypatch.context() as patch:
+            current = lab.__wrapped__(directory, patch)
+            prepare_reference_lab(current, patch, reference_resolver)
+            case = make_reference_case(current, patch)
+            current.models['roles']['coordinator']['provider'] = 'codex'
+            ids = iter(scan_ids)
+            patch.setattr(loop, '_id', lambda: next(ids))
+            patch.setattr(loop, '_cloud_call', actual_call if observed else without_usage)
+            read_traces = []
+
+            def trace(events):
+                context = str(current.cloud_requests[-1]['options']['workspace'])
+                read_traces.append(json.loads(json.dumps(events).replace(context, '<synthetic-context>')))
+                return events
+
+            def attach(role, result, response, options):
+                if role == 'downloader' and failure == 'exception':
+                    raise RuntimeError(RAW + SECRET)
+                result.update(private_usage_metadata(result['provider'], current.cloud_requests[-1]['prompt']))
+                if role == 'downloader' and failure == 'cli':
+                    result['status'] = 'failed'
+                return result
+
+            current.review_trace_transform = trace
+            current.cloud_transform = attach
+            outcomes = current.hours()
+            report = current.report()
+            outcomes.append(current.tick(9))
+            journal = current.store.read('loop/publications/2026-10-15.json')
+            frozen = current.store.path('loop/publications/2026-10-15.json').read_bytes()
+            current.tick(10)
+            assert current.store.path('loop/publications/2026-10-15.json').read_bytes() == frozen
+            slots = deepcopy(current.slots())
+            for slot in slots.values():
+                slot.pop('usage_observation', None)
+            comparisons.append({
+                'prompts': [r['prompt'].encode('utf-8') for r in current.cloud_requests],
+                'local': current.local_requests, 'wire': current.wire_requests,
+                'events': current.events, 'calls': current.calls(), 'quotas': current.quotas,
+                'reads': read_traces, 'reference_trace': case['trace'],
+                'resolutions': current.storage_resolutions, 'slots': slots,
+                'outcomes': [{key: outcome[key] for key in (
+                    'status', 'reason', 'next_stage', 'next_role', 'calls_today',
+                    'claude_spent_estimated_usd', 'budget_status', 'last_review_at',
+                    'last_review_current_at_last_tick') if key in outcome} for outcome in outcomes],
+                'proposals': report['proposals'],
+                'authorization': loop.authorization_context(report),
+                'public': contract.build_web_report(report),
+                'health': health.project(current.state(), current.clock().isoformat()),
+                'payload': journal['payload'], 'digest': journal['digest'],
+                'rendered': {ext: current.store.path('web/2026-10-15.' + ext).read_bytes()
+                             for ext in ('json', 'html', 'md')},
+            })
+            assert 'usage_observation' not in json.dumps(journal['payload'])
+            assert 'usage_observation' not in json.dumps(comparisons[-1]['health'])
+        if not observed:
+            directory.rename(tmp_path / 'private-usage-baseline')
+    assert comparisons[0] == comparisons[1]
+
+
+@pytest.mark.parametrize('value', [None, True, RAW + SECRET, [], {'version': RAW + SECRET}])
+def test_private_usage_container_versions_and_legacy_projection_have_no_fallback(value):
+    prior = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic', 'status': 'succeeded',
+             'result': private_usage_metadata('codex', '한🙂')}
+    baseline = loop._safe_participation(prior)
+    assert 'usage_observation' not in baseline and 'result' not in baseline
+    safe = loop._safe_participation(dict(prior, usage_observation=value))
+    assert safe['usage_observation'] == {
+        'prompt_size': {'characters': None, 'utf8_bytes': None}, 'usage': agent_usage.unavailable()}
+    safe.pop('usage_observation')
+    assert safe == baseline
+    assert agent_usage.prompt_size('한🙂') == {'characters': 2, 'utf8_bytes': 7}
+
+
+def test_private_usage_reimport_revalidates_untrusted_bounded_metadata(private_usage_lab):
+    current, case = private_usage_lab
+    current.hours(count=2)
+    report = current.report()
+    agent = report['agents'][0]
+    agent['usage_observation'] = {
+        'prompt_size': {'characters': True, 'utf8_bytes': '7', 'raw': RAW + SECRET},
+        'usage': {'version': 'agent-usage-v1', 'input_tokens': -1, 'output_tokens': 0,
+                  'total_tokens': 1000000001, 'uncached_input_tokens': float('inf'),
+                  'source': RAW + SECRET, 'status': '/private/usage-source',
+                  'input_tokens_semantics': RAW + SECRET, 'raw': RAW + SECRET},
+        'diagnostics': RAW + SECRET}
+    state = current.state()
+    state['participation'] = []
+    loop._import_participation(state, report)
+    facts = state['participation'][0]['usage_observation']
+    expected = dict(agent_usage.unavailable(), output_tokens=0)
+    assert facts == {'prompt_size': {'characters': None, 'utf8_bytes': None}, 'usage': expected}
+    assert state['participation'][0]['status'] == 'succeeded'
+    loop._write_state(current.store, state)
+    current.store = imp.Store(current.selected)
+    assert current.state()['participation'] == state['participation']
+    assert loop.status(now=current.clock(), selected=current.selected)['participation'][0]['usage_observation'] == facts
+    assert_private(current.state())
+
+
+@pytest.mark.parametrize('provider', ['codex', 'claude', 'zai'])
+@pytest.mark.parametrize('value,expected,rejected', [
+    (7, 7, False), (0, 0, False), (None, None, False), (True, None, False),
+    (-1, None, False), (float('nan'), None, True), (float('inf'), None, True),
+    (1000000001, None, False), ('7', None, False), (RAW + SECRET, None, False),
+], ids=['integer', 'zero', 'null', 'bool', 'negative', 'nan', 'inf',
+        'over-limit', 'numeric-string', 'arbitrary-string'])
+def test_private_usage_actual_agent_usage_numeric_contract_is_preserved(
+        lab, provider, value, expected, rejected):
+    target_role = 'reviewer' if provider == 'claude' else 'coordinator'
+    if provider != 'claude':
+        lab.models['roles']['coordinator']['provider'] = provider
+    fields = ({'input_tokens': value, 'cached_input_tokens': 0,
+               'output_tokens': 0, 'reasoning_output_tokens': 0} if provider == 'codex' else
+              {'input_tokens': value, 'cache_read_input_tokens': 0,
+               'cache_creation_input_tokens': 0, 'output_tokens': 0})
+    envelope = ({'type': 'turn.completed', 'usage': fields} if provider == 'codex' else
+                {'type': 'result', 'subtype': 'success', 'is_error': False,
+                 'result': 'synthetic final', 'usage': fields})
+    # NaN/Inf invalidate the final JSON envelope in the existing observer;
+    # ordinary invalid numeric members remain partial, with fixed provenance.
+    usage = agent_usage.observe(provider, json.dumps(envelope))
+    expected_usage = agent_usage.unavailable()
+    if not rejected:
+        expected_usage.update(input_tokens=expected, output_tokens=0,
+                              total_input_tokens=expected, uncached_input_tokens=expected,
+                              total_tokens=expected, status='available' if expected is not None else 'partial',
+                              source='codex_turn_completed' if provider == 'codex' else 'claude_result',
+                              input_tokens_semantics='cache_inclusive' if provider == 'codex' else 'cache_exclusive')
+        if provider == 'codex':
+            expected_usage.update(cached_input_tokens=0, reasoning_output_tokens=0)
+        else:
+            expected_usage.update(cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    assert usage == expected_usage
+
+    def attach(role, result, response, options):
+        if role == target_role:
+            return dict(result, usage=usage, prompt_size=agent_usage.prompt_size('한🙂'))
+        return result
+
+    lab.cloud_transform = attach
+    lab.hours(count=9 if provider == 'claude' else 2)
+    report = private_usage_saved(lab)
+    if provider == 'claude':
+        assert lab.events == list(loop.STAGES) and lab.calls() == 9
+        assert [request['role'] for request in lab.cloud_requests
+                if request['role'] == 'reviewer'] == ['reviewer']
+        agent = next(agent for agent in report['agents'] if agent['role'] == 'reviewer')
+        assert agent['provider'] == 'claude' and agent['status'] == 'succeeded'
+        assert report['review_complete'] is True
+    else:
+        agent = report['agents'][0]
+    facts = agent['usage_observation']
+    assert facts == {'prompt_size': {'characters': 2, 'utf8_bytes': 7}, 'usage': expected_usage}
