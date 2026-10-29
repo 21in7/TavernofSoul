@@ -4301,3 +4301,175 @@ def test_private_usage_actual_agent_usage_numeric_contract_is_preserved(
         agent = report['agents'][0]
     facts = agent['usage_observation']
     assert facts == {'prompt_size': {'characters': 2, 'utf8_bytes': 7}, 'usage': expected_usage}
+
+
+@pytest.mark.parametrize('mode,status,skips,roots,items,annotations', [
+    ('partial', 'partial', 2, [], ['record_invalid', 'record_missing'], None),
+    ('root', 'unknown', 0, ['unsafe_attachment'], [], None),
+    ('annotation', 'normal', None, None, None, ['annotation_invalid']),
+])
+def test_reference_isolation_diagnostics_follow_production_save_reload_and_public_boundary(
+        private_observation_lab, mode, status, skips, roots, items, annotations):
+    current, case = private_observation_lab
+    latest = current.development_root / 'latest.json'
+    latest.write_bytes(encode({'run_id': 'synthetic-reference-44'}))
+    latest.chmod(0o600)
+    lock = current.development_root / '.lock'
+    lock.write_bytes(b'')
+    lock.chmod(0o600)
+    if mode == 'partial':
+        for name, body in (('RUN-corrupt', b'{'), ('RUN-incomplete', b'{}')):
+            directory = current.development_root / name
+            directory.mkdir(mode=0o700)
+            path = directory / 'report.json'
+            path.write_bytes(body)
+            path.chmod(0o600)
+    elif mode == 'root':
+        current.development_root.chmod(0o755)
+    else:
+        case['annotations'].write_bytes(b'{invalid\n')
+    current.hours()
+    assert current.events == list(loop.STAGES) and current.calls() == 9
+    assert [row[0] for row in case['trace'] if row[0] != 'render'] == [
+        'capture', 'annotations'] * 9
+    assert len([row for row in case['trace'] if row[0] == 'render']) == 4
+    report = current.report()
+    facts = report['agents'][0]['reference_observation']
+    assert facts['collection_status'] == status
+    if skips is not None:
+        assert facts['skipped_items'] == skips
+        assert facts['root_failure_codes'] == roots
+        assert facts['item_failure_codes'] == items
+    if annotations is not None:
+        assert facts['annotation_failure_codes'] == annotations
+        assert facts['annotation_used'] is None
+    payload = reference_payload(current.cloud_requests[0]['prompt'])
+    if mode == 'root':
+        assert payload is None
+        assert facts['attached_utf8_bytes'] == 0
+        assert facts['annotation_used'] is False
+    else:
+        assert payload['issues']
+        assert payload['merged_prs']
+    assert facts['attached_utf8_bytes'] == private_observation_attachment(
+        current.cloud_requests[0]['prompt'])
+    current.store = imp.Store(current.selected)
+    saved = current.store.read('scans/' + report['scan_id'] + '.json')
+    for rows in (saved['agents'], current.state()['participation'],
+                 loop.status(now=current.clock(), selected=current.selected)['participation']):
+        assert next(row for row in rows if row['role'] == report['agents'][0]['role'])[
+            'reference_observation'] == facts
+    history = deepcopy(current.state()['participation'])
+    state = current.state()
+    loop._import_participation(state, saved)
+    assert state['participation'] == history
+    baseline = private_observation_without_references(report)
+    assert contract.build_web_report(report) == contract.build_web_report(baseline)
+    assert loop.authorization_context(report) == loop.authorization_context(baseline)
+    assert_private(facts)
+
+
+@pytest.mark.parametrize('value', [True, -1, 4097, 2 ** 256, '0', float('nan')])
+def test_reference_diagnostic_counts_reject_untrusted_values_without_legacy_inference(value):
+    facts = loop._safe_reference_observation({
+        'skipped_items': value, 'root_failure_codes': [RAW, SECRET, 'lock_busy'],
+        'item_failure_codes': ['record_missing', True, 'record_missing'],
+        'annotation_failure_codes': ['annotation_invalid', '/private/source']})
+    assert facts['skipped_items'] is None
+    assert facts['root_failure_codes'] == ['lock_busy']
+    assert facts['item_failure_codes'] == ['record_missing']
+    assert facts['annotation_failure_codes'] == ['annotation_invalid']
+    assert_private(facts)
+    legacy = loop._safe_reference_observation({'collection_status': 'empty'})
+    assert not any(key in legacy for key in (
+        'skipped_items', 'root_failure_codes', 'item_failure_codes', 'annotation_failure_codes'))
+    for count in (0, 4096):
+        assert loop._safe_reference_observation({'skipped_items': count})['skipped_items'] == count
+    for codes in (True, RAW, {'lock_busy': True}, ['lock_busy'] * 100):
+        assert loop._safe_reference_observation({'root_failure_codes': codes})[
+            'root_failure_codes'] is None
+
+
+def test_reference_exclusion_diagnostics_keep_frozen_payload_and_collection_count(
+        tmp_path, monkeypatch, reference_resolver):
+    scan_ids = [loop._id() for _ in range(8)]
+    directory = tmp_path / 'reference-isolation-paired'
+    sanitize = loop._safe_reference_observation
+    results = []
+    for diagnostics in (False, True):
+        directory.mkdir(mode=0o700)
+        with monkeypatch.context() as patch:
+            current = lab.__wrapped__(directory, patch)
+            prepare_reference_lab(current, patch, reference_resolver)
+            case = make_reference_case(current, patch)
+            for name in ('latest.json', '.lock'):
+                path = current.development_root / name
+                path.write_bytes(b'{}' if name == 'latest.json' else b'')
+                path.chmod(0o600)
+            incomplete = current.development_root / 'RUN-incomplete'
+            incomplete.mkdir(mode=0o700)
+            path = incomplete / 'report.json'
+            path.write_bytes(b'{}')
+            path.chmod(0o600)
+            if not diagnostics:
+                def legacy_only(value):
+                    return {key: fact for key, fact in sanitize(value).items() if key in (
+                        'attached_utf8_bytes', 'collection_status', 'annotation_used')}
+                patch.setattr(loop, '_safe_reference_observation', legacy_only)
+            ids = iter(scan_ids)
+            patch.setattr(loop, '_id', lambda: next(ids))
+            current.hours()
+            assert [event[0] for event in case['trace'] if event[0] != 'render'] == [
+                'capture', 'annotations'] * 9
+            assert len([event for event in case['trace'] if event[0] == 'render']) == 4
+            report = current.report()
+            if diagnostics:
+                assert all(agent['reference_observation']['skipped_items'] == 1
+                           for agent in report['agents'])
+            current.tick(9)
+            journal = current.store.read('loop/publications/2026-10-15.json')
+            frozen = current.store.path('loop/publications/2026-10-15.json').read_bytes()
+            current.tick(10)
+            assert current.store.path('loop/publications/2026-10-15.json').read_bytes() == frozen
+            results.append({'prompts': [request['prompt'] for request in current.cloud_requests],
+                            'proposals': report['proposals'],
+                            'authorization': loop.authorization_context(report),
+                            'public': contract.build_web_report(report),
+                            'payload': journal['payload'], 'digest': journal['digest']})
+        if not diagnostics:
+            directory.rename(tmp_path / 'reference-isolation-baseline')
+    assert results[0] == results[1]
+
+
+def test_empty_partial_reference_input_is_observed_once_without_inventing_root_failure(
+        reference_lab, monkeypatch):
+    current = reference_lab
+    directory = current.development_root / 'RUN-incomplete'
+    directory.mkdir(mode=0o700)
+    path = directory / 'report.json'
+    path.write_bytes(b'{}')
+    path.chmod(0o600)
+    current.store.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    current.store.path('loop').mkdir(mode=0o700, exist_ok=True)
+    capture, read = reference.capture_reference_inputs, reference.read_annotations
+    calls = []
+
+    def capture_once(*args):
+        calls.append('capture')
+        return capture(*args)
+
+    def read_once(*args):
+        calls.append('annotations')
+        return read(*args)
+
+    monkeypatch.setattr(reference, 'capture_reference_inputs', capture_once)
+    monkeypatch.setattr(reference, 'read_annotations', read_once)
+    monkeypatch.setattr(reference, 'render_reference', forbidden)
+    observation = {}
+    assert loop._reference_inputs(current.store, observation) == ({}, [])
+    assert calls == ['capture', 'annotations']
+    facts = loop._safe_reference_observation(observation)
+    assert facts['collection_status'] == 'partial'
+    assert facts['skipped_items'] == 1
+    assert facts['root_failure_codes'] == []
+    assert facts['item_failure_codes'] == ['record_missing']

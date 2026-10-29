@@ -7,7 +7,7 @@ full bounded schema·native envelope·strict client 후보/evidence 검증과 �
 Z.ai specialist discovery만 opt-in하며 legacy/reviewer Read stream·모델/인증/예산은 유지한다.
 result fallback·문법 수선·모델 retry는 없다. native 형식은 의미적 정확성 증거가 아니다.
 과거 downloader role_json_invalid와 오전 partial/frozen digest를 새 성공으로 바꾸지 않는다.
-[개선 성과 조회 계약](improvement-metrics.md).
+[개선 성과 조회 계약](improvement-metrics.md)·[자문 수집 경계](harness-design.md).
 
 ## 별도 owner-private health 계약
 

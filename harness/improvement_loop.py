@@ -1072,9 +1072,9 @@ def _deadline(seconds):
 def _reference_inputs(store, observation=None):
     """One advisory read; optional fixed observations do not change the pair API.
 
-    Empty means a completed error-free collection found no records. Missing,
-    failed or unattempted collection stays unknown, including partial errors.
-    No collector errors or annotation contents enter the private observation.
+    Empty means a completed error-free collection found no records. Candidate
+    exclusions are partial; any root refusal clears all records and remains
+    unknown. Only fixed per-call diagnostics are retained.
     """
     if observation is not None:
         observation.update(collection_status='unknown', annotations_observed=False)
@@ -1107,20 +1107,35 @@ def _reference_inputs(store, observation=None):
             local_default=legacy_root)
         records, errors = reference.capture_reference_inputs(store.root, development_root)
         if observation is not None:
-            observation['collection_status'] = ('unknown' if errors else
-                                                 'normal' if records else 'empty')
+            if type(errors) is reference.ReferenceErrors:
+                observation.update(errors.observation())
+                observation['collection_status'] = (
+                    'unknown' if errors.root_failure_codes else
+                    'partial' if errors.item_failure_codes else
+                    'normal' if records else 'empty')
+            else:
+                # Legacy pair providers supply no trustworthy root/item split.
+                observation['collection_status'] = ('unknown' if errors else
+                                                     'normal' if records else 'empty')
     except LoopError:
         raise  # The existing tick deadline remains authoritative.
     except Exception:
-        pass  # Optional advice is unavailable; never report raw input/errors.
+        records = {}
+        if observation is not None:
+            observation.update(skipped_items=None,
+                               root_failure_codes=['references_unavailable'],
+                               item_failure_codes=[])
     try:
         annotations = reference.read_annotations(store.path('loop/issue-annotations.jsonl'))
         if observation is not None:
             observation['annotations_observed'] = True
     except LoopError:
         raise
-    except Exception:
-        pass  # Missing/invalid/busy annotations cannot establish a grouping.
+    except Exception as exc:
+        if observation is not None:
+            code = exc.args[0] if isinstance(exc, reference.ReferenceError) and exc.args else None
+            observation['annotation_failure_codes'] = [code if type(code) is str and
+                code in reference.ANNOTATION_CODES else 'annotation_unavailable']
     return records, annotations
 
 
@@ -1152,16 +1167,31 @@ def _safe_usage_observation(value):
 
 
 def _safe_reference_observation(value):
-    """Private facts only: null is unobserved; zero is observed no attachment."""
+    """Optional private facts only; reject unknown strings and invalid numbers.
+
+    Missing extension fields stay missing on legacy records. Sparse diagnostic
+    extensions are emitted on failures, never inferred for historical entries.
+    """
     value = value if type(value) is dict else {}
     size = value.get('attached_utf8_bytes')
     status = value.get('collection_status')
     annotation = value.get('annotation_used')
-    return {'attached_utf8_bytes': size if type(size) is int and
-            0 <= size <= reference.REFERENCE_BYTES else None,
-            'collection_status': status if type(status) is str and status in (
-                'normal', 'unknown', 'empty') else 'unknown',
-            'annotation_used': annotation if type(annotation) is bool else None}
+    result = {'attached_utf8_bytes': size if type(size) is int and
+              0 <= size <= reference.REFERENCE_BYTES else None,
+              'collection_status': status if type(status) is str and status in (
+                  'normal', 'unknown', 'empty', 'partial') else 'unknown',
+              'annotation_used': annotation if type(annotation) is bool else None}
+    if 'skipped_items' in value:
+        count = value['skipped_items']
+        result['skipped_items'] = count if type(count) is int and 0 <= count <= reference.MAX_FILES else None
+    for field, allowed in (('root_failure_codes', reference.COLLECTION_CODES),
+                           ('item_failure_codes', reference.COLLECTION_CODES),
+                           ('annotation_failure_codes', reference.ANNOTATION_CODES)):
+        if field in value:
+            codes = value[field]
+            result[field] = (sorted({code for code in codes if type(code) is str and code in allowed})
+                             if type(codes) is list and len(codes) <= len(allowed) else None)
+    return result
 
 
 def _reference_annotation_used(segment, observation, inputs):

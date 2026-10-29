@@ -629,3 +629,200 @@ class RenderingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CaptureIsolationTests(PrivateFixture):
+    """Synthetic active-root layout, through the production collector only."""
+    def active_layout(self):
+        good = {'proposals/' + pid(1) + '.json': proposal(1)}
+        good.update(workflow('RUN-good'))
+        self.install(good)
+        self.put(self.workflows / 'latest.json', {'run_id': 'RUN-good'})
+        self.put(self.workflows / '.lock', body=b'')
+        self.put(self.workflows / 'archive' / 'ignored' / 'report.json', body=b'{')
+        return good
+
+    def test_active_layout_preserves_good_records_and_counts_candidates_once(self):
+        good = self.active_layout()
+        self.install(workflow('RUN-corrupt'))
+        self.put(self.workflows / 'RUN-corrupt' / 'github.json', body=b'{')
+        self.put(self.workflows / 'RUN-incomplete' / 'report.json', {'run_id': 'RUN-incomplete'})
+        self.put(self.workflows / 'RUN-type' / 'report.json', [])
+        self.put(self.workflows / 'RUN-regular', body=b'{}')
+        records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual(records, good)
+        self.assertEqual(errors, ['entry_type', 'record_invalid', 'record_missing'])
+        self.assertEqual(errors.observation(), {
+            'skipped_items': 4, 'root_failure_codes': [],
+            'item_failure_codes': ['entry_type', 'record_invalid', 'record_missing']})
+        self.assertEqual(render(records)['merged_prs'][0]['pr_number'], 1)
+        self.assertLessEqual(set(errors), ref.COLLECTION_CODES)
+        self.assertNotIn(str(self.base), str(errors.observation()))
+        self.assertNotIn(PAYLOAD, str(errors.observation()))
+
+    def test_all_excluded_is_distinct_from_clean_empty(self):
+        self.put(self.workflows / 'latest.json', {})
+        clean, no_errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual((clean, no_errors), ({}, []))
+        self.put(self.workflows / 'RUN-incomplete' / 'report.json', {})
+        records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual(records, {})
+        self.assertEqual(errors.skipped_items, 1)
+        self.assertEqual(errors.item_failure_codes, {'record_missing'})
+        self.assertFalse(errors.root_failure_codes)
+
+    def test_busy_run_is_excluded_without_retry_or_discarding_other_runs(self):
+        good = self.active_layout()
+        self.install(workflow('RUN-busy'))
+        lock = self.put(self.workflows / 'RUN-busy' / 'github.lock', body=b'')
+        from harness.improvement_metrics import Capture
+        read = Capture.read
+        calls = []
+
+        def once(capture, relative, *args, **kwargs):
+            calls.append((capture.root, relative))
+            return read(capture, relative, *args, **kwargs)
+
+        with lock.open('rb') as handle, mock.patch.object(Capture, 'read', once):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual(records, good)
+        self.assertEqual(errors, ['lock_busy'])
+        self.assertEqual(errors.skipped_items, 1)
+        self.assertFalse(errors.root_failure_codes)
+        self.assertEqual(len(calls), len(good))
+        self.assertEqual(len(calls), len(set(calls)))
+
+    def test_unsafe_symlink_and_hardlink_candidates_never_poison_good_records(self):
+        good = self.active_layout()
+        (self.workflows / 'RUN-link').symlink_to(self.workflows / 'RUN-good',
+                                                target_is_directory=True)
+        self.install(workflow('RUN-file-link'))
+        linked = self.workflows / 'RUN-file-link' / 'github.json'
+        linked.unlink()
+        linked.symlink_to(self.workflows / 'RUN-good' / 'github.json')
+        bad = self.put(self.root / 'proposals' / (pid(2) + '.json'), proposal(2))
+        os.link(bad, self.root / 'hardlink')
+        records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual(records, good)
+        self.assertEqual(errors, ['unsafe_attachment'])
+        self.assertEqual(errors.skipped_items, 3)
+        self.assertFalse(errors.root_failure_codes)
+
+    def test_changed_or_detached_run_loses_the_whole_pair_only(self):
+        from harness.improvement_metrics import Capture
+        verify = Capture.verify
+        for change in ('bytes', 'detach', 'busy'):
+            with self.subTest(change=change):
+                good = self.active_layout()
+                self.install(workflow('RUN-changing'))
+                journal_lock = self.put(self.workflows / 'RUN-changing' / 'github.lock', body=b'')
+                calls, held = [], []
+
+                def mutate(capture):
+                    calls.append(capture.root)
+                    verify(capture)
+                    if capture.root == self.workflows:
+                        if change == 'bytes':
+                            self.put(self.workflows / 'RUN-changing' / 'github.json', {})
+                        elif change == 'detach':
+                            (self.workflows / 'RUN-changing').rename(self.workflows / '.detached')
+                        else:
+                            handle = journal_lock.open('rb')
+                            held.append(handle)
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+                try:
+                    with mock.patch.object(Capture, 'verify', mutate):
+                        records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+                finally:
+                    for handle in held:
+                        handle.close()
+                self.assertEqual(records, good)
+                self.assertEqual(errors.skipped_items, 1)
+                self.assertFalse(errors.root_failure_codes)
+                self.assertLessEqual(set(errors), ref.COLLECTION_CODES)
+                self.assertEqual(calls, [self.root, self.workflows])
+                # Keep each subcase independent without modifying existing fixtures.
+                import shutil
+                shutil.rmtree(self.workflows / ('.detached' if change == 'detach' else 'RUN-changing'))
+
+    def test_failed_candidate_is_removed_from_final_verification(self):
+        good = self.active_layout()
+        bad = self.put(self.root / 'proposals' / (pid(2) + '.json'), body=b'{')
+        from harness.improvement_metrics import Capture
+        verify = Capture.verify
+
+        def mutate_excluded(capture):
+            if capture.root == self.root:
+                bad.write_bytes(b'{still-invalid')
+            verify(capture)
+
+        with mock.patch.object(Capture, 'verify', mutate_excluded):
+            records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual(records, good)
+        self.assertEqual(errors, ['record_invalid'])
+        self.assertEqual(errors.skipped_items, 1)
+        self.assertFalse(errors.root_failure_codes)
+
+    def test_root_refusal_clears_all_records_and_does_not_become_item_success(self):
+        self.active_layout()
+        self.workflows.chmod(0o755)
+        records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual(records, {})
+        self.assertEqual(errors.observation(), {
+            'skipped_items': 0, 'root_failure_codes': ['unsafe_attachment'],
+            'item_failure_codes': []})
+        self.workflows.chmod(0o700)
+        records, errors = ref.capture_reference_inputs(self.base / 'missing', self.workflows)
+        self.assertEqual(records, {})
+        self.assertEqual(errors.root_failure_codes, {'references_unavailable'})
+        with mock.patch.object(ref, 'MAX_BYTES', 1):
+            records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+        self.assertEqual(records, {})
+        self.assertEqual(errors.root_failure_codes, {'record_bound'})
+
+
+class AnnotationAncestorIsolationTests(PrivateFixture):
+    def test_unrelated_sibling_directory_nlink_changes_allow_annotation_read(self):
+        entry = ref.append_annotation(self.annotations, semantic())
+        read = ref._read_locked
+        for ancestor in (self.base, self.root, self.root / 'loop'):
+            for create in (True, False):
+                with self.subTest(ancestor=ancestor.name, create=create):
+                    sibling = ancestor / 'unrelated-sibling'
+                    if not create:
+                        sibling.mkdir(mode=0o700)
+                    calls = []
+
+                    def change_sibling(fd):
+                        body = read(fd)
+                        before = ancestor.stat().st_nlink
+                        sibling.mkdir(mode=0o700) if create else sibling.rmdir()
+                        self.assertNotEqual(ancestor.stat().st_nlink, before)
+                        calls.append(True)
+                        return body
+
+                    with mock.patch.object(ref, '_read_locked', change_sibling):
+                        self.assertEqual(ref.read_annotations(self.annotations), [entry])
+                    self.assertEqual(calls, [True])
+                    if create:
+                        sibling.rmdir()
+
+
+class CaptureBudgetIsolationTests(PrivateFixture):
+    def test_global_inventory_or_byte_refusal_clears_previously_safe_root(self):
+        good = {'proposals/' + pid(1) + '.json': proposal(1)}
+        self.install(good)
+        self.install(workflow('RUN-good'))
+        for index in range(4):
+            self.put(self.workflows / ('.metadata-' + str(index)), body=b'')
+        for limit, bound, code in (
+                ('MAX_FILES', 5, 'inventory_bound'),
+                ('MAX_BYTES', len(canonical(proposal(1))) + 1, 'record_bound')):
+            with self.subTest(limit=limit), mock.patch.object(ref, limit, bound):
+                records, errors = ref.capture_reference_inputs(self.root, self.workflows)
+            self.assertEqual(records, {})
+            self.assertEqual(errors.root_failure_codes, {code})
+            self.assertEqual(errors.skipped_items, 0)
+            self.assertFalse(errors.item_failure_codes)

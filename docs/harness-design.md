@@ -417,9 +417,18 @@ cloud specialist는 승인 경로 교집합의 정제 자문을 별도 구간으
 입력은 deadline/readiness 뒤 Store.lock 전, source/state 잠금 밖에서 연구 `store.root`와 `storage.resolve_storage(imp.ROOT, env={})`의
 active `workflow_root(local_default=imp.ROOT/'logs/harness/workflows')`에서만 수집한다.
 archive/fallback 검색은 없다. 그룹·구현 판정은 연구 `loop/issue-annotations.jsonl` 하나의 명시
-annotation만 따른다. annotation 부재·손상·읽기 실패·busy는 []로 처리해 각 항목을 unknown으로,
-collector unavailable은 빈 records로 다룬다. 기본 설정이 없고 legacy root도 부재/잠금 메타데이터뿐이면 입력 unavailable이다.
-재시도 없이 기존 호출 수·순서·예약/정산을 유지한다.
+annotation만 따른다. annotation 실패는 []이며 수집 상태와 별개다. no-follow 타입 확인 뒤
+proposal 파일/run 쌍을 검증하고 실패 항목만 제외한다. archive·숨김 metadata·latest.json은
+제외 대상이며 실패 수에 넣지 않는다. root 거절은 전체 records를 비우고 첨부0이다.
+private reference_observation의 세 필드·legacy 생략을 보존한다. 실패 시 선택적
+skipped_items(제외 proposal/run 수, 중복 없이0..4096), root_failure_codes/item_failure_codes/
+annotation_failure_codes(고정 allowlist)를 남긴다. null은 미관측,0/[]는 관측된 무실패다.
+collection_status는 정상 normal/무자료 empty, 항목 제외 partial(빈 records도), root 확인·잠금·
+전역 상한 거절 unknown이다. annotation_used와 읽기 성공은 별개며 소급 추정하지 않는다.
+조상은 dev/ino/mode/uid, 파일은 nlink1·전체 identity/bytes를 재검증한다.
+진단은 private history/status에만 두고 public 세 계약·digest·승인·freshness에는 넣지 않는다.
+한 번 수집한 진단을 전달하며 관측용 재수집·annotation 재읽기·재렌더는 없다. 기본 설정이 없고
+legacy root도 부재/잠금 metadata뿐이면 unavailable이다. 기존 호출·예약/정산은 유지한다.
 
 local adapter는 파일을 열지 않고 parent의 승인 snapshot 한 파일의 연속 numbered whole-line
 window만 받는다. [로컬 계약](local-models.md)의 mlx-vlm0.7.8 native strict JSON Schema·
