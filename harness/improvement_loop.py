@@ -485,7 +485,8 @@ def _validate_history(entry, local=False):
     required = {
             'scan_id', 'slot', 'stage_index', 'role', 'provider', 'model',
             'status', 'started_at', 'finished_at'}
-    optional = {'reason', 'failure_detail', 'stage', 'owner_role', 'call_started_at', 'call_finished_at'}
+    optional = {'reason', 'failure_detail', 'stage', 'owner_role', 'call_started_at', 'call_finished_at',
+                'reference_observation'}
     if (not isinstance(entry, dict) or not required <= set(entry) or
             set(entry) - required - optional or
             not isinstance(entry['scan_id'], str) or not storage.RUN_ID.fullmatch(entry['scan_id']) or
@@ -542,6 +543,8 @@ def _remember(state, scan_id, role, agent, pending=None, local=False):
     for key in ('call_started_at', 'call_finished_at'):
         if agent.get(key) is not None:
             entry[key] = agent[key]
+    if not local and 'reference_observation' in agent:
+        entry['reference_observation'] = _safe_reference_observation(agent['reference_observation'])
     if agent['status'] not in ('reserved', 'succeeded'):
         entry.update(_failure_fields(agent, local=local))
     _validate_history(entry, local=local)
@@ -551,6 +554,11 @@ def _remember(state, scan_id, role, agent, pending=None, local=False):
     if old is not None and old['status'] in ('failed', 'unavailable'):
         # Re-import/settlement cannot replace this attempt's first observed failure.
         return
+    if old is not None and 'reference_observation' in old:
+        # A reduced legacy projection of this same call cannot erase facts
+        # already observed at invocation. It cannot establish new facts either.
+        entry.setdefault('reference_observation', _safe_reference_observation(
+            old['reference_observation']))
     previous = [e for e in state[key] if _history_identity(e) != identity]
     state[key] = sorted(previous + [entry], key=_history_order)[-HISTORY_LIMIT:]
 
@@ -842,6 +850,9 @@ def _safe_participation(participation):
         telemetry = imp.agent_telemetry.sanitize(participation.get('telemetry'))
         if telemetry is not None:
             result['telemetry'] = telemetry
+    if 'reference_observation' in participation:
+        result['reference_observation'] = _safe_reference_observation(
+            participation['reference_observation'])
     cost = participation.get('cost')
     known = participation.get('cost_status') == 'cli_estimated_usd' and _number(cost)
     result.update(cost=cost if known else None,
@@ -1052,8 +1063,15 @@ def _deadline(seconds):
                             previous_timer[1])
 
 
-def _reference_inputs(store):
-    """One advisory read before either source/state mutex; never retry or write."""
+def _reference_inputs(store, observation=None):
+    """One advisory read; optional fixed observations do not change the pair API.
+
+    Empty means a completed error-free collection found no records. Missing,
+    failed or unattempted collection stays unknown, including partial errors.
+    No collector errors or annotation contents enter the private observation.
+    """
+    if observation is not None:
+        observation.update(collection_status='unknown', annotations_observed=False)
     records, annotations = {}, []
     try:
         # The source mutex can create the legacy directory with only hidden
@@ -1081,13 +1099,18 @@ def _reference_inputs(store):
         development = storage.resolve_storage(imp.ROOT, env={})
         development_root = development.workflow_root(
             local_default=legacy_root)
-        records, _ = reference.capture_reference_inputs(store.root, development_root)
+        records, errors = reference.capture_reference_inputs(store.root, development_root)
+        if observation is not None:
+            observation['collection_status'] = ('unknown' if errors else
+                                                 'normal' if records else 'empty')
     except LoopError:
         raise  # The existing tick deadline remains authoritative.
     except Exception:
         pass  # Optional advice is unavailable; never report raw input/errors.
     try:
         annotations = reference.read_annotations(store.path('loop/issue-annotations.jsonl'))
+        if observation is not None:
+            observation['annotations_observed'] = True
     except LoopError:
         raise
     except Exception:
@@ -1095,15 +1118,77 @@ def _reference_inputs(store):
     return records, annotations
 
 
+def _safe_reference_observation(value):
+    """Private facts only: null is unobserved; zero is observed no attachment."""
+    value = value if type(value) is dict else {}
+    size = value.get('attached_utf8_bytes')
+    status = value.get('collection_status')
+    annotation = value.get('annotation_used')
+    return {'attached_utf8_bytes': size if type(size) is int and
+            0 <= size <= reference.REFERENCE_BYTES else None,
+            'collection_status': status if type(status) is str and status in (
+                'normal', 'unknown', 'empty') else 'unknown',
+            'annotation_used': annotation if type(annotation) is bool else None}
+
+
+def _reference_annotation_used(segment, observation, inputs):
+    """Infer use only from attached rendered rows, never file/list presence.
+
+    An unavailable annotation read or an unrecognizable rendered envelope gives
+    no evidence. Unknown-only issue rows do not assert an annotation was used.
+    A partial key/status match stays unknown (null): both fields must match the
+    same already-read issue. One corroborated attached row establishes true,
+    even when other rows remain unconfirmed; this asks whether any was used.
+    """
+    if not segment:
+        return False
+    if not observation or observation.get('annotations_observed') is not True:
+        return None
+    try:
+        start = '\n<reference_advisory>\n' + reference.HEADER
+        end = '\n</reference_advisory>\n'
+        if not segment.startswith(start) or not segment.endswith(end):
+            return None
+        payload = json.loads(segment[len(start):-len(end)])
+        issues = payload.get('issues') if type(payload) is dict else None
+        if type(issues) is not list:
+            return None
+        for row in issues:
+            if (type(row) is not dict or type(row.get('issue_key')) is not str or
+                    type(row.get('implementation_status')) is not str):
+                return None
+        known = [row for row in issues if row['issue_key'] != 'unknown' or
+                 row['implementation_status'] != 'unknown']
+        if not known:
+            return False
+        # Corroborate meaningful fields against entries already read. A
+        # nonempty unrelated annotation list alone cannot establish use.
+        for row in known:
+            if any(type(entry) is dict and type(entry.get('issues')) is list and
+                   any(type(issue) is dict and
+                       issue.get('issue_key') == row['issue_key'] and
+                       issue.get('implementation_status') == row['implementation_status']
+                       for issue in entry['issues']) for entry in inputs[1]):
+                return True
+        return None
+    except LoopError:
+        raise
+    except Exception:
+        return None  # Optional interpretation never replaces a runner outcome.
+
+
 def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
                 keys, runner, selected, config, budget, coverage=None, clock=None,
-                reference_inputs=None):
+                reference_inputs=None, reference_observation=None):
     source_bytes = sum(len(snapshots[path]['content'] or b'') for path in own_paths)
     call_times = {}
+    reference_facts = _safe_reference_observation(reference_observation)
     advisory = ''
+    rendered = False
     if role != 'reviewer' and reference_inputs is not None:
         try:
             advisory = reference.render_reference(*reference_inputs, own_paths)
+            rendered = True
         except LoopError:
             raise
         except Exception:
@@ -1150,6 +1235,12 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
         options['timeout'] = min(options['timeout'], config['model_timeout_seconds'])
         if actual_role == 'reviewer':
             options['max_budget_usd'] = budget
+        if actual_role != 'reviewer' and rendered:
+            # Only here is attachment known: after redaction, envelope/context
+            # bounds and preparation, immediately before the actual invocation.
+            reference_facts['attached_utf8_bytes'] = len(segment.encode('utf-8'))
+            reference_facts['annotation_used'] = _reference_annotation_used(
+                segment, reference_observation, reference_inputs)
         # Parent wall observations of the actual adapter invocation, not slot
         # admission, context preparation, settlement or model-reported times.
         observe_time('call_started_at')
@@ -1165,6 +1256,7 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
                                           records, keys, bounded_runner, selected)
     safe = _safe_participation(participation)
     safe.update(call_times)
+    safe['reference_observation'] = reference_facts
     return safe, parsed
 
 
@@ -1724,6 +1816,8 @@ def _status_attempt(entry):
     result = copy.deepcopy({key: entry[key] for key in (
         'scan_id', 'slot', 'stage_index', 'role', 'stage', 'owner_role', 'provider', 'model',
         'status', 'started_at', 'call_started_at', 'call_finished_at', 'finished_at') if key in entry})
+    if 'reference_observation' in entry:
+        result['reference_observation'] = _safe_reference_observation(entry['reference_observation'])
     if entry['status'] not in ('succeeded', 'reserved'):
         result.update(_failure_fields(entry, local=entry['stage_index'] < 8 and entry['stage_index'] % 2 == 0))
     return result
@@ -1786,7 +1880,8 @@ def _skip_stage(store, state, day, slot, now, config, reason):
 
 
 def _tick_locked(store, state, now, config, runner, keys, local_runner,
-                 supplied_local_config, quota_transport, finish_clock, reference_inputs):
+                 supplied_local_config, quota_transport, finish_clock, reference_inputs,
+                 reference_observation=None):
     date = now.date().isoformat()
     slot = date + 'T{:02d}'.format(now.hour)
     if state['high_water_at'] and now < _stamp(state['high_water_at']):
@@ -1978,7 +2073,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             store.policy, config, budget,
             coverage=[{'role': a['role'], 'status': a['status'],
                        'read_files': a.get('read_files', [])} for a in report['agents'][:-1]],
-            clock=finish_clock, reference_inputs=reference_inputs)
+            clock=finish_clock, reference_inputs=reference_inputs,
+            reference_observation=reference_observation)
         call_finished = _clock(finish_clock())
         participation.update(provider=provider, model=model,
                              started_at=now.isoformat(), finished_at=call_finished.isoformat())
@@ -2149,7 +2245,8 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
                     store.policy.check_ready()
                 # Store.lock spans admission through settlement. Capture first:
                 # its nonblocking probes must not contend with our own mutexes.
-                reference_inputs = _reference_inputs(store)
+                reference_observation = {}
+                reference_inputs = _reference_inputs(store, observation=reference_observation)
                 with store.lock():
                     with diagnostics.boundary('storage_binding'):
                         project_lock.bind_discovery_root(store.policy, store.root)
@@ -2158,7 +2255,7 @@ def tick(*, now=None, selected=None, runner=None, keys=None, local_runner=None,
                         with diagnostics.boundary('stage'):
                             result = _tick_locked(store, state, now, config, runner, keys, local_runner,
                                                   local_config, quota_transport, finish_clock,
-                                                  reference_inputs)
+                                                  reference_inputs, reference_observation)
                             # A duplicate slot still checks the morning sender mutex.
                             # Bootstrap/persistence exceptions authorize neither sender.
                             morning_ready = True

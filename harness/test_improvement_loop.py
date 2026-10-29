@@ -857,6 +857,91 @@ def test_reference_legacy_active_runs_are_collected_without_default_policy(lab, 
     assert lab.events == list(loop.STAGES[:2]) and lab.calls() == 2
 
 
+@pytest.fixture
+def private_partial_evidence_lab(lab, monkeypatch, reference_resolver):
+    """Independent synthetic envelopes through the real cloud and save paths."""
+    prepare_reference_lab(lab, monkeypatch, reference_resolver)
+    records = {'synthetic-partial-evidence': {}}
+    annotations = [
+        {'issues': [{'issue_key': 'synthetic-alpha',
+                     'implementation_status': 'implemented'}]},
+        {'issues': [{'issue_key': 'synthetic-beta',
+                     'implementation_status': 'not_implemented'}]},
+    ]
+    payload, trace = {'issues': []}, []
+
+    def capture_once(root, development_root):
+        assert root == lab.store.root and development_root == lab.development_root
+        trace.append('capture')
+        return deepcopy(records), []
+
+    def read_once(path):
+        assert path == lab.store.path('loop/issue-annotations.jsonl')
+        trace.append('annotations')
+        return deepcopy(annotations)
+
+    def render_once(captured, entries, paths):
+        assert captured == records and entries == annotations
+        assert paths == imp.role_scope('coordinator', FILES, lab.discovery)
+        trace.append('render')
+        # Exercise the recognized envelope contract without using renderer code.
+        return reference.HEADER + json.dumps(payload, ensure_ascii=False)
+
+    monkeypatch.setattr(reference, 'capture_reference_inputs', capture_once)
+    monkeypatch.setattr(reference, 'read_annotations', read_once)
+    monkeypatch.setattr(reference, 'render_reference', render_once)
+    return lab, payload, trace
+
+
+@pytest.mark.parametrize('rows,expected', [
+    ([('synthetic-alpha', 'unknown')], None),
+    ([('synthetic-unconfirmed', 'implemented')], None),
+    ([('synthetic-alpha', 'not_implemented')], None),
+    ([('synthetic-alpha', 'unknown'),
+      ('synthetic-unconfirmed', 'implemented')], None),
+    ([('synthetic-alpha', 'implemented'),
+      ('synthetic-alpha', 'unknown'),
+      ('synthetic-unconfirmed', 'implemented')], True),
+    ([('synthetic-alpha', 'unknown'),
+      ('synthetic-unconfirmed', 'implemented'),
+      ('synthetic-alpha', 'implemented')], True),
+], ids=['key-only', 'status-only', 'pair-split-across-annotations',
+        'partial-rows-only', 'corroborated-first', 'corroborated-last'])
+def test_private_reference_partial_evidence_survives_cloud_save_and_reload(
+        private_partial_evidence_lab, rows, expected):
+    """Attached bytes are observed, but partial evidence is null, not false.
+
+    Byte count 0 means observed absence; null means attachment was unobserved.
+    annotation_used means any annotation was used, not that all rows matched.
+    """
+    current, payload, trace = private_partial_evidence_lab
+    payload['issues'] = [{'issue_key': key, 'implementation_status': status}
+                         for key, status in rows]
+    current.hours(count=2)
+    assert current.events == list(loop.STAGES[:2]) and current.calls() == 2
+    assert trace == ['capture', 'annotations', 'capture', 'annotations', 'render']
+    assert len(current.cloud_requests) == 1
+    prompt = current.cloud_requests[0]['prompt']
+    start = '\n<reference_advisory>\n' + reference.HEADER
+    end = '\n</reference_advisory>\n'
+    assert json.loads(prompt.split(start, 1)[1].split(end, 1)[0]) == payload
+    size = private_observation_attachment(prompt)
+    assert 0 < size <= 8192  # Observed nonzero attachment, never unobserved null.
+    facts = {'attached_utf8_bytes': size, 'collection_status': 'normal',
+             'annotation_used': expected}
+    current.store = imp.Store(current.selected)
+    state = current.state()
+    report = state['round']['report']
+    saved = current.store.read('scans/' + report['scan_id'] + '.json')
+    private_status = loop.status(now=current.clock(), selected=current.selected)
+    for entries in (report['agents'], saved['agents'], state['participation'],
+                    private_status['participation']):
+        agent = next(a for a in entries if a['role'] == 'coordinator')
+        assert agent['status'] == 'succeeded'
+        assert agent['reference_observation'] == facts
+        assert agent['reference_observation']['annotation_used'] is expected
+
+
 @pytest.mark.parametrize('segment_bytes', [8192, 8193])
 def test_reference_complete_multibyte_envelope_is_bounded_after_runtime_redaction(
         lab, reference_case, monkeypatch, segment_bytes):
@@ -3148,6 +3233,303 @@ def test_legacy_participation_without_diagnostics_remains_compatible(status):
     assert 'error_type' not in safe
     assert 'reason' not in loop._safe_participation(dict(legacy, status='succeeded',
                                                        reason='role_json_invalid', error_type=RAW + SECRET))
+
+
+@pytest.fixture
+def private_observation_lab(lab, monkeypatch, reference_resolver):
+    """New observation tests use synthetic reference inputs and unchanged Lab."""
+    prepare_reference_lab(lab, monkeypatch, reference_resolver)
+    case = make_reference_case(lab, monkeypatch)
+    return lab, case
+
+
+def private_observation_attachment(prompt):
+    start, end = '\n<reference_advisory>\n', '\n</reference_advisory>\n'
+    if start not in prompt:
+        return 0
+    return len((start + prompt.split(start, 1)[1].split(end, 1)[0] + end).encode('utf-8'))
+
+
+def private_observation_without_references(report):
+    result = deepcopy(report)
+    for agent in result['agents']:
+        agent.pop('reference_observation', None)
+    return result
+
+
+@pytest.mark.parametrize('failure', ['none', 'cli', 'malformed', 'exception'])
+def test_private_reference_observations_survive_scan_history_and_reload(
+        private_observation_lab, failure):
+    current, case = private_observation_lab
+
+    def transform(role, result, response, options):
+        if role == 'downloader':
+            if failure == 'cli':
+                result['status'] = 'failed'
+            elif failure == 'malformed':
+                result['response'] = '{broken ' + SECRET + RAW
+            elif failure == 'exception':
+                raise RuntimeError(SECRET + RAW)
+        return result
+
+    current.cloud_transform = transform
+    current.hours()
+    assert current.events == list(loop.STAGES) and current.calls() == 9
+    assert [event[0] for event in case['trace'] if event[0] != 'render'] == [
+        'capture', 'annotations'] * 9
+    assert len([event for event in case['trace'] if event[0] == 'render']) == 4
+    current.store = imp.Store(current.selected)
+    state = current.state()
+    report = current.report()
+    saved = current.store.read('scans/' + report['scan_id'] + '.json')
+    private_status = loop.status(now=current.clock(), selected=current.selected)
+    for agent, request in zip(report['agents'], current.cloud_requests):
+        facts = agent['reference_observation']
+        reviewer = agent['role'] == 'reviewer'
+        assert facts == {'attached_utf8_bytes': None if reviewer else
+                         private_observation_attachment(request['prompt']),
+                         'collection_status': 'normal',
+                         'annotation_used': None if reviewer else True}
+        for entries in (saved['agents'], state['participation'], private_status['participation']):
+            assert next(a for a in entries if a['role'] == agent['role'])[
+                'reference_observation'] == facts
+        assert_private(facts)
+    downloader = report['agents'][1]
+    # Adapter exceptions retain the existing unavailable outcome; returned CLI
+    # failures and malformed responses are failed, with attachment facts intact.
+    assert downloader['status'] == {
+        'none': 'succeeded', 'cli': 'failed', 'malformed': 'failed',
+        'exception': 'unavailable'}[failure]
+    if failure != 'none':
+        assert downloader['reason'] == (
+            'role_json_invalid' if failure == 'malformed' else 'role_execution_failed')
+    assert 'call_started_at' in downloader and 'call_finished_at' in downloader
+    for entries in (saved['agents'], state['participation'], private_status['participation']):
+        attempt = next(a for a in entries if a['role'] == 'downloader')
+        assert attempt['status'] == downloader['status']
+        if failure != 'none':
+            assert attempt['reason'] == downloader['reason']
+    baseline = private_observation_without_references(report)
+    assert contract.build_web_report(report) == contract.build_web_report(baseline)
+    assert loop.authorization_context(report) == loop.authorization_context(baseline)
+    for record in report['proposals']:
+        identity = contract.proposal_record(record['candidate'], record['source_fingerprints'])
+        assert all(record[key] == value for key, value in identity.items())
+    # Re-import must retain both successes and first failures without new I/O.
+    history = deepcopy(state['participation'])
+    loop._import_participation(state, saved)
+    assert state['participation'] == history
+    loop._import_participation(state, private_observation_without_references(saved))
+    assert state['participation'] == history
+
+
+@pytest.mark.parametrize('mode,status', [
+    ('normal', 'normal'), ('empty', 'empty'), ('partial', 'unknown'),
+    ('unavailable', 'unknown'), ('render_failed', 'normal'),
+])
+def test_private_reference_collection_states_do_not_invent_empty_success(
+        private_observation_lab, monkeypatch, mode, status):
+    current, _ = private_observation_lab
+    capture, render = reference.capture_reference_inputs, reference.render_reference
+    counts = {'capture': 0, 'render': 0}
+
+    def capture_once(*args):
+        counts['capture'] += 1
+        if mode == 'unavailable':
+            raise RuntimeError(RAW + SECRET)
+        records, errors = capture(*args)
+        if mode == 'empty':
+            return {}, []
+        if mode == 'partial':
+            return records, [RAW + SECRET]
+        return records, errors
+
+    def render_once(*args):
+        counts['render'] += 1
+        if mode == 'render_failed':
+            raise RuntimeError(RAW + SECRET)
+        return render(*args)
+
+    monkeypatch.setattr(reference, 'capture_reference_inputs', capture_once)
+    monkeypatch.setattr(reference, 'render_reference', render_once)
+    current.hours(count=2)
+    facts = current.report()['agents'][0]['reference_observation']
+    assert facts['collection_status'] == status
+    assert counts == {'capture': 2, 'render': 1}
+    if mode == 'render_failed':
+        assert facts['attached_utf8_bytes'] is None and facts['annotation_used'] is None
+    else:
+        assert facts['attached_utf8_bytes'] == private_observation_attachment(
+            current.cloud_requests[0]['prompt'])
+        assert facts['annotation_used'] is (mode in ('normal', 'partial'))
+        if mode in ('empty', 'unavailable'):
+            assert facts['attached_utf8_bytes'] == 0
+    assert_private(current.report())
+
+
+@pytest.mark.parametrize('mode,expected', [
+    ('used', True), ('empty', False), ('unrelated', False), ('unavailable', None),
+])
+def test_private_reference_annotation_requires_attached_matching_evidence(
+        private_observation_lab, monkeypatch, mode, expected):
+    current, _ = private_observation_lab
+    read = reference.read_annotations
+    calls = []
+
+    def read_once(path):
+        calls.append(path)
+        if mode == 'unavailable':
+            raise RuntimeError(RAW + SECRET)
+        entries = read(path)
+        if mode == 'empty':
+            return []
+        if mode == 'unrelated':
+            entries = deepcopy(entries)
+            for entry in entries:
+                entry['proposal_id'] = 'IMP-' + 'f' * 16
+                entry['proposal_digest'] = 'f' * 64
+        return entries
+
+    monkeypatch.setattr(reference, 'read_annotations', read_once)
+    current.hours(count=2)
+    assert len(calls) == 2
+    facts = current.report()['agents'][0]['reference_observation']
+    assert facts['attached_utf8_bytes'] > 0
+    assert facts['annotation_used'] is expected
+
+
+@pytest.mark.parametrize('segment_bytes', [8192, 8193])
+def test_private_reference_bytes_observe_final_multibyte_bound(
+        private_observation_lab, monkeypatch, segment_bytes):
+    current, _ = private_observation_lab
+    redact = agent_models.redact
+    envelopes = []
+
+    def expanding_redaction(text, keys):
+        result = redact(text, keys)
+        if text.startswith('\n<reference_advisory>\n'):
+            delta = segment_bytes - len(result.encode('utf-8'))
+            assert delta > 0
+            marker = '합성 참고 공통'
+            result = result.replace(marker, marker + '가' * (delta // 3) +
+                                    'a' * (delta % 3), 1)
+            envelopes.append(len(result.encode('utf-8')))
+        return result
+
+    monkeypatch.setattr(agent_models, 'redact', expanding_redaction)
+    current.hours(count=2)
+    facts = current.report()['agents'][0]['reference_observation']
+    assert envelopes == [segment_bytes]
+    assert facts['attached_utf8_bytes'] == (8192 if segment_bytes == 8192 else 0)
+    assert facts['annotation_used'] is (segment_bytes == 8192)
+    assert facts['attached_utf8_bytes'] == private_observation_attachment(
+        current.cloud_requests[0]['prompt'])
+
+
+def test_private_reference_unattempted_collection_keeps_pair_contract(lab, monkeypatch):
+    monkeypatch.setattr(reference, 'capture_reference_inputs', forbidden)
+    monkeypatch.setattr(reference, 'read_annotations', forbidden)
+    observation = {}
+    assert loop._reference_inputs(lab.store, observation=observation) == ({}, [])
+    assert observation == {'collection_status': 'unknown', 'annotations_observed': False}
+    lab.hours(count=2)
+    assert lab.report()['agents'][0]['reference_observation'] == {
+        'attached_utf8_bytes': 0, 'collection_status': 'unknown', 'annotation_used': False}
+
+
+def test_private_reference_preparation_failure_has_no_attachment_observation(
+        private_observation_lab, monkeypatch):
+    current, _ = private_observation_lab
+    redact = agent_models.redact
+
+    def over_context(text, keys):
+        result = redact(text, keys)
+        if 'LOCAL DRAFTS' in text:
+            result += 'x' * current.discovery['limits']['max_context_bytes']
+        return result
+
+    monkeypatch.setattr(agent_models, 'redact', over_context)
+    current.hours(count=2)
+    agent = current.report()['agents'][0]
+    # Preparation exceptions are unavailable before the adapter is invoked.
+    assert agent['status'] == 'unavailable' and current.cloud_requests == []
+    assert 'call_started_at' not in agent and 'call_finished_at' not in agent
+    assert agent['reference_observation'] == {
+        'attached_utf8_bytes': None, 'collection_status': 'normal', 'annotation_used': None}
+    assert agent['failure_detail']['reason'] == 'role_preparation_failed'
+    assert agent['failure_detail']['phase'] == 'preparation'
+    assert agent['failure_detail']['cause'] == 'context_too_large'
+
+
+def test_private_reference_unrecognizable_annotation_evidence_is_optional(
+        private_observation_lab, monkeypatch):
+    current, _ = private_observation_lab
+    calls = []
+
+    def render_once(*args):
+        calls.append(args[2])
+        return '합성 미판정 참고자료'
+
+    monkeypatch.setattr(reference, 'render_reference', render_once)
+    current.hours(count=2)
+    agent = current.report()['agents'][0]
+    assert agent['status'] == 'succeeded' and len(calls) == 1
+    assert agent['reference_observation']['annotation_used'] is None
+    assert agent['reference_observation']['attached_utf8_bytes'] == private_observation_attachment(
+        current.cloud_requests[0]['prompt'])
+
+
+def test_private_reference_observation_preserves_prompts_publication_and_digests(
+        tmp_path, monkeypatch, reference_resolver):
+    scan_ids = [loop._id() for _ in range(8)]
+    directory = tmp_path / 'private-observation-paired'
+    actual_call = loop._cloud_call
+    results = []
+
+    def without_observations(*args, **kwargs):
+        participation, parsed = actual_call(*args, **kwargs)
+        participation.pop('reference_observation', None)
+        return participation, parsed
+
+    for observed in (False, True):
+        directory.mkdir(mode=0o700)
+        with monkeypatch.context() as patch:
+            current = lab.__wrapped__(directory, patch)
+            prepare_reference_lab(current, patch, reference_resolver)
+            make_reference_case(current, patch)
+            ids = iter(scan_ids)
+            patch.setattr(loop, '_id', lambda: next(ids))
+            patch.setattr(loop, '_cloud_call', actual_call if observed else without_observations)
+            current.hours()
+            report = current.report()
+            current.tick(9)
+            journal = current.store.read('loop/publications/2026-10-15.json')
+            frozen = current.store.path('loop/publications/2026-10-15.json').read_bytes()
+            current.tick(10)
+            assert current.store.path('loop/publications/2026-10-15.json').read_bytes() == frozen
+            results.append({'prompts': [r['prompt'] for r in current.cloud_requests],
+                            'wire': current.wire_requests, 'events': current.events,
+                            'calls': current.calls(), 'slots': current.slots(),
+                            'proposals': report['proposals'],
+                            'authorization': loop.authorization_context(report),
+                            'public': contract.build_web_report(report),
+                            'payload': journal['payload'], 'digest': journal['digest']})
+        if not observed:
+            directory.rename(tmp_path / 'private-observation-baseline')
+    assert results[0] == results[1]
+
+
+@pytest.mark.parametrize('value', [True, -1, 8193, 2 ** 256, float('inf'),
+                                  float('nan'), '0', RAW + SECRET, '/private/source'])
+def test_private_reference_observation_rejects_untrusted_values(value):
+    raw = {'attached_utf8_bytes': value, 'collection_status': value,
+           'annotation_used': value, 'raw': RAW + SECRET}
+    safe = loop._safe_reference_observation(raw)
+    assert safe['attached_utf8_bytes'] is None
+    assert safe['collection_status'] == 'unknown'
+    assert safe['annotation_used'] is (True if value is True else None)
+    assert_private(safe)
+
 
 def test_discovery_schema_is_not_forwarded_to_codex_local_or_reviewer(lab):
     lab.models['roles']['coordinator']['provider'] = 'codex'
