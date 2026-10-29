@@ -34,11 +34,11 @@ No store mutation, approval/signature/ID/digest change, model, Git, network or
 source read occurs in rendering. Titles use the existing redaction API and a
 96-character limit, with title_truncated explicitly recording omission.
 
-This unconnected private schema documents run 1's contract here; loop/metrics
-integration and their design documentation remain separate follow-up work.
+Collection diagnostics remain private advice, never authority or publication data.
 """
 import contextlib
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -128,75 +128,270 @@ def _matches(pattern, value):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
+COLLECTION_CODES = frozenset((
+    'parent_only', 'unsafe_attachment', 'inventory_bound', 'record_bound',
+    'concurrent_change', 'lock_busy', 'references_unavailable',
+    'record_unavailable', 'record_invalid', 'record_missing', 'entry_type',
+))
+ANNOTATION_CODES = frozenset((
+    'parent_only', 'unsafe_attachment', 'concurrent_change', 'lock_busy',
+    'annotation_path', 'annotation_invalid', 'annotation_bound',
+    'annotation_time_regression', 'annotation_unavailable',
+))
+
+
+class ReferenceErrors(list):
+    """List-compatible pair API with per-call bounded, path-free diagnostics."""
+    def __init__(self):
+        super().__init__()
+        self.skipped_items = 0
+        self.root_failure_codes = set()
+        self.item_failure_codes = set()
+
+    def failure(self, code, root=False):
+        code = code if type(code) is str and code in COLLECTION_CODES else 'references_unavailable'
+        (self.root_failure_codes if root else self.item_failure_codes).add(code)
+        if not root:
+            self.skipped_items += 1
+        self[:] = sorted(self.root_failure_codes | self.item_failure_codes)
+
+    def observation(self):
+        # Sparse extension: preserve the exact legacy observation on clean input.
+        if not self:
+            return {}
+        return {'skipped_items': self.skipped_items,
+                'root_failure_codes': sorted(self.root_failure_codes),
+                'item_failure_codes': sorted(self.item_failure_codes)}
+
+
+def _reference_code(exc):
+    from harness.improvement_metrics import Unavailable
+    if (isinstance(exc, Unavailable) and exc.args and type(exc.args[0]) is str and
+            exc.args[0] in COLLECTION_CODES):
+        return exc.args[0]
+    if isinstance(exc, ReferenceError) and exc.args and exc.args[0] == 'unsafe_attachment':
+        return 'unsafe_attachment'
+    if isinstance(exc, OSError) and exc.errno == errno.ELOOP:
+        return 'unsafe_attachment'
+    if isinstance(exc, FileNotFoundError):
+        return 'record_missing'
+    if isinstance(exc, (ValueError, UnicodeError, RecursionError)):
+        return 'record_invalid'
+    return 'record_unavailable'
+
+
+def _verify_reference_parts(directories, files):
+    """Revalidate one candidate's directory and complete report/journal bytes."""
+    from harness.improvement_metrics import Unavailable
+    for parent, prefix, fd, before, names in directories:
+        if (_identity(os.fstat(fd)) != before or
+                tuple(sorted(os.listdir(fd))) != names or
+                _identity(os.stat(prefix.rsplit('/', 1)[-1], dir_fd=parent,
+                                  follow_symlinks=False)) != before):
+            raise Unavailable('concurrent_change')
+    for parent, name, before, digest in files:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            _private(os.fstat(fd))
+            if _identity(os.fstat(fd)) != before:
+                raise Unavailable('concurrent_change')
+            body = bytearray()
+            while len(body) <= before[5]:
+                chunk = os.read(fd, min(65536, before[5] + 1 - len(body)))
+                if not chunk:
+                    break
+                body.extend(chunk)
+            if hashlib.sha256(body).digest() != digest or _identity(os.fstat(fd)) != before:
+                raise Unavailable('concurrent_change')
+        finally:
+            os.close(fd)
+
+
+def _verify_reference_root_attachment(capture):
+    from harness.improvement_metrics import Unavailable, open_directory
+    fd = open_directory(capture.root)
+    try:
+        if _identity(os.fstat(fd))[:4] != capture.directories[0][3][:4]:
+            raise Unavailable('concurrent_change')
+    finally:
+        os.close(fd)
+    growth = 0
+    for parent, prefix, fd, before, names in capture.directories:
+        _private(os.fstat(fd), directory=True)
+        if (_identity(os.fstat(fd))[:4] != before[:4] or
+                (parent is not None and _identity(os.stat(
+                    prefix.rsplit('/', 1)[-1], dir_fd=parent,
+                    follow_symlinks=False))[:4] != before[:4])):
+            raise Unavailable('concurrent_change')
+        current_count = len(os.listdir(fd))
+        if current_count > MAX_FILES:
+            raise Unavailable('inventory_bound')
+        growth += max(0, current_count - len(names))
+    return growth
+
+
+def _verify_reference_root(capture):
+    """Resolve changed inventories by candidate checks; keep shared Capture intact."""
+    from harness.improvement_metrics import Unavailable
+    try:
+        capture.verify()
+    except Unavailable as exc:
+        if str(exc) != 'concurrent_change':
+            raise
+        _verify_reference_root_attachment(capture)
+
+
 def capture_reference_inputs(improvement_root, workflow_root=None):
-    """Bounded optimistic snapshot; no retry, fallback or authority records."""
+    """Single bounded collection, no retry; one item = proposal or whole run.
+
+    archive, dot metadata and latest.json are exclusions, not failed items.
+    Any root refusal clears all records, preserving root/item diagnostics.
+    """
+    errors = ReferenceErrors()
     try:
         _parent()
     except ReferenceError:
-        return {}, ['parent_only']
-    # Lazy: metrics may import this module in a subsequent integration.
+        errors.failure('parent_only', root=True)
+        return {}, errors
     from harness.improvement_metrics import Capture, Unavailable, probe
-    records, errors, captures, locks, probes = {}, [], [], [], []
-    fixed = {'unsafe_attachment', 'inventory_bound', 'record_bound',
-             'concurrent_change', 'lock_busy'}
+    records, roots = {}, []
+    inventory, file_count, byte_count = 0, 0, 0
 
-    def bounds():
-        if (sum(len(c.files) for c in captures) > MAX_FILES or
-                sum(len(d[4]) for c in captures for d in c.directories) > MAX_FILES):
+    def bounds(capture, before_dirs=0, before_files=0, before_bytes=0):
+        nonlocal inventory, file_count, byte_count
+        inventory += sum(len(d[4]) for d in capture.directories[before_dirs:])
+        file_count += len(capture.files) - before_files
+        byte_count += capture.total - before_bytes
+        if inventory > MAX_FILES or file_count > MAX_FILES:
             raise Unavailable('inventory_bound')
-        if sum(c.total for c in captures) > MAX_BYTES:
+        if byte_count > MAX_BYTES:
             raise Unavailable('record_bound')
 
-    def lock(path):
-        locks.append(path)
-        probes.append(probe(path))
+    def probes(paths):
+        return [probe(path) for path in paths]
 
-    def read(capture, relative, key):
-        try:
-            records[key] = capture.read(relative)
-        except FileNotFoundError:
-            pass
-        except Unavailable:
-            raise
-        except (ValueError, UnicodeError, RecursionError):
-            errors.append('record_unavailable')
-        bounds()
-
-    try:
-        with contextlib.ExitStack() as stack:
-            for root, workflow in ((improvement_root, False), (workflow_root, True)):
-                if root is None:
-                    continue
+    failures = (OSError, ValueError, UnicodeError, RecursionError)
+    with contextlib.ExitStack() as stack:
+        for root, workflow in ((improvement_root, False), (workflow_root, True)):
+            if root is None:
+                continue
+            try:
                 root = Path(root)
-                for name in ('.lock', '.discovery-lock', '.workflow-lock'):
-                    lock(root / name)
+                locks = [root / name for name in ('.lock', '.discovery-lock', '.workflow-lock')]
+                before = probes(locks)
                 capture = stack.enter_context(Capture(root))
-                captures.append(capture)
-                bounds()
+                bounds(capture)
                 if not workflow:
-                    for name in capture.names('proposals'):
-                        if not re.fullmatch(r'IMP-[0-9a-f]{16}\.json', name):
+                    count = len(capture.directories)
+                    try:
+                        capture.directory('proposals')
+                    except FileNotFoundError:
+                        names = ()
+                    else:
+                        names = capture.directories[-1][4]
+                    bounds(capture, count, len(capture.files), capture.total)
+                else:
+                    names = capture.directories[0][4]
+                bundles = []
+                for name in names:
+                    if workflow:
+                        if (name in ('archive', 'latest.json') or name.startswith('.') or
+                                not RUN.fullmatch(name)):
                             continue
-                        read(capture, 'proposals/' + name, 'proposals/' + name)
-                    bounds()
-                    continue
-                # The active index is independent of improvement execution claims.
-                for run in capture.names('.'):
-                    if run == 'archive' or run.startswith('.') or not RUN.fullmatch(run):
+                    elif not re.fullmatch(r'IMP-[0-9a-f]{16}\.json', name):
                         continue
-                    capture.directory(run)
-                    bounds()
-                    lock(root / run / 'github.lock')
-                    for name in ('report.json', 'github.json'):
-                        read(capture, run + '/' + name, 'workflows/' + run + '/' + name)
-            for capture in captures:
-                capture.verify()
-            if probes != [probe(path) for path in locks]:
-                raise Unavailable('concurrent_change')
-    except (OSError, ValueError, UnicodeError, RecursionError) as exc:
-        reason = str(exc) if isinstance(exc, Unavailable) and str(exc) in fixed else 'references_unavailable'
-        return {}, sorted(set(errors + [reason]))
-    return records, sorted(set(errors))
+                    dirs, files, total = len(capture.directories), len(capture.files), capture.total
+                    candidate = {}
+                    charged_dirs, charged_files, charged_total = dirs, files, total
+
+                    def charge():
+                        nonlocal charged_dirs, charged_files, charged_total
+                        try:
+                            bounds(capture, charged_dirs, charged_files, charged_total)
+                        finally:
+                            charged_dirs = len(capture.directories)
+                            charged_files = len(capture.files)
+                            charged_total = capture.total
+
+                    try:
+                        if workflow:
+                            info = os.stat(name, dir_fd=capture.fds[0], follow_symlinks=False)
+                            if stat.S_ISLNK(info.st_mode):
+                                raise Unavailable('unsafe_attachment')
+                            if not stat.S_ISDIR(info.st_mode):
+                                raise Unavailable('entry_type')
+                            capture.directory(name)
+                            charge()
+                            item_locks = [root / name / 'github.lock']
+                            item_before = probes(item_locks)
+                            paths = [(name + '/' + file, 'workflows/' + name + '/' + file)
+                                     for file in ('report.json', 'github.json')]
+                        else:
+                            item_locks, item_before = [], []
+                            paths = [('proposals/' + name, 'proposals/' + name)]
+                        for relative, key in paths:
+                            try:
+                                value = capture.read(relative)
+                            finally:
+                                charge()
+                            if not isinstance(value, dict):
+                                raise Unavailable('record_invalid')
+                            candidate[key] = value
+                    except failures as exc:
+                        code = _reference_code(exc)
+                        if (code in ('inventory_bound', 'record_bound') or
+                                inventory > MAX_FILES or file_count > MAX_FILES or byte_count > MAX_BYTES):
+                            raise  # A global bound is a root refusal, not a skipped item.
+                        errors.failure(code)
+                    else:
+                        bundles.append((candidate, capture.directories[dirs:],
+                                        capture.files[files:], item_locks, item_before))
+                    finally:
+                        # Failed items are charged but leave no final-verify
+                        # inventory capable of poisoning another valid item.
+                        try:
+                            charge()
+                        finally:
+                            del capture.directories[dirs:]
+                            del capture.files[files:]
+                roots.append((capture, locks, before, bundles))
+            except failures as exc:
+                code = _reference_code(exc)
+                if code in ('record_missing', 'record_unavailable', 'record_invalid'):
+                    code = 'references_unavailable'
+                errors.failure(code, root=True)
+                if code in ('inventory_bound', 'record_bound'):
+                    break
+        for capture, locks, before, bundles in roots:
+            try:
+                if probes(locks) != before:
+                    raise Unavailable('concurrent_change')
+                _verify_reference_root(capture)
+                valid = {}
+                for candidate, directories, files, item_locks, item_before in bundles:
+                    try:
+                        if probes(item_locks) != item_before:
+                            raise Unavailable('concurrent_change')
+                        _verify_reference_parts(directories, files)
+                        if probes(item_locks) != item_before:
+                            raise Unavailable('concurrent_change')
+                    except failures as exc:
+                        errors.failure(_reference_code(exc))
+                    else:
+                        valid.update(candidate)
+                growth = _verify_reference_root_attachment(capture)
+                if growth and inventory + growth > MAX_FILES:
+                    raise Unavailable('inventory_bound')
+                inventory += growth
+                if probes(locks) != before:
+                    raise Unavailable('concurrent_change')
+                records.update(valid)
+            except failures as exc:
+                code = _reference_code(exc)
+                errors.failure(code if code not in (
+                    'record_missing', 'record_unavailable', 'record_invalid') else
+                    'references_unavailable', root=True)
+    return ({} if errors.root_failure_codes else records), errors
 
 
 def _identity(info):
@@ -224,7 +419,7 @@ class _Attachment:
         try:
             fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             self.fds.append(fd)
-            self.root_identity = _identity(os.fstat(fd))[:5]
+            self.root_identity = _identity(os.fstat(fd))[:4]
             parts = self.path.parent.parts[1:]
             for index, part in enumerate(parts):
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -232,7 +427,7 @@ class _Attachment:
                 self.fds.append(child)
                 if index >= len(parts) - 2:
                     _private(os.fstat(child), directory=True)
-                self.edges.append((fd, part, child, _identity(os.fstat(child))[:5]))
+                self.edges.append((fd, part, child, _identity(os.fstat(child))[:4]))
                 fd = child
             return self
         except BaseException:
@@ -244,11 +439,11 @@ class _Attachment:
         return self.fds[-1]
 
     def verify(self, fd=None, expected=None):
-        if _identity(os.stat('/', follow_symlinks=False))[:5] != self.root_identity:
+        if _identity(os.stat('/', follow_symlinks=False))[:4] != self.root_identity:
             raise ReferenceError('concurrent_change')
         for parent, name, child, before in self.edges:
-            if (_identity(os.fstat(child))[:5] != before or
-                    _identity(os.stat(name, dir_fd=parent, follow_symlinks=False))[:5] != before):
+            if (_identity(os.fstat(child))[:4] != before or
+                    _identity(os.stat(name, dir_fd=parent, follow_symlinks=False))[:4] != before):
                 raise ReferenceError('concurrent_change')
         if fd is not None:
             now = _identity(os.fstat(fd))
