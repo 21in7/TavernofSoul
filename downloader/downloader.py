@@ -21,7 +21,7 @@ IPF_BLACKLIST = []
 region = ""
 # Both-modes failure rule: patch_process refuses these patch names with
 # RuntimeError in the full and partial paths alike.
-error_ipf = [] #the somehow error patch
+error_ipf = []
 # Partial-mode skip rule: patch_partial silently skips these revisions, even
 # when newer than the installed version or when repatching. The reason for
 # skipping 147674 is recorded nowhere in this source and stays unknown.
@@ -211,7 +211,7 @@ def validate_extracted_ies(root):
     logging.debug('Validated {} IES CSV files under {}'.format(validated, root))
 
 
-def unpack(f):
+def unpack(f, region):
     IPF_PATH    = join("..", "{}_patch".format(region))
     OUTPUT_PATH = join("..", "{}_unpack".format(region))
     unpacker    = join("..", 'IPFUnpacker', 'ipf_unpack')
@@ -285,23 +285,22 @@ def read(file):
         return json.load(f)
 
   
-def patch_full(patch_path, patch_url, patch_ext, patch_unpack, revision_url,repatch):
+def patch_full(patch_path, patch_url, patch_ext, patch_unpack, revision_url, region, repatch):
     logging.warning('Patching %s...', revision_url)
     with urllib.request.urlopen(revision_url, timeout=60) as response:
         revision_list = response.read()
     revision_list = revision_decrypt(revision_list)
 
     for revision in revision_list:
-        # Download patch
         patch_name = revision + patch_ext
         patch_file = os.path.join(patch_path, patch_name)
         if (not os.path.exists(os.path.join(patch_path, patch_name)) or repatch==1  )and patch_name not in IPF_BLACKLIST :
             logging.warning('Lets Downloading %s...', patch_url + patch_name)
-            patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_path)
+            patch_process(patch_file, patch_name, patch_unpack, patch_url, region, patch_path)
 
 
 
-def patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_destination = ""):
+def patch_process(patch_file, patch_name, patch_unpack, patch_url, region, patch_destination=""):
     if patch_name in error_ipf:
         raise RuntimeError('Patch is blocked: {}'.format(patch_name))
     # Ensure patch_file destination exists
@@ -357,9 +356,7 @@ def patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_destina
                 os.remove(patch_file)
             raise
     else:
-        unpack(patch_name)
-    # Delete patch
-    # os.remove(patch_file)
+        unpack(patch_name, region)
 
 
 
@@ -389,7 +386,7 @@ def read_version(filename):
             rev[lines[0]] = lines[1]
     return rev
 
-def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path, revision_url,repatch):
+def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path, revision_url, region, repatch):
     logging.debug('Patching %s...', revision_url)
     with urllib.request.urlopen(revision_url, timeout=60) as response:
         revision_list = response.read()
@@ -405,8 +402,8 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
             # Process patch
             patch_name = revision + '_001001' + patch_ext
             patch_file = os.path.join(patch_path, patch_name)
-            
-            patch_process(patch_file, patch_name, patch_unpack, patch_url, patch_path)
+
+            patch_process(patch_file, patch_name, patch_unpack, patch_url, region, patch_path)
 
             if patch_unpack:
                 # Translation publication is part of a completed release patch.
@@ -421,10 +418,10 @@ def patch_partial(patch_path, patch_url, patch_ext, patch_unpack, revision_path,
 
 
 
-def do_patch_full(url_patch):
+def do_patch_full(url_patch, region):
     patch_full(
         os.path.join("..", "{}_patch".format(region)),  url_patch + 'full/data/', '.ipf', False,
-        url_patch + 'full/data.file.list.txt',True
+        url_patch + 'full/data.file.list.txt', region, True
     )
     
 
@@ -445,7 +442,6 @@ def move_language(region):
 
 
 def main(argv=None):
-    global region
     argv = sys.argv[1:] if argv is None else argv
     try:
         return _run(argv)
@@ -455,10 +451,8 @@ def main(argv=None):
 
 
 def _run(argv):
-    global region
     logging.warning('Patching...')
     region = getRegion(['downloader.py'] + argv)
-    #region = "itos"
     url_patch = {'itos' : 'http://drygkhncipyq8.cloudfront.net/toslive/patch/',
                  'jtos' : 'http://d3bbj7hlpo9jjy.cloudfront.net/live/patch/',
                  'ktos' : 'http://d31k064uwo645x.cloudfront.net/patchkor/',
@@ -471,16 +465,16 @@ def _run(argv):
     output = os.path.join("..", "{}_patch".format(region))
     
     if ('full' in argv ):
-        do_patch_full(url_patch)
+        do_patch_full(url_patch, region)
         return EXIT_CHANGED
     else:
         version_data, version_data_new, has_data_chages = patch_partial(
             output , url_patch + 'partial/data/', '.ipf', False,
-            'revision.csv', url_patch + 'partial/data.revision.txt' ,0
+            'revision.csv', url_patch + 'partial/data.revision.txt', region, 0
         )
         version_release, version_release_new, has_release_chages = patch_partial(
             output, url_patch + 'partial/release/', '.pak', True,
-            'release.csv', url_patch + 'partial/release.revision.txt',0
+            'release.csv', url_patch + 'partial/release.revision.txt', region, 0
         )
 
         move_language(region)
