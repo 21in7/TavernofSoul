@@ -133,7 +133,7 @@ def test_cross_area_routes_to_configured_specialists_and_publishes_after_gates(p
     events = report['events']
     assert {event['phase'] for event in events} == set(workflow.PHASES)
     assert any(event['phase'] == 'implement' and event['role'] == 'downloader' and
-               event['provider'] == 'zai' and event['model'] == 'glm-5.3-flash' for event in events)
+               event['provider'] == 'zai' and event['model'] == 'glm-5.3' for event in events)
     assert next(i for i, event in enumerate(events) if event['phase'] == 'apply') > \
         max(i for i, event in enumerate(events) if event['phase'] == 'validate')
     assert Path(report['report']).stat().st_mode & 0o777 == 0o600

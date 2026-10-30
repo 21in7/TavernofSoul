@@ -546,7 +546,7 @@ worker는 검사를 실행하지 않으며 합성 회귀·문서 존재/확장�
 | --- | --- | --- |
 | coordinator / parser | codex / gpt-6.1-sol | high |
 | django / git | codex / gpt-6.1-sol | medium |
-| downloader | zai / glm-5.3-flash | CLI 설정에 effort·달러 예산 없음 |
+| downloader | zai / glm-5.3 | CLI 설정에 effort·달러 예산 없음 |
 | reviewer | claude / claude-sonnet-5-5 | medium · 호출별 2 USD |
 | escalation | claude / claude-opus-5-5 | high · 호출별 5 USD; workflow 자동 호출 없음 |
 | 접수 Jev | typesafe / jev-1.13.0 | timeout 8초; 오류 시 자동 API 재시도 없음 |
