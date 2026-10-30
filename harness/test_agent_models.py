@@ -3,6 +3,7 @@ import json
 import http.client
 import os
 import socket
+import shlex
 from contextlib import nullcontext
 from pathlib import Path
 import subprocess
@@ -17,6 +18,308 @@ from harness.test_review_coverage import read_events, stdout, with_rate_limit_ev
 
 
 _native_loop_run = models.run  # Capture before the shared offline fixture patches it.
+
+
+def native_read_event(command='cat approved.py', code=0, status='completed', identity='read-0'):
+    return {'type': 'item.completed', 'item': {
+        'id': identity, 'type': 'command_execution', 'command': command,
+        'status': status, 'exit_code': code,
+        'aggregated_output': 'PRIVATE_READ_OUTPUT sk-read-sensitive /private/read-source'}}
+
+
+def native_read_stream(events=(), response='{"candidates":[]}', terminal='turn.completed'):
+    body = [{'type': 'thread.started', 'thread_id': 'synthetic-thread'},
+            {'type': 'turn.started'}] + list(events)
+    body.append({'type': 'item.completed', 'item': {
+        'id': 'final-message', 'type': 'agent_message', 'text': response}})
+    if terminal is not None:
+        body.append({'type': terminal})
+    return '\n'.join(json.dumps(event, ensure_ascii=False) for event in body)
+
+
+def expected_read_counts(status='available', name=None, outcome='success', count=1):
+    # Literal independent schema: no production sanitizer/parser builds expectations.
+    value = {'version': 'observed-reads-v1', 'status': status,
+             'commands': {key: {'success': 0, 'failure': 0, 'unknown': 0}
+                          for key in ('cat', 'sed', 'rg', 'ls', 'head', 'tail', 'other')}}
+    if name is not None:
+        value['commands'][name][outcome] = count
+    return value
+
+
+@pytest.mark.parametrize('command,name', [
+    ('cat approved.py', 'cat'), ('/usr/bin/head -n 4 approved.py', 'head'),
+    ('tail approved.py', 'tail'), ('ls -l .', 'ls'),
+    ("sed -n '1,20{=;p;}' approved.py", 'sed'),
+    ("rg 'a|b' approved.py", 'rg'), ("rg 'a ; b && c' approved.py", 'rg'),
+    ('rg "a|b; c && d" approved.py', 'rg'),
+    ('rg "a\\\"|b" approved.py', 'rg'),
+    ("/bin/bash -lc \"sed -n '1,160p' harness/improvements.py\"", 'sed'),
+    ("/usr/bin/zsh -c 'rg '\"'\"'a|b'\"'\"' approved.py'", 'rg'),
+    ('rg a\\|b approved.py', 'rg'), ("rg 'a\u2028b\u2029c' approved.py", 'rg'),
+    ('cat approved.py | head', 'other'), ('ls; cat approved.py', 'other'),
+    ('cat approved.py && head approved.py', 'other'),
+    ('cat approved.py\nhead approved.py', 'other'),
+    ('cat $(private-command)', 'other'), ('cat "$(private-command)"', 'other'),
+    ('cat `private-command`', 'other'), ('cat ${PRIVATE}', 'other'),
+    ('cat approved.py > private', 'other'), ('cat < approved.py', 'other'),
+    ('cat approved.py # comment', 'other'), ('cat *.py', 'other'),
+    ('env PRIVATE=marker cat approved.py', 'other'), ('./cat approved.py', 'other'),
+    ('/usr/bin/../bin/cat approved.py', 'other'), ('cat "unterminated', 'other'),
+    ('cat approved.py\\', 'other'), ('cat \\\napproved.py', 'other'),
+    ('bash -lc', 'other'), ('bash -c "cat approved.py" ignored-arg', 'other'),
+    ('PRIVATE_COMMAND --secret marker', 'other'), ('', 'other'),
+    ('cat ' + 'a' * 8192, 'other'),
+])
+def test_read_command_classification_keeps_quotes_and_never_retains_arguments(command, name):
+    assert models._read_command_name(command) == name
+    observed = models.observe_codex_reads(native_read_stream([native_read_event(command)]))
+    expected = expected_read_counts(name=name, outcome='success' if command else 'unknown')
+    assert observed == expected
+    assert 'PRIVATE_READ_OUTPUT' not in json.dumps(observed)
+    assert 'sk-read-sensitive' not in json.dumps(observed)
+    assert '/private/read-source' not in json.dumps(observed)
+
+
+@pytest.mark.parametrize('shell', ['bash', '/bin/sh', '/usr/bin/zsh'])
+@pytest.mark.parametrize('flag', ['-c', '-lc'])
+@pytest.mark.parametrize('inner,name', [
+    ("sed -n '1,20{=;p;}' approved.py", 'sed'), ("rg 'a|b' approved.py", 'rg'),
+    ("rg 'a; b && c' approved.py", 'rg'), ('cat a && cat b', 'other'),
+])
+def test_read_wrapper_decodes_only_one_bounded_quoted_payload(shell, flag, inner, name):
+    command = shell + ' ' + flag + ' ' + shlex.quote(inner)
+    assert models._read_command_name(command) == name
+    for _ in range(4):
+        command = shell + ' ' + flag + ' ' + shlex.quote(command)
+    assert models._read_command_name(command) == 'other'
+
+
+def test_native_reads_lf_framing_preserves_unicode_separators_in_json_strings():
+    response = '{"candidates":[],"literal":"a\u2028b\u2029c"}'
+    event = native_read_event("rg 'a\u2028b\u2029c|d' approved.py")
+    event['item']['aggregated_output'] += '\u2028output\u2029marker'
+    stream = native_read_stream([event], response=response)
+    assert models.observe_codex_reads(stream) == expected_read_counts(name='rg')
+    assert models.response_text('codex', stream) == (response, None)
+    assert models.observe_codex_reads(stream.replace('\n', '\r\n')) == expected_read_counts(name='rg')
+
+
+@pytest.mark.parametrize('code,status,outcome', [
+    (0, 'completed', 'success'), (1, 'failed', 'failure'), (7, 'completed', 'failure'),
+    (255, 'failed', 'failure'), (True, 'completed', 'unknown'),
+    (False, 'completed', 'unknown'), (None, 'completed', 'unknown'),
+    ('0', 'completed', 'unknown'), (-9, 'failed', 'unknown'),
+    (256, 'failed', 'unknown'), (0, 'failed', 'unknown'), (0, 'in_progress', 'unknown'),
+])
+def test_native_reads_require_real_exit_integer_and_completed_status(code, status, outcome):
+    stream = native_read_stream([native_read_event(code=code, status=status)])
+    assert models.observe_codex_reads(stream) == expected_read_counts(name='cat', outcome=outcome)
+
+
+def test_native_reads_only_count_completed_commands_and_distinguish_zero_from_unavailable():
+    started = native_read_event()
+    started['type'] = 'item.started'
+    updated = dict(started, type='item.updated')
+    assert models.observe_codex_reads(native_read_stream([started, updated])) == expected_read_counts()
+    assert models.observe_codex_reads(native_read_stream()) == expected_read_counts()
+    for stream in ('', '\n \r\n', 'legacy final text', '{"result":"legacy"}', '[]'):
+        assert models.observe_codex_reads(stream) == expected_read_counts('unavailable')
+    for terminal in ('turn.failed', 'error', None):
+        stream = native_read_stream([native_read_event()], terminal=terminal)
+        assert models.observe_codex_reads(stream) == expected_read_counts('partial', 'cat')
+    assert models.observe_codex_reads(native_read_stream(), 1) == expected_read_counts('partial')
+    assert models.observe_codex_reads(native_read_stream(), True) == expected_read_counts('partial')
+
+
+@pytest.mark.parametrize('damage', ['duplicate-id', 'conflicting-id', 'missing-id', 'bool-id',
+                                   'malformed', 'duplicate-key', 'double-terminal', 'unknown',
+                                   'oversize', 'event-limit', 'command-limit'])
+def test_native_reads_ambiguous_or_unbounded_streams_cannot_create_success(damage):
+    first = native_read_event()
+    events = [first]
+    if damage == 'duplicate-id':
+        events.append(first)
+    elif damage == 'conflicting-id':
+        events.append(native_read_event(code=1, status='failed'))
+    elif damage == 'missing-id':
+        first['item'].pop('id')
+    elif damage == 'bool-id':
+        first['item']['id'] = True
+    elif damage == 'command-limit':
+        events = [native_read_event(identity='read-' + str(i)) for i in range(257)]
+    stream = native_read_stream(events)
+    if damage == 'malformed':
+        stream = '{"type":\n' + stream
+    elif damage == 'duplicate-key':
+        stream = stream.replace('"exit_code": 0', '"exit_code": 1,"exit_code": 0')
+    elif damage == 'double-terminal':
+        stream += '\n{"type":"turn.completed"}'
+    elif damage == 'unknown':
+        stream = '{"type":"PRIVATE_UNKNOWN"}\n' + stream
+    elif damage == 'oversize':
+        stream += ' ' * 2097152
+    elif damage == 'event-limit':
+        stream = '\n' * 4096 + stream
+    assert models.observe_codex_reads(stream) == expected_read_counts('unavailable')
+
+
+@pytest.mark.parametrize('bad', [True, -1, 257, 1.0, '1', None])
+def test_read_metadata_has_closed_schema_and_bounded_native_counters(bad):
+    value = expected_read_counts(name='cat')
+    value['commands']['cat']['success'] = bad
+    assert models.sanitize_observed_reads(value) == expected_read_counts('unavailable')
+
+
+def test_read_metadata_rejects_raw_extensions_unknown_names_and_total_overflow():
+    for location in ('root', 'commands', 'counter', 'total', 'version', 'status'):
+        value = expected_read_counts(name='cat')
+        if location == 'root':
+            value['raw'] = 'PRIVATE_READ_OUTPUT'
+        elif location == 'commands':
+            value['commands']['PRIVATE_READ_OUTPUT'] = value['commands']['cat']
+        elif location == 'counter':
+            value['commands']['cat']['path'] = '/private/read-source'
+        elif location == 'total':
+            value['commands']['cat']['success'] = 256
+            value['commands']['other']['failure'] = 1
+        else:
+            value[location] = 'PRIVATE_READ_OUTPUT'
+        assert models.sanitize_observed_reads(value) == expected_read_counts('unavailable')
+
+
+@pytest.mark.parametrize('write', [False, True])
+def test_codex_cli_and_permission_profile_exact_contract_is_unchanged(tmp_path, monkeypatch, write):
+    monkeypatch.setattr(models, 'load_config', lambda: {
+        'roles': {'coordinator': {'provider': 'codex', 'model': 'synthetic-model', 'effort': 'high'}},
+        'compaction': {}})
+    workspace, runtime, auth = tmp_path / 'sources', tmp_path / 'runtime', tmp_path / 'auth'
+    cli, shell = str(tmp_path / 'bin/codex'), str(tmp_path / 'bin/zsh')
+    filesystem = ('permissions.harness-scoped.filesystem={":root"="deny",":minimal"="read",' +
+                  json.dumps(str(workspace)) + '=' + json.dumps('write' if write else 'read') + ',' +
+                  json.dumps(cli) + '="read",' + json.dumps(shell) + '="read",' +
+                  json.dumps(str(runtime)) + '="deny"}')
+    values = ['default_permissions="harness-scoped"', filesystem,
+              'permissions.harness-scoped.network.enabled=false', 'project_doc_max_bytes=0',
+              'web_search="disabled"', 'features.apps=false', 'features.browser_use=false',
+              'features.computer_use=false', 'features.memories=false', 'features.skill_search=false',
+              'features.skip_host_skill_discovery=true']
+    policy = [part for value in values for part in ('-c', value)]
+    assert models.scoped_codex_config(workspace, write, cli, shell, runtime, auth) == policy
+    expected = [cli, '--no-daemon', '--strict-config', 'exec', '--skip-git-repo-check',
+                '--ignore-user-config', '--ephemeral', '--json', '--color', 'never',
+                '--model', 'synthetic-model', '--cd', str(workspace),
+                '-c', 'forced_login_method="chatgpt"', '-c', 'model_provider="openai"',
+                '-c', 'cli_auth_credentials_store="file"', '-c', 'approval_policy="never"',
+                '-c', 'agents.enabled=false', '-c', 'features.plugins=false',
+                '-c', 'model_reasoning_effort="high"'] + policy + ['-']
+    assert models.command_for('coordinator', write=write, compaction=False, workspace=workspace,
+        scoped=True, codex_cli=cli, codex_shell=shell, runtime_root=runtime, auth_home=auth) == expected
+
+
+@pytest.mark.parametrize('failure', ['none', 'cli', 'json'])
+@pytest.mark.parametrize('observer_error', [ValueError, KeyboardInterrupt])
+def test_native_read_observer_failure_preserves_first_cli_result(
+        codex_login, local_keys, monkeypatch, failure, observer_error):
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        body = '{broken' if failure == 'json' else native_read_stream([native_read_event()])
+        return subprocess.CompletedProcess(command, 7 if failure == 'cli' else 0, body, '')
+    def broken(*args):
+        raise observer_error('PRIVATE_READ_OBSERVER')
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    baseline = models.run('parser', 'fixture', local_keys, compaction=False,
+                          workspace=codex_login['workspace'], scoped=True)
+    monkeypatch.setattr(models, 'observe_codex_reads', broken)
+    result = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert result['observed_reads'] == expected_read_counts('unavailable')
+    assert {k: v for k, v in result.items() if k != 'observed_reads'} == {
+        k: v for k, v in baseline.items() if k != 'observed_reads'}
+    assert 'PRIVATE_READ_OBSERVER' not in json.dumps(result)
+    assert 'PRIVATE_READ_OUTPUT' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('failure,cause', [('timeout', 'timeout'), ('spawn', 'spawn_failed')])
+def test_native_read_transport_failure_has_no_counts_or_raw_partial_output(
+        codex_login, local_keys, monkeypatch, failure, cause):
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(command, 7, output=native_read_stream([native_read_event()]),
+                                              stderr='PRIVATE_READ_OUTPUT')
+        raise OSError(13, 'PRIVATE_READ_OUTPUT')
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    monkeypatch.setattr(models, 'observe_codex_reads', lambda *a: pytest.fail('No completed CLI output'))
+    result = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=True)
+    assert result['status'] == 'failed'
+    assert diag.result_detail(result)['cause'] == cause
+    assert result['observed_reads'] == expected_read_counts('unavailable')
+    assert 'PRIVATE_READ_OUTPUT' not in json.dumps(result)
+    assert 'sk-read-sensitive' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('kind', ['ordinary', 'write', 'unscoped', 'smoke'])
+def test_read_observer_does_not_extend_ordinary_codex_calls(
+        codex_login, local_keys, monkeypatch, kind):
+    # Ordinary unscoped task_prompt reads repository instructions; this test
+    # supplies a synthetic prompt and never opens those unrelated files.
+    monkeypatch.setattr(models, 'task_prompt', lambda *a, **k: 'synthetic task')
+    if kind != 'ordinary':
+        monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    else:
+        monkeypatch.delenv('TAVERN_IMPROVEMENT_DISCOVERY', raising=False)
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        response = options['input'].split('Reply with exactly ', 1)[1].split('.', 1)[0] if kind == 'smoke' else '{}'
+        return subprocess.CompletedProcess(command, 0, native_read_stream(response=response), '')
+    monkeypatch.setattr(models.subprocess, 'run', cli)
+    monkeypatch.setattr(models, 'observe_codex_reads', lambda *a: pytest.fail('Observer scope expanded'))
+    result = models.run('parser', 'fixture', local_keys, compaction=False,
+                        workspace=codex_login['workspace'], scoped=kind != 'unscoped',
+                        write=kind == 'write', smoke=kind == 'smoke')
+    assert 'observed_reads' not in result
+
+
+@pytest.mark.parametrize('provider', ['codex', 'claude', 'zai'])
+def test_discovery_read_permission_changes_only_existing_codex_specialist_prompts(tmp_path, monkeypatch, provider):
+    from harness import improvements as imp, improvement_report as contract
+    from harness.test_improvements import lab as discovery_lab, ModelRunner, scan
+    lab = discovery_lab.__wrapped__(tmp_path, monkeypatch)
+    for role in contract.SPECIALIST_ROLES:
+        lab.models['roles'][role]['provider'] = provider
+    current_prompt = imp.CODEX_CANDIDATE_PROMPT
+    with monkeypatch.context() as patch:
+        patch.setattr(imp, 'CODEX_CANDIDATE_PROMPT', imp.CANDIDATE_PROMPT)
+        baseline = ModelRunner(lab)
+        scan(lab, baseline)
+    runner = ModelRunner(lab)
+    report = scan(lab, runner)
+    opening = ('Do not modify source, run checks, Git,\n'
+               'commands, pipelines, schedulers or workflows.')
+    replacement = ('승인 workspace 안의 파일을 보기 위한 읽기 전용 명령(cat, sed -n, rg, ls, head)만 사용할 수 있다.\n'
+                   '파일 수정·검사·Git·네트워크·workflow 실행은 금지한다.\n'
+                   'Do not run pipelines or schedulers.')
+    assert imp.CANDIDATE_PROMPT.startswith('Read-only improvement discovery. ' + opening)
+    assert current_prompt == imp.CANDIDATE_PROMPT.replace(opening, replacement)
+    for old, new in zip(baseline.calls, runner.calls):
+        expected = old['prompt']
+        if provider == 'codex' and new['role'] in contract.SPECIALIST_ROLES:
+            expected = expected.replace(opening, replacement, 1)
+        assert new['prompt'].encode('utf-8') == expected.encode('utf-8')
+    for agent in report['agents'][:-1]:
+        call = next(c for c in runner.calls if c['role'] == agent['role'])
+        assert agent['approved_read_files'] == call['paths']
+        assert 'read_files' not in agent and 'observed_reads' not in agent
+    reviewer = report['agents'][-1]
+    assert reviewer['read_files'] and 'approved_read_files' not in reviewer
+    assert reviewer['source_review'] and runner.read_results
 
 
 def run_synthetic_loop_adapter(lab, monkeypatch, blocked, cli, role, prompt, keys, **options):

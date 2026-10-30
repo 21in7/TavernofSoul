@@ -402,6 +402,12 @@ backtick block, with LF or CRLF after the tag and before the closing fence, and
 optional outer JSON whitespace (space/tab/CR/LF). Original bytes including that
 wrapper and whitespace count toward the same response limit.
 """
+CODEX_CANDIDATE_PROMPT = CANDIDATE_PROMPT.replace(
+    'Do not modify source, run checks, Git,\ncommands, pipelines, schedulers or workflows.',
+    '승인 workspace 안의 파일을 보기 위한 읽기 전용 명령(cat, sed -n, rg, ls, head)만 사용할 수 있다.\n'
+    '파일 수정·검사·Git·네트워크·workflow 실행은 금지한다.\n'
+    'Do not run pipelines or schedulers.')
+
 REVIEW_PROMPT = """Independently assess ALL supplied proposals against exact approved sources.
 Supplied candidates retain all accepted prose, with sensitive text redacted;
 their narrative fields may be up to 4x the concise public display targets.
@@ -473,7 +479,10 @@ def _parse_model_response(value, max_bytes):
 def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
     participation = {'role': role, 'provider': None, 'model': None,
                      'status': 'unavailable', 'cost': None, 'cost_status': 'unknown',
-                     'read_files': [] if role == 'reviewer' else list(paths), 'started_at': _now().isoformat()}
+                     'started_at': _now().isoformat()}
+    # Specialist paths are approval inputs, never receipts of actual reads.
+    participation['read_files' if role == 'reviewer' else 'approved_read_files'] = (
+        [] if role == 'reviewer' else list(paths))
     start = time.monotonic()
     result = None
     preparation_ms = verification_ms = None
@@ -519,6 +528,8 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     target.write_bytes(item['content'])
                     target.chmod(0o400)
             prompt = REVIEW_PROMPT if role == 'reviewer' else CANDIDATE_PROMPT
+            if spec['provider'] == 'codex' and role in contract.SPECIALIST_ROLES:
+                prompt = CODEX_CANDIDATE_PROMPT
             capture = None
             if role == 'reviewer':
                 failure_reason = 'source_review_unverified'
@@ -604,7 +615,7 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     if telemetry['outcome'] == 'interrupted':
                         participation['interrupted'] = True
             retained = workflow.triage.scrub({k: v for k, v in result.items()
-                                             if k not in ('telemetry', 'failure_detail')}, keys)
+                                             if k not in ('telemetry', 'failure_detail', 'observed_reads')}, keys)
             if len(contract.canonical_json(retained)) <= config['limits']['max_response_bytes'] + 8192:
                 participation['result'] = retained
             else:
@@ -620,6 +631,13 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     participation[field] = result[field]
             if not identity_matches:
                 raise ImprovementError('Model result identity differs from configured role.')
+            if (spec['provider'] == 'codex' and role in contract.SPECIALIST_ROLES and
+                    'observed_reads' in result):
+                try:
+                    participation['observed_reads'] = agent_models.sanitize_observed_reads(
+                        result['observed_reads'])
+                except (Exception, KeyboardInterrupt):
+                    pass  # Observation cannot change candidate validation or settlement.
             failure_reason = 'role_result_invalid'
             if 'cli_estimated_cost_usd' in result:
                 participation['cost'] = result['cli_estimated_cost_usd']

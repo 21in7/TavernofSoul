@@ -24,7 +24,8 @@ from harness import improvement_report as contract
 from harness import improvements as imp, local_model, storage, workflow
 from harness import review_coverage as coverage
 from harness import improvement_diagnostics as diag
-from harness.test_agent_models import run_synthetic_loop_adapter
+from harness.test_agent_models import (
+    run_synthetic_loop_adapter, native_read_event, native_read_stream, expected_read_counts)
 from harness.test_review_coverage import (
     add_assessments, capture_result, read_events, stdout, with_rate_limit_events)
 
@@ -4245,6 +4246,203 @@ def test_private_usage_reimport_revalidates_untrusted_bounded_metadata(private_u
     assert current.state()['participation'] == state['participation']
     assert loop.status(now=current.clock(), selected=current.selected)['participation'][0]['usage_observation'] == facts
     assert_private(current.state())
+
+
+@pytest.mark.parametrize('mode', ['success', 'zero', 'cli', 'identity', 'context', 'json', 'legacy', 'observer'])
+def test_native_codex_reads_flow_through_role_private_round_history_and_restart(lab, monkeypatch, mode):
+    from harness import improvement_health as health
+    lab.models['roles']['coordinator']['provider'] = 'codex'
+    lab.tick(0)
+    executions = []
+    def cli(command, **options):
+        if 'login' in command:
+            return subprocess.CompletedProcess(command, 0, 'Logged in using ChatGPT', '')
+        executions.append(list(command))
+        # This quotes the same sed program through the native shell wrapper as
+        # the read probe; separators inside quotes must survive both levels.
+        events = [native_read_event(
+            "/bin/bash -lc \"sed -n '1,20{=;p;}' harness/example.py\""),
+            native_read_event("rg 'a|b' harness/example.py", 1, 'failed', 'read-1')]
+        if mode == 'zero':
+            events = []
+        for event in events:
+            event['item']['aggregated_output'] = RAW + SECRET + '/private/read-source'
+        response = '{broken' if mode == 'json' else '{"candidates":[]}'
+        return subprocess.CompletedProcess(command, 7 if mode == 'cli' else 0,
+                                            native_read_stream(events, response), '')
+    def adapter(role, prompt, keys, **options):
+        assert role == 'coordinator'
+        lab.assert_reserved('codex')
+        result = run_synthetic_loop_adapter(lab, monkeypatch, forbidden, cli,
+                                             role, prompt, keys, **options)
+        assert RAW not in json.dumps(result) and SECRET not in json.dumps(result)
+        if mode == 'identity':
+            result['model'] = 'wrong-model'
+        elif mode == 'context':
+            target = options['workspace'] / 'harness/example.py'
+            target.chmod(0o600)
+            target.write_bytes(b'changed\n')
+        elif mode == 'legacy':
+            result.pop('observed_reads')
+        return result
+    if mode == 'observer':
+        def broken(*args):
+            raise ValueError(RAW + SECRET)
+        monkeypatch.setattr(agent_models, 'observe_codex_reads', broken)
+    lab.tick(1, runner=adapter)
+    assert len(executions) == 1 and lab.calls() == 2
+    scan = lab.report()
+    agent = scan['agents'][0]
+    expected_status = {'success': 'succeeded', 'zero': 'succeeded', 'legacy': 'succeeded', 'observer': 'succeeded',
+                       'cli': 'failed', 'identity': 'failed', 'context': 'failed',
+                       'json': 'failed'}[mode]
+    assert agent['status'] == expected_status
+    if mode in ('cli', 'identity', 'context', 'json'):
+        assert agent['reason'] == {'cli': 'role_execution_failed', 'identity': 'role_identity_mismatch',
+                                   'context': 'role_context_changed', 'json': 'role_json_invalid'}[mode]
+    expected = expected_read_counts('partial' if mode == 'cli' else 'available', 'sed')
+    expected['commands']['rg']['failure'] = 1
+    if mode == 'observer':
+        expected = expected_read_counts('unavailable')
+    elif mode == 'zero':
+        expected = expected_read_counts()
+    assert 'read_files' not in agent and agent['approved_read_files']
+    state = lab.state()
+    saved = lab.store.read('scans/' + scan['scan_id'] + '.json')
+    private_status = loop.status(now=lab.clock(), selected=lab.selected)
+    for entries in (scan['agents'], saved['agents'], state['participation'], private_status['participation']):
+        attempt = next(a for a in entries if a['role'] == 'coordinator')
+        assert attempt['status'] == expected_status
+        if mode in ('identity', 'legacy'):
+            assert 'observed_reads' not in attempt
+        else:
+            assert attempt['observed_reads'] == expected
+        assert_private(attempt)
+        assert '/private/read-source' not in json.dumps(attempt)
+        assert 'response' not in attempt and 'result' not in attempt
+    assert 'observed_reads' not in json.dumps(contract.build_web_report(scan))
+    assert 'observed_reads' not in json.dumps(health.project(state, lab.clock().isoformat()))
+    history = deepcopy(state['participation'])
+    loop._import_participation(state, saved)
+    legacy = deepcopy(saved)
+    for item in legacy['agents']:
+        item.pop('observed_reads', None)
+    loop._import_participation(state, legacy)
+    assert state['participation'] == history
+    state['participation'] = []
+    loop._import_participation(state, saved)
+    assert state['participation'] == history
+    loop._write_state(lab.store, state)
+    lab.store = imp.Store(lab.selected)
+    assert lab.state()['participation'] == history
+    assert loop.status(now=lab.clock(), selected=lab.selected)['participation'] == private_status['participation']
+
+
+def test_specialist_legacy_read_files_are_approval_inputs_and_reviewer_receipts_are_unchanged():
+    legacy = {'role': 'coordinator', 'provider': 'codex', 'model': 'synthetic',
+              'status': 'succeeded', 'read_files': ['harness/example.py']}
+    safe = loop._safe_participation(legacy)
+    assert safe['approved_read_files'] == legacy['read_files']
+    assert 'read_files' not in safe and 'observed_reads' not in safe
+    assert legacy['read_files'] == ['harness/example.py']
+    new = dict(legacy, approved_read_files=['docs/approved.md'])
+    assert loop._safe_participation(new)['approved_read_files'] == ['docs/approved.md']
+    review = dict(legacy, role='reviewer', provider='claude', source_review={'verified': True})
+    reviewed = loop._safe_participation(review)
+    assert reviewed['read_files'] == legacy['read_files']
+    assert reviewed['source_review'] == review['source_review']
+    assert 'approved_read_files' not in reviewed and 'observed_reads' not in reviewed
+
+
+@pytest.mark.parametrize('provider,role', [('claude', 'coordinator'), ('zai', 'downloader'),
+                                           ('codex', 'reviewer'), ('mlx-vlm', 'coordinator')])
+def test_read_metadata_stays_with_codex_specialist_private_participation(provider, role):
+    value = {'role': role, 'provider': provider, 'model': 'synthetic', 'status': 'succeeded',
+             'observed_reads': expected_read_counts(name='cat')}
+    assert 'observed_reads' not in loop._safe_participation(value)
+
+
+def test_read_metadata_reimport_sanitizes_counts_without_inventing_legacy_observations(lab):
+    lab.models['roles']['coordinator']['provider'] = 'codex'
+    lab.hours(count=2)
+    report = lab.report()
+    agent = report['agents'][0]
+    assert 'observed_reads' not in agent
+    agent['observed_reads'] = dict(expected_read_counts(name='cat'), raw=RAW + SECRET)
+    state = lab.state()
+    state['participation'] = []
+    loop._import_participation(state, report)
+    entry = next(a for a in state['participation'] if a['role'] == 'coordinator')
+    assert entry['observed_reads'] == expected_read_counts('unavailable')
+    assert_private(entry)
+    loop._write_state(lab.store, state)
+    lab.store = imp.Store(lab.selected)
+    assert next(a for a in loop.status(now=lab.clock(), selected=lab.selected)['participation']
+                if a['role'] == 'coordinator')['observed_reads'] == expected_read_counts('unavailable')
+
+
+def test_read_observations_do_not_extend_frozen_publication_or_authorization(lab):
+    from harness import improvement_health as health
+    lab.models['roles']['coordinator']['provider'] = 'codex'
+    def transform(role, result, response, options):
+        if role == 'coordinator':
+            result['observed_reads'] = expected_read_counts(name='cat')
+        return result
+    lab.cloud_transform = transform
+    lab.hours()
+    report = lab.report()
+    baseline = loop._without_observed_reads(report)
+    assert report['agents'][0]['observed_reads'] == expected_read_counts(name='cat')
+    assert 'observed_reads' not in json.dumps(baseline)
+    assert contract.build_web_report(report) == contract.build_web_report(baseline)
+    assert loop.authorization_context(report) == loop.authorization_context(baseline)
+    assert 'observed_reads' not in json.dumps(health.project(lab.state(), lab.clock().isoformat()))
+    lab.tick(9)
+    journal_name = 'loop/publications/2026-10-15.json'
+    frozen = lab.store.path(journal_name).read_bytes()
+    assert b'observed_reads' not in frozen
+    public = lab.store.path('web/2026-10-15.json').read_bytes()
+    assert b'observed_reads' not in public
+    lab.tick(9, 1, runner=forbidden, local_runner=forbidden)
+    assert lab.store.path(journal_name).read_bytes() == frozen
+    assert lab.store.path('web/2026-10-15.json').read_bytes() == public
+
+
+def test_read_observation_and_approval_list_rename_preserve_cloud_and_local_wire_bytes(tmp_path, monkeypatch):
+    directory = tmp_path / 'read-contract'
+    scan_ids = [loop._id() for _ in range(8)]
+    actual_call = imp._call_role
+    comparisons = []
+    def legacy_call(*args, **options):
+        participation, parsed = actual_call(*args, **options)
+        if participation['role'] in contract.SPECIALIST_ROLES:
+            participation['read_files'] = participation.pop('approved_read_files')
+        return participation, parsed
+    for observed in (False, True):
+        directory.mkdir(mode=0o700)
+        with monkeypatch.context() as patch:
+            current = lab.__wrapped__(directory, patch)
+            current.models['roles']['coordinator']['provider'] = 'codex'
+            ids = iter(scan_ids)
+            patch.setattr(loop, '_id', lambda: next(ids))
+            patch.setattr(imp, '_call_role', actual_call if observed else legacy_call)
+            def transform(role, result, response, options):
+                if observed and role == 'coordinator':
+                    result['observed_reads'] = expected_read_counts(name='cat')
+                return result
+            current.cloud_transform = transform
+            current.hours()
+            report = current.report()
+            comparisons.append({
+                'prompts': [r['prompt'].encode('utf-8') for r in current.cloud_requests],
+                'wire': current.wire_requests, 'local': current.local_requests,
+                'calls': current.calls(), 'events': current.events,
+                'proposals': report['proposals'], 'authorization': loop.authorization_context(report),
+                'public': contract.build_web_report(report), 'spent': current.spent(),
+            })
+        if not observed:
+            directory.rename(tmp_path / 'read-contract-baseline')
+    assert comparisons[0] == comparisons[1]
 
 
 @pytest.mark.parametrize('provider', ['codex', 'claude', 'zai'])
