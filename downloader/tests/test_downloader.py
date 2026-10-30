@@ -31,7 +31,7 @@ def encrypted_revisions(text):
 def patch_data():
     return client.patch_partial('../itos_patch', 'https://fixture.invalid/partial/data/',
                                 '.ipf', False, 'revision.csv',
-                                'https://fixture.invalid/partial/data.revision.txt', 0)
+                                'https://fixture.invalid/partial/data.revision.txt', 'itos', 0)
 
 
 def test_real_revision_decryption_fixture():
@@ -865,7 +865,7 @@ def test_partial_revision_147674_skip_survives_repatch(server):
     server.revision = encrypted_revisions('147674\r\n')
     old, new, changed = client.patch_partial(
         '../itos_patch', 'https://fixture.invalid/partial/data/', '.ipf', False,
-        'revision.csv', 'https://fixture.invalid/partial/data.revision.txt', 1)
+        'revision.csv', 'https://fixture.invalid/partial/data.revision.txt', 'itos', 1)
     assert server.calls == ['data.revision.txt']
     assert new['itos'] == '0'
     assert not changed
@@ -881,7 +881,7 @@ def test_ipf_blacklist_skips_only_the_full_download(server, monkeypatch):
     # names are revision + patch_ext ('1.ipf', '2.ipf'), not the partial
     # '<rev>_001001.ipf' used by the test below.
     full = ('../itos_patch', 'https://fixture.invalid/full/data/', '.ipf', False,
-            'https://fixture.invalid/full/data.revision.txt')
+            'https://fixture.invalid/full/data.revision.txt', 'itos')
     client.patch_full(*full, 1)
     assert requested == ['1.ipf', '2.ipf']
     monkeypatch.setattr(client, 'IPF_BLACKLIST', ['1.ipf'])
@@ -921,16 +921,16 @@ def install_full_routes(server, revision_text='1\r\n2\r\n', patch_names=('1.ipf'
 def test_do_patch_full_forwards_region_paths_and_repatch(workspace, monkeypatch):
     captured = []
     monkeypatch.setattr(client, 'patch_full', lambda *args: captured.append(args))
-    # do_patch_full takes only the patch base URL: the patch directory is
+    # do_patch_full takes the patch base URL and region: the patch directory is
     # derived from the region, and repatch is forwarded as literal True.
-    client.do_patch_full('https://fixture.invalid/patch/')
+    client.do_patch_full('https://fixture.invalid/patch/', 'itos')
     assert captured == [(os.path.join('..', 'itos_patch'),
                          'https://fixture.invalid/patch/full/data/',
                          '.ipf',
                          False,
                          'https://fixture.invalid/patch/full/data.file.list.txt',
-                         True)]
-    assert captured[0][5] is True
+                         'itos', True)]
+    assert captured[0][6] is True
 
 
 def test_full_mode_processes_encrypted_revisions_and_disposes_cache(workspace, server, extract_stub, monkeypatch):
@@ -966,7 +966,7 @@ def test_full_keeps_decrypted_list_order_and_lines_verbatim(server, monkeypatch)
     monkeypatch.setattr(client, 'patch_process',
                         lambda patch_file, patch_name, *args: requested.append(patch_name))
     client.patch_full('../itos_patch', 'https://fixture.invalid/full/data/', '.ipf', False,
-                      'https://fixture.invalid/full/data.file.list.txt', 0)
+                      'https://fixture.invalid/full/data.file.list.txt', 'itos', 0)
     # Unlike patch_partial, the full path neither sorts by numeric revision
     # nor token-parses the lines: each decrypted line is used verbatim as
     # '<line>.ipf' in server order.
@@ -980,7 +980,7 @@ def test_full_repatch_false_skips_existing_and_true_reprocesses(server, monkeypa
     monkeypatch.setattr(client, 'patch_process',
                         lambda patch_file, patch_name, *args: requested.append(patch_name))
     call = ('../itos_patch', 'https://fixture.invalid/full/data/', '.ipf', False,
-            'https://fixture.invalid/full/data.file.list.txt')
+            'https://fixture.invalid/full/data.file.list.txt', 'itos')
     client.patch_full(*call, 0)
     # repatch=0 skips the existing path entirely: revision 1 is not processed.
     assert requested == ['2.ipf']
