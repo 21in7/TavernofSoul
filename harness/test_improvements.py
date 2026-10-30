@@ -22,6 +22,7 @@ from harness import review_coverage as coverage, improvement_diagnostics as diag
 from harness.test_review_coverage import (
     FixtureFS, candidate, add_assessments, capture_result, read_events, stdout,
 )
+from harness.test_agent_models import expected_read_counts
 
 
 NOW = dt.datetime(2026, 10, 14, 16, 0, tzinfo=dt.timezone.utc)
@@ -240,6 +241,78 @@ def test_discovery_exact_role_scope_cross_review_and_no_operating_calls(lab):
     assert (lab.root / 'harness/example.py').read_text() == 'first_value = 1\nsecond_value = 2\n'
     assert lab.store.path('days/' + DATE + '.json').stat().st_mode & 0o777 == 0o600
     assert lab.store.root.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize('provider', ['codex', 'claude', 'zai'])
+@pytest.mark.parametrize('failure', ['none', 'cli', 'identity', 'context', 'json', 'legacy'])
+def test_private_read_metadata_is_identity_bound_and_cannot_change_original_outcome(lab, failure, provider):
+    for role in contract.SPECIALIST_ROLES:
+        lab.models['roles'][role]['provider'] = provider
+    lab.models['roles']['coordinator']['provider'] = 'codex'
+    counts = expected_read_counts(name='sed')
+    def transform(role, result, response, options):
+        if role != 'coordinator':
+            # Malformed Codex metadata becomes unavailable; other providers
+            # and the reviewer cannot acquire specialist read observations.
+            return dict(result, observed_reads={'raw': 'PRIVATE_READ_METADATA'})
+        if failure != 'legacy':
+            result['observed_reads'] = counts
+        if failure == 'cli':
+            result['status'] = 'failed'
+        elif failure == 'identity':
+            result['model'] = 'wrong-model'
+        elif failure == 'context':
+            target = options['workspace'] / 'harness/example.py'
+            target.chmod(0o600)
+            target.write_bytes(b'changed\n')
+        elif failure == 'json':
+            result['response'] = '{broken'
+        return result
+    report = scan(lab, ModelRunner(lab, transform=transform))
+    agent = report['agents'][0]
+    if failure in ('identity', 'legacy'):
+        assert 'observed_reads' not in agent
+    else:
+        assert agent['observed_reads'] == counts
+    assert 'observed_reads' not in agent['result']
+    expected = {'none': ('succeeded', None), 'legacy': ('succeeded', None),
+                'cli': ('failed', 'role_execution_failed'),
+                'identity': ('failed', 'role_identity_mismatch'),
+                'context': ('failed', 'role_context_changed'),
+                'json': ('failed', 'role_json_invalid')}
+    status, reason = expected[failure]
+    assert agent['status'] == status and agent.get('reason') == reason
+    if failure != 'identity':
+        assert agent['cost'] == .0123 and agent['cost_status'] == 'cli_estimated_usd'
+    for other in report['agents'][1:]:
+        assert 'observed_reads' not in other['result']
+        if other['provider'] == 'codex' and other['role'] in contract.SPECIALIST_ROLES:
+            assert other['observed_reads'] == expected_read_counts('unavailable')
+        else:
+            assert 'observed_reads' not in other
+    assert 'PRIVATE_READ_METADATA' not in json.dumps(report)
+    assert 'observed_reads' not in json.dumps(contract.build_web_report(report))
+
+
+@pytest.mark.parametrize('error', [ValueError, KeyboardInterrupt])
+@pytest.mark.parametrize('failed', [False, True])
+def test_optional_read_metadata_sanitizer_failure_does_not_replace_candidate_outcome(
+        lab, monkeypatch, error, failed):
+    lab.models['roles']['coordinator']['provider'] = 'codex'
+    def transform(role, result, response, options):
+        if role == 'coordinator':
+            result.update(observed_reads=expected_read_counts(name='cat'),
+                          status='failed' if failed else 'passed')
+        return result
+    def broken(value):
+        raise error('PRIVATE_READ_METADATA')
+    monkeypatch.setattr(agent_models, 'sanitize_observed_reads', broken)
+    report = scan(lab, ModelRunner(lab, transform=transform))
+    agent = report['agents'][0]
+    assert agent['status'] == ('failed' if failed else 'succeeded')
+    assert agent.get('reason') == ('role_execution_failed' if failed else None)
+    assert agent['cost'] == .0123 and 'observed_reads' not in agent
+    assert 'PRIVATE_READ_METADATA' not in json.dumps(report)
 
 
 @pytest.mark.parametrize('failure', ['timeout', 'unavailable', 'failed', 'identity'])

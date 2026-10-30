@@ -406,6 +406,14 @@ local→specialist 네 쌍 뒤 Claude reviewer의9단계다. tick당 최대1모�
 전체 승인 scope를 본다. 기존 owner 예외를 유지한다. 0400 사본·write=False/scoped=True와 parent
 격리에 의존하며 VM이나 임의 in-process Python에 대한 보안 경계를 주장하지 않는다.
 원본 수정·검사·Git·workflow·운영 작업, symlink/보호 파일/private config는 모델 권한이 아니다.
+Codex specialist discovery만 승인 workspace의 cat·sed -n·rg·ls·head 읽기를 허용한다.
+다른 provider·reviewer·local 입력과 CLI·권한·network=false 격리는 유지한다.
+specialist `approved_read_files`(legacy `read_files`)는 승인 목록이며 읽기 증거가 아니다.
+private `observed_reads`는 완료 command_execution의 cat/sed/rg/ls/head/tail/other별
+bounded 성공·실패·unknown 수와 가용성이다. 정상 0회와 관측 불가를 구별한다.
+미지원 구문은 보수적으로 분류한다. 명령·출력 원문을 저장하거나 shell 성공을 읽기 증명으로 쓰지 않는다.
+reviewer Capture/Read는 유지한다. identity 확인 뒤 참여/history/status에만 보존하며
+실패·정산·공개·동결·승인 판단은 불변이다.
 
 기존 한도는 보고3개·specialist 후보2개/전체8개, legacy5호출/600초/retry0, hourly tick600초/
 cloud480초/quota15초·자정 guard600초·기본 완료 index16(최대32)이다. 파일128KiB·source1.5MiB,

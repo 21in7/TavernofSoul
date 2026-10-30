@@ -486,7 +486,7 @@ def _validate_history(entry, local=False):
             'scan_id', 'slot', 'stage_index', 'role', 'provider', 'model',
             'status', 'started_at', 'finished_at'}
     optional = {'reason', 'failure_detail', 'stage', 'owner_role', 'call_started_at', 'call_finished_at',
-                'reference_observation', 'usage_observation'}
+                'reference_observation', 'usage_observation', 'observed_reads'}
     if (not isinstance(entry, dict) or not required <= set(entry) or
             set(entry) - required - optional or
             not isinstance(entry['scan_id'], str) or not storage.RUN_ID.fullmatch(entry['scan_id']) or
@@ -547,6 +547,8 @@ def _remember(state, scan_id, role, agent, pending=None, local=False):
         entry['reference_observation'] = _safe_reference_observation(agent['reference_observation'])
     if not local and 'usage_observation' in agent:
         entry['usage_observation'] = _safe_usage_observation(agent['usage_observation'])
+    if not local:
+        _retain_observed_reads(entry, agent)
     if agent['status'] not in ('reserved', 'succeeded'):
         entry.update(_failure_fields(agent, local=local))
     _validate_history(entry, local=local)
@@ -563,6 +565,8 @@ def _remember(state, scan_id, role, agent, pending=None, local=False):
             old['reference_observation']))
     if not local and old is not None and 'usage_observation' in old:
         entry.setdefault('usage_observation', _safe_usage_observation(old['usage_observation']))
+    if not local and old is not None and 'observed_reads' not in entry:
+        _retain_observed_reads(entry, old)
     previous = [e for e in state[key] if _history_identity(e) != identity]
     state[key] = sorted(previous + [entry], key=_history_order)[-HISTORY_LIMIT:]
 
@@ -839,13 +843,31 @@ def _failure_fields(value, local=False):
     return {'reason': reason, 'failure_detail': diagnostics.sanitize_detail(value.get('failure_detail'))}
 
 
+def _retain_observed_reads(target, source):
+    if (source.get('provider') == 'codex' and source.get('role') in contract.SPECIALIST_ROLES and
+            'observed_reads' in source):
+        try:
+            target['observed_reads'] = agent_models.sanitize_observed_reads(source['observed_reads'])
+        except (Exception, KeyboardInterrupt):
+            pass  # Optional observation cannot affect reservation or settlement.
+
+
 def _safe_participation(participation):
     # Retain bounded real participation and revalidated fixed private failures;
     # never copy raw CLI responses, diagnostic objects or syntax positions.
     # The existing helper validates identity, evidence and read-only contexts.
     result = {key: participation[key] for key in (
         'role', 'provider', 'model', 'status', 'started_at', 'finished_at',
-        'elapsed_seconds', 'read_files') if key in participation}
+        'elapsed_seconds') if key in participation}
+    if participation.get('role') == 'reviewer':
+        if 'read_files' in participation:
+            result['read_files'] = participation['read_files']
+    elif participation.get('role') in contract.SPECIALIST_ROLES:
+        # Legacy specialist read_files was also an approval list, not receipts.
+        if 'approved_read_files' in participation or 'read_files' in participation:
+            result['approved_read_files'] = participation.get(
+                'approved_read_files', participation.get('read_files', []))
+    _retain_observed_reads(result, participation)
     if type(participation.get('interrupted')) is bool:
         result['interrupted'] = participation['interrupted']
     if participation.get('status') == 'succeeded' and 'source_review' in participation:
@@ -1638,7 +1660,8 @@ def _freeze_morning(store, state, now, discovery, dependencies):
         chosen['headline'] = '점검 미완료 · 제안 없음으로 판단할 수 없음'
     payload = contract.build_web_report(chosen, discovery['limits']['max_reported_proposals'])
     journal = {'version': 'improvement-publication-v1', 'date': date, 'status': 'prepared',
-               'at': now.isoformat(), 'digest': payload['digest'], 'report': chosen, 'payload': payload}
+               'at': now.isoformat(), 'digest': payload['digest'],
+               'report': _without_observed_reads(chosen), 'payload': payload}
     journal['projection_limit'] = discovery['limits']['max_reported_proposals']
     store.write(journal_name, journal)
     return _materialize_morning(store, journal, discovery)
@@ -1682,7 +1705,7 @@ def _freeze_unavailable_morning(store, state, now, reason):
                           ' 현재 설정과 소스의 유효성을 확인할 수 없어 후보를 선택하지 못했습니다.')}
     payload = contract.build_web_report(report)
     journal = {'version': 'improvement-publication-v1', 'date': date, 'status': 'prepared',
-               'at': now.isoformat(), 'digest': payload['digest'], 'report': report,
+               'at': now.isoformat(), 'digest': payload['digest'], 'report': _without_observed_reads(report),
                'payload': payload, 'projection_limit': contract.MAX_PROPOSALS}
     store.write(name, journal)
     return _materialize_morning(store, journal, None)
@@ -1898,6 +1921,16 @@ def _summary(state, now, config):
                                report_time.isoformat())}
 
 
+def _without_observed_reads(report):
+    """Private invocation counters do not extend frozen publication records."""
+    result = dict(report)
+    for key in ('agents', 'reviewed_agents'):
+        if key in result:
+            result[key] = [{k: v for k, v in agent.items() if k != 'observed_reads'}
+                           for agent in result[key]]
+    return result
+
+
 def _status_attempt(entry):
     result = copy.deepcopy({key: entry[key] for key in (
         'scan_id', 'slot', 'stage_index', 'role', 'stage', 'owner_role', 'provider', 'model',
@@ -1906,6 +1939,7 @@ def _status_attempt(entry):
         result['reference_observation'] = _safe_reference_observation(entry['reference_observation'])
     if 'usage_observation' in entry:
         result['usage_observation'] = _safe_usage_observation(entry['usage_observation'])
+    _retain_observed_reads(result, entry)
     if entry['status'] not in ('succeeded', 'reserved'):
         result.update(_failure_fields(entry, local=entry['stage_index'] < 8 and entry['stage_index'] % 2 == 0))
     return result
@@ -2160,7 +2194,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
             report['proposals'], drafts, feedback, keys, runner or agent_models.run,
             store.policy, config, budget,
             coverage=[{'role': a['role'], 'status': a['status'],
-                       'read_files': a.get('read_files', [])} for a in report['agents'][:-1]],
+                       'read_files': a.get('approved_read_files', a.get('read_files', []))}
+                      for a in report['agents'][:-1]],
             clock=finish_clock, reference_inputs=reference_inputs,
             reference_observation=reference_observation)
         call_finished = _clock(finish_clock())

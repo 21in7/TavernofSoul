@@ -552,6 +552,182 @@ def task_prompt(role, task, workspace=None, scoped=False):
                 'The orchestrator owns validation.\n' if workspace is not None else '', instructions, task)
 
 
+_READ_COMMANDS = ('cat', 'sed', 'rg', 'ls', 'head', 'tail', 'other')
+_READ_EVENT_LIMIT = 256
+
+
+def unavailable_reads():
+    return {'version': 'observed-reads-v1', 'status': 'unavailable',
+            'commands': {name: {'success': 0, 'failure': 0, 'unknown': 0}
+                         for name in _READ_COMMANDS}}
+
+
+def sanitize_observed_reads(value):
+    """Closed private counters, never argv, output, or evidence of source coverage."""
+    empty = unavailable_reads()
+    if (type(value) is not dict or set(value) != set(empty) or
+            value.get('version') != empty['version'] or
+            value.get('status') not in ('available', 'partial', 'unavailable') or
+            type(value.get('commands')) is not dict or
+            set(value['commands']) != set(_READ_COMMANDS)):
+        return empty
+    total = 0
+    for counts in value['commands'].values():
+        if type(counts) is not dict or set(counts) != {'success', 'failure', 'unknown'}:
+            return empty
+        for count in counts.values():
+            if type(count) is not int or not 0 <= count <= _READ_EVENT_LIMIT:
+                return empty
+            total += count
+    if total > _READ_EVENT_LIMIT or value['status'] == 'unavailable' and total:
+        return empty
+    return {'version': empty['version'], 'status': value['status'],
+            'commands': {name: dict(value['commands'][name]) for name in _READ_COMMANDS}}
+
+
+def _read_command_name(command, depth=0):
+    """Passive small shell subset. Unsupported syntax counts once as other.
+
+    Keep quoting while scanning: a quoted separator is data, not shell syntax.
+    No expansion, subprocess, shell evaluation, or arbitrary shell grammar.
+    """
+    if type(command) is not str or len(command) > 8192 or depth > 2:
+        return 'other'
+    words, word, quote, active = [], [], None, False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char == '\0' or char in '\r\n':
+            return 'other'
+        if quote == "'":
+            if char == quote:
+                quote = None
+            else:
+                word.append(char)
+        elif char == '\\':
+            index += 1
+            if index == len(command) or command[index] in '\0\r\n':
+                return 'other'
+            following = command[index]
+            # Double quotes only consume the shell's special backslash escapes.
+            if quote == '"' and following not in '$`"\\':
+                word.append('\\')
+            word.append(following)
+            active = True
+        elif quote == '"':
+            if char == quote:
+                quote = None
+            elif char in '$`':
+                return 'other'
+            else:
+                word.append(char)
+        elif char in "'\"":
+            quote, active = char, True
+        elif char in ' \t':
+            if active:
+                words.append(''.join(word))
+                word, active = [], False
+                if len(words) > 256:
+                    return 'other'
+        elif char in '|;&<>()`$#*?[]{}~':
+            return 'other'
+        else:
+            word.append(char)
+            active = True
+        index += 1
+    if quote is not None:
+        return 'other'
+    if active:
+        words.append(''.join(word))
+    if not words or len(words) > 256:
+        return 'other'
+    executable = words[0]
+    if '/' in executable and (not executable.startswith('/') or
+                              any(part in ('.', '..') for part in executable.split('/'))):
+        return 'other'
+    name = executable.rsplit('/', 1)[-1]
+    if name in ('bash', 'sh', 'zsh'):
+        return (_read_command_name(words[2], depth + 1)
+                if len(words) == 3 and words[1] in ('-c', '-lc') else 'other')
+    return name if name in _READ_COMMANDS else 'other'
+
+
+def observe_codex_reads(output, exit_code=0):
+    """Observe LF-framed native completions; ambiguous streams yield no counts."""
+    empty = unavailable_reads()
+    if type(output) is not str or len(output) > 2097152:
+        return empty
+    try:
+        if len(output.encode('utf-8')) > 2097152:
+            return empty
+    except UnicodeError:
+        return empty
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate')
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError('constant')
+
+    observed = unavailable_reads()
+    seen, terminal, recognized = set(), None, False
+    # splitlines would split literal U+2028/U+2029 inside JSON strings.
+    if output.count('\n') >= 4096:
+        return empty
+    try:
+        for line in output.split('\n'):
+            if not line.strip(' \t\r'):
+                continue
+            event = json.loads(line, object_pairs_hook=unique, parse_constant=invalid_constant)
+            if type(event) is not dict or type(event.get('type')) is not str or terminal:
+                return empty
+            kind = event['type']
+            if kind in ('turn.completed', 'turn.failed', 'error'):
+                terminal = kind
+                recognized = True
+            elif kind in ('thread.started', 'turn.started', 'item.started', 'item.updated', 'item.completed'):
+                recognized = True
+            else:
+                return empty
+            if kind != 'item.completed':
+                continue
+            item = event.get('item')
+            if type(item) is not dict or type(item.get('type')) is not str:
+                return empty
+            identity = item.get('id')
+            # Native completed items have unique IDs. Missing/duplicate IDs
+            # cannot create a successful command or inflate a previous count.
+            if type(identity) is not str or not 1 <= len(identity) <= 128 or identity in seen:
+                return empty
+            seen.add(identity)
+            if item['type'] != 'command_execution':
+                continue
+            if sum(sum(c.values()) for c in observed['commands'].values()) >= _READ_EVENT_LIMIT:
+                return empty
+            name = _read_command_name(item.get('command'))
+            code, status = item.get('exit_code'), item.get('status')
+            outcome = 'unknown'
+            if (type(item.get('command')) is str and item['command'].strip() and
+                    type(code) is int and 0 <= code <= 255):
+                if code == 0 and status == 'completed':
+                    outcome = 'success'
+                elif code > 0 and status in ('completed', 'failed'):
+                    outcome = 'failure'
+            observed['commands'][name][outcome] += 1
+    except (ValueError, TypeError, RecursionError):
+        return empty
+    if not recognized:
+        return empty
+    observed['status'] = ('available' if terminal == 'turn.completed' and
+                           type(exit_code) is int and exit_code == 0 else 'partial')
+    return observed
+
+
 def response_text(provider, output, *, discovery_schema=None):
     if discovery_schema is not None:
         return _structured_response_text(provider, output, discovery_schema)
@@ -572,7 +748,7 @@ def response_text(provider, output, *, discovery_schema=None):
             raise _failure('Model CLI returned no final response.', 'empty_response', 'response')
         # Claude Code's estimated dollar cost is not Z.ai Coding Lite credit usage.
         return data['result'], data.get('total_cost_usd') if provider == 'claude' else None
-    events = [parse(line) for line in output.splitlines() if line.strip()]
+    events = [parse(line) for line in output.split('\n') if line.strip(' \t\r')]
     if any(not isinstance(event, dict) for event in events):
         raise _failure('Codex returned an invalid event.', 'envelope_invalid', 'response')
     if any(event.get('type') in ('turn.failed', 'error') for event in events):
@@ -720,6 +896,12 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
               'prompt_size': agent_usage.prompt_size(prompt), 'usage': agent_usage.unavailable()}
     if provider == 'codex':
         report['warnings'] = []
+    from harness import improvement_report as contract
+    discovery_reads = (provider == 'codex' and role in contract.SPECIALIST_ROLES and
+                       scoped and workspace is not None and not write and not smoke and
+                       os.environ.get('TAVERN_IMPROVEMENT_DISCOVERY') == '1')
+    if discovery_reads:
+        report['observed_reads'] = unavailable_reads()
     report['compaction'] = {'requested': enabled, 'key_registered': bool(keys.get('TYPESAFE_API_KEY')),
                             'status': 'requested' if enabled else 'disabled'}
     collector = None
@@ -843,6 +1025,12 @@ def run(role, task, keys, write=False, smoke=False, timeout=300, compaction=None
                         if execution_error is not None:
                             raise execution_error
             report['exit_code'] = result.returncode
+            if discovery_reads:
+                try:
+                    report['observed_reads'] = sanitize_observed_reads(
+                        observe_codex_reads(result.stdout, result.returncode))
+                except (Exception, KeyboardInterrupt):
+                    pass  # Optional counters never replace the original CLI outcome.
             if not result.returncode:
                 try:
                     report['usage'] = agent_usage.observe(
