@@ -13,7 +13,7 @@
   },
   "roles": {
     "coordinator": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "high", "instructions": "AGENTS.md", "check": "check"},
-    "downloader": {"provider": "zai", "model": "glm-5.3-flash", "instructions": "downloader/AGENTS.md", "check": "check-downloader"},
+    "downloader": {"provider": "zai", "model": "glm-5.3", "instructions": "downloader/AGENTS.md", "check": "check-downloader"},
     "parser": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "high", "instructions": "parser_tidy/AGENTS.md", "check": "check-parser"},
     "django": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "medium", "instructions": "TavernofSoul/AGENTS.md", "check": "check-django"},
     "git": {"provider": "codex", "model": "gpt-6.1-sol", "effort": "medium", "instructions": "AGENTS.md", "check": "check"},

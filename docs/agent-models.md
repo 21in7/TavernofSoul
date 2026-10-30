@@ -87,7 +87,7 @@ Claude Code 기반 역할은 [Jev 대화 기록 압축](compaction.md)을 기본
 | 역할 | 실행 도구 / 인증 | 모델 | 관련 검증 |
 | --- | --- | --- | --- |
 | coordinator | Codex / ChatGPT Pro 로그인 | gpt-6.1-sol, high | make check |
-| downloader | Claude Code / Z.ai Coding Lite 키 | glm-5.3-flash | make check-downloader |
+| downloader | Claude Code / Z.ai Coding Lite 키 | glm-5.3 | make check-downloader |
 | parser | Codex / ChatGPT Pro 로그인 | gpt-6.1-sol, high | make check-parser |
 | django | Codex / ChatGPT Pro 로그인 | gpt-6.1-sol, medium | make check-django |
 | git | Codex / ChatGPT Pro 로그인 | gpt-6.1-sol, medium | 검증 결과로 커밋·PR 설명 작성; 게시·CI·머지는 메인 앱 연결 |
