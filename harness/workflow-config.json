@@ -3,7 +3,7 @@
   "max_tasks": 8,
   "max_rounds": 2,
   "max_plan_attempts": 2,
-  "agent_timeout_seconds": 900,
+  "agent_timeout_seconds": 1800,
   "check_timeout_seconds": 1800,
   "max_file_bytes": 33554432,
   "max_snapshot_bytes": 134217728,

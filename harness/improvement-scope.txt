@@ -28,9 +28,7 @@ TavernofSoul/ipfparser/contracts.py
 TavernofSoul/ipfparser/management/commands/importAll.py
 parser_tidy/tests/test_import_safety.py
 docs/architecture.md
-docs/harness.md
 docs/harness-design.md
-docs/workflow.md
 docs/improvements.md
 docs/data-contracts.md
 docs/adr/README.md
