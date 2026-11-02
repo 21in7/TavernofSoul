@@ -8,17 +8,14 @@ item_monster[0].Chance [range]: expected a value in 0..100
 items_by_name['harness_recipe'].Link_Target [reference]: target missing not found in release
 ```
 
-`ToS_DB.export()`는 메모리 데이터를 검사한 뒤 JSON을 staging에 기록한다.
-기록한 스냅샷도 다시 검사한 후 공개 파일 교체를 시작한다.
-메모리 계약 실패 시 staging·backup·기존 공개 파일을 건드리지 않는다.
-staging 검사 실패 시 임시 출력만 정리하고 공개 파일과 버전을 보존한다.
-
-`importAll`은 공개 JSON을 임시 디렉터리에 복사하고 **실제로 적재할 스냅샷**을 검사한다.
-계약 오류는 DB 쿼리와 트랜잭션 시작 전에 `CommandError`로 중단된다.
-DB·Version·`prev/`는 유지하며, 수정한 릴리스로 재시도할 수 있다.
-유효한 계약 이후 발생한 DB 적재 오류에도 기존 트랜잭션·비교 기준 롤백을 유지한다.
-장비에 명시한 RefreshScp가 없거나 Lua 계산에 실패하면 파서가 오류를 전파하고 공개 전에 중단한다.
-JSON 계약이 0 수치를 허용한다는 이유로 계산 실패를 유효한 기본 수치로 처리하지 않는다.
+`ToS_DB.export()`는 메모리 검사 후 JSON을 staging에 기록하고 스냅샷도 검사한 뒤 공개 파일을 교체한다.
+메모리 계약 실패는 staging·backup·기존 공개 파일을 보존한다.
+staging 검사 실패는 임시 출력만 정리하고 공개 파일·버전을 보존한다.
+`importAll`은 공개 JSON을 임시 디렉터리에 복사해 **실제 적재 스냅샷**을 검사한다.
+계약 오류는 DB 쿼리·트랜잭션 전에 `CommandError`로 중단하며 DB·Version·`prev/`를 보존한다.
+수정 릴리스로 재시도할 수 있고, 유효 계약 후 DB 적재 오류도 기존 트랜잭션·비교 기준을 롤백한다.
+장비의 명시된 RefreshScp 누락·Lua 계산 실패는 파서가 전파하여 공개 전에 중단한다.
+JSON의 0 허용은 계산 실패를 유효한 기본 수치로 처리할 근거가 아니다.
 
 ## 릴리스 형식과 ID
 
@@ -105,22 +102,24 @@ consumed-only retention은 검사 완료 후 반환된 snapshot에 적용한다.
 
 ### Importer 호출 소유와 ORM 의미
 
-[ADR 0012](adr/0012-importer-single-run-snapshot.md)의 스냅샷은 한 `handle`의 private
-staging에만 속한다. 활성 handle의 base와 입력 파일 디렉터리가 그 staging인 소비 컬렉션에
-한해서 재사용하고 각 mutable 소비자 및 version payload에 `deepcopy`를 제공한다.
-consumer의 배열/중첩 객체 변경은 다음 consumer나 검증 원본으로 전파되지 않는다.
-직접 호출·`prev/`·다른 디렉터리·미보관 파일은 매번 새 `load_json`이며 새 변경/손상을 검출한다.
-재검사 시작 전에 이전 snapshot을 버리고 성공·실패·재시도에서 staging/path·previous-path·
-item ID·skill-name·관계 재조정 상태를 정리하고 base를 복원한다. 검증 실패는 DB 쿼리 전에
-중단하며 트랜잭션과 prev 공개/복원 및 정확한 bytes를 유지한다. global cache는 없다.
+[ADR 0012](adr/0012-importer-single-run-snapshot.md)의 스냅샷은 각 `handle`의 private staging 소유다.
+활성 handle의 base·소비 컬렉션 입력 디렉터리가 모두 staging일 때만 재사용한다.
+각 mutable 소비자·version payload에 `deepcopy`하여 배열/중첩 변경의 다음 소비자·검증 원본 전파를 막는다.
+직접 호출·`prev/`·다른 디렉터리·미보관 파일은 매번 새 `load_json`으로 변경/손상을 검출한다.
+재검사 전 snapshot을 버린다. 성공·실패·재시도마다 staging/path·previous-path·item ID·skill-name·
+관계 재조정 상태를 정리하고 base를 복원한다. 검증 실패는 DB 쿼리 전에 중단한다.
+트랜잭션·prev 공개/복원·정확한 bytes를 유지하며 global cache는 없다.
 
-스킬/직업 SELECT prefetch는 canonical ID의 `str` 키를 사용하고 중복 legacy ID를 임의로
-고르지 않는다. ambiguous 참조는 원래 consumer의 `get()`에서 `MultipleObjectsReturned`,
-누락 직업은 기존 `DoesNotExist`를 발생시키며 조회 오류를 누락으로 숨기지 않는다.
-기존 행의 `update=0` skip·신규 생성·`Link_Job=None`·삭제 목록의 기존 상호작용과 루프 순서,
-행별 `save()` 및 created/updated audit 의미를 유지한다. bulk write나 동일 save 생략은 없다.
-item membership set은 함수 내부에서만 만들며 호출자의 분류 목록·순서·우선순위와 누락
-그룹 오류를 보존한다. Recipe canonical ID와 분류 정책을 바꾸지 않는다.
+스킬/직업 SELECT prefetch는 canonical ID의 `str` 키를 쓰며 중복 legacy ID를 임의 선택하지 않는다.
+ambiguous 참조는 원래 consumer의 `get()`에서 `MultipleObjectsReturned`, 누락 직업은
+`DoesNotExist`다. 조회 오류를 누락으로 숨기지 않는다.
+기존 행의 `update=0` skip·신규 생성·`Link_Job=None`·삭제 목록 상호작용·루프 순서·행별 `save()`·
+created/updated audit을 유지한다. bulk write·동일 save 생략은 없다.
+item membership set은 함수 내부에 한정한다. 호출자의 분류 목록·순서·우선순위·누락 그룹 오류와
+Recipe canonical ID·분류 정책을 유지한다.
+`makeEQ`의 기존 `Item_Type` 조회 키는 membership과 같은 `TypeEquipment`다.
+`Type != TypeEquipment`이면 일반 Type 행의 identity·name·is_equipment를 보존한다.
+신규 생성·save·`Type == TypeEquipment` 동작은 유지한다.
 
 API/ORM 회귀는 기존 scoped `test_release_contract.py`, `test_import_safety.py`,
 `harness/contract_tests.py`에서 consumed-only·diagnostic/aux strict order·nested copy·fresh

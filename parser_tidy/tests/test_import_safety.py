@@ -173,6 +173,44 @@ def test_database_error_is_not_treated_as_missing_row(importer, monkeypatch):
         cmd.importItem({'removed': [], 'added': [{'$ID': 1}], 'changed': []}, {}, 1)
 
 
+@pytest.mark.parametrize('equipment,existing', [
+    ('Weapon', False), ('Weapon', True), ('Material', True)])
+def test_equipment_type_preserves_general_row(importer, monkeypatch, equipment, existing):
+    cmd, module = importer
+    general = module.Item_Type(pk=1, name='Material', is_equipment=False)
+    rows = [general]
+    if existing and equipment != general.name:
+        rows.append(module.Item_Type(pk=2, name=equipment, is_equipment=False))
+    target = rows[-1] if existing else None
+    def get(name):
+        for row in rows:
+            if row.name == name:
+                return row
+        raise module.ObjectDoesNotExist
+    def save(row):
+        if not any(row is saved for saved in rows):
+            row.pk = 3
+            rows.append(row)
+    monkeypatch.setattr(module.Item_Type, 'objects', Mock(get=Mock(side_effect=get)))
+    monkeypatch.setattr(module.Item_Type, 'save', save)
+    for model in (module.Equipments, module.Equipment_Bonus):
+        monkeypatch.setattr(model, 'objects', Mock())
+    data = dict.fromkeys(('AnvilATK AnvilDEF AnvilPrice Durability Level Potential '
+        'RequiredClass SocketsLimit Stars Stat_ATTACK_MAGICAL Stat_ATTACK_PHYSICAL_MIN '
+        'Stat_ATTACK_PHYSICAL_MAX Stat_DEFENSE_MAGICAL Stat_DEFENSE_PHYSICAL '
+        'TranscendPrice TypeAttack Unidentified UnidentifiedRandom').split(), 0)
+    data.update(Type='Material', TypeEquipment=equipment, Bonus=[])
+    names = ['Material'] if equipment != 'Material' else []
+    cmd.makeEQ(Mock(), data, names)
+    assert rows[0] is general
+    assert (general.pk, general.name, general.is_equipment) == (1, 'Material', equipment == 'Material')
+    saved = get(equipment)
+    assert saved.is_equipment is True
+    assert saved is target if existing else saved is not general
+    assert names.count(equipment) == 1
+    module.Equipments.objects.get.return_value.save.assert_called_with()
+
+
 def test_recipe_without_declared_target_is_optional(importer, monkeypatch):
     cmd, module = importer
     for model in [module.Recipes, module.Item_Recipe_Material, module.Item_Recipe_Target, module.Items]:
