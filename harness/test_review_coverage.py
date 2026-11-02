@@ -894,3 +894,295 @@ def test_candidate_evidence_line_bound_is_not_reduced_to_a_sample(end):
         windows = coverage.plan(list(snapshots), snapshots, [dict(candidate=c)], {}, ['AGENTS.md'])
         source = next(w for w in windows if w['path'] == 'harness/program.py')
         assert (source['start_line'], source['end_line'], source['size']) == (1, 256, 2560)
+
+
+@pytest.fixture
+def cross_case(tmp_path, monkeypatch):
+    """C-only synthetic scope: no operational config or source is opened."""
+    paths = ['AGENTS.md', 'downloader/program.py', 'parser_tidy/program.py',
+             'TavernofSoul/program.py', 'parser_tidy/boundary.py']
+    snapshots = {p: dict(exists=True, mode=0o644, content=b'value = 1\nvalue += 1\n') for p in paths}
+    snapshots['AGENTS.md']['content'] = b'Synthetic shared documentation.\n'
+    snapshots[paths[-1]]['content'] = (b'# header\n' * 120 +
+        b'def boundary(value):\n    result = value + 1\n    return result\n' + b'# tail\n' * 120)
+    config = dict(version=contract.CONFIG_VERSION, timezone='Asia/Seoul',
+        scope_file='harness/improvement-scope.txt', specialist_roles=list(contract.SPECIALIST_ROLES),
+        reviewer_role='reviewer', shared_files=['AGENTS.md'], limits=dict(contract.LIMIT_CEILINGS),
+        coordinator_cross_boundary_files=[paths[-1]])
+    root = tmp_path / 'sources'
+    root.mkdir()
+    monkeypatch.setattr(imp, 'ROOT', root)
+    specs = {r: dict(provider=('claude' if r == 'reviewer' else 'codex'), model='synthetic-model')
+             for r in contract.ROLES}
+    monkeypatch.setattr(agent_models, 'load_config', lambda: {'roles': specs})
+    for target, name in ((agent_models, 'load_keys'), (agent_models, 'run'),
+                         (workflow, 'execute'), (workflow, 'run_check'),
+                         (subprocess, 'run'), (subprocess, 'Popen')):
+        monkeypatch.setattr(target, name, forbidden)
+    return dict(paths=paths, snapshots=snapshots, config=config, specs=specs,
+                selected=source_limit_storage(root, tmp_path))
+
+
+def cross_owners(case):
+    return {r: imp.role_scope(r, case['paths'], case['config']) for r in contract.SPECIALIST_ROLES}
+
+
+def cross_plan(case, records=()):
+    return coverage.plan(case['paths'], case['snapshots'], records, cross_owners(case),
+        case['config']['shared_files'], config=case['config'],
+        ownership={p: workflow.owner(p) for p in case['paths']})
+
+
+def cross_review(case, records=(), omit=False):
+    def runner(role, prompt, keys, **options):
+        assert role == 'reviewer' and options['write'] is False
+        capture = options['discovery_review']
+        response = dict(reviews=[dict(candidate_id=r['id'], verdict='eligible',
+            reason='합성 입력의 역할 간 전달 계약과 명시된 범위를 검토했습니다.',
+            documentation=dict(SOURCE_DOC)) for r in records], documentation=dict(SOURCE_DOC))
+        add_assessments(response, capture)
+        events = read_events(capture, json.dumps(response, ensure_ascii=False))
+        if omit:
+            index = next(i for i, w in enumerate(capture.windows) if 'cross_boundary' in w['purposes'])
+            del events[2 * index:2 * index + 2]
+            # All assessments and every other Read remain; self-report is inert.
+            events.insert(0, dict(type='assistant', message=dict(role='assistant',
+                content=[dict(type='text', text='I read all cross-boundary source programs.')])) )
+        capture.accept(stdout(events))
+        return dict(case['specs'][role], role=role, status='passed',
+                    response=json.dumps(response, ensure_ascii=False))
+    return imp._call_role('reviewer', case['paths'], case['snapshots'], case['config'],
+                          records, {}, runner, case['selected'])
+
+
+def cross_scan(case, participation, review, records=()):
+    records = copy.deepcopy(list(records))
+    for record, verdict in zip(records, review['reviews']):
+        record['review'] = {k: v for k, v in verdict.items() if k != 'candidate_id'}
+    scan = dict(scan_id='1793603442829681851-abcdef', proposals=records,
+        approved_files=list(case['paths']), review_complete=True,
+        documentation=review['documentation'], agents=[participation],
+        source_fingerprints=contract.fingerprint_sources(case['snapshots']),
+        config_fingerprint=contract.digest(case['config']),
+        scope_fingerprint=dict(paths=list(case['paths']), mode=0o644, sha256='a' * 64))
+    coverage.attach(scan, participation['source_review'])
+    return scan
+
+
+def test_cross_empty_review_replaces_only_coordinator_and_loads_scope(cross_case, monkeypatch):
+    case = cross_case
+    reads = []
+    with monkeypatch.context() as patch:
+        config_path = imp.ROOT / 'synthetic-config.json'
+        scope_path = imp.ROOT / case['config']['scope_file']
+        patch.setattr(imp, 'CONFIG', config_path)
+        def read(path, limit, **options):
+            reads.append(path)
+            if path == config_path:
+                return json.dumps(case['config']).encode('utf-8'), 0o644
+            assert path == scope_path
+            return ('\n'.join(case['paths']) + '\n').encode('utf-8'), 0o644
+        patch.setattr(imp, '_read_file', read)
+        assert imp.load_config() == case['config']
+        assert reads == [config_path, scope_path]
+    assert all(workflow.owner(p) != 'coordinator' for p in case['paths'] if p != 'AGENTS.md')
+    participation, review = cross_review(case)
+    assert participation['status'] == 'succeeded'
+    scan = cross_scan(case, participation, review)
+    assert coverage.validate(scan)
+    assert coverage.validate(scan, case['snapshots'], cross_owners(case), ['AGENTS.md'],
+        config=case['config'], ownership={p: workflow.owner(p) for p in case['paths']})
+    windows = scan['source_review']['plan']
+    assert len(windows) == 5
+    sample = next(w for w in windows if 'cross_boundary' in w['purposes'])
+    assert (sample['path'], sample['start_line'], sample['end_line']) == (
+        'parser_tidy/boundary.py', 114, 209)
+    assert sample['start_line'] <= 122 <= sample['end_line']
+    assert sample['end_line'] - sample['start_line'] + 1 == 96
+    assert all(any(r in w['purposes'] for w in windows) for r in ('downloader', 'parser', 'django'))
+    assert {r['window']['path'] for r in scan['source_review']['reads']} == set(case['paths'])
+    from harness import improvement_loop as loop
+    scan['loop_dependencies'] = dict(review_protocol=coverage.VERSION,
+        config_fingerprint=scan['config_fingerprint'], source_fingerprints=scan['source_fingerprints'],
+        scope_fingerprint=scan['scope_fingerprint'])
+    coverage.attach(scan, scan['source_review'])
+    assert loop.authorization_context(scan)
+
+
+def test_cross_candidate_requires_unrelated_window_and_preserves_owner(cross_case):
+    case = cross_case
+    own = imp.role_scope('coordinator', case['paths'], case['config'])
+    assert own == ['AGENTS.md', 'parser_tidy/boundary.py']
+    c = candidate('parser_tidy/boundary.py')
+    c['evidence'] = [dict(path='parser_tidy/boundary.py', start_line=122, end_line=123,
+                          summary='역할 간 전달되는 반환값의 경계를 확인합니다.')]
+    prompts = []
+    def coordinator(role, prompt, keys, **options):
+        prompts.append(prompt)
+        return dict(case['specs'][role], role=role, status='passed',
+                    response=json.dumps(dict(candidates=[c]), ensure_ascii=False))
+    participation, candidates = imp._call_role('coordinator', own, case['snapshots'], case['config'],
+                                               [], {}, coordinator, case['selected'])
+    assert participation['status'] == 'succeeded' and candidates[0]['edit_files'] == c['edit_files']
+    assert imp.CROSS_BOUNDARY_PROMPT in prompts[0]
+    assert workflow.owner(candidates[0]['edit_files'][0]) == 'parser'
+    # Candidate source differs from the configured cross program; both are read.
+    records = [contract.proposal_record(candidate('downloader/program.py'),
+                                      contract.fingerprint_sources(case['snapshots']))]
+    participation, review = cross_review(case, records)
+    assert participation['status'] == 'succeeded'
+    scan = cross_scan(case, participation, review, records)
+    assert coverage.validate(scan)
+    assert {w['path'] for w in scan['source_review']['plan']} == {
+        'AGENTS.md', 'downloader/program.py', 'parser_tidy/boundary.py'}
+    # An overlapping long evidence window cannot expand the 96-line cross sample.
+    long = copy.deepcopy(c)
+    long['evidence'][0].update(start_line=1, end_line=230)
+    windows = cross_plan(case, [dict(candidate=long)])
+    assert len([w for w in windows if w['path'] == 'parser_tidy/boundary.py']) == 2
+    assert all(w['end_line'] - w['start_line'] < 96 for w in windows if 'cross_boundary' in w['purposes'])
+    # Local wire construction and canonical validation use the same guide.
+    from harness import local_model
+    local = dict(version='local-model-config-v2', provider='mlx-vlm',
+        endpoint='http://127.0.0.1:12345/v1/chat/completions', model='synthetic/model',
+        api_model='synthetic/model', temperature=0, limits=dict(local_model.DEFAULT_LIMITS))
+    prepared = local_model.prepare_request('coordinator', own, case['snapshots'], config=local,
+        coordinator_cross_boundary_files=case['config']['coordinator_cross_boundary_files'])
+    user = local_model._validate_request(local, prepared['request'])
+    assert user['coordinator_cross_boundary_files'] == ['parser_tidy/boundary.py']
+    assert imp.CROSS_BOUNDARY_PROMPT in json.loads(prepared['request'])['messages'][0]['content']
+    requests = []
+    def transport(actual_config, body):
+        requests.append(body)
+        assert local_model._validate_request(actual_config, body) == user
+        return dict(status=200, headers=[('Content-Type', 'application/json')],
+            body=json.dumps(dict(model=local['model'], choices=[dict(finish_reason='stop',
+                message=dict(role='assistant', content='{"candidates": []}'))])).encode('utf-8'))
+    local_result = local_model.run('coordinator', own, case['snapshots'], config=local,
+        coordinator_cross_boundary_files=case['config']['coordinator_cross_boundary_files'],
+        transport=transport)
+    assert len(requests) == 1 and local_result['called'] and local_result['reason'] == 'empty_draft'
+    # Active/list changes stay whole-config freshness dependencies.
+    changed = copy.deepcopy(case['config'])
+    changed['coordinator_cross_boundary_files'] = ['downloader/program.py']
+    assert contract.digest(changed) != scan['config_fingerprint']
+    with pytest.raises(ValueError):
+        coverage.validate(scan, config=changed)
+    # Cross windows count toward both existing aggregate ceilings.
+    bounded = dict(case, snapshots=copy.deepcopy(case['snapshots']))
+    bounded['snapshots']['downloader/program.py']['content'] = b'value = 1\n' * 64
+    items = [dict(path='downloader/program.py', start_line=2 * i + 1, end_line=2 * i + 1)
+             for i in range(31)]
+    many = [dict(candidate=dict(evidence=items[i:i + 6], benefit=dict(evidence=[]), edit_files=[]))
+            for i in range(0, len(items), 6)]
+    with pytest.raises(ValueError):
+        cross_plan(bounded, many)  # 31 evidence + document + cross = 33
+    bounded['snapshots']['downloader/program.py']['content'] = b'value = "' + b'x' * 32700 + b'"\n'
+    with pytest.raises(ValueError):
+        cross_plan(bounded, [dict(candidate=dict(evidence=items[:1],
+                                               benefit=dict(evidence=[]), edit_files=[]))])
+
+
+def test_cross_missing_read_cannot_be_replaced_by_claims_or_assessments(cross_case):
+    participation, review = cross_review(cross_case, omit=True)
+    assert review is None and participation['status'] != 'succeeded'
+    participation, review = cross_review(cross_case)
+    scan = cross_scan(cross_case, participation, review)
+    proof = scan['source_review']
+    proof['reads'] = [r for r in proof['reads'] if 'cross_boundary' not in r['window']['purposes']]
+    scan['source_review_binding'] = coverage.binding(scan)
+    with pytest.raises(ValueError):
+        coverage.validate(scan)
+    # Removing the cross window as well cannot turn the remaining reads into proof.
+    proof['plan'] = [w for w in proof['plan'] if 'cross_boundary' not in w['purposes']]
+    scan['source_review_binding'] = coverage.binding(scan)
+    with pytest.raises(ValueError):
+        coverage.validate(scan)
+
+
+def test_cross_shared_documents_cannot_substitute_for_program(cross_case):
+    case = cross_case
+    path = case['config']['coordinator_cross_boundary_files'][0]
+    case['snapshots'][path]['content'] = b'"""Only documentation."""\nimport os\n'
+    with pytest.raises(ValueError):
+        cross_plan(case)
+    participation, review = cross_review(case)
+    assert review is None and participation['status'] != 'succeeded'
+
+
+@pytest.mark.parametrize('bad', ['shared', 'outside', 'duplicate', 'test', 'tests', 'conftest',
+    'config', 'document', 'coordinator', 'empty', 'string', 'alias', 'no_context', 'wrong_owner'])
+def test_cross_invalid_configuration_is_rejected_semantically(cross_case, bad):
+    case = cross_case
+    paths = list(case['paths'])
+    config = copy.deepcopy(case['config'])
+    path = config['coordinator_cross_boundary_files'][0]
+    if bad == 'shared':
+        config['shared_files'].append(path)
+    elif bad == 'duplicate':
+        config['coordinator_cross_boundary_files'].append(path)
+    elif bad in ('empty', 'string'):
+        config['coordinator_cross_boundary_files'] = [] if bad == 'empty' else path
+    elif bad not in ('no_context', 'wrong_owner'):
+        path = dict(outside='downloader/outside.py', test='downloader/test_unit.py',
+            tests='parser_tidy/tests/unit.py', conftest='TavernofSoul/conftest.py',
+            config='downloader/settings.py', document='downloader/README.md',
+            coordinator='harness/example.py', alias='parser_tidy/./boundary.py')[bad]
+        config['coordinator_cross_boundary_files'] = [path]
+        if bad != 'outside':
+            paths.append(path)
+    ownership = {p: workflow.owner(p) for p in paths}
+    if bad == 'wrong_owner':
+        ownership[path] = 'coordinator'
+    context = {} if bad == 'no_context' else dict(paths=paths, ownership=ownership)
+    with pytest.raises(contract.ValidationError):
+        contract.validate_config(config, **context)
+    if bad not in ('no_context', 'wrong_owner'):
+        with pytest.raises(contract.ValidationError):
+            imp.role_scope('coordinator', paths, config)
+
+
+def test_cross_absent_preserves_normalization_digest_plan_scope_and_reads(cross_case, monkeypatch):
+    case = cross_case
+    del case['config']['coordinator_cross_boundary_files']
+    case['paths'].append('harness/program.py')
+    case['snapshots']['harness/program.py'] = dict(exists=True, mode=0o644, content=b'value = 1\n')
+    original = copy.deepcopy(case['config'])
+    assert contract.validate_config(original) == original
+    assert contract.digest(contract.validate_config(original)) == contract.digest(original)
+    reads = []
+    with monkeypatch.context() as patch:
+        def read(path, limit):
+            reads.append(path)
+            assert len(reads) == 1  # No scope read when the field is absent.
+            return json.dumps(original).encode('utf-8'), 0o644
+        patch.setattr(imp, '_read_file', read)
+        assert imp.load_config() == original
+    for role in contract.SPECIALIST_ROLES:
+        expected = [p for p in case['paths'] if workflow.owner(p) == role and p != 'AGENTS.md'] + ['AGENTS.md']
+        assert imp.role_scope(role, case['paths'], original) == expected
+    owners = cross_owners(case)
+    legacy = coverage.plan(case['paths'], case['snapshots'], [], owners, ['AGENTS.md'])
+    assert cross_plan(case) == legacy
+    assert len(legacy) == 5 and all('cross_boundary' not in w['purposes'] for w in legacy)
+    participation, review = cross_review(case)
+    assert participation['status'] == 'succeeded'
+    scan = cross_scan(case, participation, review)
+    assert 'cross_boundary_context' not in scan['source_review'] and coverage.validate(scan)
+
+
+@pytest.mark.parametrize('role,path', [('downloader', 'downloader/program.py'),
+    ('parser', 'parser_tidy/program.py'), ('django', 'TavernofSoul/program.py')])
+def test_cross_empty_still_requires_each_other_owner_program(cross_case, role, path):
+    case = cross_case
+    if role == 'parser':
+        # The cross sample belongs to downloader, leaving parser without code.
+        case['config']['coordinator_cross_boundary_files'] = ['downloader/program.py']
+        case['paths'].remove('parser_tidy/boundary.py')
+        del case['snapshots']['parser_tidy/boundary.py']
+    case['paths'].remove(path)
+    del case['snapshots'][path]
+    with pytest.raises(ValueError):
+        cross_plan(case)
+    participation, review = cross_review(case)
+    assert review is None and participation['status'] != 'succeeded'

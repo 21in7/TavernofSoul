@@ -154,7 +154,17 @@ def _json_file(path):
 @diagnostics.at('config')
 def load_config():
     path = CONFIG if CONFIG != _DEFAULT_CONFIG else ROOT / 'harness/improvement-config.json'
-    return contract.validate_config(contract.parse_json(_read_file(path, 65536)[0]))
+    value = contract.parse_json(_read_file(path, 65536)[0])
+    if isinstance(value, dict) and 'coordinator_cross_boundary_files' in value:
+        scope = contract.validate_path(value.get('scope_file'))
+        body, _ = _read_file(workspace.safe_path(ROOT, scope), 65536)
+        return validate_discovery_config(value, body.decode('utf-8').splitlines())
+    return contract.validate_config(value)
+
+
+def validate_discovery_config(config, paths):
+    return contract.validate_config(config, paths=paths,
+        ownership={p: workflow.owner(p) for p in paths})
 
 
 class Store:
@@ -354,16 +364,21 @@ def _snapshot_sources_locked(paths, limits, selected):
 
 
 def role_scope(role, paths, config):
+    if 'coordinator_cross_boundary_files' in config:
+        config = validate_discovery_config(config, paths)
     if role == 'reviewer':
         return list(paths)
     shared = set(config['shared_files']) & set(paths)
     owned = [name for name in paths if workflow.owner(name) == role and name not in shared]
-    return owned + [name for name in paths if name in shared]
+    result = owned + [name for name in paths if name in shared]
+    if role == 'coordinator':
+        result += [p for p in config.get('coordinator_cross_boundary_files', []) if p not in result]
+    return result
 
 
 def _summaries(records):
-    # Cross-area review sees only sanitized summaries, never another role's
-    # source, raw output, source fingerprints, credentials or local paths.
+    # This channel carries sanitized summaries, never source or raw output.
+    # Opted-in cross-boundary sources use the separately validated role scope.
     return [{'id': item['id'], 'title': contract.safe_text(item['candidate']['title'], 80),
              'issue': contract.safe_text(item['candidate']['issue'], 240),
              'analogy': contract.safe_text(item['candidate']['analogy'], 160),
@@ -476,7 +491,11 @@ def _parse_model_response(value, max_bytes):
     return contract.parse_json(envelope.group(1) if envelope else value, max_bytes)
 
 
-def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
+CROSS_BOUNDARY_PROMPT = ('후보는 역할 간 입력·출력 계약(다운로드→파싱→계약→적재 경계) 문제에 한정한다.\n'
+                         '단일 역할 내부 문제는 해당 역할 몫이며, 교차 경계 검토 대상으로 확대하지 않는다.')
+
+
+def _call_role(role, paths, snapshots, config, records, keys, runner, selected, *, source_config=None):
     participation = {'role': role, 'provider': None, 'model': None,
                      'status': 'unavailable', 'cost': None, 'cost_status': 'unknown',
                      'started_at': _now().isoformat()}
@@ -509,6 +528,8 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
         except (Exception, KeyboardInterrupt):
             pass  # Optional diagnostics never replace this boundary's error.
     try:
+        if 'coordinator_cross_boundary_files' in config:
+            config = validate_discovery_config(config, list(snapshots))
         spec = agent_models.load_config()['roles'][role]
         participation.update(provider=spec['provider'], model=spec['model'])
         if role == 'reviewer' and spec['provider'] != 'claude':
@@ -530,11 +551,14 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
             prompt = REVIEW_PROMPT if role == 'reviewer' else CANDIDATE_PROMPT
             if spec['provider'] == 'codex' and role in contract.SPECIALIST_ROLES:
                 prompt = CODEX_CANDIDATE_PROMPT
+            if role == 'coordinator' and 'coordinator_cross_boundary_files' in config:
+                prompt += '\n' + CROSS_BOUNDARY_PROMPT
             capture = None
             if role == 'reviewer':
                 failure_reason = 'source_review_unverified'
                 owners = {r: role_scope(r, paths, config) for r in contract.SPECIALIST_ROLES}
-                windows = coverage.plan(paths, snapshots, records, owners, config['shared_files'])
+                windows = coverage.plan(paths, snapshots, records, owners, config['shared_files'],
+                                        config=config, ownership={p: workflow.owner(p) for p in paths})
                 capture = coverage.Capture(model_root, snapshots, windows)
                 prompt += ('\nDiscovery source-read-review-v1 response contract: '
                            'return exactly reviews,documentation,assessments. Use actual Read tools '
@@ -691,6 +715,10 @@ def _call_role(role, paths, snapshots, config, records, keys, runner, selected):
                     'assessments': assessed,
                     'fingerprints_digest': contract.digest(contract.fingerprint_sources(snapshots)),
                     'review_digest': contract.digest(parsed)}
+                if 'coordinator_cross_boundary_files' in config:
+                    participation['source_review']['cross_boundary_context'] = {
+                        'config': validate_discovery_config(source_config or config, paths),
+                        'ownership': {p: workflow.owner(p) for p in paths}}
                 participation['read_files'] = sorted({w['path'] for w in windows})
             else:
                 failure_reason = 'candidate_invalid'
@@ -803,6 +831,8 @@ def discover(scope_file=None, *, runner=None, keys=None, now=None, selected=None
             scope_bytes, scope_mode = _read_file(scope_path, 65536)
             lines = scope_bytes.decode('utf-8').splitlines()
             paths = contract.validate_scope_paths(lines, limits['max_scope_files'])
+            if 'coordinator_cross_boundary_files' in config:
+                config = validate_discovery_config(config, paths)
             snapshots = snapshot_sources(paths, limits, store.policy)
             fingerprints = contract.fingerprint_sources(snapshots)
             report['approved_files'] = paths
@@ -847,7 +877,8 @@ def discover(scope_file=None, *, runner=None, keys=None, now=None, selected=None
                                         if k != 'candidate_id'}
                 coverage.attach(report, participation['source_review'])
                 coverage.validate(report, snapshots, {r: role_scope(r, paths, config)
-                                  for r in contract.SPECIALIST_ROLES}, config['shared_files'])
+                                  for r in contract.SPECIALIST_ROLES}, config['shared_files'], config=config,
+                                  ownership={p: workflow.owner(p) for p in paths})
             complete = all(a['status'] == 'succeeded' for a in report['agents'])
             report['status'] = 'scanned' if complete else (
                 'partial' if any(a['status'] == 'succeeded' for a in report['agents']) else 'failed')
@@ -1018,7 +1049,8 @@ def _fresh_locked(record, store):
     config = load_config()
     try:
         coverage.validate(scan, snapshots, {r: role_scope(r, scan['approved_files'], config)
-                          for r in contract.SPECIALIST_ROLES}, config['shared_files'])
+                          for r in contract.SPECIALIST_ROLES}, config['shared_files'], config=config,
+                          ownership={p: workflow.owner(p) for p in scan['approved_files']})
     except ValueError:
         raise ImprovementError('Independent source Read evidence changed.') from None
     scope_bytes, mode = _read_file(Path(scan['scope_input']), 65536)
