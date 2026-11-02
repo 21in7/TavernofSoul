@@ -172,7 +172,7 @@ def _code_sample(source):
     return start, min(len(_lines(source)), start + MAX_CODE_LINES - 1)
 
 
-def plan(paths, snapshots, records, owners, shared):
+def plan(paths, snapshots, records, owners, shared, *, config=None, ownership=None):
     """Small explicit sample per existing owner when empty; evidence otherwise.
 
     A document sample supports the mandatory documentation judgment. Large
@@ -180,6 +180,12 @@ def plan(paths, snapshots, records, owners, shared):
     No source bytes are inserted into the prompt.
     """
     contract.validate_scope_paths(paths, 37)
+    cross = []
+    if config is not None and 'coordinator_cross_boundary_files' in config:
+        config = contract.validate_config(config, paths=paths, ownership=ownership)
+        cross = config.get('coordinator_cross_boundary_files', [])
+        if cross and shared != config['shared_files']:
+            fail('review.plan', 'fields')
     ranges = []
 
     def add(path, start, end, purpose):
@@ -201,7 +207,10 @@ def plan(paths, snapshots, records, owners, shared):
                     add(path, 1, min(12, len(_lines(snapshots[path]))), 'documentation')
     else:
         for role in contract.SPECIALIST_ROLES:
-            members = [p for p in owners[role] if p in paths and p not in shared and _program_path(p)]
+            if role == 'coordinator' and cross:
+                continue
+            members = [p for p in owners[role] if p in paths and p not in shared and _program_path(p)
+                       and (not cross or (contract.cross_boundary_program(p) and ownership.get(p) == role))]
             # Prefer production programs to tests without changing membership
             # or ownership. Domain AGENTS/config order cannot certify coverage.
             members.sort(key=lambda p: ('/tests/' in p or Path(p).name.startswith('test_')))
@@ -212,6 +221,12 @@ def plan(paths, snapshots, records, owners, shared):
                 fail('review.plan', 'source_unavailable')
             start, end = _code_sample(snapshots[path])
             add(path, start, end, role)
+    if cross:
+        path = cross[0]
+        if path not in snapshots or not snapshots[path]['exists'] or not _lines(snapshots[path]):
+            fail('review.plan', 'source_unavailable')
+        start, end = _code_sample(snapshots[path])
+        add(path, start, end, 'cross_boundary')
     docs = [p for p in paths if p in shared and p.endswith('.md') and
             snapshots[p]['exists'] and _lines(snapshots[p])]
     if not docs:
@@ -219,7 +234,9 @@ def plan(paths, snapshots, records, owners, shared):
     add(docs[0], 1, min(12, len(_lines(snapshots[docs[0]]))), 'documentation')
     merged = []
     for path, start, end, purpose in sorted(ranges):
-        if merged and merged[-1]['path'] == path and start <= merged[-1]['end_line'] + 1:
+        if (merged and merged[-1]['path'] == path and start <= merged[-1]['end_line'] + 1 and
+                (('cross_boundary' not in merged[-1]['purposes'] and purpose != 'cross_boundary') or
+                 max(end, merged[-1]['end_line']) - merged[-1]['start_line'] < MAX_CODE_LINES)):
             merged[-1]['end_line'] = max(end, merged[-1]['end_line'])
             merged[-1]['purposes'] = sorted(set(merged[-1]['purposes'] + [purpose]))
         else:
@@ -382,14 +399,37 @@ def binding(scan):
                             'review': review_result(scan)})
 
 
-def validate(scan, snapshots=None, owners=None, shared=None):
+def validate(scan, snapshots=None, owners=None, shared=None, *, config=None, ownership=None):
     """Revalidate private completion; missing legacy receipts never imply reads."""
     try:
         if scan.get('morning_aggregate') or not scan.get('review_complete'):
             fail()
         proof = scan['source_review']
-        if set(proof) != {'version', 'plan', 'reads', 'assessments', 'fingerprints_digest', 'review_digest'}:
+        context = proof.get('cross_boundary_context')
+        expected = {'version', 'plan', 'reads', 'assessments', 'fingerprints_digest', 'review_digest'}
+        if context is not None:
+            expected.add('cross_boundary_context')
+            if not isinstance(context, dict) or set(context) != {'config', 'ownership'}:
+                fail()
+            saved_config = contract.validate_config(context['config'], paths=scan['approved_files'],
+                                                     ownership=context['ownership'])
+            if ('coordinator_cross_boundary_files' not in saved_config or
+                    contract.digest(saved_config) != scan['config_fingerprint'] or
+                    ('loop_dependencies' in scan and contract.digest(saved_config) !=
+                     scan['loop_dependencies']['config_fingerprint']) or
+                    set(context['ownership']) != set(scan['approved_files']) or
+                    any(r not in contract.SPECIALIST_ROLES for r in context['ownership'].values())):
+                fail()
+            if config is not None and config != saved_config:
+                fail()
+            if ownership is not None and ownership != context['ownership']:
+                fail()
+            config, ownership = saved_config, context['ownership']
+        elif config is not None and 'coordinator_cross_boundary_files' in config:
             fail()
+        if set(proof) != expected:
+            fail()
+        cross = [] if context is None else config['coordinator_cross_boundary_files']
         if proof['version'] != VERSION or proof['fingerprints_digest'] != contract.digest(scan['source_fingerprints']):
             fail()
         if 'loop_dependencies' in scan and (
@@ -412,18 +452,30 @@ def validate(scan, snapshots=None, owners=None, shared=None):
                     type(window['size']) is not int or not 1 <= window['size'] <= MAX_SOURCE or
                     not re.fullmatch('[0-9a-f]{64}', window['sha256']) or
                     not isinstance(window['purposes'], list) or not window['purposes'] or
-                    not set(window['purposes']).issubset(set(contract.SPECIALIST_ROLES) | {'evidence', 'documentation'})):
+                    not set(window['purposes']).issubset(set(contract.SPECIALIST_ROLES) |
+                        {'evidence', 'documentation'} | ({'cross_boundary'} if cross else set()))):
                 fail()
             total += window['size']
         if total > MAX_SOURCE:
             fail()
+        if cross:
+            samples = [w for w in windows if 'cross_boundary' in w['purposes']]
+            if (not samples or any(w['path'] not in cross or
+                    w['end_line'] - w['start_line'] >= MAX_CODE_LINES for w in samples)):
+                fail()
         if not scan['proposals']:
             for role in contract.SPECIALIST_ROLES:
+                if role == 'coordinator' and cross:
+                    continue
                 samples = [w for w in windows if role in w['purposes']]
                 if (not samples or any(not _program_path(w['path']) or
-                        w['end_line'] - w['start_line'] >= MAX_CODE_LINES for w in samples)):
+                        w['end_line'] - w['start_line'] >= MAX_CODE_LINES or
+                        (cross and (not contract.cross_boundary_program(w['path']) or
+                         w['path'] in config['shared_files'] or ownership.get(w['path']) != role))
+                        for w in samples)):
                     fail()
-        if snapshots is not None and windows != plan(scan['approved_files'], snapshots, scan['proposals'], owners, shared):
+        if snapshots is not None and windows != plan(scan['approved_files'], snapshots, scan['proposals'],
+                                                     owners, shared, config=config, ownership=ownership):
             fail()
         if len(proof['reads']) != len(windows) or len({r['tool_id_sha256'] for r in proof['reads']}) != len(windows):
             fail()

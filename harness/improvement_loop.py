@@ -197,6 +197,8 @@ def _dependencies_locked(config, local_config, selected, *, allow_unavailable_so
     scope_path = imp.ROOT / discovery['scope_file']
     body, mode = imp._read_file(scope_path, 65536)
     paths = contract.validate_scope_paths(body.decode('utf-8').splitlines(), 37)
+    if 'coordinator_cross_boundary_files' in discovery:
+        discovery = imp.validate_discovery_config(discovery, paths)
     scope = {'sha256': hashlib.sha256(body).hexdigest(), 'mode': mode, 'paths': paths}
     with diagnostics.boundary('config'):
         agent_fingerprint = contract.digest(agent_models.load_config())
@@ -251,7 +253,8 @@ def _validate_scan_freshness_locked(scan, selected):
     if scan['loop_dependencies'] != current:
         raise LoopError('loop_dependencies_changed')
     coverage.validate(scan, snapshots, {r: imp.role_scope(r, paths, discovery)
-                      for r in contract.SPECIALIST_ROLES}, discovery['shared_files'])
+                      for r in contract.SPECIALIST_ROLES}, discovery['shared_files'], config=discovery,
+                      ownership={p: workflow.owner(p) for p in paths})
 
 
 def has_source_review_protocol(scan):
@@ -1352,7 +1355,9 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
     bounded_config['limits']['max_candidates_per_specialist'] = config['max_candidates_per_specialist']
     bounded_config['limits']['call_timeout_seconds'] = config['model_timeout_seconds']
     participation, parsed = imp._call_role(role, own_paths, snapshots, bounded_config,
-                                          records, keys, bounded_runner, selected)
+                                          records, keys, bounded_runner, selected,
+                                          **({'source_config': discovery} if
+                                             'coordinator_cross_boundary_files' in discovery else {}))
     safe = _safe_participation(participation)
     safe.update(call_times)
     safe['reference_observation'] = reference_facts
@@ -1369,12 +1374,13 @@ def _cloud_call(role, own_paths, snapshots, discovery, records, draft, feedback,
 
 
 def _local_call(role, own_paths, snapshots, local_config, cursor, feedback,
-                prepared, runner, config, now):
+                prepared, runner, config, now, *, cross_options=None):
     started = time.monotonic()
     failure = diagnostics.detail('role_execution_failed', 'unavailable', phase='execution')
     try:
         result = runner(role, own_paths, snapshots, config=local_config, cursor=cursor,
-                        feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
+                        feedback=feedback, candidate_limit=config['max_candidates_per_specialist'],
+                        **(cross_options or {}))
         if (not isinstance(result, dict) or result.get('provider') != 'mlx-vlm' or
                 result.get('model') != local_config['model'] or
                 result.get('stage') != 'local_explorer' or result.get('owner_role') != role):
@@ -2090,6 +2096,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     stage, role = STAGES[state['stage_index']]
     diagnostics.position(stage, now.hour)
     own_paths = imp.role_scope(role, paths, discovery)
+    cross_options = ({'coordinator_cross_boundary_files': discovery['coordinator_cross_boundary_files']}
+                     if role == 'coordinator' and 'coordinator_cross_boundary_files' in discovery else {})
     day['slots'][slot].update(scan_id=state['round']['report']['scan_id'],
         stage_index=state['stage_index'], stage=stage, owner_role=role)
     if not own_paths:
@@ -2100,7 +2108,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
         try:
             feedback = _bounded_feedback(state['feedback'].get(role, []), own_paths, local_config)
             prepared = local_model.prepare_request(role, own_paths, snapshots, config=local_config,
-                cursor=cursor, feedback=feedback, candidate_limit=config['max_candidates_per_specialist'])
+                cursor=cursor, feedback=feedback, candidate_limit=config['max_candidates_per_specialist'],
+                **cross_options)
         except (Exception, KeyboardInterrupt) as exc:
             diagnostics.record('stage', exc)
             detail = diagnostics.exception_detail(exc)
@@ -2175,7 +2184,7 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
     if stage == 'local_explorer':
         call_started_at = _clock(finish_clock()).isoformat()
         participation, candidates = _local_call(role, own_paths, snapshots, local_config, cursor,
-            feedback, prepared, local_runner or local_model.run, config, now)
+            feedback, prepared, local_runner or local_model.run, config, now, cross_options=cross_options)
         call_finished = _clock(finish_clock())
         participation.update(finished_at=call_finished.isoformat(), call_started_at=call_started_at,
                              call_finished_at=call_finished.isoformat())
@@ -2252,7 +2261,8 @@ def _tick_locked(store, state, now, config, runner, keys, local_runner,
                                         if key != 'candidate_id'}
                 coverage.attach(report, participation['source_review'])
                 coverage.validate(report, snapshots, {r: imp.role_scope(r, paths, discovery)
-                                  for r in contract.SPECIALIST_ROLES}, discovery['shared_files'])
+                                  for r in contract.SPECIALIST_ROLES}, discovery['shared_files'], config=discovery,
+                                  ownership={p: workflow.owner(p) for p in paths})
             estimate = participation.get('cost')
             if _number(estimate):
                 day['slots'][slot].update(actual_estimated_usd=estimate, cost_status='cli_estimated_usd')

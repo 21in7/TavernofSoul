@@ -301,9 +301,21 @@ def validate_scope_paths(paths: Iterable[str], max_files: int = 64, *, field=Non
     return result
 
 
-def validate_config(value: Any) -> dict:
+def cross_boundary_program(path):
+    """Product Python only; classification does not inspect the filesystem."""
+    parts = PurePosixPath(path).parts
+    name = parts[-1]
+    return (parts[0] in ('downloader', 'parser_tidy', 'TavernofSoul') and
+            name.endswith('.py') and not name.startswith('test_') and
+            name not in ('test.py', 'tests.py', 'conftest.py', 'config.py', 'settings.py') and
+            not name.endswith(('_test.py', '_config.py', '_settings.py')) and
+            not {'test', 'tests', 'docs', 'config', 'configs', 'settings'}.intersection(parts[:-1]))
+
+
+def validate_config(value: Any, *, paths=None, ownership=None) -> dict:
     value = _object(value, ("version", "timezone", "scope_file", "specialist_roles",
-                            "reviewer_role", "shared_files", "limits"))
+                            "reviewer_role", "shared_files", "limits"),
+                    ('coordinator_cross_boundary_files',))
     if value["version"] != CONFIG_VERSION or value["timezone"] != "Asia/Seoul":
         raise ValidationError("unsupported improvement configuration")
     if value["specialist_roles"] != list(SPECIALIST_ROLES) or value["reviewer_role"] != "reviewer":
@@ -318,8 +330,21 @@ def validate_config(value: Any) -> dict:
     if limits["max_context_bytes"] < limits["max_source_bytes"]:
         raise ValidationError("context bound must accommodate bounded source")
     shared = _list(value["shared_files"], 64, 1)
-    return dict(value, scope_file=validate_path(value["scope_file"]),
-                shared_files=validate_scope_paths(shared), limits=dict(limits))
+    result = dict(value, scope_file=validate_path(value["scope_file"]),
+                  shared_files=validate_scope_paths(shared), limits=dict(limits))
+    if 'coordinator_cross_boundary_files' in value:
+        field = 'coordinator_cross_boundary_files'
+        cross = validate_scope_paths(_list(value[field], 37, 1), field=field)
+        if paths is None or not isinstance(ownership, Mapping):
+            raise ValidationError('Cross-boundary configuration requires scope and ownership context.')
+        approved = validate_scope_paths(paths, limits['max_scope_files'])
+        for path in cross:
+            if (path not in approved or path in result['shared_files'] or
+                    not cross_boundary_program(path) or
+                    ownership.get(path) not in SPECIALIST_ROLES[1:]):
+                raise ValidationError('Cross-boundary file must be an approved nonshared product program owned by another role.')
+        result[field] = cross
+    return result
 
 
 def fingerprint_sources(snapshots: Mapping[str, dict]) -> dict:
