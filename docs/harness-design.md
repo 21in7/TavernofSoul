@@ -880,3 +880,5 @@ contract 필드·상한은 [모델 문서](agent-models.md#glm-호출의-private
 관측은 main 책임이다. 매 review는 documentation={status,files,reason}를 새로 판단한다.
 37파일 연구 scope·모델/역할·운영 downloader/game·인증/billing·compaction plugin·quota/budget/
 approval·schedule·storage defaults·fingerprint·확정 아침 보고는 변경하지 않는다.
+
+2026-11-02 PR-0 전환: 기존 연구 scope에서 `docs/harness.md`와 `docs/workflow.md`만 제외해 35개 파일과 나머지 순서를 유지한다. 문서 파일 자체와 shared_files는 변경하지 않으며, coordinator의 비공유 프로그램도 유지한다. 개발 workflow의 `agent_timeout_seconds`만 900초에서 1800초로 늘린다. 실행 시작 시 읽은 정책은 해당 실행 동안 유지되므로 새 timeout은 반영 후 새 workflow부터 적용된다. scope와 workflow 설정 변경은 기존 dependency 비교에 따라 연구 진행과 승인 신선도를 무효화하며, 과거 기록과 확정 오전 보고는 보존한다. 위의 기존 37개 유지 서술은 당시 작업 기록이며, 이 문단이 현재 PR-0 전환을 명시한다.

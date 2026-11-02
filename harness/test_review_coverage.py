@@ -585,7 +585,7 @@ def test_default_project_scope_fits_configured_source_limits(offline_source_limi
     scope, _ = imp._read_file(imp.ROOT / config['scope_file'], 65536)
     paths = contract.validate_scope_paths(scope.decode('utf-8').splitlines(),
                                           config['limits']['max_scope_files'])
-    assert len(paths) == 37
+    assert len(paths) == 35
     # The source mutex belongs to the full validation copy being read, while
     # artifact/context storage is disposable and never resolves host config.
     selected = source_limit_storage(imp.ROOT, tmp_path)
