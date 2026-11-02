@@ -318,7 +318,7 @@ class Command(BaseCommand):
             except ObjectDoesNotExist:
                 logging.warning("failed to delete item {} ({})".format(i['Name'], i['$ID']))
         logging.debug("migrating items")
-        item_type_db = list(Item_Type.objects.all())
+        item_type_db = [t.name for t in Item_Type.objects.all()]
         dolater = {'RECIPES': [],'COLLECTION': [], 'EQUIPMENT' : [], 'CARD' : []}
         if 'BOOKS' in item_type:
             dolater['BOOKS'] = []
@@ -338,12 +338,11 @@ class Command(BaseCommand):
             handler.tradability = i['Tradability']
             handler.type = i['Type']
             if i['Type'] not in item_type_db:
-                try:
-                    type_handler = Item_Type.objects.get(name = i['Type'])
-                except ObjectDoesNotExist:
+                type_handler = Item_Type.objects.filter(name=i['Type']).order_by('id').first()
+                if type_handler is None:
                     type_handler = Item_Type()
-                type_handler.name = i['Type']
-                type_handler.save()
+                    type_handler.name = i['Type']
+                    type_handler.save()
                 item_type_db.append(i['Type'])
             handler.grade = i['Grade']
             handler.icon = i['Icon']
@@ -393,12 +392,11 @@ class Command(BaseCommand):
             handler.tradability = i['Tradability']
             handler.type = i['Type']
             if i['Type'] not in item_type_db:
-                try:
-                    type_handler = Item_Type.objects.get(name = i['Type'])
-                except ObjectDoesNotExist:
+                type_handler = Item_Type.objects.filter(name=i['Type']).order_by('id').first()
+                if type_handler is None:
                     type_handler = Item_Type()
-                type_handler.name = i['Type']
-                type_handler.save()
+                    type_handler.name = i['Type']
+                    type_handler.save()
                 item_type_db.append(i['Type'])
             handler.grade = i['Grade']
             if i['Grade']          == "":
@@ -488,11 +486,10 @@ class Command(BaseCommand):
         handler.type_attack = i['TypeAttack']
         handler.type_equipment = i['TypeEquipment']
         if i['TypeEquipment'] not in item_type_db:
-            try:
-                type_handler = Item_Type.objects.get(name = i['TypeEquipment'])
-            except ObjectDoesNotExist:
+            type_handler = Item_Type.objects.filter(name=i['TypeEquipment']).order_by('id').first()
+            if type_handler is None:
                 type_handler = Item_Type()
-            type_handler.name = i['TypeEquipment']
+                type_handler.name = i['TypeEquipment']
             type_handler.is_equipment = True
             type_handler.save()
             item_type_db.append(i['TypeEquipment'])

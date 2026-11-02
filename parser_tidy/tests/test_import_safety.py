@@ -14,14 +14,19 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'TavernofSoul'))
 _HARNESS_WORK_DIR = tempfile.TemporaryDirectory(prefix='import-safety-')
 atexit.register(_HARNESS_WORK_DIR.cleanup)
-os.environ['HARNESS_WORK_DIR'] = _HARNESS_WORK_DIR.name
-os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
+
+
+def use_harness():
+    os.environ['HARNESS_WORK_DIR'] = _HARNESS_WORK_DIR.name
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
+
+
+use_harness()
 
 
 @pytest.fixture
 def importer(tmp_path):
-    os.environ['HARNESS_WORK_DIR'] = _HARNESS_WORK_DIR.name
-    os.environ['DJANGO_SETTINGS_MODULE'] = 'TavernofSoul.settings_harness'
+    use_harness()
     from django.conf import settings
     if settings.configured and getattr(settings, 'SETTINGS_MODULE', None) != 'TavernofSoul.settings_harness':
         raise RuntimeError('Django must use TavernofSoul.settings_harness')
@@ -36,6 +41,37 @@ def importer(tmp_path):
 def write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data))
+
+
+def read(path):
+    return json.loads(path.read_text())
+
+
+def mock_managers(monkeypatch, *models):
+    for model in models:
+        monkeypatch.setattr(model, 'objects', Mock())
+
+
+def fail_at(monkeypatch, module, failure):
+    if failure == 'publish':
+        real_replace = module.os.replace
+        def replace(source, destination):
+            if Path(source).name.startswith('.import-prev-') and not str(source).endswith('-backup'):
+                raise OSError('publication failed')
+            return real_replace(source, destination)
+        monkeypatch.setattr(module.os, 'replace', replace)
+    if failure == 'commit':
+        from django.db import connections, OperationalError
+        monkeypatch.setattr(connections['import_safety_test'], 'commit',
+                            Mock(side_effect=OperationalError('commit failed')))
+
+
+def assert_handle_cleared(cmd, tmp_path):
+    for name in ('_staged_snapshot', '_snapshot_path', '_previous_path',
+                 '_reconcile_map_relations', '_item_ids_by_name', '_available_skill_names'):
+        assert not hasattr(cmd, name)
+    assert cmd.base_path == str(tmp_path)
+    assert not list(tmp_path.glob('.import-prev-*'))
 
 
 @pytest.mark.parametrize('now', [[], {}, [{'Map': 2, 'Item': 3}]])
@@ -58,6 +94,7 @@ def test_missing_or_invalid_current_fails(importer, tmp_path, contents):
 
 @pytest.fixture
 def isolated_db(importer, monkeypatch):
+    from django.apps import apps
     from django.db import connections, transaction
     cmd, module = importer
     alias = 'import_safety_test'
@@ -65,15 +102,19 @@ def isolated_db(importer, monkeypatch):
         ENGINE='django.db.backends.sqlite3', NAME=':memory:', OPTIONS={})
     connection = connections[alias]
     with connection.schema_editor() as editor:
-        editor.create_model(module.Version)
+        # Related tables support real deletion collectors and FK checks, too.
+        for model in apps.get_models():
+            editor.create_model(model)
     real_atomic = transaction.atomic
     monkeypatch.setattr(module.transaction, 'atomic', lambda *args, **kwargs: real_atomic(*args, **dict(kwargs, using=kwargs.get('using', alias))))
     real_manager = module.Version.objects.db_manager(alias)
     monkeypatch.setattr(module.Version, 'objects', real_manager)
-    yield real_manager
-    connection.close()
-    del connections[alias]
-    del connections.databases[alias]
+    try:
+        yield real_manager
+    finally:
+        connection.close()
+        del connections[alias]
+        del connections.databases[alias]
 
 
 @pytest.mark.parametrize('failure', ['import', 'publish', 'commit', None])
@@ -90,38 +131,24 @@ def test_transaction_and_baseline(importer, isolated_db, tmp_path, monkeypatch, 
     # Arbitrary data.json isolates transaction/publication failure handling.
     monkeypatch.setattr(cmd, '_validate_staged_release',
                         lambda directory: cmd.importJSON(Path(directory) / 'version.json'))
-    if failure == 'publish':
-        real_replace = module.os.replace
-        def replace(source, destination):
-            if Path(source).name.startswith('.import-prev-') and not str(source).endswith('-backup'):
-                raise OSError('publication failed')
-            return real_replace(source, destination)
-        monkeypatch.setattr(module.os, 'replace', replace)
-    if failure == 'commit':
-        from django.db import connections, OperationalError
-        monkeypatch.setattr(connections['import_safety_test'], 'commit', Mock(side_effect=OperationalError('commit failed')))
+    fail_at(monkeypatch, module, failure)
     if failure:
         with pytest.raises(Exception, match='failed'):
             cmd.handle(update=1)
         assert list(isolated_db.all()) == []
-        assert json.loads((tmp_path / 'prev/version.json').read_text()) == {'version': 'old'}
+        assert read(tmp_path / 'prev/version.json') == {'version': 'old'}
     else:
         cmd.handle(update=1)
         assert set(isolated_db.values_list('version', flat=True)) == {'new', 'intermediate'}
-        assert json.loads((tmp_path / 'prev/version.json').read_text()) == {'version': 'new'}
-    assert cmd.base_path == str(tmp_path)
-    for name in ('_staged_snapshot', '_snapshot_path', '_previous_path',
-                 '_reconcile_map_relations', '_item_ids_by_name', '_available_skill_names'):
-        assert not hasattr(cmd, name)
-    assert not list(tmp_path.glob('.import-prev-*'))
+        assert read(tmp_path / 'prev/version.json') == {'version': 'new'}
+    assert_handle_cleared(cmd, tmp_path)
 
 
 def test_drop_update_and_delete_use_queryset(importer, monkeypatch):
     cmd, module = importer
     manager = Mock()
     monkeypatch.setattr(module.Item_Monster, 'objects', manager)
-    monkeypatch.setattr(module.Monsters, 'objects', Mock())
-    monkeypatch.setattr(module.Items, 'objects', Mock())
+    mock_managers(monkeypatch, module.Monsters, module.Items)
     row = {'Monster': 4, 'Item': 8, 'Chance': 2, 'Quantity_MIN': 1, 'Quantity_MAX': 1}
     cmd.importItemMonster({'removed': [row], 'added': [], 'changed': [row]}, 1)
     manager.filter.assert_called_once_with(monster__ids=4, item__ids=8)
@@ -136,8 +163,7 @@ def test_drop_update_and_delete_use_queryset(importer, monkeypatch):
 
 def test_npc_delete_uses_monster_field(importer, monkeypatch):
     cmd, module = importer
-    for model in [module.Maps, module.Monsters, module.Map_NPC]:
-        monkeypatch.setattr(model, 'objects', Mock())
+    mock_managers(monkeypatch, module.Maps, module.Monsters, module.Map_NPC)
     cmd.importMapNPC({'removed': [{'Map': 1, 'NPC': 2}], 'added': [], 'changed': []}, 1)
     module.Map_NPC.objects.filter.assert_called_once_with(
         map=module.Maps.objects.get.return_value, monster=module.Monsters.objects.get.return_value)
@@ -156,85 +182,153 @@ def test_old_baseline_reconciles_previously_skipped_map_rows(importer, tmp_path)
 
 def test_missing_map_parent_blocks_success(importer, monkeypatch):
     cmd, module = importer
-    monkeypatch.setattr(module.Maps, 'objects', Mock())
+    mock_managers(monkeypatch, module.Maps)
     module.Maps.objects.get.side_effect = module.Maps.DoesNotExist
     with pytest.raises(module.CommandError, match='not found'):
         cmd.importMapItem({'removed': [], 'added': [{'Map': 1, 'Item': 2}], 'changed': []}, 1)
 
 
-def test_database_error_is_not_treated_as_missing_row(importer, monkeypatch):
-    from django.db import OperationalError
+@pytest.fixture
+def type_rows(importer, monkeypatch):
+    """Model rows emulate utf8mb4_general_ci for ASCII ARCANE/Arcane and
+    SEAL/Seal duplicates without server access.
+    """
     cmd, module = importer
-    monkeypatch.setattr(module.Items, 'objects', Mock())
-    monkeypatch.setattr(module.Item_Type, 'objects', Mock())
-    module.Item_Type.objects.all.return_value = []
-    module.Items.objects.get.side_effect = OperationalError('database down')
-    with pytest.raises(OperationalError, match='database down'):
-        cmd.importItem({'removed': [], 'added': [{'$ID': 1}], 'changed': []}, {}, 1)
-
-
-@pytest.mark.parametrize('equipment,existing', [
-    ('Weapon', False), ('Weapon', True), ('Material', True)])
-def test_equipment_type_preserves_general_row(importer, monkeypatch, equipment, existing):
-    cmd, module = importer
-    general = module.Item_Type(pk=1, name='Material', is_equipment=False)
-    rows = [general]
-    if existing and equipment != general.name:
-        rows.append(module.Item_Type(pk=2, name=equipment, is_equipment=False))
-    target = rows[-1] if existing else None
-    def get(name):
-        for row in rows:
-            if row.name == name:
-                return row
-        raise module.ObjectDoesNotExist
+    rows, selected, saved = [], [], []
+    def first(matches, field):
+        row = min(matches, key=lambda row: getattr(row, field)) if matches else None
+        selected.append(row)
+        return row
+    def filter(name):
+        matches = [row for row in rows if row.name.casefold() == name.casefold()]
+        return Mock(order_by=lambda field: Mock(first=lambda: first(matches, field)))
     def save(row):
-        if not any(row is saved for saved in rows):
-            row.pk = 3
+        saved.append(row)
+        if not any(row is old for old in rows):
+            row.pk = max((old.pk for old in rows), default=0) + 1
             rows.append(row)
-    monkeypatch.setattr(module.Item_Type, 'objects', Mock(get=Mock(side_effect=get)))
+    manager = Mock(filter=filter)
+    manager.all.return_value = rows
+    manager.get.side_effect = AssertionError('unexpected get()')
+    monkeypatch.setattr(module.Item_Type, 'objects', manager)
     monkeypatch.setattr(module.Item_Type, 'save', save)
-    for model in (module.Equipments, module.Equipment_Bonus):
-        monkeypatch.setattr(model, 'objects', Mock())
+    return cmd, module, rows, selected, saved
+
+
+def item_row():
+    return {'$ID': 1, '$ID_NAME': 'Shared', 'Name': 'Shared', 'TimeCoolDown': 0,
+            'Description': '', 'Weight': 0, 'Tradability': 'TTTT', 'Type': 'Material',
+            'Grade': 1, 'Icon': ''}
+
+
+def eq_row():
     data = dict.fromkeys(('AnvilATK AnvilDEF AnvilPrice Durability Level Potential '
         'RequiredClass SocketsLimit Stars Stat_ATTACK_MAGICAL Stat_ATTACK_PHYSICAL_MIN '
         'Stat_ATTACK_PHYSICAL_MAX Stat_DEFENSE_MAGICAL Stat_DEFENSE_PHYSICAL '
         'TranscendPrice TypeAttack Unidentified UnidentifiedRandom').split(), 0)
-    data.update(Type='Material', TypeEquipment=equipment, Bonus=[])
+    return dict(data, Type='Material', Bonus=[])
+
+
+@pytest.mark.parametrize('equipment,existing', [
+    ('Weapon', False), ('Weapon', True), ('Material', True),
+    ('SEAL', True), ('Seal', True)])
+def test_equipment_type_preserves_general_row(type_rows, monkeypatch, equipment, existing):
+    cmd, module, rows, selected, saved = type_rows
+    general = module.Item_Type(pk=1, name='Material', is_equipment=False)
+    rows.append(general)
+    if existing and equipment != general.name:
+        rows.extend([module.Item_Type(pk=9, name=equipment, is_equipment=False),
+                     module.Item_Type(pk=2, name='SEAL' if equipment == 'Seal' else equipment,
+                                      is_equipment=False)])
+    target = rows[-1] if existing else None
+    mock_managers(monkeypatch, module.Equipments, module.Equipment_Bonus)
+    data = dict(eq_row(), TypeEquipment=equipment)
     names = ['Material'] if equipment != 'Material' else []
-    cmd.makeEQ(Mock(), data, names)
+    before = [(row.pk, row.name, row.is_equipment) for row in rows]
+    for _ in range(2):
+        cmd.makeEQ(Mock(), data, names)
     assert rows[0] is general
     assert (general.pk, general.name, general.is_equipment) == (1, 'Material', equipment == 'Material')
-    saved = get(equipment)
-    assert saved.is_equipment is True
-    assert saved is target if existing else saved is not general
+    result = saved[0]
+    assert result.is_equipment is True
+    assert result is target if existing else result is not general
+    assert selected == [target]
+    assert saved == [result]
+    assert len(rows) == len(before) + (not existing)
+    for row, state in zip(rows, before):
+        assert (row.pk, row.name, row.is_equipment) == (
+            state[0], state[1], True if row is target else state[2])
+    if not existing:
+        assert result.name == equipment
     assert names.count(equipment) == 1
     module.Equipments.objects.get.return_value.save.assert_called_with()
 
 
-def test_recipe_without_declared_target_is_optional(importer, monkeypatch):
-    cmd, module = importer
-    for model in [module.Recipes, module.Item_Recipe_Material, module.Item_Recipe_Target, module.Items]:
-        monkeypatch.setattr(model, 'objects', Mock())
-    cmd.makeRecipe(Mock(), {'Link_Materials': [], 'Link_Target': None}, [])
-    module.Items.objects.get.assert_not_called()
+@pytest.mark.parametrize('kind', ['added', 'changed'])
+@pytest.mark.parametrize('names,query', [
+    (['ARCANE', 'ARCANE'], 'arcane'), (['ARCANE', 'Arcane'], 'arcane'),
+    (['SEAL', 'Seal'], 'Seal'), ([], 'New')])
+def test_general_types_preserve_duplicate_state(type_rows, monkeypatch, kind, names, query):
+    cmd, module, rows, selected, saved = type_rows
+    rows.extend(module.Item_Type(pk=pk, name=name, is_equipment=pk == 2)
+                for pk, name in zip((9, 2), names))
+    before = [(row, vars(row).copy()) for row in rows]
+    mock_managers(monkeypatch, module.Items)
+    changes = {'added': [], 'changed': [], 'removed': []}
+    changes[kind] = [dict(item_row(), Type=query)] * 2
+    cmd.importItem(changes, dict.fromkeys(('EQUIPMENT', 'CARD', 'RECIPES', 'COLLECTION'), []), 1)
+    for row, state in before:
+        assert any(row is current for current in rows)
+        assert vars(row) == state
+    if names:
+        assert len(rows) == 2
+        assert saved == []
+        assert selected == ([] if query in names else [rows[1]])
+    else:
+        assert len(rows) == 1
+        assert rows[0].name == query and not rows[0].is_equipment
+        assert selected == [None] and saved == rows
 
 
-def test_declared_recipe_target_must_exist(importer, monkeypatch):
+@pytest.mark.parametrize('kind', ['item', 'added', 'changed', 'equipment'])
+def test_type_database_errors_propagate(type_rows, monkeypatch, kind):
+    from django.db import OperationalError
+    cmd, module, rows, _, saved = type_rows
+    error = OperationalError('database down')
+    module.Item_Type.objects.filter = Mock(side_effect=error)
+    mock_managers(monkeypatch, module.Items, module.Equipments)
+    if kind == 'item':
+        module.Items.objects.get.side_effect = error
+    with pytest.raises(OperationalError, match='database down'):
+        if kind == 'equipment':
+            cmd.makeEQ(Mock(), dict(eq_row(), TypeEquipment='Seal'), [])
+        else:
+            changes = {'added': [], 'changed': [], 'removed': []}
+            changes['added' if kind == 'item' else kind] = [item_row()]
+            cmd.importItem(changes, {}, 1)
+    assert rows == saved == []
+
+
+@pytest.mark.parametrize('target', [None, 'missing'])
+def test_declared_recipe_target_must_exist(importer, monkeypatch, target):
     cmd, module = importer
-    for model in [module.Recipes, module.Item_Recipe_Material, module.Item_Recipe_Target, module.Items]:
-        monkeypatch.setattr(model, 'objects', Mock())
+    mock_managers(monkeypatch, module.Recipes, module.Item_Recipe_Material, module.Item_Recipe_Target, module.Items)
     module.Recipes.objects.get.return_value = module.Recipes(pk=1)
     module.Items.objects.get.side_effect = module.Items.DoesNotExist
-    with pytest.raises(module.CommandError, match='target'):
-        cmd.makeRecipe(Mock(), {'Name': 'recipe', '$ID_NAME': 'R', 'Link_Materials': [], 'Link_Target': 'missing'}, [])
+    row = {'Name': 'recipe', '$ID_NAME': 'R', 'Link_Materials': [], 'Link_Target': target}
+    if target is None:
+        cmd.makeRecipe(Mock(), row, [])
+        module.Items.objects.get.assert_not_called()
+    else:
+        with pytest.raises(module.CommandError, match='target'):
+            cmd.makeRecipe(Mock(), row, [])
 
 
 @pytest.mark.parametrize('failure', [False, True])
 def test_retired_attribute_skills_optional_but_database_errors_propagate(importer, monkeypatch, failure):
     from django.db import OperationalError
     cmd, module = importer
-    for model in [module.Attributes, module.Skills]:
-        monkeypatch.setattr(model, 'objects', Mock())
+    mock_managers(monkeypatch, module.Attributes, module.Skills)
     handler = module.Attributes.objects.get.return_value
     handler.skill.all.return_value = []
     handler.job.all.return_value = []
@@ -406,16 +500,7 @@ def test_real_snapshot_handle_clears_state_and_retry_reads_new_input(importer, i
     if failure == 'validation':
         (tmp_path / 'auxiliary.json').write_text('{broken')
     with monkeypatch.context() as faults:
-        if failure == 'publish':
-            real_replace = module.os.replace
-            def replace(source, destination):
-                if Path(source).name.startswith('.import-prev-') and not str(source).endswith('-backup'):
-                    raise OSError('publication failed')
-                return real_replace(source, destination)
-            faults.setattr(module.os, 'replace', replace)
-        if failure == 'commit':
-            from django.db import connections, OperationalError
-            faults.setattr(connections['import_safety_test'], 'commit', Mock(side_effect=OperationalError('commit failed')))
+        fail_at(faults, module, failure)
         if failure:
             with pytest.raises(Exception):
                 cmd.handle(update=1)
@@ -423,18 +508,13 @@ def test_real_snapshot_handle_clears_state_and_retry_reads_new_input(importer, i
             assert {p.name: p.read_bytes() for p in (tmp_path / 'prev').iterdir()} == original_prev
         else:
             cmd.handle(update=1)
-    for name in ('_staged_snapshot', '_snapshot_path', '_previous_path',
-                 '_reconcile_map_relations', '_item_ids_by_name', '_available_skill_names'):
-        assert not hasattr(cmd, name)
-    assert cmd.base_path == str(tmp_path)
-    assert not list(tmp_path.glob('.import-prev-*'))
+    assert_handle_cleared(cmd, tmp_path)
     failure = None
     empty_release(tmp_path, 'retry-v2')
     cmd.handle(update=1)
     assert imported[-1] == 'retry-v2'
-    assert json.loads((tmp_path / 'prev/version.json').read_text())['version'] == 'retry-v2'
-    assert not any(hasattr(cmd, name) for name in (
-        '_staged_snapshot', '_snapshot_path', '_previous_path', '_available_skill_names', '_item_ids_by_name'))
+    assert read(tmp_path / 'prev/version.json')['version'] == 'retry-v2'
+    assert_handle_cleared(cmd, tmp_path)
 
 
 def skill_row(identifier=10, job=1):
@@ -446,33 +526,20 @@ def skill_row(identifier=10, job=1):
 
 
 @pytest.fixture
-def skill_db(importer, monkeypatch):
-    from django.apps import apps
+def skill_db(importer, isolated_db, monkeypatch):
     from django.db import connections
-    cmd, module = importer
-    alias = 'import_safety_skills'
-    connections.databases[alias] = dict(connections.databases['default'],
-        ENGINE='django.db.backends.sqlite3', NAME=':memory:', OPTIONS={})
-    connection = connections[alias]
-    try:
-        # Include related tables so real deletion collectors and FK checks work.
-        with connection.schema_editor() as editor:
-            for model in apps.get_models():
-                editor.create_model(model)
-        for model in (module.Skills, module.Jobs):
-            monkeypatch.setattr(model, 'objects', model.objects.db_manager(alias))
-        original_save = module.Skills.save
-        def save(instance, *args, **kwargs):
-            kwargs['using'] = alias
-            return original_save(instance, *args, **kwargs)
-        monkeypatch.setattr(module.Skills, 'save', save)
-        module.Jobs.objects.create(ids='1', id_name='Job1', name='Job', is_starter=True,
-                                   job_tree='Warrior', icon='', descriptions='')
-        yield connection
-    finally:
-        connection.close()
-        del connections[alias]
-        del connections.databases[alias]
+    _, module = importer
+    alias = isolated_db.db
+    for model in (module.Skills, module.Jobs):
+        monkeypatch.setattr(model, 'objects', model.objects.db_manager(alias))
+    original_save = module.Skills.save
+    def save(instance, *args, **kwargs):
+        kwargs['using'] = alias
+        return original_save(instance, *args, **kwargs)
+    monkeypatch.setattr(module.Skills, 'save', save)
+    module.Jobs.objects.create(ids='1', id_name='Job1', name='Job', is_starter=True,
+                               job_tree='Warrior', icon='', descriptions='')
+    yield connections[alias]
 
 
 def test_skill_prefetch_real_orm_saves_timestamps_and_deletion(importer, skill_db):
@@ -516,7 +583,7 @@ def test_active_snapshot_survives_mutating_skill_consumer(importer, skill_db, tm
     cmd.importSkills(consumer, 1)
     assert consumer['10']['CaptionRatio'] == [1, 2]
     assert cmd.importJSON(tmp_path / 'skills.json') == data['skills']
-    assert json.loads((tmp_path / 'skills.json').read_text()) == data['skills']
+    assert read(tmp_path / 'skills.json') == data['skills']
 
 
 @pytest.mark.parametrize('target', ['skill', 'job'])
@@ -544,9 +611,9 @@ def test_ambiguous_ids_raise_at_original_consumer(importer, monkeypatch, target,
 def test_missing_job_and_prefetch_database_errors_propagate(importer, monkeypatch):
     from django.db import OperationalError
     cmd, module = importer
-    for model in (module.Skills, module.Jobs):
-        monkeypatch.setattr(model, 'objects', Mock())
-        model.objects.filter.return_value = []
+    mock_managers(monkeypatch, module.Skills, module.Jobs)
+    module.Skills.objects.filter.return_value = []
+    module.Jobs.objects.filter.return_value = []
     module.Jobs.objects.get.side_effect = module.Jobs.DoesNotExist
     with pytest.raises(module.Jobs.DoesNotExist):
         cmd.importSkills({'10': skill_row()}, 1)
@@ -559,8 +626,7 @@ def test_missing_job_and_prefetch_database_errors_propagate(importer, monkeypatc
 def test_update_zero_retains_original_skip_and_deletion_behavior(importer, monkeypatch):
     cmd, module = importer
     existing = Mock(ids='10')
-    monkeypatch.setattr(module.Skills, 'objects', Mock())
-    monkeypatch.setattr(module.Jobs, 'objects', Mock())
+    mock_managers(monkeypatch, module.Skills, module.Jobs)
     module.Skills.objects.filter.return_value = [existing]
     module.Jobs.objects.filter.return_value = []
     all_rows = [('10',)]
@@ -579,15 +645,12 @@ def test_update_zero_retains_original_skip_and_deletion_behavior(importer, monke
 @pytest.mark.parametrize('kind', ['added', 'changed'])
 def test_classification_indexes_preserve_lists_priority_and_missing_group_errors(importer, monkeypatch, kind):
     cmd, module = importer
-    monkeypatch.setattr(module.Items, 'objects', Mock())
-    monkeypatch.setattr(module.Item_Type, 'objects', Mock())
-    module.Item_Type.objects.all.return_value = ['Material']
+    mock_managers(monkeypatch, module.Items, module.Item_Type)
+    module.Item_Type.objects.all.return_value = [module.Item_Type(name='Material')]
     groups = {'EQUIPMENT': ['Shared'], 'CARD': ['Shared'], 'RECIPES': [], 'COLLECTION': []}
     before = deepcopy(groups)
     lists = list(groups.values())
-    row = {'$ID': 1, '$ID_NAME': 'Shared', 'Name': 'Shared', 'TimeCoolDown': 0,
-           'Description': '', 'Weight': 0, 'Tradability': 'TTTT', 'Type': 'Material',
-           'Grade': 1, 'Icon': ''}
+    row = item_row()
     changes = {'added': [], 'changed': [], 'removed': []}
     changes[kind] = [row]
     for method in ('makeEQ', 'makeCard', 'makeRecipe', 'makeCollection'):
