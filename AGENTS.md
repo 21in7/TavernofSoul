@@ -3,6 +3,23 @@
 현재 자동 검증은 [ADR0031](docs/adr/0031-change-scoped-automatic-validation.md)이 우선한다.
 실제 diff로 검사하고 master push·PR·수동 CI, 핵심 회귀·수동 targets와 기존 권한 경계를 유지한다.
 
+현재 제품 연구 scope는 [ADR0035](docs/adr/0035-product-scope-cross-boundary-review.md)의
+37개 개별 경로와 순서를 따른다. B′의 `shared_files`는 `docs/data-contracts.md` 하나이며,
+C의 `coordinator_cross_boundary_files`는 `TavernofSoul/ipfparser/contracts.py`,
+`TavernofSoul/ipfparser/management/commands/importAll.py`, `parser_tidy/DB.py`다.
+coordinator는 이 세 프로그램과 공통 계약 문서만 읽고 다운로드→파싱→계약→적재의 입력·출력
+계약 문제만 후보로 삼는다. 다른 역할은 자기 owner 파일과 공통 문서의 읽기 범위를 유지한다.
+읽기 권한과 실행 소유권은 별개로 `workflow.owner()`를 유지한다. DB.py는 parser,
+contracts.py/importAll.py는 django, 공통 문서는 coordinator가 편집한다.
+최종 Claude reviewer는 후보 유무와 무관하게 교차 프로그램 본문 window를 최소 하나 실제
+Read하고 assessment해야 한다. 빈 후보에서 coordinator 자체 프로그램 표본만 교체하며
+downloader/parser/django 표본·문서 Read, 96줄·MAX_WINDOWS 32·MAX_SOURCE 32768B 합산을 유지한다.
+제거한 하네스 경로는 새 후보의 근거/편집 대상이 아니며 runtime scope는 개발 모델의 읽기 승인이 아니다.
+scope/config 전환은 다음 정상 tick의 control 비교에서 진행을 무효화하고 호출 중 변경은 호출 후
+검증에서 거절한다. 기존 eligible/승인은 재사용하지 않으며 전체-source freshness와 과거 frozen
+보고를 유지한다. 아래 과거 scope 수치·실패·관측은 당시 기록이다. 매 최종 Claude 검토에서
+`documentation={status,files,reason}`를 새로 판단하고 전환 검증·실제 운영 관측은 parent가 기록한다.
+
 재개된 Git 성공의 추가 보관은 [ADR0028](docs/adr/0028-resumed-run-result-archives.md)을 따른다.
 trusted parent의 `python -m harness.archive --run-id 원래_run --resume-failed-to-passed`만
 원래 검토·diff·검증과 완료 Git/cleanup 증거를 연결해 별도 고정 세대에 보관한다. 최초 실패는

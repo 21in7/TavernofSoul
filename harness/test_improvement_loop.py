@@ -461,6 +461,9 @@ def lab(tmp_path, monkeypatch):
     lab = Lab()
     lab.config = shipped('improvement-loop-config.json')
     lab.discovery = shipped('improvement-config.json')
+    lab.discovery['shared_files'] = ['AGENTS.md', 'docs/architecture.md', 'docs/harness-design.md',
+                                    'docs/improvements.md', 'docs/data-contracts.md']
+    lab.discovery.pop('coordinator_cross_boundary_files', None)
     lab.models = shipped('agent-models.json')
     lab.policy = shipped('workflow-config.json')
     lab.local_config = shipped('local-model-config.json.example')

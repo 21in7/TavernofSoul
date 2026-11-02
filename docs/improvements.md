@@ -1,5 +1,31 @@
 # 승인 대기 시간별 연구와 오전 개선 보고
 
+## 제품 scope 전환과 교차 경계 검토
+
+[ADR0035](adr/0035-product-scope-cross-boundary-review.md)는 PR-2의 현재 운영 설정을 정한다.
+제품37개는 scope 파일에 명시한 순서의 경로이며 B′의 shared는 `docs/data-contracts.md` 하나다.
+C의 교차 목록은 `TavernofSoul/ipfparser/contracts.py`,
+`TavernofSoul/ipfparser/management/commands/importAll.py`, `parser_tidy/DB.py`다.
+coordinator는 이 세 프로그램과 공통 계약 문서만 받고 다운로드→파싱→계약→적재의 입력·출력
+계약 문제만 제안한다. 읽기 예외는 실행 소유권을 바꾸지 않는다. DB.py는 parser,
+contracts.py/importAll.py는 django, 공통 문서는 coordinator이며 다른 역할의 읽기/후보 범위는 유지한다.
+후보 유무와 무관하게 최종 Claude reviewer의 교차 프로그램 본문 window 최소1개 실제 Read와
+assessment가 필수다. 빈 후보의 coordinator 자체 프로그램 표본만 대체하며 downloader/parser/django
+표본·문서 Read와 기존 pairing/bytes/ranges/Capture, 96줄·MAX_WINDOWS 32·MAX_SOURCE 32768B 합산을 유지한다.
+문서·헤더·자기 보고·local 초안은 본문 검토 증거가 아니며 표본 밖의 결함 부재는 보증하지 않는다.
+
+제거한 하네스 경로는 유효한 새 후보의 근거/편집 대상이 아니다. 과거 제안·실패·승인과 frozen
+오전 보고는 보존한다. scope/config 전환은 다음 정상 tick의 control 비교에서 진행을 무효화하고
+호출 중 변경은 기존 호출 후 검증에서 거절한다. 기존 eligible/승인은 새 구성에 재사용하지 않으며
+미확정 오전 선택은 현재 전체 dependency 일치 완료 회차만 사용한다. 제품 파일 하나의 변경도
+전체-source freshness에 영향을 주고 scope 밖 control fingerprint도 유지한다.
+9단계·호출 수·모델·인증·예산·스케줄·승인/실행 scope·서명·claim은 유지한다.
+parent는 새 전체 diff 검토·full check·scoped apply와 적용 전후 상태를 기록하고 PR 생성·CI3 실제
+success 확인 뒤 merge 전에 멈춘다. 다음 정상 tick 관측은 merge 이후 별도 단계이며 강제 tick·scan·
+모델 호출·오전 보고 재생성은 없다. 전환 후 새9단계/최종 reviewer 성공은 아직 관측하지 않았다.
+매 최종 Claude 검토는 `documentation={status,files,reason}`를 새로 판단한다.
+아래 PR-0/PR-1 이전 수치·실패·관측은 역사적 기록이며 이번 운영 성공의 증거가 아니다.
+
 ## 반복 role_json_invalid의 경계 수리
 
 [ADR0034](adr/0034-inspection-failure-recovery-and-health.md)에 parent 제공 실제 실패 시각/원인,
@@ -157,9 +183,9 @@ cloud provider/model/effort/compaction/auth는 그대로며 Sites 구현/배포�
 glob/재귀/Git enumeration/모델 범위 확대는 없다. 향후 runtime 읽기 목록은 현재 worker의
 승인 범위를 넓히지 않는다. discover --scope-file도 사용자 승인 개별 목록만 받으며 절대 host
 경로는 private provenance에만 둔다. specialist는 `workflow.owner(path)`의 승인 파일과
-shared_files 중 scope에도 있는 파일만 받고 reviewer는 별도 context에서 전체 승인 scope를 받는다.
-예를 들어 parser_tidy/tests/test_import_safety.py의 owner는 django다. shared 후보는
-AGENTS.md·docs/architecture.md·docs/harness-design.md·docs/improvements.md·docs/data-contracts.md다.
+scope 내 shared인 `docs/data-contracts.md`만 받으며 coordinator에만 위 교차3개 읽기 예외를 적용한다.
+reviewer는 별도 context에서 전체 승인 scope를 받는다.
+예를 들어 parser_tidy/tests/test_import_safety.py의 owner는 django다.
 missing은 근거로 쓸 수 없다. 필요한 scope 밖 경로는 승인 파일 finding에 귀속해
 needs_evidence/ineligible로 남기고 parent가 새 실행을 준비한다. repair는 권한을 넓히지 않는다.
 

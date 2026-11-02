@@ -5,11 +5,12 @@
   "specialist_roles": ["coordinator", "downloader", "parser", "django"],
   "reviewer_role": "reviewer",
   "shared_files": [
-    "AGENTS.md",
-    "docs/architecture.md",
-    "docs/harness-design.md",
-    "docs/improvements.md",
     "docs/data-contracts.md"
+  ],
+  "coordinator_cross_boundary_files": [
+    "TavernofSoul/ipfparser/contracts.py",
+    "TavernofSoul/ipfparser/management/commands/importAll.py",
+    "parser_tidy/DB.py"
   ],
   "limits": {
     "max_reported_proposals": 3,

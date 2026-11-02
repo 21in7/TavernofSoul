@@ -109,10 +109,24 @@ Ubuntu 20.04 ARM 호스트에서는 엔진만 지원 Ubuntu 컨테이너로 실�
 local(coordinator)→coordinator→local(downloader)→downloader→local(parser)→parser→
 local(django)→django→독립 Claude 검토의9단계를 한 slot에 한 단계씩 진행한다. 로컬 포함
 KST 하루 최대24회·tick당 모델 최대1회다. 기존 `discover/daily`는 legacy 호환 경로이며
-활성 예약은 새 tick 하나만 사용한다. 기존37개 읽기 승인은 확대하지 않는다.
+활성 예약은 새 tick 하나만 사용한다. 현재 제품37개 개별 경로와 순서는
+[ADR0035](adr/0035-product-scope-cross-boundary-review.md)와 scope 파일을 따른다.
 cloud specialist는 `workflow.owner()`별 개별 승인 파일과 명시된 공통 문서만 별도
-`write=False, scoped=True` 모델 사본에 제공한다. reviewer는 별도 사본에서 승인 scope 전체를
+`write=False, scoped=True` 모델 사본에 제공한다. B′의 공통 문서는 `docs/data-contracts.md` 하나다.
+C를 활성화한 coordinator는 `TavernofSoul/ipfparser/contracts.py`,
+`TavernofSoul/ipfparser/management/commands/importAll.py`, `parser_tidy/DB.py`와 공통 문서만
+받으며 다운로드→파싱→계약→적재의 입력·출력 계약 문제를 검토한다. 이 읽기 예외는 다른 역할로
+확장하지 않는다. 실제 편집 소유권은 `workflow.owner()` 그대로 DB.py는 parser,
+contracts.py/importAll.py는 django, 공통 문서는 coordinator다. reviewer는 별도 사본에서 승인 scope 전체를
 독립 검토한다. 다른 영역의 소스 대신 앞 역할의 정제된 후보 요약을 공유한다.
+최종 Claude reviewer는 후보 유무와 무관하게 교차 프로그램 본문 window를 최소 하나 실제 Read하고
+assessment한다. 빈 후보에서는 coordinator 자체 프로그램 표본만 대체하고 downloader/parser/django의
+표본과 문서 Read를 유지한다. 교차 window도 96줄·MAX_WINDOWS 32·MAX_SOURCE 32768B 합산과
+기존 pairing/bytes/ranges/Capture 검증 안에 든다. 표본 밖의 결함 부재를 보증하지 않는다.
+scope에서 제거한 하네스 파일은 새 후보의 근거/편집 대상에서 제외되며 과거 제안·실패·승인·frozen
+보고는 보존한다. 제품 하나의 변경도 전체 `source_fingerprints` 신선도에 영향을 주며 scope 밖
+control 설정 fingerprint도 계속 적용한다. 기존 eligible/승인은 새 구성에 재사용하지 않는다.
+아직 미확정인 오전 선택은 현재 전체 dependency가 일치하는 완료 회차만 사용한다.
 디렉터리 탐색이나 모델에 의한 scope 확대는 없으며 테스트·문서가 부족하면 추가 승인 필요로 남긴다.
 점검은 소스 쓰기·검사·Git·workflow·운영 importAll을 호출하지 않는다. 기록·lock·격리 임시
 context/runtime만 쓴다. discovery→artifact lock으로 예약을 직렬화하고 기존 source mutex로
