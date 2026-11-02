@@ -31,7 +31,7 @@ from Other.models import Achievements
 from ipfparser.contracts import (ContractError, RECIPE_ID_PREFIX, canonical_item_id,
                                  load_json, load_import_snapshot, GEM_SLOTS, inactive_recipe, number)
 class Command(BaseCommand):
-    
+
     base_path               = settings.JSON_ROOT
     maps_path               = 'maps.json'
     maps_by_name_path       = 'maps_by_name.json'
@@ -82,8 +82,8 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('-u', '--update', type=int, help='Indicate wether ignore any \
                             existing data or update them')
-        
-    
+
+
     def escaper(self,string):
         string = str(string)
         escaped = string.translate(str.maketrans({"-":  r"\-",
@@ -96,16 +96,16 @@ class Command(BaseCommand):
                                               "'" : r"\'",
                                               '"' : r'\"',
                                               ',' :r''
-                                              
+
                                               }))
         return escaped
-    
+
     def deleteMe(self, all_item, json_item, table, name):
         item_to_delete = []
         for item in all_item:
             if item[0] not in json_item:
                 item_to_delete.append(item[0])
-        
+
         for ids in item_to_delete:
             try:
                 logging.warn("deleting from {} where ids ={}".format(name, ids))
@@ -194,7 +194,7 @@ class Command(BaseCommand):
         logging.warning("Change at {} : {} added, {} deleted, {} modified row".format(
             path, len(changes['added']), len(changes['removed']), len(changes['changed'])))
         return changes
-        
+
 
 
     def handle(self, *args, **kwargs):
@@ -268,37 +268,37 @@ class Command(BaseCommand):
         )
         self.importItem(items,item_type, update)
         self.importReinforcement()
-        
+
         npc             = self.comparer(self.npc_path)
         monster         = self.comparer(self.monster_path)
         self.importMonster(monster, npc, update)
-        
+
         item_monster    = self.comparer(self.item_monster_path, ['Item','Monster'])
         self.importItemMonster(item_monster,update)
-        
+
         map = self.comparer(self.maps_path)
         self.importMap(map, update)
-        
+
         map = self.comparer(self.map_item_path, ['Map', 'Item'])
         self.importMapItem(map, update)
-        
+
         map = self.comparer(self.map_npc_path, ['Map', 'NPC'])
         self.importMapNPC(map, update)
-        
+
         map = self.comparer(self.map_item_spawn_path, ['Map', 'Item'] )
         self.importMapItemSpawn(map, update)
-        
+
         jobs           = self.comparer(self.jobs_path)
         self.importJobs(jobs, update)
-        
+
         skills         = self.importJSON(join(self.base_path,self.skills_path))
         self.importSkills(skills, update)
         # Gem skill FKs must be created after this release's skills exist.
         self.importGems(item_type)
-        
+
         attrib         = self.comparer(self.attributes_path)
         self.importAttrib(attrib, update)
-        
+
         skillmon = self.comparer('skill_mon.json')
         self.importSkillMon(skillmon, update)
         #to do copy all item to old dir
@@ -308,7 +308,7 @@ class Command(BaseCommand):
 
         achieve = self.comparer(self.achieve_path)
         self.importAchieve(achieve,update)
-        
+
     def importItem(self,items, item_type, update ):
         # Local membership indexes preserve the caller's ordered group lists.
         item_type = {group: set(names) for group, names in item_type.items()}
@@ -318,7 +318,7 @@ class Command(BaseCommand):
             except ObjectDoesNotExist:
                 logging.warning("failed to delete item {} ({})".format(i['Name'], i['$ID']))
         logging.debug("migrating items")
-        item_type_db = list(Item_Type.objects.all())  
+        item_type_db = list(Item_Type.objects.all())
         dolater = {'RECIPES': [],'COLLECTION': [], 'EQUIPMENT' : [], 'CARD' : []}
         if 'BOOKS' in item_type:
             dolater['BOOKS'] = []
@@ -329,14 +329,14 @@ class Command(BaseCommand):
                 upd = True
             except ObjectDoesNotExist:
                 handler = Items()
-            handler.ids             = i['$ID']
-            handler.id_name         = i['$ID_NAME']
-            handler.cooldown        = i['TimeCoolDown']
-            handler.descriptions    = i['Description']
-            handler.name            = i['Name']
-            handler.weight          = 0 if i['Weight'] == '' else i['Weight']
-            handler.tradability     = i['Tradability']
-            handler.type            = i['Type']
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.cooldown = i['TimeCoolDown']
+            handler.descriptions = i['Description']
+            handler.name = i['Name']
+            handler.weight = 0 if i['Weight'] == '' else i['Weight']
+            handler.tradability = i['Tradability']
+            handler.type = i['Type']
             if i['Type'] not in item_type_db:
                 try:
                     type_handler = Item_Type.objects.get(name = i['Type'])
@@ -345,8 +345,8 @@ class Command(BaseCommand):
                 type_handler.name = i['Type']
                 type_handler.save()
                 item_type_db.append(i['Type'])
-            handler.grade           = i['Grade']
-            handler.icon            = i['Icon']
+            handler.grade = i['Grade']
+            handler.icon = i['Icon']
             handler.package_contents = json.dumps(i['PackageContents'], ensure_ascii=False) if i.get('PackageContents') else None
             handler.save()
             if i['$ID_NAME'] in item_type['EQUIPMENT']:
@@ -362,10 +362,10 @@ class Command(BaseCommand):
             elif 'BOOKS' in item_type and i['$ID_NAME'] in item_type['BOOKS']:
                 dolater['BOOKS'].append([handler,i.copy(), upd])
                  #self.makeBook(handler,i,item_type_db, upd)
-        
+
         for i in dolater['RECIPES']:
             self.makeRecipe(i[0], i[1], item_type_db, i[2])
-        
+
         for i in dolater['COLLECTION']:
             self.makeCollection(i[0], i[1], item_type_db,i[2])
 
@@ -378,20 +378,20 @@ class Command(BaseCommand):
         if 'BOOKS' in dolater:
             for i in dolater['BOOKS']:
                 self.makeBook(i[0], i[1], item_type_db,i[2])
-        
+
         for i in items['changed']:
             try:
                 handler = Items.objects.get(ids = i['$ID'])
             except ObjectDoesNotExist:
                 handler = Items()
-            handler.ids             = i['$ID']
-            handler.id_name         = i['$ID_NAME']
-            handler.cooldown        = i['TimeCoolDown']
-            handler.descriptions    = i['Description']
-            handler.name            = i['Name']
-            handler.weight          = 0 if i['Weight'] == '' else i['Weight']
-            handler.tradability     = i['Tradability']
-            handler.type            = i['Type']
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.cooldown = i['TimeCoolDown']
+            handler.descriptions = i['Description']
+            handler.name = i['Name']
+            handler.weight = 0 if i['Weight'] == '' else i['Weight']
+            handler.tradability = i['Tradability']
+            handler.type = i['Type']
             if i['Type'] not in item_type_db:
                 try:
                     type_handler = Item_Type.objects.get(name = i['Type'])
@@ -400,10 +400,10 @@ class Command(BaseCommand):
                 type_handler.name = i['Type']
                 type_handler.save()
                 item_type_db.append(i['Type'])
-            handler.grade           = i['Grade']
+            handler.grade = i['Grade']
             if i['Grade']          == "":
                 handler.grade = 1
-            handler.icon            = i['Icon']
+            handler.icon = i['Icon']
             handler.package_contents = json.dumps(i['PackageContents'], ensure_ascii=False) if i.get('PackageContents') else None
             handler.save()
             if i['$ID_NAME'] in item_type['EQUIPMENT']:
@@ -416,10 +416,10 @@ class Command(BaseCommand):
                 self.makeCollection(handler,i,item_type_db, upd = True)
             elif 'BOOKS' in item_type and i['$ID_NAME'] in item_type['BOOKS']:
                 self.makeBook(handler,i,item_type_db, upd = True)
-                
-        
-           
-        
+
+
+
+
     def importGems(self, item_type):
         names = item_type.get('GEMS', [])
         Gems.objects.exclude(item__id_name__in=names).delete()
@@ -465,38 +465,38 @@ class Command(BaseCommand):
         except ObjectDoesNotExist:
             handler = Equipments()
             handler.item = item
-            
-        handler.anvil_atk       = i['AnvilATK'] 
-        handler.anvil_def       = i['AnvilDEF'] 
-        handler.anvil_price     = i['AnvilPrice'] 
-       
-        
-        handler.durability      = i['Durability']
-        handler.level           = i['Level']
+
+        handler.anvil_atk = i['AnvilATK']
+        handler.anvil_def = i['AnvilDEF']
+        handler.anvil_price = i['AnvilPrice']
+
+
+        handler.durability = i['Durability']
+        handler.level = i['Level']
         handler.reinforcement_level = i.get('GoddessReinforceLevel')
         handler.reinforcement_group = i.get('GoddessReinforceGroup')
-        handler.potential       = i['Potential']
-        handler.requiredClass   = i['RequiredClass']
-        handler.sockets_limit   = i['SocketsLimit']
-        handler.stars           = i['Stars']
-        handler.matk            = i['Stat_ATTACK_MAGICAL']            
-        handler.patk            = i['Stat_ATTACK_PHYSICAL_MIN']
-        handler.patk_max        = i['Stat_ATTACK_PHYSICAL_MAX']
-        handler.mdef            = i['Stat_DEFENSE_MAGICAL']
-        handler.pdef            = i['Stat_DEFENSE_PHYSICAL']
+        handler.potential = i['Potential']
+        handler.requiredClass = i['RequiredClass']
+        handler.sockets_limit = i['SocketsLimit']
+        handler.stars = i['Stars']
+        handler.matk = i['Stat_ATTACK_MAGICAL']
+        handler.patk = i['Stat_ATTACK_PHYSICAL_MIN']
+        handler.patk_max = i['Stat_ATTACK_PHYSICAL_MAX']
+        handler.mdef = i['Stat_DEFENSE_MAGICAL']
+        handler.pdef = i['Stat_DEFENSE_PHYSICAL']
         handler.transcend_price = i['TranscendPrice']
-        handler.type_attack     = i['TypeAttack']
-        handler.type_equipment  = i['TypeEquipment']
+        handler.type_attack = i['TypeAttack']
+        handler.type_equipment = i['TypeEquipment']
         if i['TypeEquipment'] not in item_type_db:
             try:
-                type_handler = Item_Type.objects.get(name = i['Type'])
+                type_handler = Item_Type.objects.get(name = i['TypeEquipment'])
             except ObjectDoesNotExist:
                 type_handler = Item_Type()
             type_handler.name = i['TypeEquipment']
             type_handler.is_equipment = True
             type_handler.save()
             item_type_db.append(i['TypeEquipment'])
-        handler.unidentified    = i['Unidentified']
+        handler.unidentified = i['Unidentified']
         handler.unidentifiedRandom = i['UnidentifiedRandom']
         Equipment_Bonus.objects.filter(equipment = handler).delete()
         handler.save()
@@ -505,13 +505,13 @@ class Command(BaseCommand):
                 bonus = Equipment_Bonus(equipment = handler)
                 bonus.bonus_stat = b[0]
                 #try:
-                #    bonus.bonus_val  = b[1].replace('{img green_up_arrow 16 16}', '▲')\
+                #    bonus.bonus_val = b[1].replace('{img green_up_arrow 16 16}', '▲')\
                 #                            .replace('{img green_down_arrow 16 16}', '▼')
                 #except ObjectDoesNotExist:
-                bonus.bonus_val  = b[1]
+                bonus.bonus_val = b[1]
                 bonus.save()
         handler.save()
-    
+
     def makeCard(self, item, i, item_type_db,upd = False):
         try:
             handler = Cards.objects.get(item = item)
@@ -519,17 +519,17 @@ class Command(BaseCommand):
             handler = Cards()
             handler.item = item
         handler.icon = i['IconTooltip']
-        
+
         handler.type_card = i['TypeCard']
         handler.save()
-    
+
     def makeRecipe(self, item, i, item_type_db,upd = False):
         if inactive_recipe(i):
             Recipes.objects.filter(item=item).delete()
             return
         if ('Link_Materials' not in i):
             raise CommandError("invalid recipe {}".format(i['Name']))
-        
+
         try:
             handler = Recipes.objects.get(item = item)
         except ObjectDoesNotExist:
@@ -537,16 +537,16 @@ class Command(BaseCommand):
             handler.item = item
             handler.save()
         Item_Recipe_Material.objects.filter(recipe = handler).delete()
-        
+
         for link in i['Link_Materials']:
             try:
                 mat             = Item_Recipe_Material(recipe = handler)
-                mat.material    = self._item_by_name(link['Item'])
-                mat.qty         = link['Quantity']
+                mat.material = self._item_by_name(link['Item'])
+                mat.qty = link['Quantity']
                 mat.save()
             except ObjectDoesNotExist:
                 raise CommandError("[RCP] {} ({}) material not found ({})".format(i['Name'], i['$ID_NAME'], link['Item']))
-        
+
         Item_Recipe_Target.objects.filter(recipe = handler).delete()
         # Some source recipes intentionally have no target (e.g. BlessedStone).
         if i.get('Link_Target') is None:
@@ -557,7 +557,7 @@ class Command(BaseCommand):
             target.save()
         except ObjectDoesNotExist:
             raise CommandError("[RCP] {} ({}) didnt have target".format(i['Name'], i['$ID_NAME']))
-    
+
     def makeCollection(self, item, i, item_type_db,upd = False):
         if ('Link_Items' not in i):
             raise CommandError("invalid collection {}".format(i['Name']))
@@ -571,18 +571,18 @@ class Command(BaseCommand):
         for link in i['Link_Items']:
             try:
                 mat             = Item_Collection_Material(collection = handler)
-                mat.material    = self._item_by_name(link)
+                mat.material = self._item_by_name(link)
                 mat.save()
             except ObjectDoesNotExist:
                 raise CommandError("[RCP] {} ({}) material not found ({})".format(i['Name'], i['$ID_NAME'], link))
-        
+
         Item_Collection_Bonus.objects.filter(collection = handler).delete()
         try:
             if (i['Bonus']):
                 for b in i['Bonus']:
                     bonus = Item_Collection_Bonus(collection = handler)
                     bonus.bonus_stat = b[0]
-                    bonus.bonus_val  = b[1]
+                    bonus.bonus_val = b[1]
                     bonus.save()
         except ObjectDoesNotExist:
             raise CommandError("[RCP] {} ({}) didnt have target".format(i['Name'], i['$ID_NAME']))
@@ -598,7 +598,7 @@ class Command(BaseCommand):
         else:
             handler.text = None
         handler.save()
-     
+
     def importMonster(self,monster, npc, update ):
         for i in monster['removed']:
             try:
@@ -610,42 +610,42 @@ class Command(BaseCommand):
                 handler                 = Monsters.objects.get(ids= i['$ID'])
             except ObjectDoesNotExist:
                 handler = Monsters()
-            handler.ids             = i['$ID']
-            handler.id_name         = i['$ID_NAME']            
-            handler.armor           = i['Armor']
-            handler.descriptions    = i['Description']
-            handler.element         = i['Element']
-            handler.exp             = i['EXP']
-            handler.exp_class       = i['EXPClass']
-            handler.icon            = i['Icon']
-            handler.level           = i['Level']
-            handler.name            = i['Name']
-            handler.race            = i['Race']
-            handler.rank            = i['Rank']
-            handler.size            = i['Size']
-            handler.accuracy        = i['Stat_Accuracy']
-            handler.matk_max        = i['Stat_ATTACK_MAGICAL_MAX']
-            handler.matk_min        = i['Stat_ATTACK_MAGICAL_MIN']
-            handler.patk_min        = i['Stat_ATTACK_PHYSICAL_MIN']
-            handler.patk_max        = i['Stat_ATTACK_PHYSICAL_MAX']
-            handler.blockpen        = i['Stat_BlockPenetration']
-            handler.block           = i['Stat_BlockRate']
-            handler.critdmg         = i['Stat_CriticalDamage']
-            handler.critdef         = i['Stat_CriticalDefense']
-            handler.critrate        = i['Stat_CriticalRate']
-            handler.mdef            = i['Stat_DEFENSE_MAGICAL']
-            handler.pdef            = i['Stat_DEFENSE_PHYSICAL']
-            handler.eva             = i['Stat_Evasion']
-            handler.hp              = i['Stat_HP']
-            handler.stat_dex        = i['Stat_DEX']
-            handler.stat_int        = i['Stat_INT']
-            handler.stat_spr        = i['Stat_SPR']
-            handler.stat_str        = i['Stat_STR']
-            handler.stat_con        = i['Stat_CON']
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.armor = i['Armor']
+            handler.descriptions = i['Description']
+            handler.element = i['Element']
+            handler.exp = i['EXP']
+            handler.exp_class = i['EXPClass']
+            handler.icon = i['Icon']
+            handler.level = i['Level']
+            handler.name = i['Name']
+            handler.race = i['Race']
+            handler.rank = i['Rank']
+            handler.size = i['Size']
+            handler.accuracy = i['Stat_Accuracy']
+            handler.matk_max = i['Stat_ATTACK_MAGICAL_MAX']
+            handler.matk_min = i['Stat_ATTACK_MAGICAL_MIN']
+            handler.patk_min = i['Stat_ATTACK_PHYSICAL_MIN']
+            handler.patk_max = i['Stat_ATTACK_PHYSICAL_MAX']
+            handler.blockpen = i['Stat_BlockPenetration']
+            handler.block = i['Stat_BlockRate']
+            handler.critdmg = i['Stat_CriticalDamage']
+            handler.critdef = i['Stat_CriticalDefense']
+            handler.critrate = i['Stat_CriticalRate']
+            handler.mdef = i['Stat_DEFENSE_MAGICAL']
+            handler.pdef = i['Stat_DEFENSE_PHYSICAL']
+            handler.eva = i['Stat_Evasion']
+            handler.hp = i['Stat_HP']
+            handler.stat_dex = i['Stat_DEX']
+            handler.stat_int = i['Stat_INT']
+            handler.stat_spr = i['Stat_SPR']
+            handler.stat_str = i['Stat_STR']
+            handler.stat_con = i['Stat_CON']
             handler.save()
-        
-       
-        
+
+
+
         for i in npc['removed']:
             try:
                 Monsters.objects.get(ids= i['$ID']).delete()
@@ -656,27 +656,27 @@ class Command(BaseCommand):
                 handler                 = Monsters.objects.get(ids= i['$ID'])
             except ObjectDoesNotExist:
                 handler = Monsters()
-            
-            handler.ids             = i['$ID']
-            handler.id_name         = i['$ID_NAME']            
-            handler.descriptions    = i['Description']
-            handler.icon            = i['Icon']
-            handler.name            = i['Name']
+
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.descriptions = i['Description']
+            handler.icon = i['Icon']
+            handler.name = i['Name']
             handler.save()
-        
+
         for i in npc['changed']:
             handler                 = Monsters.objects.get(ids= i['$ID'])
-            handler.ids             = i['$ID']
-            handler.id_name         = i['$ID_NAME']            
-            handler.descriptions    = i['Description']
-            handler.icon            = i['Icon']
-            handler.name            = i['Name']
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.descriptions = i['Description']
+            handler.icon = i['Icon']
+            handler.name = i['Name']
             handler.save()
-        
-        
-           
-        
-        
+
+
+
+
+
     def importItemMonster(self,item_monster, update ):
         for i in item_monster['removed']:
             try:
@@ -689,11 +689,11 @@ class Command(BaseCommand):
                 item=Items.objects.get(ids=i['Item']),
                 defaults={'chance': i['Chance'], 'qty_min': i['Quantity_MIN'],
                           'qty_max': i['Quantity_MAX']})
-        
-        
 
-    
-            
+
+
+
+
     def importMap (self,map, update ):
         for i in map['removed']:
             try:
@@ -705,23 +705,23 @@ class Command(BaseCommand):
                 handler = Maps.objects.get(ids= i['$ID'])
             except ObjectDoesNotExist:
                 handler = Maps()
-            handler.ids            = i['$ID']
-            handler.id_name        = i['$ID_NAME']            
-            handler.icon           = (i['$ID_NAME'] + ".png").lower()
-            handler.name           = i['Name']
-            handler.has_cm         = i['HasChallengeMode']
-            handler.has_warp       = i['HasWarp']
-            handler.level          = i['Level']
-            handler.max_elite      = i['Prop_EliteMonsterCapacity']
-            handler.max_hate       = i['Prop_MaxHateCount']
-            handler.star           = i['Stars']
-            handler.type           = i['Type']
-            handler.map_link       = i['Link_Maps']
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.icon = (i['$ID_NAME'] + ".png").lower()
+            handler.name = i['Name']
+            handler.has_cm = i['HasChallengeMode']
+            handler.has_warp = i['HasWarp']
+            handler.level = i['Level']
+            handler.max_elite = i['Prop_EliteMonsterCapacity']
+            handler.max_hate = i['Prop_MaxHateCount']
+            handler.star = i['Stars']
+            handler.type = i['Type']
+            handler.map_link = i['Link_Maps']
             handler.save()
-        
-        
 
-    
+
+
+
     def importMapItem (self,map, update ):
         for i in map['removed']:
             try:
@@ -732,7 +732,7 @@ class Command(BaseCommand):
                 continue
             Map_Item.objects.filter(map=m, item=it).delete()
         for i in map['added'] + map['changed']:
-           
+
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Items.objects.get(ids = i['Item'])
@@ -742,17 +742,17 @@ class Command(BaseCommand):
                 handler = Map_Item.objects.get(map= m, item = it)
             except ObjectDoesNotExist:
                 handler = Map_Item()
-            handler.chance          = i['Chance']
-            handler.item            = it
-            handler.map             = m
-            handler.qty_max         = i['Quantity_MAX']
-            handler.qty_min         = i['Quantity_MIN']
+            handler.chance = i['Chance']
+            handler.item = it
+            handler.map = m
+            handler.qty_max = i['Quantity_MAX']
+            handler.qty_min = i['Quantity_MIN']
             handler.save()
-        
-        
-            
-    
-    
+
+
+
+
+
     def importMapItemSpawn (self,map, update ):
         for i in map['removed']:
             try:
@@ -763,7 +763,7 @@ class Command(BaseCommand):
                 logging.warning("map {} or item {} not found".format(i['Map'], i['Item']))
                 continue
         for i in map['added'] +  map['changed']:
-          
+
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Items.objects.get(ids = i['Item'])
@@ -773,23 +773,23 @@ class Command(BaseCommand):
                 handler = Map_Item_Spawn.objects.get(map= m, item = it)
             except ObjectDoesNotExist:
                 handler = Map_Item_Spawn()
-            handler.population      = i['Population']
-            handler.item            = it
-            handler.map             = m
-            handler.time_respawn    = i['TimeRespawn']
+            handler.population = i['Population']
+            handler.item = it
+            handler.map = m
+            handler.time_respawn = i['TimeRespawn']
             pos = []
             for posit in i['Positions']:
                 for po in posit:
                     pos.append(po)
-            handler.positions        = pos
+            handler.positions = pos
             handler.save()
-         
-        
-        
 
-            
-    
-    
+
+
+
+
+
+
     def importMapNPC (self,map, update ):
         for i in map['removed']:
             try:
@@ -800,7 +800,7 @@ class Command(BaseCommand):
                 logging.warning("map {} or item {} not found".format(i['Map'], i['NPC']))
                 continue
         for i in map['added'] + map['changed']:
-            
+
             try:
                 m = Maps.objects.get(ids = i['Map'])
                 it = Monsters.objects.get(ids = i['NPC'])
@@ -810,23 +810,23 @@ class Command(BaseCommand):
                 handler = Map_NPC.objects.get(map= m, monster = it)
             except ObjectDoesNotExist:
                 handler = Map_NPC()
-            handler.population      = i['Population']
-            handler.monster         = it
-            handler.map             = m
+            handler.population = i['Population']
+            handler.monster = it
+            handler.map = m
             pos = []
             for posit in i['Positions']:
                 for po in posit:
                     pos.append(po)
-            handler.time_respawn    = i['TimeRespawn']
-            handler.positions        = pos
+            handler.time_respawn = i['TimeRespawn']
+            handler.positions = pos
             handler.save()
-            
-        
-        
 
-            
-            
-    
+
+
+
+
+
+
     def importJobs(self,jobs, update ):
         for i in jobs['removed']:
             try:
@@ -838,21 +838,21 @@ class Command(BaseCommand):
                 handler = Jobs.objects.get(ids= i['$ID'])
             except ObjectDoesNotExist:
                 handler = Jobs()
-            handler.ids             = i['$ID']
-            handler.id_name         = i['$ID_NAME']            
-            handler.name            = i['Name']
-            handler.is_starter      = i['IsStarter']
-            handler.job_tree        = i['JobTree']
-            handler.icon            = i['Icon']
-            handler.descriptions    = i['Description']
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.name = i['Name']
+            handler.is_starter = i['IsStarter']
+            handler.job_tree = i['JobTree']
+            handler.icon = i['Icon']
+            handler.descriptions = i['Description']
             handler.save()
-            
-        
-        
-            
-            
-        
-    
+
+
+
+
+
+
+
     @staticmethod
     def _prefetch_ids(model, ids):
         result = {}
@@ -888,44 +888,44 @@ class Command(BaseCommand):
                 flag_u = True
                 if update == 0:
                     logging.info("skipping ({}/{})  {}".format(count,count_all,i['Name']))
-                    
+
                 else:
                     logging.info("updating ({}/{})  {}".format(count,count_all,i['Name']))
             except ObjectDoesNotExist:
                 handler = Skills()
                 logging.info("inserting ({}/{})  {}".format(count,count_all,i['Name']))
-            
+
             if flag_u and update == 0:
                 count+=1
                 continue
             if i['Link_Job'] == None:
                 continue
             json_item.append(str(i['$ID']))
-            handler.ids             = i['$ID']
-            handler.id_name         = i['$ID_NAME']            
-            handler.name            = i['Name']
-            handler.icon            = i['Icon']
-            handler.descriptions    = i['Description']
+            handler.ids = i['$ID']
+            handler.id_name = i['$ID_NAME']
+            handler.name = i['Name']
+            handler.icon = i['Icon']
+            handler.descriptions = i['Description']
             if 'BasicCoolDown' in i:
-                handler.cooldown        = i['BasicCoolDown']
+                handler.cooldown = i['BasicCoolDown']
             else:
-                handler.cooldown        = 0
-            handler.sp              = i['BasicSP']
+                handler.cooldown = 0
+            handler.sp = i['BasicSP']
             if (i['RequiredStanceCompanion'].lower() == 'yes'):
-                handler.is_riding       = True
+                handler.is_riding = True
             else:
-                handler.is_riding       = False
-            handler.effect          = i['Effect']
-            handler.element         = i['Element']
-            handler.max_lv          = i['MaxLevel']
-            handler.unlock          = i['UnlockClassLevel']
-            handler.overheat        = i['OverHeat']
+                handler.is_riding = False
+            handler.effect = i['Effect']
+            handler.element = i['Element']
+            handler.max_lv = i['MaxLevel']
+            handler.unlock = i['UnlockClassLevel']
+            handler.overheat = i['OverHeat']
             job_id = str(i['Link_Job'])
             if jobs.get(job_id) is None:
                 jobs[job_id] = Jobs.objects.get(ids=i['Link_Job'])
-            handler.job             = jobs[job_id]
+            handler.job = jobs[job_id]
             if 'sfr' in i:
-                handler.sfr             = i['sfr']
+                handler.sfr = i['sfr']
             # CaptionRatio 단위 변환은 parser(skills.py)가 단일 소유한다.
             # 이전에는 importer 양쪽에서 0<v<1 을 100배해 이중 확대 위험이 있었다.
             # importer 늀 parser 출력을 int 로만 저장한다.
