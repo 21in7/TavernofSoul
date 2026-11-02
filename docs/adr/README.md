@@ -39,6 +39,7 @@
 | [0032](0032-parallel-local-regressions.md) | 로컬 pytest 병렬·증거·정리 | 제안, 검토·측정·검증·전달 대기 | 2026-10-25 |
 | [0033](0033-workflow-token-efficiency.md) | 단일 역할 direct 배정·손실 없는 프롬프트 중복 제거·private CLI usage 관측 | 제안, 새 의미 검토·parent full check·측정·전달 대기 | 2026-10-25 |
 | [0034](0034-inspection-failure-recovery-and-health.md) | Z.ai discovery schema·native 요청 예산·잠금 해제 후 health와 실패/후속 성공 분리 | 제안, full6263 뒤 실제 구조화 실패/이전 timeout 보존·구조1/transport0 호환 수리 새 검토/검증 대기 | 2026-10-26 |
+| [0035](0035-product-scope-cross-boundary-review.md) | 제품37개/B′ 공통 계약1개·C 교차3개 활성화와 읽기/실행 소유권 분리 | 사용자 실행 승인, 새 의미 검토·parent full check/apply·PR/CI3 대기, 정상 tick 미관측 | 2026-11-02 |
 
 ## 상태와 근거의 의미
 

@@ -585,7 +585,7 @@ def test_default_project_scope_fits_configured_source_limits(offline_source_limi
     scope, _ = imp._read_file(imp.ROOT / config['scope_file'], 65536)
     paths = contract.validate_scope_paths(scope.decode('utf-8').splitlines(),
                                           config['limits']['max_scope_files'])
-    assert len(paths) == 35
+    assert len(paths) == 37
     # The source mutex belongs to the full validation copy being read, while
     # artifact/context storage is disposable and never resolves host config.
     selected = source_limit_storage(imp.ROOT, tmp_path)
@@ -601,12 +601,12 @@ def test_default_project_scope_fits_configured_source_limits(offline_source_limi
                                       'sha256': hashlib.sha256(content).hexdigest()}
     assert sum(item['size'] for item in fingerprints.values()) <= config['limits']['max_source_bytes']
     sources = {p: item['content'].decode('utf-8') for p, item in snapshots.items()}
-    validated = contract.validate_candidate(candidate('AGENTS.md'), sources, paths)
+    validated = contract.validate_candidate(candidate('docs/data-contracts.md'), sources, paths)
     # Proposal construction revalidates stored source fingerprints as well.
     assert contract.proposal_record(validated, fingerprints)['source_fingerprints'] == fingerprints
     records = []
     for index in range(len(contract.SPECIALIST_ROLES) * config['limits']['max_candidates_per_specialist']):
-        item = contract.validate_candidate(candidate('AGENTS.md', title='점검 제안 ' + str(index)), sources)
+        item = contract.validate_candidate(candidate('docs/data-contracts.md', title='점검 제안 ' + str(index)), sources)
         records.append(contract.proposal_record(item, fingerprints))
     # Check the full reviewer context with all eight candidate slots using a
     # Python envelope only. The real snapshot is never offered to a model.
@@ -715,7 +715,12 @@ def source_limit_storage(root, tmp_path):
 @pytest.mark.parametrize('overflow', [0, 1])
 def test_context_byte_ceiling_includes_sources_and_prompt_without_models(
         offline_source_limits, tmp_path, monkeypatch, overflow):
-    config = offline_source_limits
+    from copy import deepcopy
+
+    config = deepcopy(offline_source_limits)
+    config['shared_files'] = ['AGENTS.md', 'docs/architecture.md', 'docs/harness-design.md',
+                              'docs/improvements.md', 'docs/data-contracts.md']
+    config.pop('coordinator_cross_boundary_files', None)
     limits = config['limits']
     root = tmp_path / 'sources'
     root.mkdir()

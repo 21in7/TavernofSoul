@@ -94,6 +94,9 @@ def lab(tmp_path, monkeypatch):
                 'TAVERN_IMPROVEMENT_UNATTENDED', storage.CONFIG_ENV, storage.REPORT_ENV):
         monkeypatch.delenv(key, raising=False)
     config = copy.deepcopy(imp.load_config())
+    config['shared_files'] = ['AGENTS.md', 'docs/architecture.md', 'docs/harness-design.md',
+                              'docs/improvements.md', 'docs/data-contracts.md']
+    config.pop('coordinator_cross_boundary_files', None)
     models = copy.deepcopy(agent_models.load_config())
     root = tmp_path / 'sources'
     root.mkdir(mode=0o700)
