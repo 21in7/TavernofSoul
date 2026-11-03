@@ -1,6 +1,7 @@
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 from html.parser import HTMLParser
+from django.utils.html import escape
 
 from django.http import HttpResponse
 from django.template.loader import render_to_string
@@ -26,6 +27,26 @@ class DetailDocument(HTMLParser):
 
     def handle_data(self, text):
         self.text.append(text)
+
+
+class TypeOptions(HTMLParser):
+    """Read only the type select, decoding escaped attribute values as a browser does."""
+    def __init__(self, html):
+        super().__init__()
+        self.options = []
+        self.in_types = False
+        self.feed(html)
+
+    def handle_starttag(self, tag, attributes):
+        attrs = dict(attributes)
+        if tag == 'select':
+            self.in_types = attrs.get('id') == 'item-type'
+        elif tag == 'option' and self.in_types:
+            self.options.append(attrs)
+
+    def handle_endtag(self, tag):
+        if tag == 'select':
+            self.in_types = False
 
 
 class ItemDetailDocumentTests(TestCase):
@@ -156,7 +177,7 @@ class SearchQueryTests(TestCase):
             self.assertIn('x-item-search',
                           [token.strip().lower() for token in response['Vary'].split(',')])
             for key, value in (('query', 'Matching'), ('order', 'ids-asc'),
-                               ('grade', '4'), ('type', str(material.pk))):
+                               ('grade', '4'), ('type', 'Material')):
                 self.assertEqual(response.context[key], value)
             self.assertEqual(response.context['curpage'], 2)
             self.assertEqual(response.context['item_len'], 25)
@@ -218,7 +239,9 @@ class SearchQueryTests(TestCase):
             self.assertEqual(parsed.path, '/items/')
             values = parse_qs(parsed.query, keep_blank_values=True)
             for key, value in params.items():
-                self.assertEqual(values[key], [str(page['page']) if key == 'page' else value])
+                expected = str(page['page']) if key == 'page' else (
+                    'Material' if key == 'type' else value)
+                self.assertEqual(values[key], [expected])
             self.assertNotIn('fragment', values)
         self.assertEqual(data['item_len'], 25)
         self.assertEqual(data['previous'], data['pageStart'])
@@ -236,6 +259,9 @@ class SearchQueryTests(TestCase):
                   'lvmin': '550', 'lvmax': '560', 'order': 'eq-level-dsc'}
         for headers in ({}, {'HTTP_X_ITEM_SEARCH': 'results-v1'}):
             response = self.client.get('/items/', params, **headers)
+            self.assertEqual(response.context['type'], 'Sword')
+            self.assertEqual(parse_qs(urlsplit(response.context['search_url']).query)['type'],
+                             ['Sword'])
             self.assertEqual(response.context['item_len'], 1)
             self.assertEqual([row.ids for row in response.context['item']], ['sword'])
             self.assertContains(response, 'href="/items/sword">Filtered sword</a>')
@@ -284,3 +310,187 @@ class SearchQueryTests(TestCase):
         self.assertContains(response, 'href="/items/000">Matching item</a>')
         self.assertContains(response, 'for="item-query"')
         self.assertContains(response, '<legend>Search filters</legend>')
+
+
+class SearchTypeNameTests(TestCase):
+    special_name = 'A&<"한+/?#'
+
+    @classmethod
+    def setUpTestData(cls):
+        # Insert out of PK and alphabetical order to require stable first-PK order.
+        for pk, name, equipment in (
+                (30, 'MiXeD', True), (10, 'Zulu', False), (20, 'Alpha', False),
+                (40, 'MiXeD', False), (50, 'Alpha', False), (60, 'MiXeD', True),
+                (70, cls.special_name, False), (80, cls.special_name, True),
+                (90, 'Sword', True), (100, 'Sword', True)):
+            Item_Type.objects.create(pk=pk, name=name, is_equipment=equipment)
+        # Each branch of the mixed classification and their intersection occurs on
+        # every page. A row matching both branches must still appear only once.
+        for i in range(25):
+            cls.make_item('mixed-%02d' % i, 'MiXeD' if i % 3 != 1 else 'Weapon',
+                          'MiXeD' if i % 3 != 0 else None)
+        cls.make_item('alpha', 'Alpha')
+        cls.make_item('alpha-b', 'Alpha')
+        cls.make_item('alpha-equipment-only', 'Weapon', 'Alpha')
+        cls.make_item('sword-a', 'Weapon', 'Sword')
+        cls.make_item('sword-b', 'Weapon', 'Sword')
+        cls.make_item('sword-item-only', 'Sword')
+        cls.make_item('special-item', cls.special_name)
+        cls.make_item('special-equipment', 'Weapon', cls.special_name)
+
+    @classmethod
+    def make_item(cls, ident, item_type, equipment_type=None):
+        item = Items.objects.create(ids=ident, id_name=ident, name='Type fixture',
+                                    type=item_type, grade=4)
+        if equipment_type is not None:
+            Equipments.objects.create(
+                item=item, type_equipment=equipment_type, level=560,
+                requiredClass='...T.', unidentified=False,
+                unidentifiedRandom=False, transcend_price=[])
+        return item
+
+    def response(self, type_value, page=1, fragment=False):
+        headers = {'HTTP_X_ITEM_SEARCH': 'results-v1'} if fragment else {}
+        response = self.client.get('/items/', {
+            'q': 'Type fixture', 'type': type_value, 'page': str(page),
+            'grade': '4', 'order': 'ids-asc'}, **headers)
+        self.assertEqual(response.status_code, 200)
+        return response
+
+    def assert_canonical(self, response, name, fragment=False):
+        self.assertEqual(response.context['type'], name)
+        urls = [response.context['search_url']]
+        urls += [page['link'] for page in response.context['pages']]
+        urls += [response.context[key] for key in ('previous', 'next', 'pageStart', 'pageEnd')
+                 if response.context[key]]
+        for url in urls:
+            parsed = urlsplit(url)
+            self.assertEqual(parsed.path, '/items/')
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            self.assertEqual(values['type'], [name])
+            self.assertEqual(values['q'], ['Type fixture'])
+            self.assertEqual(values['grade'], ['4'])
+            self.assertEqual(values['order'], ['ids-asc'])
+        document = DetailDocument(response.content.decode())
+        regions = [attrs for _, attrs in document.elements
+                   if attrs.get('id') == 'item-search-results']
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0]['data-search-url'], response.context['search_url'])
+        page_links = [attrs['href'] for tag, attrs in document.elements
+                      if tag == 'a' and attrs.get('href', '').startswith('/items/?')]
+        for link in page_links:
+            self.assertEqual(parse_qs(urlsplit(link).query, keep_blank_values=True)['type'],
+                             [name])
+        if not fragment:
+            selected = [option['value'] for option in TypeOptions(response.content.decode()).options
+                        if 'selected' in option]
+            self.assertEqual(selected, [name] if name else [])
+
+    def test_options_deduplicate_each_flag_and_keep_first_pk_order(self):
+        response = self.client.get('/items/')
+        options = TypeOptions(response.content.decode()).options
+        self.assertEqual([option['value'] for option in options],
+                         ['', 'Zulu', 'Alpha', 'MiXeD', self.special_name, 'Sword'])
+        self.assertFalse(any('selected' in option for option in options))
+
+    def test_each_legacy_row_matches_name_across_all_pages_and_representations(self):
+        for page in (1, 2, 3):
+            document = self.response('MiXeD', page)
+            expected_ids = ['mixed-%02d' % i
+                            for i in range((page - 1) * 10, min(page * 10, 25))]
+            self.assertEqual(document.context['item_len'], 25)
+            self.assertEqual([row.ids for row in document.context['item']], expected_ids)
+            self.assertEqual(len(expected_ids), len(set(expected_ids)))
+            for value in ('MiXeD', '30_eq', '40', '60_eq'):
+                for fragment in (False, True):
+                    with self.subTest(page=page, type=value, fragment=fragment):
+                        response = self.response(value, page, fragment)
+                        self.assertEqual(response.context['item_len'], 25)
+                        self.assertEqual([row.ids for row in response.context['item']], expected_ids)
+                        self.assert_canonical(response, 'MiXeD', fragment)
+                        self.assertEqual(response['X-Item-Search'],
+                                         'results-v1' if fragment else 'document')
+                        self.assertIn('x-item-search', [token.strip().lower()
+                                      for token in response['Vary'].split(',')])
+                        self.assertEqual(response['Content-Type'].split(';')[0], 'text/html')
+                        if fragment:
+                            result_keys = ('searched', 'item_len', 'curpage', 'pageLen',
+                                           'item', 'search_url', 'pages', 'previous',
+                                           'next', 'pageStart', 'pageEnd')
+                            self.assertEqual(response.content.decode(), render_to_string(
+                                'Items/search_results.html',
+                                {key: document.context[key] for key in result_keys}))
+                            self.assertIn(response.content.decode(), document.content.decode())
+                            self.assertNotContains(response, '<form')
+                        else:
+                            self.assertEqual(response.content, document.content)
+
+    def test_same_flag_duplicates_keep_all_items_and_do_not_add_other_classification(self):
+        for name, legacy, expected in (
+                ('Alpha', ('20', '50'), ['alpha', 'alpha-b']),
+                ('Sword', ('90_eq', '100_eq'), ['sword-a', 'sword-b'])):
+            for value in (name,) + legacy:
+                with self.subTest(type=value):
+                    response = self.response(value)
+                    self.assertEqual(response.context['item_len'], len(expected))
+                    self.assertEqual([row.ids for row in response.context['item']], expected)
+                    self.assert_canonical(response, name)
+
+    def test_real_names_win_over_colliding_legacy_tokens(self):
+        for name in ('20', '30_eq'):
+            Item_Type.objects.create(name=name, is_equipment=False)
+            self.make_item('literal-' + name, name)
+            for fragment in (False, True):
+                with self.subTest(name=name, fragment=fragment):
+                    response = self.response(name, fragment=fragment)
+                    self.assertEqual(response.context['item_len'], 1)
+                    self.assertEqual([row.ids for row in response.context['item']],
+                                     ['literal-' + name])
+                    self.assert_canonical(response, name, fragment)
+
+    def test_invalid_type_is_ignored_and_removed_from_canonical_urls(self):
+        for value in ('missing', '999999999999999999999999', '999999999999999999_eq',
+                      '20_eq_eq', '20_extra', '-1', '1.5'):
+            for fragment in (False, True):
+                with self.subTest(type=value, fragment=fragment):
+                    response = self.response(value, fragment=fragment)
+                    baseline = self.response('', fragment=fragment)
+                    self.assertEqual(response.context['item_len'], baseline.context['item_len'])
+                    self.assertEqual([row.ids for row in response.context['item']],
+                                     [row.ids for row in baseline.context['item']])
+                    self.assert_canonical(response, '', fragment)
+                    self.assertEqual(response.content, baseline.content)
+
+    def test_special_name_is_escaped_and_urls_round_trip_the_original_string(self):
+        # More than two pages exercises previous/next and first/last links as well.
+        Items.objects.filter(ids__startswith='mixed-').update(type=self.special_name)
+        for value in (self.special_name, '70', '80_eq'):
+            for fragment in (False, True):
+                with self.subTest(type=value, fragment=fragment):
+                    response = self.response(value, page=2, fragment=fragment)
+                    self.assertEqual(response.context['item_len'], 27)
+                    self.assert_canonical(response, self.special_name, fragment)
+                    self.assertNotContains(response, self.special_name)
+                    self.assertContains(response, escape(self.special_name))
+                    url = response.context['search_url']
+                    self.assertIn('type=A%26%3C%22%ED%95%9C%2B%2F%3F%23', url)
+                    self.assertContains(response, 'data-search-url="%s"' % escape(url))
+                    if not fragment:
+                        self.assertContains(response, 'value="%s"' % escape(self.special_name),
+                                            count=1)
+
+    def test_duplicate_types_and_legacy_resolution_keep_three_queries_without_n_plus_one(self):
+        for value in ('MiXeD', '30_eq', '40', '60_eq'):
+            for fragment in (False, True):
+                with self.subTest(type=value, fragment=fragment):
+                    with CaptureQueriesContext(connection) as queries:
+                        response = self.response(value, page=2, fragment=fragment)
+                        rows = list(response.context['item'])
+                        equipment = [getattr(row, 'equipments', None) for row in rows]
+                    self.assertEqual(len(queries), 3)
+                    self.assertIn('LIMIT 10 OFFSET 10', queries[-1]['sql'])
+                    self.assertEqual(response.context['item_len'], 25)
+                    self.assertEqual([row.ids for row in rows],
+                                     ['mixed-%02d' % i for i in range(10, 20)])
+                    self.assertEqual([eq is not None for eq in equipment],
+                                     [i % 3 != 0 for i in range(10, 20)])

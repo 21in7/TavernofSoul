@@ -28,7 +28,7 @@
     <select class="form-control" id="item-type" name="type">
               <option value="">{{"Type" | translate}}</option>
               {% for i in types%}
-                <option value="{{i.id}}" {%if i.id == type%} selected {%endif%} >{{i.type| translate}}</option>
+                <option value="{{i.name}}" {%if i.name == type%} selected {%endif%} >{{i.type| translate}}</option>
               {%endfor%}
             </select></div>
     <div><label for="item-class">{{"Job"|translate}}</label>
