@@ -4,12 +4,12 @@
 
 모델은 index부터 필요한 페이지만 선택해 읽는다. 링크는 읽기 승인이 아니며 TASK·FILES_FILE의 경계를 따른다. 근거가 부족하면 필요한 경로와 이유를 보고한다.
 
-wiki는 `logs/harness/harness-runbook-core.json`의 공개 요약이다. 정본은 읽으러 가지 않는다. 새 실행 권한이나 정책 변경은 없으며 기존 문서는 보존한다.
+wiki는 `logs/harness/harness-runbook-core.json`의 공개 요약이다. 정본 확인도 해당 작업의 읽기 승인 범위를 따른다. 새 실행 권한이나 정책 변경은 없으며 기존 문서는 보존한다.
 
 ## Wiki 페이지 12개
 
 - [index](index.md): 모든 wiki와 주요 기존 문서의 안내 및 작업별 읽기 순서.
-- [작업 이력](log.md): 제공된 Git commit 날짜·제목 근거로 정리한 PR #86~#103과 append-only 기록 원칙.
+- [작업 이력](log.md): 확인된 Git commit 날짜·제목을 근거로 정리하는 append-only 이력과 기록 원칙.
 - [workflow 운영](ops/workflow.md): 승인, 입력 준비, 단일 실행, 검토와 검증의 책임 순서.
 - [GitHub 전달](ops/github-transport.md): fork 게시, 파일 기반 응답 framing, accept와 다음 요청 연결.
 - [merge와 정리](ops/merge-cleanup.md): 사용자 UI squash merge 이후 parent의 비교, 삭제, cleanup과 archive.
@@ -44,4 +44,4 @@ index에서 시작해 필요한 순서만 따른다.
 - 공개 보고·이력 확인: 공개 근거 교훈 → 작업 이력. PR 제목이 보장하는 범위와 사용자 제공 관측을 구분한다.
 - 구조·계약 변경 검토: architecture → data-contracts → harness-design → ADR 목록 중 승인된 필요한 문서만 읽는다. 개별 ADR 열람은 별도 범위 판단이 필요하다.
 
-탐색층 추가이므로 harness-design은 링크만 안내하며 읽거나 수정하지 않는다. 의미적 완전성은 매 검토에서 판단하고 링크 검사는 parent가 맡는다.
+설계 확인이 필요한 작업은 읽기 승인 범위 안에서 harness-design을 확인한다. 문서 영향과 의미적 완전성은 매 검토에서 판단하고 링크 검사는 parent가 맡는다.

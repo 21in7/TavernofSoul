@@ -25,6 +25,7 @@
 2026-11-02 | #101 | 연구 scope 여유 확보와 agent timeout 확대
 2026-11-02 | #102 | 선택 설정으로 교차 경계 reviewer coverage 지원
 2026-11-02 | #103 | 제품 37개 scope와 교차 경계 검토 활성화
+2026-11-03 | #104 | docs wiki 탐색·운영·교훈 문서층 추가
 ```
 
 실패·복구의 상세 교훈은 사용자 제공 관측으로 구분해 [설정과 크기](lessons/config-and-size.md), [GitHub 복구](lessons/github-recovery.md), [run 수명](lessons/run-lifecycle.md)에 둔다. commit 제목만으로 그 원인과 운영 결과를 독립 검증했다고 쓰지 않는다. 공개 정보 한계와 증거 수준은 [공개 근거](lessons/public-evidence.md)를 따른다.
