@@ -241,6 +241,20 @@ git submodule update --init --recursive -- IPFUnpacker
 make prepare-ipf-unpacker
 ```
 
+[IPFUnpacker #4](https://github.com/21in7/IPFUnpacker/pull/4)는 저장된 footer offset과
+EOF−24 사이의 추가 이름 목록을 허용한다. 비어 있지 않은 구간은 little-endian uint16
+archiveNameLength·filenameLength와 두 이름 바이트로 된 항목이 footer의 `unk`개이고,
+구간 끝에 정확히 도달해야 한다. 기존 데이터 테이블·16비트 개수 wrap 검증을 유지하며,
+추가 구간이 비어 있는 기존 형식은 `unk`와 무관하게 허용한다. 모든 검증은 callback 전에
+끝내고 목록을 파일 삭제·추출에 사용하지 않는다. 목록의 의미는 확정하지 않는다.
+
+운영 배포는 승인된 gitlink를 반영한 뒤 위의 `submodule update` →
+`make prepare-ipf-unpacker` 순서로 별도 수행한다. 현재 지역 cron은 KST 화요일
+12~19시의 매 정각과 :05(itos)·:20(jtos)·:35(ktos)에 실행된다. 빌드·복사본 확인은
+이 시각과 겹치지 않고 기존 downloader·parser·importAll이 종료된 구간에서만 진행한다.
+직전 submodule clean 상태와 바이너리 해시를 기록하고, 빌드 뒤 새 해시와 임시 409316
+복사본의 decrypt 1회 성공을 확인한다. 운영 원본은 보존하고 임시 사본은 삭제한다.
+
 `.PHONY`와 help에 등록하는 독립 타깃 `prepare-ipf-unpacker`의 내부 호출은 정확히 다음 하나다.
 
 ```make
