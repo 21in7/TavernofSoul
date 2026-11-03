@@ -1,5 +1,7 @@
 """Pure native candidate schema contracts; execution belongs to the parent."""
 import json
+from copy import deepcopy
+from hashlib import sha256
 
 import pytest
 
@@ -16,6 +18,94 @@ def prepared(root, config=None):
     snapshots = {'downloader/example.py': dict(exists=True, mode=0o644, content=b'one\ntwo\n'),
                  'AGENTS.md': dict(exists=False, mode=None, content=None)}
     return schema.prepare('downloader', root, list(snapshots), snapshots, config or configuration())
+
+
+def active_configuration():
+    return dict(version='improvement-config-v1', timezone='Asia/Seoul',
+        scope_file='harness/improvement-scope.txt',
+        specialist_roles=['coordinator', 'downloader', 'parser', 'django'],
+        reviewer_role='reviewer', shared_files=['docs/data-contracts.md'],
+        coordinator_cross_boundary_files=[
+            'TavernofSoul/ipfparser/contracts.py',
+            'TavernofSoul/ipfparser/management/commands/importAll.py',
+            'parser_tidy/DB.py'],
+        limits=dict(max_reported_proposals=3, max_candidates_per_specialist=2,
+            max_role_calls=5, call_timeout_seconds=600, max_retries=0,
+            max_scope_files=64, max_file_bytes=131072, max_source_bytes=1572864,
+            max_context_bytes=2097152, max_response_bytes=65536, max_evidence=6,
+            max_edit_files=12, max_validation_steps=6, approval_expiry_days=7,
+            delivery_timeout_seconds=20, max_delivery_bytes=262144))
+
+
+@pytest.mark.parametrize('serialized_cross_boundary', [False, True])
+def test_active_config_prepares_downloader_native_schema(
+        tmp_path, monkeypatch, serialized_cross_boundary):
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    config = active_configuration()
+    original = deepcopy(config)
+    snapshots = {'downloader/example.py': dict(
+        exists=True, mode=0o644, content=b'one\ntwo\n')}
+    request = schema.prepare('downloader', tmp_path, list(snapshots), snapshots, config)
+    data = json.loads(request._inputs)
+    assert 'coordinator_cross_boundary_files' not in data['config']
+    if serialized_cross_boundary:
+        # Revalidation must use the same policy even if serialized inputs
+        # include the contextual field; it grants no additional schema paths.
+        data['config']['coordinator_cross_boundary_files'] = list(
+            config['coordinator_cross_boundary_files'])
+        object.__setattr__(request, '_inputs', contract.canonical_json(data))
+    inputs = request._inputs
+    text = schema.validate_request(request, 'downloader', 'zai', tmp_path, scoped=True)
+    expected = contract.canonical_json(schema.candidate_schema(
+        list(snapshots), {'downloader/example.py': 'one\ntwo\n'}, config['limits']))
+    assert text.encode('utf-8') == request._schema == expected
+    assert schema.response_limit(request) == 65536
+    assert request._inputs == inputs
+    assert config == original
+    object.__setattr__(request, '_schema', b'{}')
+    with pytest.raises(ValueError, match='schema_invalid'):
+        schema.validate_request(request, 'downloader', 'zai', tmp_path, scoped=True)
+
+
+def test_absent_cross_boundary_preserves_legacy_bytes_and_digests(tmp_path, monkeypatch):
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    config = configuration()
+    original = deepcopy(config)
+    normalized = contract.validate_config(config)
+    paths = ['downloader/example.py', 'AGENTS.md']
+    sources = {'downloader/example.py': 'one\ntwo\n', 'AGENTS.md': None}
+    legacy_inputs = contract.canonical_json(dict(paths=paths, sources=sources, config=normalized))
+    legacy_schema = contract.canonical_json(schema.candidate_schema(paths, sources, normalized['limits']))
+    request = prepared(tmp_path, config)
+    assert request._inputs == legacy_inputs
+    assert request._schema == legacy_schema
+    assert sha256(request._inputs).digest() == sha256(legacy_inputs).digest()
+    assert sha256(request._schema).digest() == sha256(legacy_schema).digest()
+    assert schema.validate_request(
+        request, 'downloader', 'zai', tmp_path, scoped=True).encode('utf-8') == legacy_schema
+    assert schema.response_limit(request) == normalized['limits']['max_response_bytes']
+    assert config == original
+
+
+@pytest.mark.parametrize('change', ['scope', 'limits', 'invalid_limits'])
+def test_active_config_revalidation_rejects_tampered_inputs(tmp_path, monkeypatch, change):
+    monkeypatch.setenv('TAVERN_IMPROVEMENT_DISCOVERY', '1')
+    request = prepared(tmp_path, active_configuration())
+    data = json.loads(request._inputs)
+    if change == 'scope':
+        data['paths'].append('parser_tidy/DB.py')
+    elif change == 'limits':
+        data['config']['limits']['max_candidates_per_specialist'] = 1
+    else:
+        data['config']['limits']['max_response_bytes'] = contract.LIMIT_CEILINGS['max_response_bytes'] + 1
+    object.__setattr__(request, '_inputs', contract.canonical_json(data))
+    with pytest.raises(ValueError):
+        schema.validate_request(request, 'downloader', 'zai', tmp_path, scoped=True)
+    if change == 'invalid_limits':
+        with pytest.raises(ValueError):
+            schema.response_limit(request)
+        with pytest.raises(ValueError):
+            prepared(tmp_path, data['config'])
 
 
 def test_full_canonical_schema_is_bounded_by_prepared_sources(tmp_path, monkeypatch):
