@@ -71,15 +71,20 @@ SEARCH_ORDERS = {
 def index(request):
     from django.utils.cache import patch_vary_headers
 
-    types = list(Item_Type.objects.all())
-    type_map = {str(t.id) + ('_eq' if t.is_equipment else ''): t for t in types}
+    # Preserve first occurrence order while retaining every classification for a name.
+    type_flags = {}
+    legacy_types = {}
+    for t in Item_Type.objects.order_by('pk'):
+        type_flags.setdefault(t.name, set()).add(t.is_equipment)
+        legacy_types[str(t.pk) + ('_eq' if t.is_equipment else '')] = t.name
     params = request.GET.copy()
     grade = params.get('grade', '')
     grade = grade if grade in ('', '1', '2', '3', '4', '5', '6') else ''
     clas = params.get('class', '')
     clas = clas if clas in ('', '0', '1', '2', '3', '4') else ''
     type_key = params.get('type', '')
-    type_key = type_key if type_key in type_map else ''
+    # Real names take priority over legacy IDs, including names like "123_eq".
+    type_key = type_key if type_key in type_flags else legacy_types.get(type_key, '')
     order = params.get('order', 'updated-dsc')
     order = order if order in SEARCH_ORDERS else 'updated-dsc'
 
@@ -94,7 +99,7 @@ def index(request):
     min_lv, max_lv = level('lvmin'), level('lvmax')
     searched = 'q' in params
     data = {
-        'types': [{'type': t.name.lower(), 'id': key} for key, t in type_map.items()],
+        'types': [{'type': name.lower(), 'name': name} for name in type_flags],
         'query': params.get('q', ''), 'grade': grade, 'class': clas, 'type': type_key,
         'minLV': min_lv, 'maxLV': max_lv, 'order': order,
         'searched': searched, 'item': [], 'item_len': 0, 'curpage': 1, 'pageLen': 0,
@@ -110,8 +115,11 @@ def index(request):
         if max_lv:
             query &= Q(equipments__level__lte=int(max_lv))
         if type_key:
-            t = type_map[type_key]
-            query &= Q(**{'equipments__type_equipment' if t.is_equipment else 'type': t.name})
+            type_query = Q()
+            for is_equipment in type_flags[type_key]:
+                field = 'equipments__type_equipment' if is_equipment else 'type'
+                type_query |= Q(**{field: type_key})
+            query &= type_query
         if grade:
             query &= Q(grade=int(grade))
         if clas:

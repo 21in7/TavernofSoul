@@ -728,6 +728,19 @@ obsolete parsing-server CI 3개는 메인 `/root`가 로컬에 그대로 보관�
 전체 `make check`는 실행기가 수행한다. 현재 작업자는 테스트·cron·다운로더·운영 import·Git 명령을
 실행하지 않으며 후속 검증·커밋·PR·CI 성공 확인·머지도 담당하지 않는다.
 
+### 현재 운영 배포의 정적 파일 반영
+
+현재 세 도메인이 `staticfiles_itos`를 공유하는 배포에서는 정적 파일 변경 시
+`collectstatic` → 원본 응답 확인 → 사용자 Cloudflare 캐시 삭제 순서로 반영한다.
+기존 가상환경 명령은 다음과 같으며, 정적 파일은 웹서버 재시작 없이 반영된다.
+
+```bash
+cd /home/ubuntu/TavernofSoul/TavernofSoul && ./itos/3.8/bin/python manage_itos.py collectstatic --noinput
+```
+
+원본 확인은 저장소와 배포된 CSS/JS의 해시 및 원본 HTTP 응답을 대조한다.
+Cloudflare 캐시 삭제는 사용자가 수행한다. 이는 별도 운영 배포 절차이며 이번 PR workflow에서는 실행하지 않는다.
+
 ## 실행 범위
 
 | 명령 | 검증 내용 |
@@ -933,6 +946,31 @@ parent는 최종 통합 diff의 새 Claude 의미 검토·유효 JSON·`document
 scoped apply·Git·새 PR·실제 CI3 success·squash merge·cleanup·archive로 잇는다.
 실패 브라우저 JSON은 native 수리 피드백이며 full check를 대신하지 않는다. leaf는 실행하지 않는다.
 상세 설계·실제 CI 실패·수리 인계는 [ADR0030](adr/0030-item-detail-mobile-layout.md)에 둔다.
+
+### 검색 type 이름 중복 제거 PR의 계약과 인계
+
+이번 검색 선택지는 실제 원래 이름 문자열별 하나이며, 중복의 첫 등장 순서와 기존 표시 규칙을 유지한다.
+이름 필터는 같은 이름의 모든 분류를 포함한다. 실제 유효 이름을 먼저 해석하고 기존 `type=<id>`와
+`type=<id>_eq` 입력은 해당 행의 이름으로 호환 처리하며, 잘못된 입력은 안전하게 무시한다.
+선택값·검색 URL·페이지 링크의 canonical `type`은 이름을 사용하고 전체 문서와 fragment도 같은 계약을 따른다.
+운영 DB의 중복 행 정리는 범위 밖이다.
+
+이 PR 인계는 위의 과거 검증·운영 관측을 변경하지 않으며, **merge 전에 반드시 정지**한다.
+기존 역할·모델의 단일 workflow에서 새 Claude가 최종 전체 diff를 독립 의미 검토하고
+`documentation={status,files,reason}`을 새로 반환한 뒤 실행기가 full `make check`를 수행한다.
+기존 Git 역할은 PR 설명을 준비하고 parent는 GitHub 게시 후 required CI
+`Offline harness (SQLite)`·`MySQL harness`·`Chromium browser harness`의 실제 success를 모두 확인한다.
+parent는 실패 후 workflow를 재시도하지 않으며 merge 요청도 전송하지 않는다.
+이 작업자는 검사·Git·workflow·재위임을 실행하지 않는다. 운영 배포·`collectstatic` 재실행·운영 HTTP·DB·
+cron·서비스 조작·Cloudflare purge 역시 이번 workflow에서 수행하지 않는다.
+
+문서 영향은 제품 검색 선택지/URL 계약과 명시적 정적 배포 안내로 한정되어 실제 갱신 문서는
+`docs/harness.md`다. 하네스 구조·책임·입력/저장소 계약·격리·검증·실패 복구·GitHub 게시 정책은
+변경하지 않으므로 `docs/harness-design.md`와 신규 ADR은 불필요하다. 모든 후속 리뷰에서 이 판단을
+최종 전체 diff에 대해 재평가한다. 의미적 문서 완전성은 Markdown 검사 통과만으로 입증되지 않는다.
+추가 필수 문서가 승인 범위 밖이면 읽거나 만들지 않고 정확한 경로와 기존 승인 파일에 귀속한 finding을
+`changes_requested` 및 `documentation.status=missing`으로 보고한다. main coordinator가 범위를 확인하고
+새 run을 준비하며 수리 라운드에서 승인 범위를 확대하지 않는다.
 
 ## 실제 게임 데이터와 운영 도메인
 

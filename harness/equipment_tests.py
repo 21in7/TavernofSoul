@@ -143,7 +143,7 @@ class EquipmentPipelineTests(TransactionTestCase):
         self.assertContains(fragment, '女神' if self.region == 'jtos' else 'Goddess')
         self.assertContains(fragment, '560')
         canonical = parse_qs(urlsplit(document.context['search_url']).query)
-        for key, value in conditions.items():
+        for key, value in dict(conditions, type=equipment_type.name).items():
             self.assertEqual(canonical[key], [value])
         for key, value in (('grade', '1'), ('lvmin', '561'), ('lvmax', '559')):
             with self.subTest(region=self.region, excluded=key):
