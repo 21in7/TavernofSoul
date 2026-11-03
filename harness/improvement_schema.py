@@ -27,6 +27,15 @@ def _text(field):
         contract.CANDIDATE_DISPLAY_LIMITS[field] * contract.PRIVATE_PROSE_MULTIPLIER))
 
 
+def _schema_config(config):
+    # Schema construction needs limits only. Contextual cross-boundary checks
+    # remain in load_config, role scope and review_coverage.
+    if isinstance(config, dict):
+        config = {key: value for key, value in config.items()
+                  if key != 'coordinator_cross_boundary_files'}
+    return contract.validate_config(config)
+
+
 def candidate_schema(paths, sources, limits):
     """Full candidates root; cross-field/semantic constraints remain client-side."""
     evidence = []
@@ -87,7 +96,7 @@ def prepare(role, root, paths, snapshots, config):
     if role not in contract.SPECIALIST_ROLES:
         raise ValueError('discovery_schema_scope_invalid')
     paths = contract.validate_scope_paths(paths)
-    config = contract.validate_config(config)
+    config = _schema_config(config)
     if set(snapshots) != set(paths) or len(paths) > config['limits']['max_scope_files']:
         raise ValueError('discovery_schema_scope_invalid')
     contract.fingerprint_sources(snapshots)
@@ -117,7 +126,7 @@ def validate_request(request, role, provider, workspace, *, write=False, smoke=F
     # used here. They are canonical private bytes created by prepare, not output.
     import json
     data = json.loads(request._inputs)
-    config = contract.validate_config(data['config'])
+    config = _schema_config(data['config'])
     paths = contract.validate_scope_paths(data['paths'])
     if set(paths) != set(data['sources']):
         raise ValueError('discovery_schema_scope_invalid')
@@ -131,4 +140,4 @@ def response_limit(request):
     import json
     if type(request) is not DiscoverySchema:
         raise ValueError('discovery_schema_invalid')
-    return contract.validate_config(json.loads(request._inputs)['config'])['limits']['max_response_bytes']
+    return _schema_config(json.loads(request._inputs)['config'])['limits']['max_response_bytes']
