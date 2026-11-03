@@ -542,7 +542,7 @@ def task_prompt(role, task, workspace=None, scoped=False):
     work_root = Path(workspace) if workspace is not None else ROOT
     instructions = '\n\n'.join((work_root / path).read_text(encoding='utf-8') for path in paths)
     return ('Role: {}. Required validation: make {}.\n'
-            'Read docs/architecture.md and docs/harness.md before project work.\n'
+            'Start with docs/index.md and read only the pages the task needs.\n'
             'Do not read credential files or print secrets. Do not delegate to other agents.\n'
             'TAVERN_WORKFLOW_CHILD=1: this is a leaf role; do not start harness.workflow or agent-run.\n'
             '{}'

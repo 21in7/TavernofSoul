@@ -1189,7 +1189,7 @@ def test_scoped_prompt_does_not_read_unapproved_instructions(tmp_path, monkeypat
     monkeypatch.setattr(models, 'load_config', lambda: {'roles': {'parser': {}}})
     prompt = models.task_prompt('parser', 'Review approved sources.', workspace=tmp_path, scoped=True)
     assert 'Review approved sources.' in prompt and 'orchestrator owns validation' in prompt
-    assert 'Read docs/architecture.md' not in prompt
+    assert 'Start with docs/index.md' not in prompt
 
 
 def test_scoped_run_disables_inherited_memories_and_session_policy(local_keys, tmp_path, monkeypatch):
