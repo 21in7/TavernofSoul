@@ -488,6 +488,93 @@ trace = trace .. "|later"''',
         assert globals_.later() == luautil.LUA_RUNTIME['later']() == 27
 
 
+# Handwritten closure and arithmetic; no game sources or calculation outputs.
+MONSTER_HP_LUA = '''\
+local calls = 0
+local function revise_mon_hp(self, hp)
+    calls = calls + 1
+    return hp * self.Scale + self.Bonus + calls
+end
+function SCR_Get_MON_MHP(self)
+    return revise_mon_hp(self, self.BaseHP + 10)
+end
+'''
+
+
+@pytest.mark.parametrize('filename', ('calc_property_monster.lua', 'Calc_Property_Monster.LUA'))
+def test_monster_module_keeps_local_helper_and_global_registry_source(tmp_path, filename):
+    (tmp_path / filename).write_text(MONSTER_HP_LUA, encoding='utf-8')
+    with isolated_parser_state():
+        luautil.init_runtime(SimpleNamespace(PATH_INPUT_DATA=str(tmp_path)))
+        monster = {'BaseHP': 20, 'Scale': 3, 'Bonus': 4}
+        assert set(luautil.LUA_RUNTIME) == {'SCR_Get_MON_MHP'}
+        assert luautil.LUA_SOURCE == {'SCR_Get_MON_MHP': '''\
+function SCR_Get_MON_MHP(self)
+    return revise_mon_hp(self, self.BaseHP + 10)
+end
+'''}
+        assert luautil.LUA_RUNTIME['SCR_Get_MON_MHP'](monster) == 95
+        assert luautil.lua.globals().SCR_Get_MON_MHP(monster) == 96
+        for name in ('revise_mon_hp', 'calls'):
+            assert luautil.lua.globals()[name] is None
+            assert name not in luautil.LUA_RUNTIME
+            assert name not in luautil.LUA_SOURCE
+
+
+def test_monster_module_repeat_init_and_region_switch_reset_state(tmp_path):
+    inputs = [special_input(tmp_path / region, region=region, module=False)
+              for region in ('ktos', 'jtos', 'itos')]
+    for c, increment in zip(inputs, (10, 20, 30)):
+        (c.root / 'calc_property_monster.lua').write_text(
+            MONSTER_HP_LUA.replace('self.BaseHP + 10', 'self.BaseHP + ' + str(increment)),
+            encoding='utf-8')
+    monster = {'BaseHP': 20, 'Scale': 3, 'Bonus': 4}
+    with isolated_parser_state():
+        for c, expected in ((inputs[0], 95), (inputs[0], 95), (inputs[1], 125),
+                            (inputs[2], 155), (inputs[0], 95)):
+            previous_lua = luautil.lua
+            previous_runtime, previous_source = luautil.LUA_RUNTIME, luautil.LUA_SOURCE
+            luautil.init(c)
+            assert luautil.lua is not previous_lua
+            assert luautil.LUA_RUNTIME is not previous_runtime
+            assert luautil.LUA_SOURCE is not previous_source
+            assert luautil.LUA_RUNTIME['SCR_Get_MON_MHP'](monster) == expected
+            assert luautil.lua.globals().SCR_Get_MON_MHP(monster) == expected + 1
+            assert luautil.lua.globals().revise_mon_hp is None
+        (inputs[0].root / 'calc_property_monster.lua').unlink()
+        luautil.init(inputs[0])
+        assert luautil.lua.globals().SCR_Get_MON_MHP is None
+        assert 'SCR_Get_MON_MHP' not in luautil.LUA_RUNTIME
+        assert 'SCR_Get_MON_MHP' not in luautil.LUA_SOURCE
+
+
+@pytest.mark.parametrize('source,cause_text', (
+    ('local function revise_mon_hp(self, hp) return hp + end', 'calc_property_monster.lua'),
+    (MONSTER_HP_LUA + "error('monster initializer failed')\n", 'monster initializer failed'),
+))
+def test_bad_monster_module_propagates_lua_cause_and_retry(tmp_path, source, cause_text):
+    c = special_input(tmp_path / 'ktos', module=False)
+    path = c.root / 'calc_property_monster.lua'
+    path.write_text(MONSTER_HP_LUA, encoding='utf-8')
+    monster = {'BaseHP': 20, 'Scale': 3, 'Bonus': 4}
+    with isolated_parser_state():
+        luautil.init(c)
+        assert luautil.LUA_RUNTIME['SCR_Get_MON_MHP'](monster) == 95
+        previous_lua = luautil.lua
+        path.write_text(source, encoding='utf-8')
+        with pytest.raises(ValueError, match='monster Lua module') as failure:
+            luautil.init(c)
+        assert luautil.lua is not previous_lua
+        assert isinstance(failure.value.__cause__, LuaError)
+        assert cause_text in str(failure.value.__cause__)
+        assert str(path) in str(failure.value)
+        assert 'SCR_Get_MON_MHP' not in luautil.LUA_RUNTIME
+        assert 'SCR_Get_MON_MHP' not in luautil.LUA_SOURCE
+        path.write_text(MONSTER_HP_LUA, encoding='utf-8')
+        luautil.init(c)
+        assert luautil.LUA_RUNTIME['SCR_Get_MON_MHP'](monster) == 95
+
+
 def test_goddess_module_preserves_local_tables_and_file_scope_initializers(tmp_path):
     (tmp_path / 'shared_item_goddess_reinforce.lua').write_text('''
 local end_level = 560
@@ -1544,7 +1631,9 @@ def test_special_module_requires_registered_callable_without_stale_function(tmp_
         assert luautil.lua.globals().shared_enchant_special_option is None
 
 
-@pytest.mark.parametrize('filename', ('Shared_Enchant_Special_Option.LUA', 'shared_item_goddess_reinforce.lua'))
+@pytest.mark.parametrize('filename', ('Shared_Enchant_Special_Option.LUA',
+                                      'shared_item_goddess_reinforce.lua',
+                                      'calc_property_monster.lua'))
 def test_whole_modules_preserve_overrides_during_initializer_and_calls(tmp_path, filename):
     c = special_input(tmp_path / 'ktos', module=False)
     source = '''
@@ -1553,6 +1642,8 @@ function GetItemOwner(item) return {} end
 local initialized_level = GET_ITEM_LEVEL({})
 local initialized_owner_is_nil = GetItemOwner({}) == nil
 function observed_override()
+    GET_ITEM_LEVEL = function(item) return 777 end
+    GetItemOwner = function(item) return {} end
     return initialized_level, GET_ITEM_LEVEL({}),
            initialized_owner_is_nil, GetItemOwner({}) == nil
 end

@@ -580,6 +580,11 @@ def init_runtime(c):
                     _load_whole_module(file_path, 'goddess')
                     continue
 
+                # SCR_Get_MON_MHP closes over the file-local revise_mon_hp helper.
+                if file_name.lower() == 'calc_property_monster.lua':
+                    _load_whole_module(file_path, 'monster')
+                    continue
+
                 with open(file_path, 'r',errors='ignore', encoding = 'utf-8') as file:
                     try:
                         # Remove multiline comments https://stackoverflow.com/a/40454391

@@ -707,6 +707,13 @@ legacy Lua 줄 전처리는 quoted index → require 제거 → method 변환 �
 `harness/parser_fixture.py`의 `isolated_parser_state`도 새 runtime/레지스트리와 격리된
 아이템·스킬·몬스터 상태를 사용하고 `finally`에서 기존 상태를 복구한다.
 
+`init_runtime`은 파일명 대소문자를 구분하지 않고 `calc_property_monster.lua`를 기존
+`_load_whole_module`로 단일 chunk 실행하여 `SCR_Get_MON_MHP`가 local helper
+`revise_mon_hp`를 참조하도록 보존해야 한다. local helper는 전역·레지스트리에 노출하지 않고,
+global 함수의 `LUA_RUNTIME`·`LUA_SOURCE` 등록, 기존 override 보호, 반복 초기화·지역 전환의
+상태 격리와 로딩 오류 전파를 유지한다. 다른 일반 Lua의 legacy 함수 분리·engine-error isolation과
+goddess·special-option 로딩 경로는 변경하지 않는다.
+
 `TryGetProp`는 한 호출에서 `item[prop]`에 대한 `tonumber` 결과를 local 변수에 저장해 재사용한다.
 행·지역·호출 사이의 값 캐시는 만들지 않으며, setter 이후 재조회는 현재 행의 값을 읽는다.
 기존 attribute handler, nil/default 분기, 오류 전파와 setter 동작을 유지한다.
