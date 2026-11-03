@@ -1,4 +1,5 @@
 # TavernofSoul 작업 지도
+문서 탐색은 [docs wiki](docs/index.md)에서 시작하고, 작업에 필요한 페이지만 선택해 읽는다.
 
 현재 자동 검증은 [ADR0031](docs/adr/0031-change-scoped-automatic-validation.md)이 우선한다.
 실제 diff로 검사하고 master push·PR·수동 CI, 핵심 회귀·수동 targets와 기존 권한 경계를 유지한다.
