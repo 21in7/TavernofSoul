@@ -14,6 +14,7 @@ import tempfile
 import logging
 import json
 from copy import deepcopy
+from collections import Counter
 from os.path import join, exists
 from Monsters.models import Monsters, Item_Monster, Skill_Monster
 import os
@@ -30,6 +31,7 @@ from Dashboard.models import Version
 from Other.models import Achievements
 from ipfparser.contracts import (ContractError, RECIPE_ID_PREFIX, canonical_item_id,
                                  load_json, load_import_snapshot, GEM_SLOTS, inactive_recipe, number)
+from ipfparser.item_types import get_or_create_item_type
 class Command(BaseCommand):
 
     base_path               = settings.JSON_ROOT
@@ -250,6 +252,22 @@ class Command(BaseCommand):
                 shutil.rmtree(staged)
         if moved_old:
             shutil.rmtree(backup)
+        self._audit_item_types()
+
+    @staticmethod
+    def _audit_item_types():
+        # Python equality preserves case, trailing spaces and Unicode forms,
+        # independently of the database's collation. Never repair these rows.
+        try:
+            counts = Counter(Item_Type.objects.values_list('name', 'is_equipment'))
+            for (name, flag), count in counts.items():
+                if count > 1:
+                    logging.warning(
+                        'Item_Type duplicate pair REGION=%s name=%r is_equipment=%s count=%d',
+                        settings.REGION, name, flag, count)
+        except Exception:
+            logging.warning('Item_Type duplicate audit failed REGION=%s',
+                            getattr(settings, 'REGION', '<unknown>'), exc_info=True)
 
     def _import_data(self, update):
         item_type       = self.importJSON(join(self.base_path,self.item_type_path))
@@ -318,7 +336,7 @@ class Command(BaseCommand):
             except ObjectDoesNotExist:
                 logging.warning("failed to delete item {} ({})".format(i['Name'], i['$ID']))
         logging.debug("migrating items")
-        item_type_db = [t.name for t in Item_Type.objects.all()]
+        item_type_db = {}
         dolater = {'RECIPES': [],'COLLECTION': [], 'EQUIPMENT' : [], 'CARD' : []}
         if 'BOOKS' in item_type:
             dolater['BOOKS'] = []
@@ -337,13 +355,7 @@ class Command(BaseCommand):
             handler.weight = 0 if i['Weight'] == '' else i['Weight']
             handler.tradability = i['Tradability']
             handler.type = i['Type']
-            if i['Type'] not in item_type_db:
-                type_handler = Item_Type.objects.filter(name=i['Type']).order_by('id').first()
-                if type_handler is None:
-                    type_handler = Item_Type()
-                    type_handler.name = i['Type']
-                    type_handler.save()
-                item_type_db.append(i['Type'])
+            get_or_create_item_type(i['Type'], False, item_type_db)
             handler.grade = i['Grade']
             handler.icon = i['Icon']
             handler.package_contents = json.dumps(i['PackageContents'], ensure_ascii=False) if i.get('PackageContents') else None
@@ -391,13 +403,7 @@ class Command(BaseCommand):
             handler.weight = 0 if i['Weight'] == '' else i['Weight']
             handler.tradability = i['Tradability']
             handler.type = i['Type']
-            if i['Type'] not in item_type_db:
-                type_handler = Item_Type.objects.filter(name=i['Type']).order_by('id').first()
-                if type_handler is None:
-                    type_handler = Item_Type()
-                    type_handler.name = i['Type']
-                    type_handler.save()
-                item_type_db.append(i['Type'])
+            get_or_create_item_type(i['Type'], False, item_type_db)
             handler.grade = i['Grade']
             if i['Grade']          == "":
                 handler.grade = 1
@@ -485,14 +491,7 @@ class Command(BaseCommand):
         handler.transcend_price = i['TranscendPrice']
         handler.type_attack = i['TypeAttack']
         handler.type_equipment = i['TypeEquipment']
-        if i['TypeEquipment'] not in item_type_db:
-            type_handler = Item_Type.objects.filter(name=i['TypeEquipment']).order_by('id').first()
-            if type_handler is None:
-                type_handler = Item_Type()
-                type_handler.name = i['TypeEquipment']
-            type_handler.is_equipment = True
-            type_handler.save()
-            item_type_db.append(i['TypeEquipment'])
+        get_or_create_item_type(i['TypeEquipment'], True, item_type_db)
         handler.unidentified = i['Unidentified']
         handler.unidentifiedRandom = i['UnidentifiedRandom']
         Equipment_Bonus.objects.filter(equipment = handler).delete()

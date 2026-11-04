@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree as ET
 
 from django.core.management import call_command, CommandError
-from django.db import IntegrityError
+from django.db import connection, DatabaseError, IntegrityError, transaction
 from django.contrib.staticfiles import finders
 from django.test import TransactionTestCase, override_settings
 from django.template.loader import render_to_string
@@ -21,12 +21,79 @@ from Skills.models import Skills
 from harness.fixture_inputs import EQUIPMENT_FIXTURE, REGIONS
 from harness.parser_fixture import change_ies_column, parse_workspace, prepare_equipment_workspace
 from ipfparser.management.commands.importAll import Command
+from ipfparser.item_types import get_or_create_item_type
 from harness.browser_calculator import run_calculator
 
 EXPECTED = json.loads((EQUIPMENT_FIXTURE / 'expected_equipment.json').read_text())
 
 
 class EquipmentPipelineTests(TransactionTestCase):
+    def test_exact_pairs_keep_bytes_flags_ids_and_counts_with_and_without_cache(self):
+        cache, expected = {}, {}
+        names = ('Pair', 'pair', 'Pair ', 'Caf\u00e9', 'Cafe\u0301')
+        for name in names:
+            for flag in (False, True):
+                pair = (name, flag)
+                row, created = get_or_create_item_type(name, flag, cache)
+                self.assertTrue(created, pair)
+                self.assertEqual((row.name, row.is_equipment), pair)
+                expected[pair] = row.pk
+                with self.assertNumQueries(0):
+                    cached, created = get_or_create_item_type(name, flag, cache)
+                self.assertIs(cached, row)
+                self.assertFalse(created)
+        before = list(Item_Type.objects.order_by('pk').values_list('pk', 'name', 'is_equipment'))
+        self.assertEqual(len(before), len(names) * 2)
+        self.assertEqual(len(set(expected.values())), len(expected))
+        for cache_arg in ({}, None):
+            for (name, flag), pk in expected.items():
+                row, created = get_or_create_item_type(name, flag, cache_arg)
+                self.assertEqual((row.pk, row.name, row.is_equipment), (pk, name, flag))
+                self.assertFalse(created)
+        self.assertEqual(list(Item_Type.objects.order_by('pk').values_list(
+            'pk', 'name', 'is_equipment')), before)
+
+    def test_legacy_exact_duplicates_reuse_smallest_pk_without_changing_any_row(self):
+        for flag in (False, True):
+            first = Item_Type.objects.create(name='Legacy', is_equipment=flag)
+            Item_Type.objects.create(name='Legacy', is_equipment=flag)
+            Item_Type.objects.create(name='legacy', is_equipment=flag)
+            Item_Type.objects.create(name='Legacy ', is_equipment=flag)
+            before = list(Item_Type.objects.order_by('pk').values())
+            cache = {}
+            for cache_arg in (None, cache, cache, {}):
+                row, created = get_or_create_item_type('Legacy', flag, cache_arg)
+                self.assertEqual(row.pk, first.pk)
+                self.assertFalse(created)
+            self.assertEqual(list(Item_Type.objects.order_by('pk').values()), before)
+
+    def test_lookup_and_insert_sql_errors_propagate_without_caching_failed_pairs(self):
+        for verb in ('SELECT', 'INSERT'):
+            with self.subTest(verb=verb):
+                cache = {}
+                kept, _ = get_or_create_item_type('Kept' + verb, False, cache)
+                name = 'Failed' + verb
+                failure = DatabaseError('forced item type ' + verb)
+                intercepted = []
+
+                def fail_sql(execute, sql, params, many, context):
+                    if (Item_Type._meta.db_table.lower() in sql.lower() and
+                            sql.lstrip().upper().startswith(verb)):
+                        intercepted.append(sql)
+                        raise failure
+                    return execute(sql, params, many, context)
+
+                with self.assertRaises(DatabaseError) as raised:
+                    with transaction.atomic(), connection.execute_wrapper(fail_sql):
+                        get_or_create_item_type(name, True, cache)
+                self.assertIs(raised.exception, failure)
+                self.assertTrue(intercepted)
+                self.assertEqual(cache, {('Kept' + verb, False): kept})
+                self.assertFalse(Item_Type.objects.filter(name=name, is_equipment=True).exists())
+                row, created = get_or_create_item_type(name, True, cache)
+                self.assertTrue(created)
+                self.assertIs(cache[(name, True)], row)
+
     def prepare_region(self, region='itos'):
         temporary = tempfile.TemporaryDirectory(prefix='tavern-equipment-pipeline-')
         self.addCleanup(temporary.cleanup)
@@ -65,6 +132,164 @@ class EquipmentPipelineTests(TransactionTestCase):
         for name in ('_staged_snapshot', '_snapshot_path', '_previous_path',
                      '_available_skill_names', '_item_ids_by_name', '_reconcile_map_relations'):
             self.assertNotIn(name, self.command.__dict__)
+
+    def test_import_reuses_exact_type_pairs_without_changing_existing_flags_or_duplicates(self):
+        self.prepare_region()
+        first = Item_Type.objects.create(name='Pair', is_equipment=False)
+        duplicate = Item_Type.objects.create(name='Pair', is_equipment=False)
+        equipment = Item_Type.objects.create(name='Pair', is_equipment=True)
+        existing = list(Item_Type.objects.order_by('pk').values())
+
+        def set_types(data):
+            data['harness_sword'].update(Type='Pair', TypeEquipment='Pair')
+        self.rewrite_json('items_by_name', set_types)
+        lookups = []
+
+        def lookup(name, flag, cache=None):
+            result = get_or_create_item_type(name, flag, cache)
+            lookups.append(((name, flag), result[0].pk))
+            return result
+
+        with patch('ipfparser.management.commands.importAll.get_or_create_item_type',
+                   side_effect=lookup):
+            with self.assertLogs(level='WARNING'):
+                self.import_release()
+        self.assertIn((('Pair', False), first.pk), lookups)
+        self.assertIn((('Pair', True), equipment.pk), lookups)
+        self.assertEqual(list(Item_Type.objects.filter(pk__in=[
+            first.pk, duplicate.pk, equipment.pk]).order_by('pk').values()), existing)
+        self.assertEqual(Items.objects.get(id_name='harness_sword').type, 'Pair')
+        self.assertEqual(Equipments.objects.get(item__id_name='harness_sword').type_equipment, 'Pair')
+
+        # Exercise the changed-item path with both name case and flag differing.
+        self.rewrite_json('items_by_name', lambda data: data['harness_sword'].update(
+            Type='pair', TypeEquipment='PAIR'))
+        with self.assertLogs(level='WARNING'):
+            self.import_release()
+        types = list(Item_Type.objects.order_by('pk').values_list('pk', 'name', 'is_equipment'))
+        self.assertEqual(sum((name, flag) == ('pair', False) for _, name, flag in types), 1)
+        self.assertEqual(sum((name, flag) == ('PAIR', True) for _, name, flag in types), 1)
+        self.assertEqual(list(Item_Type.objects.filter(pk__in=[
+            first.pk, duplicate.pk, equipment.pk]).order_by('pk').values()), existing)
+        self.rewrite_json('items_by_name', lambda data: data['harness_sword'].update(
+            Name='Repeated pair lookup'))
+        with self.assertLogs(level='WARNING'):
+            self.import_release()
+        self.assertEqual(list(Item_Type.objects.order_by('pk').values_list(
+            'pk', 'name', 'is_equipment')), types)
+        self.assertEqual(Items.objects.get(id_name='harness_sword').type, 'pair')
+        self.assertEqual(Equipments.objects.get(item__id_name='harness_sword').type_equipment, 'PAIR')
+        self.assertEqual(Version.objects.count(), 1)
+        self.assert_clean_snapshot()
+
+    def test_item_type_caches_are_new_after_rollback_and_each_import_invocation(self):
+        self.prepare_region()
+        self.import_release()
+        snapshot, baseline = self.snapshot(), self.baseline()
+        types = list(Item_Type.objects.order_by('pk').values())
+        self.parse_release('equipment-v2')
+        self.rewrite_json('items_by_name', lambda data: data['harness_sword'].update(
+            Type='RollbackType', TypeEquipment='RollbackEQ'))
+        attempts = [[], [], []]
+        current = attempts[0]
+
+        def lookup(name, flag, cache=None):
+            result = get_or_create_item_type(name, flag, cache)
+            if name in ('RollbackType', 'RollbackEQ'):
+                current.append(((name, flag), cache, result[0]))
+            return result
+
+        with patch('ipfparser.management.commands.importAll.get_or_create_item_type',
+                   side_effect=lookup):
+            with patch.object(self.command, 'importGems', side_effect=RuntimeError('late import failure')):
+                with self.assertRaisesMessage(RuntimeError, 'late import failure'):
+                    self.import_release()
+            self.assertEqual(self.snapshot(), snapshot)
+            self.assertEqual(self.baseline(), baseline)
+            self.assertEqual(list(Item_Type.objects.order_by('pk').values()), types)
+            self.assert_clean_snapshot()
+            current = attempts[1]
+            self.import_release()
+            current = attempts[2]
+            self.rewrite_json('items_by_name', lambda data: data['harness_sword'].update(
+                Name='Fresh invocation cache'))
+            self.import_release()
+        expected_pairs = {('RollbackType', False), ('RollbackEQ', True)}
+        for attempt in attempts:
+            self.assertEqual({pair for pair, _, _ in attempt}, expected_pairs)
+            self.assertEqual(len(attempt), 2)
+            self.assertIs(attempt[0][1], attempt[1][1])
+            for pair, cache, row in attempt:
+                self.assertIs(cache[pair], row)
+        for previous, following in zip(attempts, attempts[1:]):
+            self.assertIsNot(previous[0][1], following[0][1])
+            for pair, _, row in previous:
+                next_row = next(result for key, _, result in following if key == pair)
+                self.assertIsNot(row, next_row)
+        for pair, _, row in attempts[1]:
+            next_row = next(result for key, _, result in attempts[2] if key == pair)
+            self.assertEqual(row.pk, next_row.pk)
+        self.assertEqual(Version.objects.count(), 2)
+        self.assert_clean_snapshot()
+
+    def test_duplicate_audit_reports_exact_pairs_after_commit_publication_and_cleanup(self):
+        self.prepare_region('jtos')
+        self.import_release()
+        for name, flag, count in (('Audit ', False, 3), ('Audit ', True, 2),
+                                  ('Audit', False, 1), ('audit ', False, 1),
+                                  ('Caf\u00e9', False, 1), ('Cafe\u0301', False, 1)):
+            for _ in range(count):
+                Item_Type.objects.create(name=name, is_equipment=flag)
+        types = list(Item_Type.objects.order_by('pk').values())
+        self.parse_release('equipment-v2')
+        published = {path.name: path.read_bytes() for path in self.release.glob('*.json')}
+        original = self.command._audit_item_types
+
+        def audit_after_cleanup():
+            self.assertFalse(connection.in_atomic_block)
+            self.assertTrue(Version.objects.filter(version='equipment-v2').exists())
+            self.assertEqual({name: value for name, value in self.baseline().items()
+                              if name.endswith('.json')}, published)
+            self.assert_clean_snapshot()
+            original()
+
+        with patch.object(self.command, '_audit_item_types', side_effect=audit_after_cleanup) as audit:
+            with self.assertLogs(level='WARNING') as logs:
+                self.import_release()
+        audit.assert_called_once_with()
+        messages = [record.getMessage() for record in logs.records
+                    if record.getMessage().startswith('Item_Type duplicate pair')]
+        self.assertCountEqual(messages, [
+            "Item_Type duplicate pair REGION=jtos name='Audit ' is_equipment=False count=3",
+            "Item_Type duplicate pair REGION=jtos name='Audit ' is_equipment=True count=2",
+        ])
+        self.assertTrue(all(record.levelname == 'WARNING' for record in logs.records
+                            if record.getMessage() in messages))
+        self.assertEqual(list(Item_Type.objects.order_by('pk').values()), types)
+        self.assertEqual(Version.objects.count(), 2)
+
+    def test_duplicate_audit_database_error_is_warning_only_after_successful_import(self):
+        self.prepare_region('ktos')
+        self.import_release()
+        self.parse_release('equipment-v2')
+        self.rewrite_json('items_by_name', lambda data: data['harness_sword'].update(
+            Name='Committed despite audit failure'))
+        published = {path.name: path.read_bytes() for path in self.release.glob('*.json')}
+        with patch.object(Item_Type.objects, 'values_list', side_effect=DatabaseError('audit unavailable')):
+            with self.assertLogs(level='WARNING') as logs:
+                self.import_release()
+        failures = [record for record in logs.records
+                    if record.getMessage() == 'Item_Type duplicate audit failed REGION=ktos']
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].levelname, 'WARNING')
+        self.assertIsInstance(failures[0].exc_info[1], DatabaseError)
+        self.assertEqual(Items.objects.get(id_name='harness_sword').name,
+                         'Committed despite audit failure')
+        self.assertEqual(Version.objects.count(), 2)
+        self.assertTrue(Version.objects.filter(version='equipment-v2').exists())
+        self.assertEqual({name: value for name, value in self.baseline().items()
+                          if name.endswith('.json')}, published)
+        self.assert_clean_snapshot()
 
     def assert_search_pair(self, params=None):
         """Exercise the collected regional pipeline, including the shared result template."""
@@ -529,6 +754,7 @@ class EquipmentPipelineTests(TransactionTestCase):
         self.prepare_region()
         self.import_release()
         snapshot, baseline = self.snapshot(), self.baseline()
+        types = list(Item_Type.objects.order_by('pk').values())
         change_ies_column(self.unpack / 'ies.ipf/item_goddess_reinforce_560.ies', 'AddAtk', '120')
         self.parse_release('equipment-v2')
         original = self.command.importGems
@@ -537,12 +763,15 @@ class EquipmentPipelineTests(TransactionTestCase):
             row = GoddessReinforcement.objects.get(level=560, step=1)
             row.pk = None
             row.save(force_insert=True)
-        with patch.object(self.command, 'importGems', side_effect=duplicate_after_writes):
+        with patch.object(self.command, 'importGems', side_effect=duplicate_after_writes), \
+                patch.object(self.command, '_audit_item_types') as audit:
             with self.assertRaises(IntegrityError):
                 self.import_release()
+        audit.assert_not_called()
         self.assert_clean_snapshot()
         self.assertEqual(self.snapshot(), snapshot)
         self.assertEqual(self.baseline(), baseline)
+        self.assertEqual(list(Item_Type.objects.order_by('pk').values()), types)
         self.assertFalse(list(self.release.glob('.import-prev-*')))
         self.import_release()
         self.assert_clean_snapshot()

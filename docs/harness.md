@@ -1588,6 +1588,48 @@ repair는 승인 범위를 확장하지 않는다.
 [workflow](workflow.md#이번-31파일-수리의-검토검증게시-인계), 결정은
 [0012](adr/0012-importer-single-run-snapshot.md)와 [0013](adr/0013-owned-validation-temporary-cleanup.md)에 둔다.
 
+## 활성 Item_Type pair 수리의 새 실행 인계 (2026-11-04)
+
+위 과거 실행·실패 기록은 그대로 보존한다. 이번 범위는 활성 `importAll`과
+`migrate_recipe_ids`의 [정확 pair 계약](data-contracts.md#활성-importallmigrate_recipe_ids의-item_type-계약)이다.
+두 명령은 이름 bytes와 `is_equipment`를 함께 비교해 `get_or_create`하며 기존 이름·flag·id를
+바꾸지 않고 정확 pair 중복만 최소 pk로 재사용한다. 호출 수명 내 pair 캐시는 성공 후에만 채우며
+rollback·다음 호출에 남기지 않는다. `importAll` 성공 끝의 commit·`prev` 공개·backup 정리 이후
+중복 audit은 지역·이름 `repr`·flag·전체 행 수를 WARNING으로 남긴다. 중복 및 audit 오류는
+성공 결과·Version·`prev`에 영향을 주지 않으며 실제 import 실패의 예외·복원·cleanup 계약은 유지한다.
+DB unique 제약 부재로 동시 writer 중복 방지는 보장하지 않고 제약 도입·중복 정리는 보류한다.
+legacy 관리 명령 `importItem`·`importAll_old`는 미수정이며 정리는 별도 후속이다.
+parent의 운영 경로 조사와 외부 수동 실행 부재를 보장할 수 없는 한계는 위 데이터 계약에 귀속한다.
+
+새 전체 diff에서 실제 ORM 회귀는 `harness/equipment_tests.py`의 SQLite/MySQL 경로와
+`harness/mysql_tests.py`의 기존 collation 아래 대소문자·끝 공백·Unicode 조합 분리,
+반대 flag 보존·반복 lookup·정확 pair 중복 최소 id 재사용·SQL 오류 전파를 검토해야 한다.
+collation을 ALTER하지 않는다. `test_recipe_migration_db.py`의 실제 격리 `_backfill`·재실행은
+flag·dry-run·rollback·recipe 링크 계약을 유지해야 한다. 성공 import의 audit 내용·오류 warning-only·
+Version/prev 보존과 실제 실패를 audit이 가리지 않는 회귀도 필요하다.
+활성 `importAll.Command.importItem` 테스트는 유지하고 분류 테스트의 tuple Mock만 필요한 만큼
+맞춘다. legacy 두 명령 전용 테스트·fixture 수리나 `Items/tests.py`의 기존 중복 fixture 변경은 제외한다.
+이 목록과 문서 변경은 검증 통과 보고가 아니다.
+
+parent 인계: 사용자가 실패를 확인하고 명시 승인한 새 일반 workflow는 1회만 허용한다.
+기존 실패 run은 불변 보존하고 이전 승인·검사를 재사용하지 않는다. parent가 원본 checkout의
+master `3978a693` (#115) clean을 확인한 뒤 기존 parent 인증 경로로 진행한다.
+새 Claude의 최종 전체 diff 독립 의미검토 → full `make check` → parent 일회용 MySQL 검사 1회 →
+Git 역할·PR·실제 CI 3개 성공 확인 후 merge 전에 정지한다. 이 작업자는 clean·검사·CI 성공을
+확인하지 않았다. 기존 provider/model/effort·인증·설정·검증선택기·Makefile·CI와 native bounded
+repair 정책을 유지하며 terminal 실패 후 parent는 workflow·모델·검사를 재시도하지 않는다.
+worker는 workflow·agent-run·검사·Git·네트워크·재위임·운영 파이프라인을 실행하지 않는다.
+운영 import·DB 쓰기·DDL·마이그레이션 실행도 금지하며, 위 격리 검사는 parent 책임이다.
+
+문서 영향 판단(시작 및 이번 자체 검토): 국소 import 조회와 성공 후 진단 계약은
+`docs/data-contracts.md`와 이 인계로 설명한다. 하네스 구조·역할 책임·격리·검증 선택·실패 복구·
+GitHub publication 정책을 바꾸지 않으므로 `docs/harness-design.md`·`docs/workflow.md` 수정과
+새 ADR은 불필요하다. 위 실행 조건은 이번 1회 승인에 대한 인계이며 하네스 정책 변경이 아니다.
+최종 reviewer도 매 검토마다 `documentation={status,files,reason}`을 새로 의미 판단한다.
+문서 확장자 검사는 완전성의 증거가 아니다. 추가 필수 문서가 발견되면 승인 밖 파일을 열거나
+만들지 말고 이 절의 finding에 정확한 필요 경로를 귀속해 `changes_requested`로 보고한다.
+main coordinator가 범위를 확인하고 새 run을 준비하며 repair는 승인 범위를 넓히지 않는다.
+
 ## GLM telemetry 검증 인계
 
 [ADR0019](adr/0019-private-glm-call-telemetry.md)의 offline 명세는

@@ -109,6 +109,7 @@ def isolated_db(importer, monkeypatch):
     monkeypatch.setattr(module.transaction, 'atomic', lambda *args, **kwargs: real_atomic(*args, **dict(kwargs, using=kwargs.get('using', alias))))
     real_manager = module.Version.objects.db_manager(alias)
     monkeypatch.setattr(module.Version, 'objects', real_manager)
+    monkeypatch.setattr(module.Item_Type, 'objects', module.Item_Type.objects.db_manager(alias))
     try:
         yield real_manager
     finally:
@@ -132,16 +133,65 @@ def test_transaction_and_baseline(importer, isolated_db, tmp_path, monkeypatch, 
     monkeypatch.setattr(cmd, '_validate_staged_release',
                         lambda directory: cmd.importJSON(Path(directory) / 'version.json'))
     fail_at(monkeypatch, module, failure)
+    audit = Mock(wraps=cmd._audit_item_types)
+    monkeypatch.setattr(cmd, '_audit_item_types', audit)
     if failure:
         with pytest.raises(Exception, match='failed'):
             cmd.handle(update=1)
         assert list(isolated_db.all()) == []
         assert read(tmp_path / 'prev/version.json') == {'version': 'old'}
+        audit.assert_not_called()
     else:
         cmd.handle(update=1)
         assert set(isolated_db.values_list('version', flat=True)) == {'new', 'intermediate'}
         assert read(tmp_path / 'prev/version.json') == {'version': 'new'}
+        audit.assert_called_once_with()
     assert_handle_cleared(cmd, tmp_path)
+
+
+@pytest.mark.parametrize('audit_error', [False, True])
+def test_success_audit_is_after_cleanup_and_warning_only(
+        importer, isolated_db, tmp_path, monkeypatch, caplog, audit_error):
+    from django.db import connections, OperationalError
+    cmd, module = importer
+    monkeypatch.setattr(module.settings, 'REGION', 'test-region')
+    write(tmp_path / 'version.json', {'version': 'new'})
+    write(tmp_path / 'prev/version.json', {'version': 'old'})
+    manager = module.Item_Type.objects
+    for name, flag in [('Sword ', False), ('Sword ', False), ('Sword ', True),
+                       ('Sword', False), ('sword ', False)]:
+        manager.create(name=name, is_equipment=flag)
+    monkeypatch.setattr(cmd, '_import_data', Mock())
+    monkeypatch.setattr(cmd, '_validate_staged_release',
+                        lambda directory: cmd.importJSON(Path(directory) / 'version.json'))
+    original_values = manager.values_list
+    audit_observations = []
+    def values_list(*fields):
+        audit_observations.append((
+            connections[isolated_db.db].in_atomic_block,
+            list(tmp_path.glob('.import-prev-*')),
+            read(tmp_path / 'prev/version.json'),
+            isolated_db.filter(version='new').exists()))
+        if audit_error:
+            raise OperationalError('audit unavailable')
+        return original_values(*fields)
+    monkeypatch.setattr(manager, 'values_list', Mock(side_effect=values_list))
+    with caplog.at_level('WARNING'):
+        cmd.handle(update=0)
+    manager.values_list.assert_called_once_with('name', 'is_equipment')
+    assert audit_observations == [(False, [], {'version': 'new'}, True)]
+    assert_handle_cleared(cmd, tmp_path)
+    cmd._import_data.assert_called_once_with(0)
+    assert isolated_db.filter(version='new').exists()
+    assert read(tmp_path / 'prev/version.json') == {'version': 'new'}
+    if audit_error:
+        assert 'audit failed REGION=test-region' in caplog.text
+    else:
+        messages = [record.getMessage() for record in caplog.records
+                    if 'duplicate pair' in record.getMessage()]
+        assert messages == [
+            "Item_Type duplicate pair REGION=test-region name='Sword ' is_equipment=False count=2"]
+    assert manager.count() == 5
 
 
 def test_drop_update_and_delete_use_queryset(importer, monkeypatch):
@@ -190,28 +240,32 @@ def test_missing_map_parent_blocks_success(importer, monkeypatch):
 
 @pytest.fixture
 def type_rows(importer, monkeypatch):
-    """Model rows emulate utf8mb4_general_ci for ASCII ARCANE/Arcane and
-    SEAL/Seal duplicates without server access.
-    """
+    """Isolate classification from ORM lookup; exact pairs have separate tests."""
     cmd, module = importer
     rows, selected, saved = [], [], []
     def first(matches, field):
         row = min(matches, key=lambda row: getattr(row, field)) if matches else None
         selected.append(row)
         return row
-    def filter(name):
-        matches = [row for row in rows if row.name.casefold() == name.casefold()]
-        return Mock(order_by=lambda field: Mock(first=lambda: first(matches, field)))
     def save(row):
         saved.append(row)
         if not any(row is old for old in rows):
             row.pk = max((old.pk for old in rows), default=0) + 1
             rows.append(row)
-    manager = Mock(filter=filter)
-    manager.all.return_value = rows
-    manager.get.side_effect = AssertionError('unexpected get()')
-    monkeypatch.setattr(module.Item_Type, 'objects', manager)
-    monkeypatch.setattr(module.Item_Type, 'save', save)
+    def lookup(name, is_equipment, cache=None):
+        pair = (name, is_equipment)
+        if cache is not None and pair in cache:
+            return cache[pair], False
+        row = first([row for row in rows
+                     if (row.name, row.is_equipment) == pair], 'pk')
+        created = row is None
+        if created:
+            row = module.Item_Type(name=name, is_equipment=is_equipment)
+            save(row)
+        if cache is not None:
+            cache[pair] = row
+        return row, created
+    monkeypatch.setattr(module, 'get_or_create_item_type', Mock(side_effect=lookup))
     return cmd, module, rows, selected, saved
 
 
@@ -229,6 +283,28 @@ def eq_row():
     return dict(data, Type='Material', Bonus=[])
 
 
+@pytest.mark.parametrize('kind', ['added', 'changed'])
+def test_active_import_item_reuses_exact_pairs(importer, isolated_db, monkeypatch, kind):
+    cmd, module = importer
+    manager = module.Item_Type.objects
+    generic = manager.create(name='Shared', is_equipment=False)
+    equipment = manager.create(name='Shared', is_equipment=True)
+    other = manager.create(name='shared', is_equipment=True)
+    original = list(manager.order_by('pk').values_list('pk', 'name', 'is_equipment'))
+    mock_managers(monkeypatch, module.Items, module.Equipments, module.Equipment_Bonus)
+    row = dict(item_row(), **eq_row(), TypeEquipment='Shared')
+    row['Type'] = 'Shared'
+    changes = {'added': [], 'changed': [], 'removed': []}
+    changes[kind] = [row, row]
+    groups = {'EQUIPMENT': ['Shared'], 'CARD': [], 'RECIPES': [], 'COLLECTION': []}
+    for _ in range(2):
+        cmd.importItem(changes, groups, 1)
+    assert list(manager.order_by('pk').values_list('pk', 'name', 'is_equipment')) == original
+    assert manager.get(name='Shared', is_equipment=False).pk == generic.pk
+    assert manager.get(name='Shared', is_equipment=True).pk == equipment.pk
+    assert manager.get(name='shared', is_equipment=True).pk == other.pk
+
+
 @pytest.mark.parametrize('equipment,existing', [
     ('Weapon', False), ('Weapon', True), ('Material', True),
     ('SEAL', True), ('Seal', True)])
@@ -240,27 +316,25 @@ def test_equipment_type_preserves_general_row(type_rows, monkeypatch, equipment,
         rows.extend([module.Item_Type(pk=9, name=equipment, is_equipment=False),
                      module.Item_Type(pk=2, name='SEAL' if equipment == 'Seal' else equipment,
                                       is_equipment=False)])
-    target = rows[-1] if existing else None
     mock_managers(monkeypatch, module.Equipments, module.Equipment_Bonus)
     data = dict(eq_row(), TypeEquipment=equipment)
-    names = ['Material'] if equipment != 'Material' else []
+    cache = {}
     before = [(row.pk, row.name, row.is_equipment) for row in rows]
     for _ in range(2):
-        cmd.makeEQ(Mock(), data, names)
+        cmd.makeEQ(Mock(), data, cache)
     assert rows[0] is general
-    assert (general.pk, general.name, general.is_equipment) == (1, 'Material', equipment == 'Material')
+    assert (general.pk, general.name, general.is_equipment) == (1, 'Material', False)
     result = saved[0]
     assert result.is_equipment is True
-    assert result is target if existing else result is not general
-    assert selected == [target]
+    assert result is not general
+    assert selected == [None]
     assert saved == [result]
-    assert len(rows) == len(before) + (not existing)
+    assert len(rows) == len(before) + 1
     for row, state in zip(rows, before):
         assert (row.pk, row.name, row.is_equipment) == (
-            state[0], state[1], True if row is target else state[2])
-    if not existing:
-        assert result.name == equipment
-    assert names.count(equipment) == 1
+            state[0], state[1], state[2])
+    assert result.name == equipment
+    assert cache == {(equipment, True): result}
     module.Equipments.objects.get.return_value.save.assert_called_with()
 
 
@@ -280,14 +354,10 @@ def test_general_types_preserve_duplicate_state(type_rows, monkeypatch, kind, na
     for row, state in before:
         assert any(row is current for current in rows)
         assert vars(row) == state
-    if names:
-        assert len(rows) == 2
-        assert saved == []
-        assert selected == ([] if query in names else [rows[1]])
-    else:
-        assert len(rows) == 1
-        assert rows[0].name == query and not rows[0].is_equipment
-        assert selected == [None] and saved == rows
+    assert len(rows) == len(before) + 1
+    assert saved == [rows[-1]]
+    assert (rows[-1].name, rows[-1].is_equipment) == (query, False)
+    assert selected == [None]
 
 
 @pytest.mark.parametrize('kind', ['item', 'added', 'changed', 'equipment'])
@@ -295,13 +365,13 @@ def test_type_database_errors_propagate(type_rows, monkeypatch, kind):
     from django.db import OperationalError
     cmd, module, rows, _, saved = type_rows
     error = OperationalError('database down')
-    module.Item_Type.objects.filter = Mock(side_effect=error)
+    module.get_or_create_item_type.side_effect = error
     mock_managers(monkeypatch, module.Items, module.Equipments)
     if kind == 'item':
         module.Items.objects.get.side_effect = error
     with pytest.raises(OperationalError, match='database down'):
         if kind == 'equipment':
-            cmd.makeEQ(Mock(), dict(eq_row(), TypeEquipment='Seal'), [])
+            cmd.makeEQ(Mock(), dict(eq_row(), TypeEquipment='Seal'), {})
         else:
             changes = {'added': [], 'changed': [], 'removed': []}
             changes['added' if kind == 'item' else kind] = [item_row()]
@@ -647,6 +717,8 @@ def test_classification_indexes_preserve_lists_priority_and_missing_group_errors
     cmd, module = importer
     mock_managers(monkeypatch, module.Items, module.Item_Type)
     module.Item_Type.objects.all.return_value = [module.Item_Type(name='Material')]
+    monkeypatch.setattr(module, 'get_or_create_item_type',
+                        Mock(return_value=(module.Item_Type(name='Material'), False)))
     groups = {'EQUIPMENT': ['Shared'], 'CARD': ['Shared'], 'RECIPES': [], 'COLLECTION': []}
     before = deepcopy(groups)
     lists = list(groups.values())
