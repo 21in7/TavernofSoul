@@ -38,7 +38,8 @@ from django.conf import settings
 from django.db import transaction
 from os.path import join, exists
 
-from Items.models import Items, Item_Type, Equipments, Recipes, Item_Recipe_Material, Item_Recipe_Target
+from Items.models import Items, Equipments, Recipes, Item_Recipe_Material, Item_Recipe_Target
+from ipfparser.item_types import get_or_create_item_type
 
 log = logging.getLogger('migrate_recipe_ids')
 log.setLevel('INFO')
@@ -139,6 +140,7 @@ class Command(BaseCommand):
         from .importAll import Command as ImportCommand
 
         recipe_filled = equip_filled = mat_failures = skipped = 0
+        item_type_cache = {}
         by_numeric_id = {}
         for entry in items_by_name.values():
             if entry.get('$ID') is not None:
@@ -175,7 +177,7 @@ class Command(BaseCommand):
                 if dry_run:
                     log.info('[dry-run] backfill %s (ids=%s)', name, canonical)
                 else:
-                    existing = self._upsert_item(entry, canonical)
+                    existing = self._upsert_item(entry, canonical, item_type_cache)
                 if is_recipe:
                     recipe_filled += 1
                 else:
@@ -189,11 +191,7 @@ class Command(BaseCommand):
             importer = ImportCommand()
             for item, entry in equipment:
                 if not Equipments.objects.filter(item=item).exists():
-                    # Pre-create the equipment category: makeEQ's fallback may
-                    # otherwise rename the generic item category in place.
-                    Item_Type.objects.update_or_create(
-                        name=entry['TypeEquipment'], defaults={'is_equipment': True})
-                    importer.makeEQ(item, entry, [entry['TypeEquipment']])
+                    importer.makeEQ(item, entry, item_type_cache)
             for entry in recipes:
                 mat_failures += self._relink_recipe(entry)
 
@@ -201,7 +199,7 @@ class Command(BaseCommand):
                  'skipped=%d', recipe_filled, equip_filled, mat_failures, skipped)
         return recipe_filled, equip_filled, mat_failures, skipped
 
-    def _upsert_item(self, entry, canonical_ids):
+    def _upsert_item(self, entry, canonical_ids, item_type_cache=None):
         """entry 로 Items 행을 생성한다(canonical_ids 사용). importItem 의
         added 분기와 동일한 필드 매핑."""
         handler = Items()
@@ -216,7 +214,7 @@ class Command(BaseCommand):
         handler.type = entry.get('Type', '')
         # Item_Type 이 없으면 생성(importItem 과 동일).
         if handler.type:
-            Item_Type.objects.get_or_create(name=handler.type)
+            get_or_create_item_type(handler.type, False, item_type_cache)
         handler.grade = entry.get('Grade', '') or 1
         handler.icon = entry.get('Icon', '')
         pc = entry.get('PackageContents')

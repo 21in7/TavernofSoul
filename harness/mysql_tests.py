@@ -7,12 +7,13 @@ from django.db import connection, DataError, IntegrityError, transaction
 from django.test import TestCase, TransactionTestCase
 
 from Dashboard.models import Version
-from Items.models import Equipments, Items, Item_Recipe_Material
+from Items.models import Equipments, Items, Item_Recipe_Material, Item_Type
 from Maps.models import Map_NPC
 from Skills.models import Skills
 from harness.mysql_config import TEST_DATABASE_NAME
 from harness.parser_fixture import parse_workspace, prepare_world_workspace
 from ipfparser.management.commands.importAll import Command
+from ipfparser.item_types import get_or_create_item_type
 
 
 class MySQLSchemaTests(TestCase):
@@ -34,6 +35,44 @@ class MySQLSchemaTests(TestCase):
         self.assertTrue(all(engine == 'InnoDB' and collation == 'utf8mb4_unicode_ci'
                             for _, engine, collation in tables), tables)
 
+    def test_binary_item_type_lookup_preserves_pairs_under_existing_unicode_ci_collation(self):
+        self.assertEqual(connection.vendor, 'mysql')
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT COLLATION_NAME FROM information_schema.COLUMNS '
+                           'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
+                           [Item_Type._meta.db_table, 'name'])
+            self.assertEqual(cursor.fetchone(), ('utf8mb4_unicode_ci',))
+        expected, cache = {}, {}
+        for name in ('Blade', 'blade', 'Blade ', 'Caf\u00e9', 'Cafe\u0301'):
+            for flag in (False, True):
+                row, created = get_or_create_item_type(name, flag, cache)
+                self.assertTrue(created, (name, flag))
+                self.assertEqual((row.name, row.is_equipment), (name, flag))
+                expected[(name, flag)] = row.pk
+        self.assertEqual(len(set(expected.values())), 10)
+        # Establish the backend ambiguity that a name__exact-only lookup misses.
+        for name, count in (('Blade', 3), ('Caf\u00e9', 2)):
+            self.assertEqual(Item_Type.objects.filter(name__exact=name, is_equipment=False).count(), count)
+        before = list(Item_Type.objects.order_by('pk').values_list('pk', 'name', 'is_equipment'))
+        for cache_arg in (None, {}, cache):
+            for (name, flag), pk in expected.items():
+                row, created = get_or_create_item_type(name, flag, cache_arg)
+                self.assertFalse(created)
+                row.refresh_from_db()
+                self.assertEqual((row.pk, row.name, row.is_equipment), (pk, name, flag))
+        self.assertEqual(list(Item_Type.objects.order_by('pk').values_list(
+            'pk', 'name', 'is_equipment')), before)
+        for flag in (False, True):
+            Item_Type.objects.create(name='Blade', is_equipment=flag)
+        duplicates = list(Item_Type.objects.order_by('pk').values_list('pk', 'name', 'is_equipment'))
+        for cache_arg in (None, {}, {}):
+            for flag in (False, True):
+                row, created = get_or_create_item_type('Blade', flag, cache_arg)
+                self.assertFalse(created)
+                self.assertEqual(row.pk, expected[('Blade', flag)])
+        self.assertEqual(list(Item_Type.objects.order_by('pk').values_list(
+            'pk', 'name', 'is_equipment')), duplicates)
+
 
 class MySQLPipelineTests(TransactionTestCase):
     def setUp(self):
@@ -54,6 +93,36 @@ class MySQLPipelineTests(TransactionTestCase):
     def snapshot(self):
         return [list(model.objects.order_by('pk').values())
                 for model in (Items, Equipments, Skills, Map_NPC, Version)]
+
+    def test_successful_import_keeps_byte_distinct_type_pairs_and_reuses_them(self):
+        expected = {}
+        names = ('Blade', 'blade', 'Blade ', 'Caf\u00e9', 'Cafe\u0301')
+        for name in names:
+            self.db.data['items_by_name']['harness_sword'].update(Type=name, TypeEquipment=name)
+            self.db.export(version_payload={'version': 'mysql-type-pairs'})
+            self.import_release()
+            self.assertEqual(Items.objects.get(id_name='harness_sword').type, name)
+            self.assertEqual(Equipments.objects.get(item__id_name='harness_sword').type_equipment, name)
+            for flag in (False, True):
+                matches = [(pk, stored_name, stored_flag) for pk, stored_name, stored_flag in
+                           Item_Type.objects.values_list('pk', 'name', 'is_equipment')
+                           if (stored_name, stored_flag) == (name, flag)]
+                self.assertEqual(len(matches), 1)
+                expected[(name, flag)] = matches[0][0]
+            for (stored_name, flag), pk in expected.items():
+                row, created = get_or_create_item_type(stored_name, flag, {})
+                self.assertFalse(created)
+                self.assertEqual(row.pk, pk)
+        before = list(Item_Type.objects.order_by('pk').values())
+        # Force another changed-item import instead of relying on an empty diff.
+        self.db.data['items_by_name']['harness_sword']['Name'] = 'Repeated MySQL pair'
+        self.db.export(version_payload={'version': 'mysql-type-pairs'})
+        self.import_release()
+        self.assertEqual(list(Item_Type.objects.order_by('pk').values()), before)
+        self.assertEqual(Version.objects.count(), 1)
+        self.assertEqual((self.release / 'prev/items_by_name.json').read_bytes(),
+                         (self.release / 'items_by_name.json').read_bytes())
+        self.assertFalse(list(self.release.glob('.import-prev-*')))
 
     def test_korean_emoji_and_case_insensitive_search_round_trip(self):
         self.db.data['items_by_name']['harness_ore']['Name'] = '하네스 Café 🧙'

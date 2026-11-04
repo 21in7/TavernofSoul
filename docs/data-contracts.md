@@ -129,6 +129,40 @@ direct/prev·failure/retry/state cleanup 및 실제 save/audit/삭제·missing/a
 이전 full workflow timeout/readonly cleanup 실패와 후속 인계는
 [하네스](harness.md#이번-importercleanup-수리의-후보-근거와-검증-대기)에 기록한다.
 
+### 활성 importAll·migrate_recipe_ids의 Item_Type 계약
+
+2026-11-04 새 수리 범위는 활성 `importAll`과 `migrate_recipe_ids`다.
+두 명령은 `Item_Type`의 `(name, is_equipment)`를 모두 lookup 인자로 명시한
+`QuerySet.get_or_create`로 정확한 pair를 재사용한다. 일반 유형은 `False`, 장비는 `True`이며,
+이름만으로 기존 행의 flag를 갱신하지 않는다. 기존 이름·flag·id와 이름의 대소문자·끝 공백·
+Unicode 조합을 그대로 보존한다. `migrate_recipe_ids`의 `makeEQ` 캐시도 pair를 키로 쓰며,
+기존 `if handler.type`의 빈 일반 유형 건너뛰기는 유지한다.
+
+공통 조회 유틸 `ipfparser/item_types.py`는 이름 lookup에 SQL binary 비교 표현식을 추가한다.
+parent가 제공한 운영 MariaDB 11.3.2 `utf8mb4_general_ci`와 CI MySQL 8.4.11
+`utf8mb4_unicode_ci`에서는 `name__exact`만으로 bytes 구분을 보장할 수 없다.
+MySQL/MariaDB의 `_NameBytes.as_mysql`은 `CAST(... AS BINARY)`를 명시하고 SQLite는
+기존 `Cast` 경로를 쓴다. 이는 조회 표현식이며 모델·필드·collation·schema 변경이 아니다.
+정확히 같은 pair의 기존 `MultipleObjectsReturned`만 최소 pk 행을 재사용한다.
+원래 중복은 삭제하지 않으며 다른 DB 오류는 전파한다. 캐시는 호출 내부 pair→객체 dict로
+성공한 조회만 담고, rollback 또는 다음 호출에 남기지 않는다.
+DB unique 제약이 없어 동시 writer의 중복 생성까지 막지는 못한다.
+중복 정리·정규화·flag 보정과 DB 제약 도입은 별도 후속 과제로 보류한다.
+
+`importAll`의 성공 종료 끝에서 transaction commit·`prev` publication·backup 정리를 마친 뒤
+Python `Counter` 등 DB collation에 영향받지 않는 집계로 정확한 pair 중복을 audit한다.
+중복 pair마다 `settings.REGION`, 이름 `repr`, flag, 해당 pair의 전체 행 수를 WARNING으로 남긴다.
+중복 발견과 audit 자체 오류는 warning-only이며 성공 결과·Version·`prev`를 실패로 바꾸지 않는다.
+실제 import 단계의 DB 예외 전파·rollback·`prev` 복원·cleanup·`update=0` 계약은 유지한다.
+
+parent의 2026-11-04 관측에 따르면 세 지역 실제 cron과 운영 wrapper·예제의 실행 경로는
+`scripts/run_region_cron.sh`의 `manage_${region}.py importAll`이다.
+tracked regular 1,611개 파일과 실제 운영 설정의 정적 조사에서 별도 legacy 관리 명령
+`importItem`·`importAll_old`의 외부 호출은 발견되지 않았다. 외부 또는 과거 수동 shell 실행의
+부재까지 보장하지는 않는다. 두 legacy 명령의 내용·등록·실행 가능 상태는 이번에 바꾸지 않으며
+삭제·deprecation 조사는 별도 후속이다. 활성 `importAll.Command.importItem` 메서드는 이번 범위다.
+이 관측은 parent 제공 사실이며 이 문서 작업자가 운영 파일을 열거나 실행한 결과가 아니다.
+
 ### Export staging과 공개·복원 경계
 
 직렬화 전 메모리 검사와 기록 후 staging 검사는 서로 다른 입력 경계이므로 둘 다 유지한다.
