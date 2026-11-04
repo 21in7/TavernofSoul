@@ -17,7 +17,6 @@ import sys
 _django_project = join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'TavernofSoul')
 if _django_project not in sys.path:
     sys.path.append(_django_project)
-from ipfparser.contracts import load_release, validate_release
 
 
 def _atomic_write_json(filepath, item):
@@ -201,12 +200,16 @@ class ToS_DB():
             self.data[i] = self.importJSON(path)
         
     def _validate_release(self, version_payload):
+        from ipfparser.contracts import validate_release
+
         data = dict(self.data)
         if version_payload is not None:
             data['version'] = version_payload
         validate_release(data, require_version=version_payload is not None)
 
     def _validate_staged_release(self, directory, version_payload):
+        from ipfparser.contracts import load_release
+
         load_release(directory, require_version=version_payload is not None)
 
     def export(self, version_payload=None):
