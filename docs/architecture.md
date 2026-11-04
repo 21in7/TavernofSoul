@@ -329,7 +329,14 @@ iTOS·jTOS·kTOS 예제는 정확한 지역만 `scripts/run_region_cron.sh`에 �
 로그에 기록하고 중간 알림 없이 main/import를 계속한다. 후속 성공은 `completed_with_warnings`,
 후속 실패는 `failed`이며 두 최종 메시지 모두 원래 `map_exit`를 포함한다. map 경고 없는 성공은
 `completed`다. map의 exit 0 stderr는 실패로 합성하지 않는다.
-실행별 `mktemp` 로그는 같은 지역·동일 초에도 고유하며 기존 로그를 덮어쓰거나 지우지 않는다.
+실행별 `mktemp` 로그는 같은 지역·동일 초에도 고유하며 기존 로그를 덮어쓰지 않는다.
+공통 flock 획득 성공 직후에만 실행 지역의 `logs/cron-${region}.*.log` 중 직하위 일반 파일을
+정리한다. 한 번 고정한 현재 시각에서 mtime이 30×24시간(2592000초)보다 오래된 파일만 삭제하며,
+정확히 30일인 파일과 현재 `run_log`(mtime 무관)는 보존한다. 다른 지역·패턴 밖 파일·잠금 파일·
+하위 디렉터리와 그 파일·심볼릭 링크와 대상은 보존하며 파일명 인자 경계를 유지한다.
+실제 삭제 성공 수는 실행 로그에 기록한다. 시간 기준 확보·후보 조회·stat·삭제 실패는 경고만
+남기고 가능한 정리 뒤 계속하며 `status`·`stage_code`·종료 코드·`map_exit`·Discord 내용과 횟수를
+바꾸지 않는다. 잠금 획득 실패와 `skipped_lock`에서는 정리하지 않는다.
 stdout/stderr, 단계별 시간·종료 코드, 완료·변경 없음·경합·실패를 기록한다.
 최종 시점에 `downloader/revision.csv`의 해당 지역(CRLF 포함)을 다시 읽어 관측값 또는
 `unknown`을 사용한다. 이는 import 완료 증거가 아니다. 알림은 실패 단계·원래 코드·지역·revision·
@@ -349,7 +356,12 @@ URL을 로그에 노출하거나 전체 로그를 알림으로 보내지 않고 
 import 완료 상태·자동 복구(B2)는 2026-11-10 이후 별도 설계이며 collectstatic도 범위 밖이다.
 운영 전환 절차와 PR의 merge 전 중지 경계는 [하네스 안내](harness.md#b1-공통-cron의-운영-전환과-인계),
 기본 B1 결정은 [ADR 0036](adr/0036-serialized-region-cron.md), 알림 시점·빈도의 부분 대체 결정은
-[ADR 0037](adr/0037-cron-final-notifications.md)에 둔다.
+[ADR 0037](adr/0037-cron-final-notifications.md)에 둔다. 로그 누적 정책만 부분 대체하는
+[ADR 0038](adr/0038-cron-log-retention.md)에 30일 보존 결정을 둔다.
+이번 반영은 사용자 merge 후 기존 native cleanup의 ff-only 동기화로 저장소 runner 소스를
+갱신한다. 운영 wrapper는 이미 해당 runner를 exec하므로 별도 wrapper/crontab 교체나 서비스
+reload는 필요 없다. 현재 연결의 실제 읽기 확인은 parent 책임이며, B1 초기 전환 기록과 구분한다.
+이번 workflow에서 운영 cron·실제 로그 정리·배포는 실행하지 않는다.
 
 ## 추적되는 설정과 로컬 운영 환경
 

@@ -1507,7 +1507,15 @@ map exit 0의 stderr 경고를 실패로 합성하지 않는다. 중단·오류�
 
 `logs/cron-<region>.<timestamp>.<unique>.log`는 mktemp로 생성하여 같은 지역·동일 초 호출에도
 고유하다. stdout/stderr와 단계 시작·경과 시간·종료 코드 및 최종 상태를 함께 보존한다.
-공유 이전출력 비교·삭제나 기존 로그 덮어쓰기는 없다. 최종 알림 직전과 최종 시점에
+공유 이전출력 비교·삭제나 기존 로그 덮어쓰기는 없다. 보존 정리는 공통 flock 획득 성공 직후에만
+실행 지역의 `logs/cron-${region}.*.log`에 맞는 직하위 일반 파일을 대상으로 한다. 실행당 한 번
+고정한 현재 시각보다 mtime이 엄격히 30×24시간(2592000초)을 초과해 오래된 파일만 삭제한다.
+정확히 30일과 더 새 파일, 현재 `run_log`(mtime 무관), 다른 지역·패턴 밖 파일·잠금 파일·
+하위 디렉터리와 그 파일·심볼릭 링크와 대상은 보존한다. 재귀·glob 전체 삭제 없이 공백·특수문자의
+파일명 인자 경계를 유지하며 실제 삭제 성공 수를 `event=log_cleanup`의 `deleted`에 기록한다.
+시간 기준 확보·후보 조회·stat·삭제 실패는 경고만 남기고 가능한 정리를 마친 뒤 파이프라인을
+계속한다. 정리 경고는 `status`·`stage_code`·파이프라인 종료 코드·`map_exit`와 Discord 내용·횟수를
+바꾸지 않는다. 잠금 획득 실패·`skipped_lock`에서는 정리하지 않는다. 최종 알림 직전과 최종 시점에
 `downloader/revision.csv`에서 해당 지역 revision을 다시 관측한다(CRLF 허용, 불명은 `unknown`).
 downloader 전 값으로 실패/최종 값을 대체하지 않으며 revision은 읽기 전용이다.
 
@@ -1523,7 +1531,9 @@ JSON 특수문자를 escape하고 전체 로그는 보내지 않는다. curl은 
 세 지역 Bash fixture는 정상 순서/cwd/인자, downloader 0/1/2/7, 파서/import/setup/venv 실패,
 정상/실패 최종 알림 각각 1회와 map 실패 뒤 후속 성공·실패의 통합 알림 1회 및 원래 `map_exit`,
 중간 알림이 없음을 보이는 가짜 호출 순서·준비 신호, JSON 특수문자·길이 상한·웹훅 누락/HTTP 실패·timeout 옵션·원래 코드 보존,
-revision 관측과 로그 유일성·보존을 검증 대상으로 삼는다. 실제 flock의 같은/다른 지역 경합과
+revision 관측과 로그 유일성·보존 범위를 검증 대상으로 삼는다. 고정 시각의 정확히 30일·1ns 전후,
+세 지역별 삭제 수·현재 로그와 비대상·링크 보존, 결정적 조회/stat/삭제 실패 stub 뒤 원래 단계·
+종료 코드·알림 정책 유지도 검증 대상으로 삼는다. 실제 flock의 같은/다른 지역 경합과
 정상/실패 뒤 해제는 준비 신호·제한된 대기·자식 정리로 관찰하며 sleep 타이밍에만 의존하지 않는다.
 변경 없음/경합은 웹훅 미설정·실패 stub에서도 curl/message 0회와 로그 보존을 검증 대상으로 삼는다.
 이는 fixture 범위이며 운영 배포 성공 증거가 아니다. downloader 변경 없음 1에서는 이전 파싱
@@ -1531,16 +1541,23 @@ revision 관측과 로그 유일성·보존을 검증 대상으로 삼는다. �
 
 ### B1 공통 cron의 운영 전환과 인계
 
-운영 전환은 이 PR 밖에서 parent가 별도 사용자 승인 후 비패치 시간에 수행한다.
+다음은 B1 초기 전환 당시 절차 기록이다. 운영 전환은 해당 PR 밖에서 parent가 별도 사용자 승인 후 비패치 시간에 수행한다.
 실제 writer가 없음을 확인하고 같은 공통 잠금을 확보한 상태에서 운영 스크립트 교체와
 세 iTOS·jTOS·kTOS crontab 줄의 바깥 flock 접두사 제거를 함께 준비·검증해야 한다.
 같은 inode를 외부 flock과 내부 runner가 별도 획득하면 자체 충돌하여 매번 건너뛸 수 있다.
 cron 시각 표현과 다른 줄은 그대로 유지한다. 이 문서는 전환 절차이며 배포 완료 주장이 아니다.
 ktest/twtos·map 본문·collectstatic·unique 제약은 이번 범위 밖이다.
 
+이번 30일 보존 정책은 위 초기 전환과 구분한다. 운영 wrapper는 이미 저장소의
+`scripts/run_region_cron.sh`를 exec하므로 사용자 merge 후 기존 native cleanup의 ff-only 동기화로
+runner 소스가 갱신되면 반영된다. 별도 wrapper/crontab 교체나 서비스 reload는 필요 없다.
+현재 wrapper 연결의 실제 읽기 확인은 parent 책임이며 이 문서 작업자는 운영 파일을 읽지 않는다.
+이번 workflow는 운영 cron·실제 로그 정리·배포를 수행하지 않으며 그 완료를 주장하지 않는다.
+
 게임 운영 잠금·실패·알림 정책은 [architecture](architecture.md)와
 [ADR 0036](adr/0036-serialized-region-cron.md), 알림 시점·빈도만 부분 대체하는
-[ADR 0037](adr/0037-cron-final-notifications.md)에 함께 기록한다. `docs/harness-design.md`는
+[ADR 0037](adr/0037-cron-final-notifications.md), 로그 누적 정책만 부분 대체하는
+[ADR 0038](adr/0038-cron-log-retention.md)에 함께 기록한다. `docs/harness-design.md`는
 하네스 실행기·입력·저장소·개발 잠금·게시·자동 검사 선택 정책 변경이 없어 범위 밖이다.
 기존 runner가 수집하는 제품 Bash fixture의 범위만 바뀐다.
 최종 Claude reviewer는 새 전체 diff와 문서 의미를 독립 검토하며, 매 검토에서
@@ -1552,6 +1569,15 @@ B1.1은 parent가 선행 #112/#113 UI squash merge와 external cleanup 완료를
 checkout/master `9c086dc2cc4f3c6b36690a810c1b8a88b3727879`를 기준으로 기존 모델·설정의 workflow를
 1회만 실행한다. 실패 뒤 parent 재실행 없이 기존 native bounded repair 정책을 유지한다.
 운영 반영은 별도 계획 보고만 하며 운영 cron/crontab·실제 파이프라인·Discord 호출 및 merge API 전송은 금지한다.
+
+이번 보존 정책의 기준은 사용자 지정 원본 checkout/master
+`cc879782cf465a96716707619a6bd60dc32f4ac4`다. 위 B1.1 기준은 과거 인계 기록으로 보존한다.
+parent/workflow가 기존 모델·설정으로 workflow 1회 → 최종 전체 diff의 Claude 독립 검토 →
+full `make check` → PR 게시·실제 CI 3개 success 확인을 수행하고 merge 전에 중지한다.
+parent 재시도 없이 기존 native bounded repair 정책을 유지하며 merge API는 전송하지 않는다.
+필수 문서가 승인 범위 밖이면 reviewer는 정확한 누락 경로를 기존 승인 파일의 finding에 귀속해
+`changes_requested`로 보고하고 main coordinator가 범위를 확인해 새 run을 준비한다.
+repair는 승인 범위를 확장하지 않는다.
 
 ## 이번 importer/cleanup 수리의 후보 근거와 검증 대기
 

@@ -201,6 +201,92 @@ return "${REACTIVATE_EXIT:-0}"
 '''
 
 
+# Installed only by retention tests. Delegate filesystem work to real utilities
+# inside the temporary repo; failures do not depend on chmod or the test UID.
+RETENTION_NOW_NS = 1900000000123456789
+RETENTION_NS = 2592000 * 10**9
+FAKE_RETENTION_TOOL = r'''
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+tool = Path(sys.argv[0]).name
+args = sys.argv[1:]
+root = Path(os.environ['FIXTURE_ROOT'])
+trace = Path(os.environ['CLEANUP_TRACE'])
+previous = [json.loads(line) for line in trace.read_text().splitlines()] \
+    if trace.exists() else []
+record = {'tool': tool, 'args': args}
+
+def save():
+    with trace.open('a') as output:
+        output.write(json.dumps(record) + '\n')
+
+def inside_logs(path):
+    # No resolution through a symlink: the real find/stat must decide its type.
+    assert Path(path).parent == root / 'logs', path
+
+if tool == 'date':
+    assert args == ['+%s.%N'], args
+    # A second clock read deliberately disagrees, exposing a moving cutoff.
+    calls = sum(row['tool'] == 'date' for row in previous)
+    now = int(os.environ['CLEANUP_NOW_NS']) + calls * 86400 * 10**9
+    record['now_ns'] = now
+    save()
+    print('%d.%09d' % divmod(now, 10**9))
+    sys.exit(0)
+
+real = os.environ['CLEANUP_REAL_' + tool.upper()]
+if tool == 'mktemp':
+    inside_logs(args[-1])
+    result = subprocess.run([real] + args, stdout=subprocess.PIPE)
+    record['path'] = os.fsdecode(result.stdout).rstrip('\n')
+    save()
+    sys.stdout.buffer.write(result.stdout)
+    sys.exit(result.returncode)
+
+if tool == 'find':
+    assert args[0] == str(root / 'logs'), args
+    current = Path([row['path'] for row in previous
+                    if row['tool'] == 'mktemp'][-1])
+    if os.environ.get('CLEANUP_AGE_CURRENT'):
+        old = int(os.environ['CLEANUP_NOW_NS']) - 2592001 * 10**9
+        # Log writes before cleanup would overwrite an mtime set by mktemp.
+        os.utime(str(current), ns=(old, old))
+        record['current_mtime_ns'] = current.stat().st_mtime_ns
+    result = subprocess.run([real] + args, stdout=subprocess.PIPE)
+    # Keep the current log last so a partial failed query yields a seeded
+    # candidate first, independent of the runner's timestamp or find's order.
+    candidates = sorted((part for part in result.stdout.split(b'\0') if part),
+                        key=lambda part: (part == os.fsencode(str(current)), part))
+    failure = os.environ.get('CLEANUP_QUERY_FAIL')
+    if failure == 'empty':
+        candidates = []
+    elif failure == 'partial':
+        candidates = candidates[:1]
+    record['candidates'] = [os.fsdecode(part) for part in candidates]
+    save()
+    sys.stdout.buffer.write(b''.join(part + b'\0' for part in candidates))
+    sys.exit(13 if failure else result.returncode)
+
+if tool == 'stat':
+    assert args == ['-c', '%f %Y %y', '--', args[-1]], args
+    failure = os.environ.get('CLEANUP_STAT_FAIL')
+elif tool == 'rm':
+    assert args == ['--', args[-1]], args
+    failure = os.environ.get('CLEANUP_DELETE_FAIL')
+else:
+    raise AssertionError(tool)
+inside_logs(args[-1])
+save()
+if Path(args[-1]).name == failure:
+    sys.exit(13)
+os.execv(real, [real] + args)
+'''
+
+
 class IsolatedCron:
     """Copy only approved entry points; invoke every stage through fake tools."""
 
@@ -249,6 +335,32 @@ class IsolatedCron:
         path.write_text('#!%s\n%s\n' % (sys.executable, textwrap.dedent(body)),
                         encoding='utf-8')
         path.chmod(0o700)
+
+    def retention_tools(self):
+        self.env.update(CLEANUP_TRACE=str(self.base / 'cleanup.jsonl'),
+                        CLEANUP_NOW_NS=str(RETENTION_NOW_NS))
+        for tool in ('date', 'find', 'stat', 'rm', 'mktemp'):
+            real = shutil.which(tool)
+            assert real, 'actual %s is required (never skip)' % tool
+            self.env['CLEANUP_REAL_' + tool.upper()] = real
+            self.write_tool(tool, FAKE_RETENTION_TOOL)
+
+    def cleanup_records(self, tool=None):
+        path = Path(self.env['CLEANUP_TRACE'])
+        rows = [json.loads(line) for line in path.read_text().splitlines()] \
+            if path.exists() else []
+        return rows if tool is None else [row for row in rows if row['tool'] == tool]
+
+    def cleanup_log(self):
+        return Path(self.cleanup_records('mktemp')[-1]['path'])
+
+    def seed_log(self, name, mtime_ns):
+        path = self.root / 'logs' / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'preserved fixture log\n')
+        os.utime(str(path), ns=(mtime_ns, mtime_ns))
+        assert path.stat().st_mtime_ns == mtime_ns
+        return path
 
     @property
     def stored_root(self):
@@ -361,12 +473,12 @@ def assert_end(log, status, stage, code, revision=None):
 
 
 def assert_final_notification(cron, status, stage, code, pipeline_code,
-                              revision, region='itos', map_code=0):
+                              revision, region='itos', map_code=0, log_path=None):
     assert len(cron.records('curl')) == len(cron.messages()) == 1
     # Every fake pipeline command must precede the sole final delivery attempt.
     assert cron.records()[:-1] == cron.stages()
     assert cron.records()[-1]['tool'] == 'curl'
-    log = cron.log()
+    log = log_path.read_text(encoding='utf-8') if log_path else cron.log()
     for event in ('pipeline_end', 'notification_summary', 'run_end'):
         assert log.count('event=' + event + ' ') == 1
     assert (log.index('event=pipeline_end ') <
@@ -378,7 +490,7 @@ def assert_final_notification(cron, status, stage, code, pipeline_code,
                   'pipeline_exit=%s' % pipeline_code, 'map_exit=%s' % map_code,
                   'notification_problem=none'):
         assert field in message.splitlines()
-    assert 'log=' + str(cron.logs()[0]) in message
+    assert 'log=' + str(log_path or cron.logs()[0]) in message
     assert_curl_contract(cron)
 
 
@@ -995,3 +1107,231 @@ def test_shared_runner_logs_unique_even_with_identical_timestamp_and_preserved(
         preserved[path] = path.read_bytes()
     assert len(cron.logs()) == 4
     assert len({path.name for path in cron.logs()}) == 4
+
+
+def assert_cleanup(log, region, deleted, warnings=()):
+    summaries = [line for line in log.splitlines() if 'event=log_cleanup ' in line]
+    assert len(summaries) == 1
+    assert ('event=log_cleanup region=%s deleted=%s retention_seconds=2592000' %
+            (region, deleted)) in summaries[0]
+    operations = [line.split('operation=', 1)[1].split()[0]
+                  for line in log.splitlines()
+                  if 'event=log_cleanup_warning ' in line]
+    assert sorted(operations) == sorted(warnings)
+    assert (log.index('event=stage_end stage=lock code=0 ') <
+            log.index('event=log_cleanup ') <
+            log.index('event=stage_start stage=setup_cwd'))
+
+
+@pytest.mark.parametrize('region', REGIONS)
+def test_shared_runner_retention_strict_boundary_scope_and_current_log(
+        cron_factory, region):
+    cron = cron_factory('repo space "quote" \\slash\n한글 ;$[]')
+    cron.retention_tools()
+    cutoff = RETENTION_NOW_NS - RETENTION_NS
+    exact = cron.seed_log('cron-%s.exact.log' % region, cutoff)
+    newer = cron.seed_log('cron-%s.newer.log' % region, cutoff + 1)
+    old_names = [
+        'cron-%s.older-one-nanosecond.log' % region,
+        'cron-%s.older-several-days.log' % region,
+        'cron-%s.space "quote" \\slash\n;$(literal)*?[한글].log' % region,
+    ]
+    old = [cron.seed_log(name, cutoff - (1 if index == 0 else 3 * 86400 * 10**9))
+           for index, name in enumerate(old_names)]
+    kept = [exact, newer]
+    kept.extend(cron.seed_log('cron-%s.other.log' % other, cutoff - 1)
+                for other in REGIONS if other != region)
+    for name in ('cron-%s.log' % region, 'cron-%s.old.log.bak' % region,
+                 'unrelated.log', 'cron-tos.lock'):
+        kept.append(cron.seed_log(name, cutoff - 1))
+    directory = cron.root / 'logs' / ('cron-%s.directory.log' % region)
+    directory.mkdir()
+    nested = cron.seed_log(directory.name + '/cron-%s.nested.log' % region,
+                           cutoff - 1)
+    kept.append(nested)
+    os.utime(str(directory), ns=(cutoff - 1, cutoff - 1))
+    target = cron.root / 'old symlink target.log'
+    target.write_bytes(b'outside logs must survive\n')
+    os.utime(str(target), ns=(cutoff - 1, cutoff - 1))
+    kept.append(target)
+    links = []
+    for suffix, destination in [('file', target), ('directory', directory),
+                                ('dangling', cron.root / 'missing target')]:
+        link = cron.root / 'logs' / ('cron-%s.%s-link.log' % (region, suffix))
+        link.symlink_to(destination)
+        os.utime(str(link), ns=(cutoff - 1, cutoff - 1), follow_symlinks=False)
+        links.append((link, os.readlink(str(link))))
+    preserved = {path: (path.read_bytes(), path.stat().st_ino) for path in kept}
+
+    result = cron.run(region, CLEANUP_AGE_CURRENT=1)
+    assert result.returncode == 0
+    run_log = cron.cleanup_log()
+    log = run_log.read_text(encoding='utf-8')
+    assert_cleanup(log, region, len(old))
+    assert_end(log, 'completed', 'import', 0)
+    assert all(not path.exists() for path in old)
+    for path, (contents, inode) in preserved.items():
+        assert path.read_bytes() == contents
+        assert path.stat().st_ino == inode
+    assert exact.stat().st_mtime_ns == cutoff
+    assert newer.stat().st_mtime_ns == cutoff + 1
+    assert directory.is_dir()
+    for link, destination in links:
+        assert link.is_symlink()
+        assert os.readlink(str(link)) == destination
+    clocks = cron.cleanup_records('date')
+    assert len(clocks) == 1
+    assert clocks[0]['now_ns'] == RETENTION_NOW_NS
+    queries = cron.cleanup_records('find')
+    assert len(queries) == 1
+    assert queries[0]['current_mtime_ns'] < cutoff
+    assert str(run_log) in queries[0]['candidates']
+    inspected = {row['args'][-1] for row in cron.cleanup_records('stat')}
+    removed = [row['args'][-1] for row in cron.cleanup_records('rm')]
+    assert inspected == {str(path) for path in old + [exact, newer]}
+    assert sorted(removed) == sorted(str(path) for path in old)
+    assert run_log.is_file()  # Excluded before stat, despite its forced old mtime.
+    assert [row['stage'] for row in cron.stages()] == [
+        'downloader', 'map', 'parser_logging', 'parser', 'import']
+    revision = dict(itos='409351', jtos='509352', ktos='609353')[region]
+    assert_final_notification(cron, 'completed', 'import', 0, 0, revision,
+                              region, log_path=run_log)
+
+
+@pytest.mark.parametrize('failure,deleted,warnings', [
+    ('query', 0, ('query',)),
+    ('partial_query', 1, ('query',)),
+    ('stat', 3, ('stat',)),
+    ('delete', 3, ('delete',)),
+    ('mixed', 2, ('stat', 'delete')),
+])
+@pytest.mark.parametrize('settings,status,stage,code,exit_code,map_code,stages', [
+    ({}, 'completed', 'import', 0, 0, 0,
+     ['downloader', 'map', 'parser_logging', 'parser', 'import']),
+    ({'DOWNLOADER_EXIT': 1}, 'no_changes', 'downloader', 1, 0, 0,
+     ['downloader']),
+    ({'DOWNLOADER_EXIT': 7}, 'failed', 'downloader', 7, 7, 0,
+     ['downloader']),
+    ({'PARSER_EXIT': 19}, 'failed', 'parser', 19, 19, 0,
+     ['downloader', 'map', 'parser_logging', 'parser']),
+    ({'IMPORT_EXIT': 23}, 'failed', 'import', 23, 23, 0,
+     ['downloader', 'map', 'parser_logging', 'parser', 'import']),
+    ({'MAP_EXIT': 11}, 'completed_with_warnings', 'import', 0, 0, 11,
+     ['downloader', 'map', 'parser_logging', 'parser', 'import']),
+    ({'MAP_EXIT': 11, 'PARSER_EXIT': 19}, 'failed', 'parser', 19, 19, 11,
+     ['downloader', 'map', 'parser_logging', 'parser']),
+])
+def test_shared_runner_retention_failures_preserve_pipeline_and_notification(
+        cron_factory, failure, deleted, warnings, settings, status, stage, code,
+        exit_code, map_code, stages):
+    cron = cron_factory()
+    cron.retention_tools()
+    paths = [cron.seed_log('cron-itos.%s.log' % name,
+                           RETENTION_NOW_NS - RETENTION_NS - 1)
+             for name in ('a-delete', 'b-stat', 'c-delete', 'd-delete')]
+    changes = dict(settings)
+    if failure in ('query', 'partial_query'):
+        changes['CLEANUP_QUERY_FAIL'] = 'empty' if failure == 'query' else 'partial'
+    if failure in ('stat', 'mixed'):
+        changes['CLEANUP_STAT_FAIL'] = paths[1].name
+    if failure in ('delete', 'mixed'):
+        changes['CLEANUP_DELETE_FAIL'] = paths[2].name
+    result = cron.run(**changes)
+    assert result.returncode == exit_code
+    run_log = cron.cleanup_log()
+    log = run_log.read_text(encoding='utf-8')
+    assert_cleanup(log, 'itos', deleted, warnings)
+    assert_end(log, status, stage, code, '409351')
+    assert [row['stage'] for row in cron.stages()] == stages
+    for event in ('pipeline_end', 'run_end'):
+        line = next(line for line in log.splitlines() if 'event=' + event + ' ' in line)
+        assert ' status=%s stage=%s code=%s pipeline_exit=%s map_exit=%s ' % (
+            status, stage, code, exit_code, map_code) in line
+    if map_code:
+        assert 'event=map_warning code=11 action=continue_parser_and_import' in log
+    if status == 'no_changes':
+        assert_no_notification(cron, log)
+    else:
+        assert_final_notification(cron, status, stage, code, exit_code, '409351',
+                                  map_code=map_code, log_path=run_log)
+        assert 'log_cleanup' not in cron.messages()[0]
+    expected_removed = set(paths)
+    if failure == 'query':
+        expected_removed.clear()
+    elif failure == 'partial_query':
+        expected_removed = {paths[0]}
+    else:
+        if failure in ('stat', 'mixed'):
+            expected_removed.remove(paths[1])
+        if failure in ('delete', 'mixed'):
+            expected_removed.remove(paths[2])
+    assert len(expected_removed) == deleted
+    for path in paths:
+        if path in expected_removed:
+            assert not path.exists()
+        else:
+            assert path.read_bytes() == b'preserved fixture log\n'
+    attempts = [Path(row['args'][-1]) for row in cron.cleanup_records('rm')]
+    expected_attempts = set(expected_removed)
+    if failure in ('delete', 'mixed'):
+        expected_attempts.add(paths[2])
+    assert attempts == sorted(expected_attempts)
+    if failure in ('stat', 'delete', 'mixed'):
+        # A later candidate is still deleted after deterministic earlier errors.
+        assert attempts[-1] == paths[-1]
+    assert len(cron.cleanup_records('date')) == 1
+    assert len(cron.cleanup_records('find')) == 1
+
+
+@pytest.mark.parametrize('region', REGIONS)
+@pytest.mark.parametrize('mode', ['busy', 'error', 'bad_fd'])
+def test_shared_runner_retention_never_runs_without_lock(cron_factory, region, mode):
+    cron = cron_factory()
+    cron.retention_tools()
+    if mode == 'busy':
+        ready, release = cron.block()
+        holder = cron.start('itos', BLOCK_STAGE='parser')
+        cron.wait_ready(holder, ready)
+        holder_log = cron.cleanup_log()
+    elif mode == 'error':
+        cron.write_tool('flock', 'import sys\nsys.exit(7)')
+    else:
+        cron.write_tool('flock', '''
+            import os
+            import sys
+            os.close(9)
+            os.execv(%r, [%r] + sys.argv[1:])
+        ''' % (cron.flock, cron.flock))
+    # Seed after the holder's readiness signal, so only the contender could
+    # remove this file. No sleep or assumption about scheduling is involved.
+    candidate = cron.seed_log('cron-%s.old.log' % region,
+                              RETENTION_NOW_NS - RETENTION_NS - 1)
+    before = [row for row in cron.cleanup_records() if row['tool'] != 'mktemp']
+    stages_before = cron.stages()
+    result = cron.run(region, direct=True)
+    run_log = cron.cleanup_log()
+    log = run_log.read_text(encoding='utf-8')
+    assert candidate.read_bytes() == b'preserved fixture log\n'
+    assert cron.stages() == stages_before
+    assert [row for row in cron.cleanup_records() if row['tool'] != 'mktemp'] == before
+    assert cron.cleanup_records('rm') == []  # Zero attempted or successful deletes.
+    assert 'event=log_cleanup' not in log
+    if mode == 'busy':
+        assert result.returncode == 0
+        assert_end(log, 'skipped_lock', 'lock', 200)
+        assert_no_notification(cron, log)
+        os.write(release, b'G')
+        assert cron.complete(holder).returncode == 0
+        assert_end(holder_log.read_text(), 'completed', 'import', 0)
+        assert len(cron.messages()) == 1
+        assert 'log=' + str(holder_log) in cron.messages()[0]
+    else:
+        assert result.returncode not in (0, 200)
+        if mode == 'error':
+            assert result.returncode == 7
+        assert_end(log, 'failed', 'lock', result.returncode)
+        assert_final_notification(cron, 'failed', 'lock', result.returncode,
+                                  result.returncode,
+                                  dict(itos='409351', jtos='509352',
+                                       ktos='609353')[region],
+                                  region, log_path=run_log)
