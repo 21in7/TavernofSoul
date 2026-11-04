@@ -291,7 +291,7 @@ def export_observation(release_db, monkeypatch):
     backup = Path(str(release) + '.backup')
     observed = {name: [] for name in ('writes', 'staged', 'copies', 'promotions')}
     real_write = DB._atomic_write_json
-    real_load = DB.load_release
+    real_load = contracts.load_release
     real_copy = DB.shutil.copy2
     real_replace = DB.os.replace
 
@@ -314,7 +314,7 @@ def export_observation(release_db, monkeypatch):
         return real_replace(src, dst)
 
     monkeypatch.setattr(DB, '_atomic_write_json', record_write)
-    monkeypatch.setattr(DB, 'load_release', record_staged)
+    monkeypatch.setattr(contracts, 'load_release', record_staged)
     monkeypatch.setattr(DB.shutil, 'copy2', record_copy)
     monkeypatch.setattr(DB.os, 'replace', record_replace)
     return observed

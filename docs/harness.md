@@ -321,6 +321,16 @@ make check PYTHON=/absolute/path/to/python
 현재 의존성 버전은 `harness/requirements.txt`에 고정되어 있다.
 하네스 환경 구성은 프로젝트 전체의 런타임 업그레이드를 의미하지 않는다.
 
+`map_image.py`가 사용하는 `parser_tidy/DB.py` 모듈은 Python 2.7로 import할 수 있다.
+Python 3 문법을 쓰는 `ipfparser.contracts`는 DB import 시 로드하지 않고, Python 3 export 경로의
+`_validate_release`에서 `validate_release`를, `_validate_staged_release`에서 `load_release`를 지연 import한다.
+기존 경로 준비·검증 호출 순서·데이터/경로 인자·버전 유무에 따른 `require_version`·예외 전파는 유지한다.
+`test_map_image_compat.py`는 현재 Python 3와 `shutil.which('python2.7')`로 발견한 Python 2.7을
+명시적인 별도 케이스로 수집하고 격리 subprocess `-B`에서 DB import와 contracts 미로드를 확인한다.
+child의 `sys.version_info`로 잘못된 실행 파일을 거절하며 출력에 인터프리터 식별 정보를 남긴다.
+Python 3-only CI의 통과는 Python 2.7 성공 증거가 아니다. Python 2 미설치를 skip/성공으로 표시하지 않으며,
+parent는 서버의 `/usr/bin/python2.7` 케이스가 실제 수집·통과했는지 별도로 확인한다.
+
 ```bash
 python3.8 -m venv harness/.venv
 harness/.venv/bin/python -m pip install -r harness/requirements.txt
@@ -1175,6 +1185,17 @@ DB의 `Version`은 고유 버전별 이력이다. 동일 버전 재적재는 이
 
 카드·젬·컬렉션, 전체 `main.py`, 바이너리 해제,
 자산 생성, 소수 초 쿨다운의 DB 저장은 이 원본 fixture로 검증하지 않는다.
+
+DB import 호환성 회귀는 필요한 DB와 실제 contracts 소스를 격리 경로에서 사용하며 운영 파일을 쓰지 않는다.
+Python 3 검증 회귀는 실제 validator에 위임하는 spy로 두 메서드의 인자·예외 전파를 확인하고,
+기존 export 검증 횟수·오류 전파·rollback 회귀를 유지한다. 운영 `map_image`·`main`·`importAll`,
+운영 DB·게임 데이터·JSON 출력·네트워크는 실행하지 않는다. 이번 PR A에서 운영 `map_image`는
+실행하지 않았으며 데이터 누락이나 TOK 처리의 실제 성공을 보장하지 않는다. 실제 데이터 누락은 미확인이다.
+전체 `make check`와 서버 Python 2.7 실측은 parent/workflow 책임이며 이 문서 변경은 성공 증거가 아니다.
+
+이 변경은 parser 모듈의 import 시점만 조정하며 검증 의미와 하네스 입력·저장소·격리·잠금·실패 복구·
+GitHub 게시 정책 및 책임을 유지한다. 문서 영향은 위 Python 환경과 검증 경계에 한정되므로
+`docs/harness-design.md`·`docs/workflow.md` 변경이나 새 ADR은 필요하지 않다.
 
 ## 스킬·몬스터·드롭 원본 검증
 
