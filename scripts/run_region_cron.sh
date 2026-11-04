@@ -174,6 +174,55 @@ open_lock() {
     exec 9>> "$repo_root/logs/cron-tos.lock"
 }
 
+cleanup_run_logs() (
+    # Isolate cleanup variables/exit status from pipeline and notification state.
+    trap - EXIT
+    local reference cutoff cutoff_fraction candidate metadata mtime fraction quoted
+    local deleted=0
+    local -a query_status
+    if ! reference=$(date +%s.%N 2>/dev/null) ||
+        [[ ! $reference =~ ^([0-9]+)\.([0-9]{9})$ ]]; then
+        log "event=log_cleanup_warning operation=time action=skip"
+        log "event=log_cleanup region=$region deleted=0 retention_seconds=2592000"
+        return 0
+    fi
+    cutoff=$((${BASH_REMATCH[1]} - 2592000))
+    cutoff_fraction=$((10#${BASH_REMATCH[2]}))
+    # No recursion or symlink following. NUL records preserve filename boundaries.
+    find "$repo_root/logs" -maxdepth 1 -type f -name "cron-${region}.*.log" \
+        -print0 2>/dev/null | {
+        while IFS= read -r -d '' candidate; do
+            [[ $candidate != "$run_log" ]] || continue
+            printf -v quoted '%q' "$candidate"
+            # %Y supplies whole epoch seconds; %y retains nanoseconds, so an
+            # exact 30-day timestamp (including its fraction) is preserved.
+            if ! metadata=$(LC_ALL=C stat -c '%f %Y %y' -- "$candidate" 2>/dev/null) ||
+                [[ ! $metadata =~ ^([[:xdigit:]]+)\ (-?[0-9]+)\ .*[.]([0-9]{9})\ [+-][0-9]{4}$ ]]; then
+                log "event=log_cleanup_warning operation=stat file=$quoted action=continue"
+                continue
+            fi
+            # stat does not dereference links; recheck the regular-file mode
+            # in case the candidate changed after find inspected it.
+            (( (16#${BASH_REMATCH[1]} & 0170000) == 0100000 )) || continue
+            mtime=${BASH_REMATCH[2]}
+            fraction=$((10#${BASH_REMATCH[3]}))
+            if ((mtime < cutoff || (mtime == cutoff && fraction < cutoff_fraction))); then
+                if rm -- "$candidate" 2>/dev/null; then
+                    ((deleted+=1))
+                else
+                    log "event=log_cleanup_warning operation=delete file=$quoted action=continue"
+                fi
+            fi
+        done
+        log "event=log_cleanup region=$region deleted=$deleted retention_seconds=2592000"
+    }
+    query_status=("${PIPESTATUS[@]}")
+    if ((query_status[0] != 0 || query_status[1] != 0)); then
+        log "event=log_cleanup_warning operation=query action=continue"
+    fi
+    return 0
+)
+
 case $region in
     itos|jtos|ktos) ;;
     *) log 'event=setup_error stage=setup_region allowed=itos,jtos,ktos'; stage_code=64; exit 64 ;;
@@ -196,6 +245,7 @@ if ((lock_code == 200)); then
 elif ((lock_code != 0)); then
     exit "$lock_code"
 fi
+cleanup_run_logs
 
 # FD 9 remains open through every stage and EXIT notification/summary.
 required_stage setup_cwd cd -- "$repo_root"
