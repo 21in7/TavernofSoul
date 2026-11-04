@@ -1497,28 +1497,35 @@ flock 자체 오류는 구분하여 실패 처리한다.
 단계 코드는 즉시 보존한다. downloader 0은 계속, 1은 `no_changes`/exit 0으로 후속 생략,
 나머지(2·7 포함)는 원래 코드로 중단한다. setup·cd·venv 실패도 단계명을 남긴다.
 파서 실패 시 import를 실행하지 않고 파서 원래 코드를 반환하며 import 실패도 원래 코드를 반환한다.
-map nonzero는 원래 코드를 기록하고 Discord 경고 뒤 main/import를 계속한다.
-후속 성공은 `completed_with_warnings`, 일반 성공은 `completed`다.
+map nonzero는 원래 `map_exit`를 즉시 로그에 기록하고 중간 알림 없이 main/import를 계속한다.
+후속 성공은 `completed_with_warnings`, 후속 실패는 `failed`이며 두 최종 메시지 모두 원래
+`map_exit`를 포함한다. map 경고 없는 성공은 `completed`다.
 map exit 0의 stderr 경고를 실패로 합성하지 않는다. 중단·오류는 공통 EXIT에서 실패로 남긴다.
+`no_changes`·`skipped_lock`은 실행별 단계·파이프라인·최종 로그만 남기며 Discord/curl 호출은 0회다.
+이 두 상태는 웹훅 미설정이나 실패 curl stub에서도 전송을 생략하며 알림 문제로 상태를 저하시키지 않는다.
+실제 갱신 성공과 단계 실패의 알림은 공통 EXIT에서 최종 1회만 시도한다.
 
 `logs/cron-<region>.<timestamp>.<unique>.log`는 mktemp로 생성하여 같은 지역·동일 초 호출에도
 고유하다. stdout/stderr와 단계 시작·경과 시간·종료 코드 및 최종 상태를 함께 보존한다.
-공유 이전출력 비교·삭제나 기존 로그 덮어쓰기는 없다. 알림 직전과 최종 시점에
+공유 이전출력 비교·삭제나 기존 로그 덮어쓰기는 없다. 최종 알림 직전과 최종 시점에
 `downloader/revision.csv`에서 해당 지역 revision을 다시 관측한다(CRLF 허용, 불명은 `unknown`).
 downloader 전 값으로 실패/최종 값을 대체하지 않으며 revision은 읽기 전용이다.
 
 웹훅은 기존 `TAVERN_DISCORD_WEBHOOK_URL` 환경 변수에서만 받으며 URL을 소스·로그에 남기지 않는다.
-Discord에는 실패 단계·원래 코드·지역·revision·실행 로그 경로와 map 결과의 bounded 요약만 보낸다.
+Discord에는 최종 상태·단계·원래 코드·지역·revision·실행 로그 경로와 `map_exit`의 bounded 요약만 보낸다.
 JSON 특수문자를 escape하고 전체 로그는 보내지 않는다. curl은 `--fail`, `--connect-timeout 5`,
-`--max-time 15`, `--retry 0`을 사용한다. 미설정은 전송 생략 및 `notification_unconfigured`,
+`--max-time 15`, `--retry 0`을 사용한다. 전송 대상 실행에서 미설정은 전송 생략 및 `notification_unconfigured`,
 전송 실패는 `notification_failed`를 최종 상태에 붙여 로그에 남긴다.
 전달 문제는 파이프라인 원래 종료 코드를 바꾸지 않으므로 성공 파이프라인은 exit 0이어도
-완전한 알림 성공을 뜻하지 않는다. map 경고 알림 실패도 main/import를 막지 않는다.
+완전한 알림 성공을 뜻하지 않는다. map 경고도 후속 실행이 끝난 뒤 최종 메시지에 합치므로
+알림 전달 문제는 main/import 진행을 막지 않는다.
 
 세 지역 Bash fixture는 정상 순서/cwd/인자, downloader 0/1/2/7, 파서/import/setup/venv 실패,
-map 실패 뒤 후속 성공·실패, JSON 특수문자·웹훅 누락/HTTP 실패·timeout 옵션·원래 코드 보존,
+정상/실패 최종 알림 각각 1회와 map 실패 뒤 후속 성공·실패의 통합 알림 1회 및 원래 `map_exit`,
+중간 알림이 없음을 보이는 가짜 호출 순서·준비 신호, JSON 특수문자·길이 상한·웹훅 누락/HTTP 실패·timeout 옵션·원래 코드 보존,
 revision 관측과 로그 유일성·보존을 검증 대상으로 삼는다. 실제 flock의 같은/다른 지역 경합과
 정상/실패 뒤 해제는 준비 신호·제한된 대기·자식 정리로 관찰하며 sleep 타이밍에만 의존하지 않는다.
+변경 없음/경합은 웹훅 미설정·실패 stub에서도 curl/message 0회와 로그 보존을 검증 대상으로 삼는다.
 이는 fixture 범위이며 운영 배포 성공 증거가 아니다. downloader 변경 없음 1에서는 이전 파싱
 실패를 복구하지 않는다. import 완료 상태·커서·retry/자동 복구(B2)는 2026-11-10 이후 별도 설계다.
 
@@ -1532,14 +1539,19 @@ cron 시각 표현과 다른 줄은 그대로 유지한다. 이 문서는 전환
 ktest/twtos·map 본문·collectstatic·unique 제약은 이번 범위 밖이다.
 
 게임 운영 잠금·실패·알림 정책은 [architecture](architecture.md)와
-[ADR 0036](adr/0036-serialized-region-cron.md)에 함께 기록한다. `docs/harness-design.md`는
+[ADR 0036](adr/0036-serialized-region-cron.md), 알림 시점·빈도만 부분 대체하는
+[ADR 0037](adr/0037-cron-final-notifications.md)에 함께 기록한다. `docs/harness-design.md`는
 하네스 실행기·입력·저장소·개발 잠금·게시·자동 검사 선택 정책 변경이 없어 범위 밖이다.
 기존 runner가 수집하는 제품 Bash fixture의 범위만 바뀐다.
-reviewer는 최종 전체 diff와 문서 의미를 새로 검토하여 `documentation={status,files,reason}`을
-판단해야 한다. 문서 파일 존재나 확장자 검사는 의미적 완전성의 증거가 아니다.
+최종 Claude reviewer는 새 전체 diff와 문서 의미를 독립 검토하며, 매 검토에서
+`documentation={status,files,reason}`을 새로 판단해야 한다. 기존 승인은 재사용하지 않는다.
+문서 파일 존재나 확장자 검사는 의미적 완전성의 증거가 아니다.
 worker는 검사·Git·GitHub 게시·CI·merge·재위임을 수행하지 않는다. parent/workflow가 필수
 전체 `make check`와 PR 생성 및 실제 CI 3개 성공을 확인한 뒤 merge 전에 중지한다.
-실패 뒤 parent의 별도 재시도 없이 기존 native repair 정책만 유지한다.
+B1.1은 parent가 선행 #112/#113 UI squash merge와 external cleanup 완료를 확인한 뒤 원본
+checkout/master `9c086dc2cc4f3c6b36690a810c1b8a88b3727879`를 기준으로 기존 모델·설정의 workflow를
+1회만 실행한다. 실패 뒤 parent 재실행 없이 기존 native bounded repair 정책을 유지한다.
+운영 반영은 별도 계획 보고만 하며 운영 cron/crontab·실제 파이프라인·Discord 호출 및 merge API 전송은 금지한다.
 
 ## 이번 importer/cleanup 수리의 후보 근거와 검증 대기
 

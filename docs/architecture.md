@@ -325,24 +325,31 @@ iTOS·jTOS·kTOS 예제는 정확한 지역만 `scripts/run_region_cron.sh`에 �
 
 다운로더 0은 후속 진행, 1은 `no_changes` 성공 종료로 map·파서·import를 생략하며,
 그 밖의 코드는 실패로 보존한다. setup·cd·venv와 파서·import 실패도 해당 단계와 원래 코드를
-공통 EXIT 처리에 전달한다. 파서 실패 뒤 import는 없다. map nonzero는 기록·Discord 경고 후
-계속하며 후속 성공은 `completed_with_warnings`다. map의 exit 0 stderr는 실패로 합성하지 않는다.
+공통 EXIT 처리에 전달한다. 파서 실패 뒤 import는 없다. map nonzero는 원래 `map_exit`를 즉시
+로그에 기록하고 중간 알림 없이 main/import를 계속한다. 후속 성공은 `completed_with_warnings`,
+후속 실패는 `failed`이며 두 최종 메시지 모두 원래 `map_exit`를 포함한다. map 경고 없는 성공은
+`completed`다. map의 exit 0 stderr는 실패로 합성하지 않는다.
 실행별 `mktemp` 로그는 같은 지역·동일 초에도 고유하며 기존 로그를 덮어쓰거나 지우지 않는다.
 stdout/stderr, 단계별 시간·종료 코드, 완료·변경 없음·경합·실패를 기록한다.
-실패/최종 알림 시 `downloader/revision.csv`의 해당 지역(CRLF 포함)을 다시 읽어 관측값 또는
+최종 시점에 `downloader/revision.csv`의 해당 지역(CRLF 포함)을 다시 읽어 관측값 또는
 `unknown`을 사용한다. 이는 import 완료 증거가 아니다. 알림은 실패 단계·원래 코드·지역·revision·
 로그 경로의 bounded JSON 요약이며 웹훅은 `TAVERN_DISCORD_WEBHOOK_URL`에서만 받는다.
 URL을 로그에 노출하거나 전체 로그를 알림으로 보내지 않고 curl HTTP 실패 처리·연결/전체 timeout·재시도 없음 정책을 쓴다.
-미설정/전송 실패는 최종 상태에 명시하며 파이프라인 코드를 덮거나 map 이후 진행을 막지 않는다.
+`no_changes`·`skipped_lock`은 실행별 단계·파이프라인·최종 로그만 남기고 Discord/curl 호출은 0회다.
+이 두 상태는 전송이 필요 없는 정상 정책이므로 웹훅 미설정/전송 실패 상태로 저하시키지 않는다.
+실제 갱신 성공과 단계 실패는 공통 EXIT에서 최종 알림을 1회만 시도한다. 전송 대상 실행의
+웹훅 미설정은 전송을 생략하고 `notification_unconfigured`, 전송 실패는 `notification_failed`를
+최종 로그 상태에 명시한다. 두 경우 모두 원래 파이프라인 종료 코드를 보존한다.
 
 `parser_tidy/tests/test_cron_guard.py`는 세 예제와 runner를 임시 repo로 복사해 실제 Bash/flock과
 가짜 단계·curl로 제어 흐름을 검증한다. ktest/twtos는 기존 본문 기반 명령 순서·실패 가드를
 유지하며 `downloader/tests/test_downloader.py`도 두 legacy 다운로드 가드를 유지한다.
 필수 예제·runner 누락은 skip 대신 실패다. 실제 게임 데이터·네트워크·운영 cron/가상환경/import는
 사용하지 않는다. 다운로더 변경 없음 1에서는 이전 파싱 실패를 복구하지 않는다.
-import 완료 상태·자동 복구(B2)는 2026-11-10 이후 별도 설계다.
+import 완료 상태·자동 복구(B2)는 2026-11-10 이후 별도 설계이며 collectstatic도 범위 밖이다.
 운영 전환 절차와 PR의 merge 전 중지 경계는 [하네스 안내](harness.md#b1-공통-cron의-운영-전환과-인계),
-승인 결정은 [ADR 0036](adr/0036-serialized-region-cron.md)에 둔다.
+기본 B1 결정은 [ADR 0036](adr/0036-serialized-region-cron.md), 알림 시점·빈도의 부분 대체 결정은
+[ADR 0037](adr/0037-cron-final-notifications.md)에 둔다.
 
 ## 추적되는 설정과 로컬 운영 환경
 

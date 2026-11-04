@@ -109,7 +109,10 @@ finish() {
     fi
     read_revision
     log "event=pipeline_end region=$region revision=$revision status=$status stage=$stage code=$stage_code pipeline_exit=$pipeline_code map_exit=$map_code log=$run_log"
-    notify "$status" "$stage_code" "$pipeline_code"
+    # Normal no-op outcomes keep their run logs without notification degradation.
+    if [[ $status != no_changes && $status != skipped_lock ]]; then
+        notify "$status" "$stage_code" "$pipeline_code"
+    fi
     final_status=$status
     if [[ $notification_problem != none ]]; then
         final_status="${status}_notification_${notification_problem}"
@@ -211,7 +214,6 @@ run_stage map python2.7 map_image.py "$region"
 map_code=$?
 if ((map_code != 0)); then
     log "event=map_warning code=$map_code action=continue_parser_and_import"
-    notify map_warning "$map_code" 0
 fi
 
 required_stage parser_venv source "$repo_root/TavernofSoul/itos/3.8/bin/activate"
