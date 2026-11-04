@@ -360,6 +360,37 @@ def assert_end(log, status, stage, code, revision=None):
         assert ' revision=%s ' % revision in line
 
 
+def assert_final_notification(cron, status, stage, code, pipeline_code,
+                              revision, region='itos', map_code=0):
+    assert len(cron.records('curl')) == len(cron.messages()) == 1
+    # Every fake pipeline command must precede the sole final delivery attempt.
+    assert cron.records()[:-1] == cron.stages()
+    assert cron.records()[-1]['tool'] == 'curl'
+    log = cron.log()
+    for event in ('pipeline_end', 'notification_summary', 'run_end'):
+        assert log.count('event=' + event + ' ') == 1
+    assert (log.index('event=pipeline_end ') <
+            log.index('event=notification_summary ') <
+            log.index('event=notification status=') < log.index('event=run_end '))
+    message = cron.messages()[0]
+    for field in ('region=' + region, 'revision=' + revision, 'status=' + status,
+                  'stage=' + stage, 'code=%s' % code,
+                  'pipeline_exit=%s' % pipeline_code, 'map_exit=%s' % map_code,
+                  'notification_problem=none'):
+        assert field in message.splitlines()
+    assert 'log=' + str(cron.logs()[0]) in message
+    assert_curl_contract(cron)
+
+
+def assert_no_notification(cron, log):
+    assert cron.records('curl') == []
+    assert cron.messages() == []
+    assert 'event=notification_summary ' not in log
+    assert 'event=notification ' not in log
+    assert '_notification_unconfigured' not in log
+    assert '_notification_failed' not in log
+
+
 @pytest.mark.parametrize('region', REGIONS)
 def test_shared_runner_region_order_cwd_arguments_and_logs(cron_factory, region):
     cron = cron_factory()
@@ -391,8 +422,7 @@ def test_shared_runner_region_order_cwd_arguments_and_logs(cron_factory, region)
         if 'event=' in line:
             assert len(line.split()[0]) >= 24  # ISO date, time and numeric offset
     revision = dict(itos='409351', jtos='509352', ktos='609353')[region]
-    assert 'revision=' + revision in cron.messages()[0]
-    assert 'log=' + str(cron.logs()[0]) in cron.messages()[0]
+    assert_final_notification(cron, 'completed', 'import', 0, 0, revision, region)
     assert cron.revision.read_bytes() == cron.initial_revision
     assert (cron.root / 'logs/cron-tos.lock').is_file()
     assert 'SECRET_FIXTURE_TOKEN' not in log + result.stdout + result.stderr
@@ -409,13 +439,37 @@ def test_shared_runner_downloader_exit_contract(cron_factory, region, code):
     status = 'no_changes' if code == 1 else 'failed'
     assert_end(cron.log(), status, 'downloader', code, '700007')
     assert 'event=stage_end stage=downloader code=%s elapsed_seconds=' % code in cron.log()
-    assert len(cron.messages()) == 1
-    message = cron.messages()[0]
-    for field in ('region=' + region, 'revision=700007', 'status=' + status,
-                  'stage=downloader', 'code=%s' % code,
-                  'log=' + str(cron.logs()[0])):
-        assert field in message
+    if code == 1:
+        assert_no_notification(cron, cron.log())
+    else:
+        assert_final_notification(cron, status, 'downloader', code, code,
+                                  '700007', region)
+    assert 'event=pipeline_end region=%s revision=700007 status=%s ' % (
+        region, status) in cron.log()
+    assert 'pipeline_exit=%s map_exit=0 log=%s' % (
+        result.returncode, cron.logs()[0]) in cron.log()
     assert 'status=completed' not in cron.log()
+
+
+@pytest.mark.parametrize('region', REGIONS)
+@pytest.mark.parametrize('delivery', ['unset', 'http', 'timeout'])
+def test_shared_runner_no_changes_never_attempts_notification(cron_factory,
+                                                             region, delivery):
+    cron = cron_factory()
+    settings = dict(DOWNLOADER_EXIT=1, REVISION_AFTER_DOWNLOADER='700007',
+                    CURL_EXIT=28 if delivery == 'timeout' else 22)
+    if delivery == 'unset':
+        settings['TAVERN_DISCORD_WEBHOOK_URL'] = None
+    result = cron.run(region, **settings)
+    assert result.returncode == 0
+    assert [row['stage'] for row in cron.stages()] == ['downloader']
+    log = cron.log()
+    assert_end(log, 'no_changes', 'downloader', 1, '700007')
+    assert_no_notification(cron, log)
+    assert 'event=stage_end stage=downloader code=1 elapsed_seconds=' in log
+    assert 'event=pipeline_end region=%s revision=700007 status=no_changes ' % region in log
+    assert 'pipeline_exit=0 map_exit=0 log=' + str(cron.logs()[0]) in log
+    assert 'SECRET_FIXTURE_TOKEN' not in log + result.stdout + result.stderr
 
 
 @pytest.mark.parametrize('region', REGIONS)
@@ -434,8 +488,8 @@ def test_shared_runner_original_failure_blocks_success(
     assert 'event=stage_end stage=%s code=%s elapsed_seconds=' % (
         failed_stage, code) in cron.log()
     assert 'status=completed' not in cron.log()
-    assert 'stage=%s\ncode=%s' % (failed_stage, code) in cron.messages()[-1]
-    assert 'revision=800008' in cron.messages()[-1]
+    assert_final_notification(cron, 'failed', failed_stage, code, code,
+                              '800008', region)
 
 
 @pytest.mark.parametrize('region', REGIONS)
@@ -448,7 +502,18 @@ def test_shared_runner_map_warning_continues_and_observes_revision(
                     REVISION_AFTER_IMPORT='710004')
     if failed_stage:
         settings[failed_stage.upper() + '_EXIT'] = code
-    result = cron.run(region, **settings)
+    ready, release = cron.block()
+    proc = cron.start(region, BLOCK_STAGE='parser', **settings)
+    cron.wait_ready(proc, ready)
+    # Map has already failed and the parser is running, but no notification is
+    # due until EXIT knows the outcome of the remaining pipeline.
+    assert [row['stage'] for row in cron.stages()] == [
+        'downloader', 'map', 'parser_logging', 'parser']
+    assert 'event=map_warning code=11 action=continue_parser_and_import' in cron.log()
+    assert 'event=pipeline_end ' not in cron.log()
+    assert_no_notification(cron, cron.log())
+    os.write(release, b'G')
+    result = cron.complete(proc)
     assert result.returncode == code
     expected = ['downloader', 'map', 'parser_logging', 'parser']
     if failed_stage != 'parser':
@@ -457,15 +522,16 @@ def test_shared_runner_map_warning_continues_and_observes_revision(
     log = cron.log()
     assert 'event=stage_end stage=map code=11 elapsed_seconds=' in log
     assert 'event=map_warning code=11 action=continue_parser_and_import' in log
-    assert len(cron.messages()) == 2
-    warning, final = cron.messages()
-    assert 'status=map_warning\nstage=map\ncode=11' in warning
-    assert 'revision=710002' in warning
     revision = '710003' if failed_stage == 'parser' else '710004'
     status = 'failed' if failed_stage else 'completed_with_warnings'
     assert_end(log, status, failed_stage or 'import', code, revision)
-    assert 'revision=' + revision in final
-    assert 'map_exit=11' in final
+    assert_final_notification(cron, status, failed_stage or 'import', code, code,
+                              revision, region, map_code=11)
+    assert 'event=pipeline_end region=%s revision=%s status=%s ' % (
+        region, revision, status) in log
+    assert 'pipeline_exit=%s map_exit=11 log=%s' % (code, cron.logs()[0]) in log
+    assert 'status=map_warning' not in log
+    assert 'revision=710002' not in cron.messages()[0]
 
 
 def test_shared_runner_map_stderr_with_zero_is_not_failure(cron_factory):
@@ -474,7 +540,7 @@ def test_shared_runner_map_stderr_with_zero_is_not_failure(cron_factory):
     assert result.returncode == 0
     assert 'fixture stderr map' in cron.log()
     assert 'event=map_warning' not in cron.log()
-    assert len(cron.messages()) == 1
+    assert_final_notification(cron, 'completed', 'import', 0, 0, '409351')
     assert_end(cron.log(), 'completed', 'import', 0)
 
 
@@ -520,8 +586,7 @@ def test_shared_runner_setup_and_cd_failures_are_stage_failures(
     assert_end(cron.log(), 'failed', stage, stage_code, revision)
     assert 'event=stage_end stage=%s code=%s elapsed_seconds=' % (
         stage, stage_code) in cron.log()
-    assert 'pipeline_exit=%s' % code in cron.messages()[-1]
-    assert 'stage=%s\ncode=%s' % (stage, stage_code) in cron.messages()[-1]
+    assert_final_notification(cron, 'failed', stage, stage_code, code, revision)
     assert 'status=completed' not in cron.log()
 
 
@@ -565,7 +630,7 @@ def test_shared_runner_early_setup_errors_have_exit_summary(
     if cron.logs():
         output += cron.log()
     assert_end(output, 'failed', stage, code)
-    assert len(cron.messages()) == 1
+    assert len(cron.records('curl')) == len(cron.messages()) == 1
     assert 'stage=%s\ncode=%s' % (stage, code) in cron.messages()[0]
     assert 'status=completed' not in output
 
@@ -579,6 +644,7 @@ def test_shared_runner_rejects_non_supported_regions(cron_factory, region):
     assert not cron.logs()
     assert_end(result.stdout + result.stderr, 'failed', 'setup_region', 64,
                'unknown')
+    assert len(cron.records('curl')) == len(cron.messages()) == 1
 
 
 @pytest.mark.parametrize('csv', [
@@ -619,7 +685,7 @@ def test_shared_runner_accepts_revision_without_final_newline(cron_factory):
     result = cron.run(DOWNLOADER_EXIT=1)
     assert result.returncode == 0
     assert_end(cron.log(), 'no_changes', 'downloader', 1, '987654')
-    assert 'revision=987654' in cron.messages()[0]
+    assert_no_notification(cron, cron.log())
     assert cron.revision.read_bytes() == b'jtos,12\r\nitos,987654'
 
 
@@ -650,8 +716,8 @@ def test_shared_runner_webhook_json_escape_and_bounded_summary(cron_factory):
     cron = cron_factory('repo "quoted" \\backslash\n\t\r 한글')
     result = cron.run(LARGE_OUTPUT=1, MAP_EXIT=13)
     assert result.returncode == 0
-    assert_curl_contract(cron)
-    assert len(cron.records('curl')) == 2  # warning and final, never full output
+    assert_final_notification(cron, 'completed_with_warnings', 'import', 0, 0,
+                              '409351', map_code=13)
     for message in cron.messages():
         assert 'log=' + str(cron.logs()[0]) in message
         assert 'region=itos\nrevision=409351\n' in message
@@ -682,38 +748,53 @@ def test_shared_runner_notification_failure_preserves_pipeline_and_status(
     assert 'event=notification status=' + problem in cron.log()
     if delivery == 'unset':
         assert cron.records('curl') == []
+        assert cron.messages() == []
     else:
-        assert len(cron.records('curl')) == 1  # no automatic retry
+        assert_final_notification(cron, base_status,
+                                  'parser' if pipeline_code else 'import',
+                                  pipeline_code, pipeline_code, '409351')
         assert 'summary=%s code=%s' % (base_status, curl_code) in cron.log()
-        assert_curl_contract(cron)
     assert 'SECRET_FIXTURE_TOKEN' not in cron.log() + result.stdout + result.stderr
 
 
-@pytest.mark.parametrize('delivery', ['unset', 'http'])
-@pytest.mark.parametrize('parser_code', [0, 49])
-def test_shared_runner_map_notification_failure_does_not_block_followup(
-        cron_factory, delivery, parser_code):
+@pytest.mark.parametrize('delivery', ['unset', 'http', 'timeout'])
+@pytest.mark.parametrize('failed_stage,code', [(None, 0), ('parser', 49), ('import', 51)])
+def test_shared_runner_map_final_notification_failure_preserves_pipeline(
+        cron_factory, delivery, failed_stage, code):
     cron = cron_factory()
-    settings = dict(MAP_EXIT=15, PARSER_EXIT=parser_code, CURL_EXIT=22)
+    curl_code = 28 if delivery == 'timeout' else 22
+    settings = dict(MAP_EXIT=15, CURL_EXIT=curl_code,
+                    REVISION_AFTER_PARSER='720003', REVISION_AFTER_IMPORT='720004')
+    if failed_stage:
+        settings[failed_stage.upper() + '_EXIT'] = code
     if delivery == 'unset':
         settings['TAVERN_DISCORD_WEBHOOK_URL'] = None
     result = cron.run(**settings)
-    assert result.returncode == parser_code
+    assert result.returncode == code
     expected = ['downloader', 'map', 'parser_logging', 'parser']
-    if parser_code == 0:
+    if failed_stage != 'parser':
         expected.append('import')
     assert [row['stage'] for row in cron.stages()] == expected
     problem = 'unconfigured' if delivery == 'unset' else 'failed'
-    status = 'failed' if parser_code else 'completed_with_warnings'
+    status = 'failed' if failed_stage else 'completed_with_warnings'
+    stage = failed_stage or 'import'
+    revision = '720003' if failed_stage == 'parser' else '720004'
     assert_end(cron.log(), status + '_notification_' + problem,
-               'parser' if parser_code else 'import', parser_code)
+               stage, code, revision)
     assert 'event=map_warning code=15' in cron.log()
-    assert len(cron.records('curl')) == (0 if delivery == 'unset' else 2)
-    if delivery == 'http':
-        assert_curl_contract(cron)
-        assert 'status=map_warning\nstage=map\ncode=15' in cron.messages()[0]
-        assert 'stage=%s\ncode=%s' % (
-            'parser' if parser_code else 'import', parser_code) in cron.messages()[1]
+    assert 'status=map_warning' not in cron.log()
+    assert 'event=pipeline_end region=itos revision=%s status=%s ' % (
+        revision, status) in cron.log()
+    assert 'pipeline_exit=%s map_exit=15 log=%s' % (code, cron.logs()[0]) in cron.log()
+    assert cron.log().count('event=notification_summary ') == 1
+    assert cron.log().count('event=notification status=' + problem) == 1
+    if delivery == 'unset':
+        assert cron.records('curl') == []
+        assert cron.messages() == []
+    else:
+        assert_final_notification(cron, status, stage, code, code, revision,
+                                  map_code=15)
+        assert 'summary=%s code=%s' % (status, curl_code) in cron.log()
     assert 'SECRET_FIXTURE_TOKEN' not in cron.log() + result.stdout + result.stderr
 
 
@@ -745,8 +826,9 @@ def test_shared_runner_real_lock_covers_all_stages_and_releases(
     assert 'event=stage_start stage=setup_venv' not in skipped
     assert 'event=stage_start stage=downloader' not in skipped
     assert 'status=failed' not in skipped
-    assert len(cron.messages()) == 1
-    assert 'status=skipped_lock\nstage=lock\ncode=200' in cron.messages()[0]
+    assert_no_notification(cron, skipped)
+    assert 'event=pipeline_end region=%s ' % contender_region in skipped
+    assert 'pipeline_exit=0 map_exit=0 log=' + str(skipped_log) in skipped
     assert lock.stat().st_ino == inode
     assert lock.read_bytes() == b'existing lock inode\n'
 
@@ -761,6 +843,11 @@ def test_shared_runner_real_lock_covers_all_stages_and_releases(
                      else 'completed')
     assert_end(holder_log.read_text(), holder_status,
                held_stage if expected_code else 'import', expected_code)
+    assert len(cron.records('curl')) == len(cron.messages()) == 1
+    assert 'status=' + holder_status in cron.messages()[0]
+    assert 'map_exit=%s' % (holder_code if held_stage == 'map' else 0) in cron.messages()[0]
+    assert 'log=' + str(holder_log) in cron.messages()[0]
+    assert_curl_contract(cron)
     preserved = {path: path.read_bytes() for path in cron.logs()}
     previous_stages = len(cron.stages())
     # A new region succeeds after either normal or failed exit of the holder.
@@ -770,8 +857,49 @@ def test_shared_runner_real_lock_covers_all_stages_and_releases(
     for path, data in preserved.items():
         assert path.read_bytes() == data
     assert len(cron.logs()) == 3
+    assert len(cron.records('curl')) == len(cron.messages()) == 2
     assert lock.stat().st_ino == inode
     assert lock.read_bytes() == b'existing lock inode\n'
+
+
+@pytest.mark.parametrize('contender_region', REGIONS)
+@pytest.mark.parametrize('delivery', ['unset', 'http', 'timeout'])
+def test_shared_runner_skipped_lock_never_attempts_notification(
+        cron_factory, contender_region, delivery):
+    cron = cron_factory()
+    ready, release = cron.block()
+    holder = cron.start('itos', BLOCK_STAGE='parser')
+    cron.wait_ready(holder, ready)
+    holder_log = cron.logs()[0]
+    lock = cron.root / 'logs/cron-tos.lock'
+    inode = lock.stat().st_ino
+    before = cron.stages()
+    settings = dict(CURL_EXIT=28 if delivery == 'timeout' else 22)
+    if delivery == 'unset':
+        settings['TAVERN_DISCORD_WEBHOOK_URL'] = None
+    result = cron.run(contender_region, direct=True, **settings)
+    assert result.returncode == 0
+    assert cron.stages() == before
+    skipped_log = next(path for path in cron.logs() if path != holder_log)
+    skipped = skipped_log.read_text()
+    assert_end(skipped, 'skipped_lock', 'lock', 200)
+    assert_no_notification(cron, skipped)
+    assert 'event=stage_end stage=lock code=200 elapsed_seconds=' in skipped
+    assert 'event=skipped_lock region=%s ' % contender_region in skipped
+    assert 'event=pipeline_end region=%s ' % contender_region in skipped
+    assert 'pipeline_exit=0 map_exit=0 log=' + str(skipped_log) in skipped
+    assert 'event=stage_start stage=setup_venv' not in skipped
+    assert 'SECRET_FIXTURE_TOKEN' not in skipped + result.stdout + result.stderr
+    saved = skipped_log.read_bytes()
+    os.write(release, b'G')
+    assert cron.complete(holder).returncode == 0
+    assert_end(holder_log.read_text(), 'completed', 'import', 0, '409351')
+    assert len(cron.records('curl')) == len(cron.messages()) == 1
+    assert 'status=completed\nstage=import\ncode=0' in cron.messages()[0]
+    assert 'log=' + str(holder_log) in cron.messages()[0]
+    assert skipped_log.read_bytes() == saved
+    assert len(cron.logs()) == 2
+    assert lock.stat().st_ino == inode
 
 
 @pytest.mark.parametrize('code', [7, 65])
@@ -783,7 +911,7 @@ def test_shared_runner_flock_error_is_not_lock_contention(cron_factory, code):
     assert cron.stages() == []
     assert_end(cron.log(), 'failed', 'lock', code)
     assert 'skipped_lock' not in cron.log()
-    assert 'status=failed\nstage=lock\ncode=%s' % code in cron.messages()[0]
+    assert_final_notification(cron, 'failed', 'lock', code, code, '409351')
     assert (cron.root / 'logs/cron-tos.lock').is_file()
 
 
@@ -802,7 +930,8 @@ def test_shared_runner_actual_flock_error_is_not_skipped(cron_factory):
     assert cron.stages() == []
     assert_end(cron.log(), 'failed', 'lock', result.returncode)
     assert 'skipped_lock' not in cron.log()
-    assert 'stage=lock\ncode=%s' % result.returncode in cron.messages()[0]
+    assert_final_notification(cron, 'failed', 'lock', result.returncode,
+                              result.returncode, '409351')
     assert (cron.root / 'logs/cron-tos.lock').is_file()
 
 
@@ -820,7 +949,7 @@ def test_shared_runner_interruption_is_failure_and_releases_lock(cron_factory):
         'downloader', 'map', 'parser_logging', 'parser']
     assert_end(cron.log(), 'failed', 'parser', 143)
     assert 'status=completed' not in cron.log()
-    assert 'stage=parser\ncode=143' in cron.messages()[0]
+    assert_final_notification(cron, 'failed', 'parser', 143, 143, '409351')
     interrupted_log = cron.logs()[0]
     saved = interrupted_log.read_bytes()
     assert cron.run('jtos').returncode == 0
