@@ -699,7 +699,9 @@ cp -n cron_ktos.sh.example cron_ktos.sh
 `cp -n`은 기존 파일을 덮어쓰지 않는다. **기존 운영 서버에서는 이 복사 단계 자체를 수행하지 않고,
 기존 cron·settings를 복사하거나 덮어쓰지 않는다.** 새로 복사한 cron은 지역 흐름·실패 가드와
 실행 권한을 유지하고 설치 경로·인터프리터·가상환경 경로를 새 서버에 맞춰 준비한다.
-예제에는 기존 서버의 절대 경로가 있으므로 복사만으로 실행 환경이 준비되는 것은 아니다.
+iTOS·jTOS·kTOS는 예제 옆 `scripts/run_region_cron.sh`가 자신의 위치로 repo 루트를 결정한다.
+공통 `TavernofSoul/itos/3.8` 가상환경과 인터프리터·의존성은 별도 준비해야 한다.
+ktest/twtos 예제의 기존 절대 경로도 새 서버에 맞춰 준비해야 한다.
 하네스 검증을 위해 운영 cron을 실행하거나 등록하지 않는다.
 
 `settings_region.py.example`은 추적되는 `settings_common.py`를 가져온다.
@@ -781,10 +783,13 @@ Django test runner로 `Items.tests`를 실행한다. 디렉터리 위치와 검�
 - JSON·미디어·캐시·메일은 하네스 환경으로 분리한다. 임시 JSON과 DB는 실행 후 정리된다.
 - 기존 환경의 `PYTEST_ADDOPTS`/추가 plugin 설정을 제거하고 하네스 전용 pytest 설정을 사용한다.
 - 선택된 pytest/Django 테스트의 skip, xfail, 테스트 미수집은 실패로 처리한다.
-- `downloader/tests/test_downloader.py`와 `parser_tidy/tests/test_cron_guard.py`는 추적되는
-  5개 지역의 `cron_<region>.sh.example`을 읽는다. 예제가 없으면 실패하며 로컬 운영 cron으로
-  대체하지 않는다. 다운로드·import 반환 코드 가드만 분리해 검사하고 파서 실패 가드와
-  지역 명령 순서를 확인하므로 전체 cron·다운로드·웹훅·운영 import는 실행하지 않는다.
+- `parser_tidy/tests/test_cron_guard.py`는 추적되는 iTOS·jTOS·kTOS 예제와 공통 runner를
+  임시 repo로 복사하여 실제 Bash/flock으로 실행한다. 임시 bin·가짜 activate·작은 revision.csv와
+  가짜 downloader/map/parser/import/curl로 순서·cwd·인자와 종료/로그/알림 결과를 관찰한다.
+  ktest/twtos는 기존 예제 본문 기반 명령 순서·파서/import 실패 가드를 유지하고,
+  `downloader/tests/test_downloader.py`의 다운로드 가드 본문 실행도 두 legacy에 유지한다.
+  필수 예제·runner 누락은 실패이며 운영 파일로 대체하거나 skip하지 않는다.
+  실제 게임 데이터·네트워크·운영 가상환경·Python 관리 명령·Discord는 사용하지 않는다.
 - 결과는 공유 저장 정책이 선택한 private 보고서 디렉터리에 JSON으로 남는다.
   설정이 없으면 Git에서 제외된 `logs/harness/`, 설정이 있으면 artifact root를 사용한다.
   `doctor.json`, `downloader.json`, `parser.json`, `django-regressions.json`, `django.json`, `pipeline.json` 및
@@ -1318,7 +1323,7 @@ IPF는 임시 실행 파일로 도구 호출 순서와 종료 코드 처리를 �
 | 다운로더 CLI 종료 코드 | 의미 | cron 처리 |
 | --- | --- | --- |
 | 0 | 새 패치 처리 완료 | 다음 단계 진행 |
-| 1 | 새 패치 없음 | 기존 지역별 변경 없음 처리 유지 |
+| 1 | 새 패치 없음 | iTOS·jTOS·kTOS는 map·파서·import 생략 후 성공 종료; ktest/twtos는 기존 처리 유지 |
 | 2 | 네트워크·파일·복호화·압축 해제·IES CSV 검증·복사·버전 기록 실패 | 파싱·DB import 전에 중단 |
 
 다운로드는 `.part`에 저장하고 비어 있거나 Content-Length와 다르면 공개하지 않는다.
@@ -1472,13 +1477,59 @@ merge와 cleanup 상태는 구분하며 cleanup complete 전 전체 성공을 �
 
 ## 공개 저장소의 운영 알림 설정
 
-추적되는 `cron_itos.sh.example`, `cron_jtos.sh.example`, `cron_ktos.sh.example`의 Discord 웹훅은
-`TAVERN_DISCORD_WEBHOOK_URL` 환경 변수에서 읽는다. 실제 지역 cron은 로컬 운영 파일이다.
-운영 cron 환경에서 지역에 맞는 값을 따로 설정하며 URL을 소스나 로그에 기록하지 않는다.
-`downloader/tests/test_downloader.py`와 `parser_tidy/tests/test_cron_guard.py`는 5개 지역의
-추적되는 `.example`을 읽어 다운로드·파서·import 실패 가드를 검사한다.
-예제가 없으면 skip하지 않고 실패하며 운영 cron은 실행하지 않는다.
-서버의 기존 설정과 운영 파일은 이 소스 준비 작업에서 수정하지 않는다.
+추적되는 iTOS·jTOS·kTOS 예제는 지역을 `scripts/run_region_cron.sh`에 전달하는 진입점이다.
+실제 지역 cron은 로컬 운영 파일이며 이번 PR에서 읽거나 수정·실행하지 않는다.
+공통 runner는 최소 경로·고유 로그 준비 직후 `logs/cron-tos.lock`에 `flock -n`을 획득한다.
+세 지역과 수동 실행이 같은 잠금을 전체 downloader/map/parser/import 및 EXIT 처리까지 유지한다.
+잠금 파일은 삭제하지 않는다. 경합은 `skipped_lock`/exit 0으로 남기고 파이프라인을 생략하며,
+flock 자체 오류는 구분하여 실패 처리한다.
+
+단계 코드는 즉시 보존한다. downloader 0은 계속, 1은 `no_changes`/exit 0으로 후속 생략,
+나머지(2·7 포함)는 원래 코드로 중단한다. setup·cd·venv 실패도 단계명을 남긴다.
+파서 실패 시 import를 실행하지 않고 파서 원래 코드를 반환하며 import 실패도 원래 코드를 반환한다.
+map nonzero는 원래 코드를 기록하고 Discord 경고 뒤 main/import를 계속한다.
+후속 성공은 `completed_with_warnings`, 일반 성공은 `completed`다.
+map exit 0의 stderr 경고를 실패로 합성하지 않는다. 중단·오류는 공통 EXIT에서 실패로 남긴다.
+
+`logs/cron-<region>.<timestamp>.<unique>.log`는 mktemp로 생성하여 같은 지역·동일 초 호출에도
+고유하다. stdout/stderr와 단계 시작·경과 시간·종료 코드 및 최종 상태를 함께 보존한다.
+공유 이전출력 비교·삭제나 기존 로그 덮어쓰기는 없다. 알림 직전과 최종 시점에
+`downloader/revision.csv`에서 해당 지역 revision을 다시 관측한다(CRLF 허용, 불명은 `unknown`).
+downloader 전 값으로 실패/최종 값을 대체하지 않으며 revision은 읽기 전용이다.
+
+웹훅은 기존 `TAVERN_DISCORD_WEBHOOK_URL` 환경 변수에서만 받으며 URL을 소스·로그에 남기지 않는다.
+Discord에는 실패 단계·원래 코드·지역·revision·실행 로그 경로와 map 결과의 bounded 요약만 보낸다.
+JSON 특수문자를 escape하고 전체 로그는 보내지 않는다. curl은 `--fail`, `--connect-timeout 5`,
+`--max-time 15`, `--retry 0`을 사용한다. 미설정은 전송 생략 및 `notification_unconfigured`,
+전송 실패는 `notification_failed`를 최종 상태에 붙여 로그에 남긴다.
+전달 문제는 파이프라인 원래 종료 코드를 바꾸지 않으므로 성공 파이프라인은 exit 0이어도
+완전한 알림 성공을 뜻하지 않는다. map 경고 알림 실패도 main/import를 막지 않는다.
+
+세 지역 Bash fixture는 정상 순서/cwd/인자, downloader 0/1/2/7, 파서/import/setup/venv 실패,
+map 실패 뒤 후속 성공·실패, JSON 특수문자·웹훅 누락/HTTP 실패·timeout 옵션·원래 코드 보존,
+revision 관측과 로그 유일성·보존을 검증 대상으로 삼는다. 실제 flock의 같은/다른 지역 경합과
+정상/실패 뒤 해제는 준비 신호·제한된 대기·자식 정리로 관찰하며 sleep 타이밍에만 의존하지 않는다.
+이는 fixture 범위이며 운영 배포 성공 증거가 아니다. downloader 변경 없음 1에서는 이전 파싱
+실패를 복구하지 않는다. import 완료 상태·커서·retry/자동 복구(B2)는 2026-11-10 이후 별도 설계다.
+
+### B1 공통 cron의 운영 전환과 인계
+
+운영 전환은 이 PR 밖에서 parent가 별도 사용자 승인 후 비패치 시간에 수행한다.
+실제 writer가 없음을 확인하고 같은 공통 잠금을 확보한 상태에서 운영 스크립트 교체와
+세 iTOS·jTOS·kTOS crontab 줄의 바깥 flock 접두사 제거를 함께 준비·검증해야 한다.
+같은 inode를 외부 flock과 내부 runner가 별도 획득하면 자체 충돌하여 매번 건너뛸 수 있다.
+cron 시각 표현과 다른 줄은 그대로 유지한다. 이 문서는 전환 절차이며 배포 완료 주장이 아니다.
+ktest/twtos·map 본문·collectstatic·unique 제약은 이번 범위 밖이다.
+
+게임 운영 잠금·실패·알림 정책은 [architecture](architecture.md)와
+[ADR 0036](adr/0036-serialized-region-cron.md)에 함께 기록한다. `docs/harness-design.md`는
+하네스 실행기·입력·저장소·개발 잠금·게시·자동 검사 선택 정책 변경이 없어 범위 밖이다.
+기존 runner가 수집하는 제품 Bash fixture의 범위만 바뀐다.
+reviewer는 최종 전체 diff와 문서 의미를 새로 검토하여 `documentation={status,files,reason}`을
+판단해야 한다. 문서 파일 존재나 확장자 검사는 의미적 완전성의 증거가 아니다.
+worker는 검사·Git·GitHub 게시·CI·merge·재위임을 수행하지 않는다. parent/workflow가 필수
+전체 `make check`와 PR 생성 및 실제 CI 3개 성공을 확인한 뒤 merge 전에 중지한다.
+실패 뒤 parent의 별도 재시도 없이 기존 native repair 정책만 유지한다.
 
 ## 이번 importer/cleanup 수리의 후보 근거와 검증 대기
 

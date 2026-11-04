@@ -1086,13 +1086,17 @@ runpy.run_path(str(Path(root) / 'downloader/downloader.py'), run_name='__main__'
     assert result.returncode == expected, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize('region', ['itos', 'ktos', 'jtos', 'ktest', 'twtos'])
+# The itos/jtos/ktos examples are thin entrypoints to scripts/run_region_cron.sh
+# and keep no inline guard body to extract. Their downloader exit codes
+# (0/1/2/7) and follow-up blocking are executed with real Bash by
+# parser_tidy/tests/test_cron_guard.py, not by string extraction here.
+@pytest.mark.parametrize('region', ['ktest', 'twtos'])
 @pytest.mark.parametrize('code', [0, 1, 2, 7])
 def test_cron_download_failure_blocks_followup(region, code):
-    # Only the tracked .example is read: operational cron_*.sh stay untracked
-    # local files, so a fresh checkout must pass without them. A missing or
-    # guard-less example raises here (FileNotFoundError/ValueError): it fails
-    # the test, it is never skipped.
+    # Only the tracked .example of a legacy full-body region is read:
+    # operational cron_*.sh stay untracked local files, so a fresh checkout
+    # must pass without them. A missing or guard-less example raises here
+    # (FileNotFoundError/ValueError): it fails the test, it is never skipped.
     source = (ROOT / ('cron_' + region + '.sh.example')).read_text(encoding='utf-8')
     start = source.index('download_result=$?')
     end = source.index('\nfi', start) + len('\nfi')
