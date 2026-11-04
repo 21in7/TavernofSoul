@@ -15,6 +15,7 @@ PYTEST_WORKERS ?= 2
 .PHONY: agent-improve-tick agent-improve-loop-status agent-improve-publish
 .PHONY: agent-improve-completion
 .PHONY: improvement-metrics
+.PHONY: collectstatic-itos
 
 # Quote each improvement argument as one literal shell word. Never evaluate it
 # as shell code; the Python CLI validates IDs, paths and trusted-parent authority.
@@ -25,6 +26,7 @@ help:
 	@echo "storage-status  Inspect artifact/temp paths and local locks (read-only, no models)"
 	@echo "storage-doctor  Check mounts/free space [PROBE=1: probe existing private directories]"
 	@echo "prepare-ipf-unpacker Force a native release build directly to IPFUnpacker/ipf_unpack"
+	@echo "collectstatic-itos Collect iTOS static files for manual production deployment only"
 	@echo "check-downloader Run local patch, failure, and retry checks"
 	@echo "check-parser    Run parser regressions without game data [PYTEST_WORKERS=1: serial, default 2]"
 	@echo "check-django    Run importer regressions and item search tests"
@@ -73,6 +75,9 @@ help:
 	@echo "agent-improve-completion Resume only completion delivery: RUN_ID=... [RECONCILE=1]"
 	@echo "improvement-metrics Read retained metrics [PERIOD=latest|day|7d|30d FORMAT=text|json]"
 	@echo "Override the interpreter with: make check PYTHON=/path/to/python"
+
+collectstatic-itos:
+	cd TavernofSoul && ./itos/3.8/bin/python manage_itos.py collectstatic --noinput
 
 prepare-ipf-unpacker:
 	$(MAKE) -C IPFUnpacker/src/ipf_unpack -B release

@@ -750,6 +750,16 @@ obsolete parsing-server CI 3개는 메인 `/root`가 로컬에 그대로 보관�
 cd /home/ubuntu/TavernofSoul/TavernofSoul && ./itos/3.8/bin/python manage_itos.py collectstatic --noinput
 ```
 
+같은 명령을 저장소 루트에서 명시적 Make 타깃으로 실행할 수 있다.
+
+```bash
+make collectstatic-itos
+```
+
+이 타깃은 수동 운영 배포 전용이며 `--clear`를 사용하지 않는다.
+게임 cron·`make check`·기본 `make`·`help`·`doctor` 등 다른 자동 타깃에서는 호출하지 않는다.
+회귀 테스트는 임시 저장소의 가짜 실행 파일만 사용하며 운영 collectstatic·Django·DB·네트워크를 실행하지 않는다.
+
 원본 확인은 저장소와 배포된 CSS/JS의 해시 및 원본 HTTP 응답을 대조한다.
 Cloudflare 캐시 삭제는 사용자가 수행한다. 이는 별도 운영 배포 절차이며 이번 PR workflow에서는 실행하지 않는다.
 
