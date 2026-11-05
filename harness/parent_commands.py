@@ -1,7 +1,8 @@
-"""A1 trusted-parent commands. JSON on stdout is private parent consumption.
+"""Trusted-parent commands. JSON on stdout is private parent consumption.
 
-No connector, retry, reconciliation, CI resume, merge or archive implementation
-lives here. Native journals/receipts are read-only except through native entry.
+No connector, retry, reconciliation, CI resume, merge or archive transfer lives
+here. Archive verification is read-only. Native journals/receipts are read-only
+except through native entry.
 """
 import argparse
 import base64
@@ -18,7 +19,8 @@ import sys
 from harness import git_cleanup, git_publish as native, git_transport as transport
 
 VERSION = 'parent-commands-v1'
-COMMANDS = ('agent-git-next', 'agent-git-accept-file', 'agent-worktree-park', 'storage-path')
+COMMANDS = ('agent-git-next', 'agent-git-accept-file', 'agent-worktree-park', 'storage-path',
+            'archive-verify')
 MAX_WIRE = transport.INLINE_BYTES * 6 + 16384
 PROCESS_TIMEOUT = 120
 
@@ -33,13 +35,16 @@ def require(condition, code):
 
 
 def result_for(command, run):
-    return {'version': VERSION, 'command': command,
+    result = {'version': VERSION, 'command': command,
             'run': run if isinstance(run, str) and native.RUN_ID.fullmatch(run) else None,
             'status': 'failed', 'stage': 'authorization', 'code': None,
             'executed': False, 'native_exit_code': None,
             'side_effects': {'transport_invoked': False, 'native_invoked': False, 'created': [], 'removed': []},
             'next_action': {'action': 'stop', 'approval_required': True,
                             'reason': 'Review retained evidence through the approved recovery procedure; no automatic retry.'}}
+    if command == 'archive-verify':
+        result['side_effects'].update(read_only=True, archive_transfer_invoked=False, writes=False)
+    return result
 
 
 def authorize():
@@ -613,6 +618,25 @@ def storage_path(result, target, category=None, report_dir=None, prepare=False, 
     result['next_action'] = {'action': 'return_path', 'path': result['path'], 'approval_required': False}
 
 
+def archive_verify(result, run):
+    from harness import archive
+    result['stage'] = 'resolve'
+    require(isinstance(run, str) and native.RUN_ID.fullmatch(run), 'invalid_run_id')
+    selected = native.storage_policy()
+    selected.check_ready()
+    directory = selected.find_run(run)
+    require(directory.name == run, 'run_identity_mismatch')
+    result.update(stage='verify_archive', executed=True)
+    try:
+        verified = archive.verify_run_archive(selected, directory)
+    except archive.ArchiveReadbackError as exc:
+        result.update(stage=exc.stage, code=exc.code)
+        raise Stop(exc.code) from None
+    result.update(verified, status='verified', stage='complete', code='archive_verified')
+    result['next_action'] = {'action': 'return_archive_evidence', 'approval_required': False,
+                             'reason': 'Retain this readback evidence; no transfer, retry or delivery action is authorized.'}
+
+
 def execute(command, run=None, **kwargs):
     result = result_for(command, run)
     try:
@@ -629,6 +653,8 @@ def execute(command, run=None, **kwargs):
                 result.setdefault('native_exit_code', None)
             elif command == 'storage-path':
                 storage_path(result, run=run, **kwargs)
+            elif command == 'archive-verify':
+                archive_verify(result, run)
             else:
                 raise Stop('invalid_command')
     except (Stop, transport.TransportError) as exc:
@@ -652,7 +678,7 @@ def execute(command, run=None, **kwargs):
         result.pop('native', None)
         result.pop('transport', None)
         result.pop('result_file', None)
-    if result['code'] != 'native_result' and result['status'] not in ('ready', 'parked', 'awaiting_approval'):
+    if result['code'] != 'native_result' and result['status'] not in ('ready', 'parked', 'awaiting_approval', 'verified'):
         result['next_action'] = result_for(command, run)['next_action']
     return result
 

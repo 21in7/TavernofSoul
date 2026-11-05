@@ -11,7 +11,7 @@ PYTEST_WORKERS ?= 2
 .PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume agent-git-cleanup
 .PHONY: agent-git-next agent-git-accept-file agent-worktree-park storage-path
 .PHONY: storage-status storage-doctor
-.PHONY: check-docs archive-run
+.PHONY: check-docs archive-run archive-verify
 .PHONY: agent-improve agent-improve-daily agent-improve-status agent-improve-approve agent-improve-reject agent-improve-execute
 .PHONY: agent-improve-tick agent-improve-loop-status agent-improve-publish
 .PHONY: agent-improve-completion
@@ -35,6 +35,7 @@ help:
 	@echo "check           Run all required checks (fails on skipped tests)"
 	@echo "check-docs      Validate complete prose changes: BASE=... HEAD=... or CHANGES_FILE=..."
 	@echo "archive-run     Resume only one terminal result archive: RUN_ID=... [KIND=workflows|checks]"
+	@echo "archive-verify  Read back one completed workflow archive without writes: RUN_ID=..."
 	@echo "doctor-mysql    Check explicit MySQL connection and test-only privileges"
 	@echo "check-mysql     Run migrations, pipeline, HTTP and MySQL-specific checks"
 	@echo "check-mysql-container Create a disposable MySQL container, check, and clean up"
@@ -98,6 +99,9 @@ check-docs:
 
 archive-run:
 	$(PYTHON) -m harness.archive --run-id $(call improve_quote,$(RUN_ID)) --kind $(call improve_quote,$(if $(KIND),$(KIND),workflows))
+
+archive-verify:
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID))
 
 doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql doctor-browser check-browser check-live check-site:
 	$(PYTHON) -m harness $@ --pytest-workers $(call improve_quote,$(PYTEST_WORKERS))
