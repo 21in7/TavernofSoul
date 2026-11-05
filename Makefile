@@ -9,6 +9,7 @@ PYTEST_WORKERS ?= 2
 .PHONY: compaction-doctor compaction-demo compaction-smoke check-compaction-engine
 .PHONY: agent-workflow agent-workflow-plan agent-workflow-demo agent-workflow-status
 .PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume agent-git-cleanup
+.PHONY: agent-git-next agent-git-accept-file agent-worktree-park storage-path
 .PHONY: storage-status storage-doctor
 .PHONY: check-docs archive-run
 .PHONY: agent-improve agent-improve-daily agent-improve-status agent-improve-approve agent-improve-reject agent-improve-execute
@@ -59,6 +60,10 @@ help:
 	@echo "agent-workflow-demo Exercise fixture orchestration without API calls or source edits"
 	@echo "agent-workflow-status Show the latest stage, role and model [RUN_ID=...]"
 	@echo "agent-git-doctor Inspect GitHub delivery policy without API calls"
+	@echo "agent-git-next   Trusted parent: first request only, RUN_ID=..."
+	@echo "agent-git-accept-file Accept saved private JSON: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=... RESPONSE_SHA256=..."
+	@echo "agent-worktree-park Preserve approved after files and restore baseline: RUN_ID=..."
+	@echo "storage-path    Resolve private output: TARGET=reports CATEGORY=... [RUN_ID=... PREPARE=1]"
 	@echo "agent-git-request Prepare the parent's next GitHub tool call: RUN_ID=..."
 	@echo "agent-git-accept Validate a connector response: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=..."
 	@echo "agent-git-resume Continue existing CI wait or post-merge cleanup: RUN_ID=..."
@@ -153,6 +158,16 @@ agent-git-request agent-git-resume agent-git-cleanup:
 
 agent-git-accept:
 	$(PYTHON) -m harness.git_publish accept --run-id "$(RUN_ID)" --request-id "$(REQUEST_ID)" --response-file "$(RESPONSE_FILE)"
+
+# A1 parent entry points: response bodies never enter shell words or a PTY.
+agent-git-next agent-worktree-park:
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID))
+
+agent-git-accept-file:
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-id $(call improve_quote,$(REQUEST_ID)) --response-file $(call improve_quote,$(RESPONSE_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256))
+
+storage-path:
+	@$(PYTHON) -m harness.parent_commands $@ --target $(call improve_quote,$(if $(TARGET),$(TARGET),reports)) $(if $(CATEGORY),--category $(call improve_quote,$(CATEGORY))) $(if $(RUN_ID),--run-id $(call improve_quote,$(RUN_ID))) $(if $(REPORT_DIR),--report-dir $(call improve_quote,$(REPORT_DIR))) $(if $(filter 1,$(PREPARE)),--prepare)
 
 agent-improve:
 	$(PYTHON) -m harness.improvements discover $(if $(SCOPE_FILE),--scope-file $(call improve_quote,$(SCOPE_FILE)))

@@ -1,8 +1,16 @@
 /* Trusted-parent capabilities only. Evaluate this file before starting workflow;
- * no require(), process, fetch(), filesystem or connector discovery is used. */
+ * no require(), process, fetch(), filesystem or connector discovery is used.
+ * writeResponseFile({runId,requestId,text,bytes,sha256}) stores only, returning
+ * {path,bytes,sha256}; use exclusive owned 0600 files in a private directory,
+ * fsync/readback and retain originals. readResultFile(descriptor) returns exact
+ * UTF-8 text, bounded by descriptor.bytes, with no-follow/owner/mode/nlink checks.
+ * Neither capability may call transport or alter journals/receipts. CLI owns
+ * frame creation, READY, transport verification and temporary-file deletion.
+ * publish/handoff return {parent,native?,exitCode}; parent is the unchanged CLI
+ * JSON, including failures and precise next_action. Contents remain private. */
 (function (root) {
   'use strict';
-  const VERSION = 'git-transport-v1', READY = 'transport-input-ready-v1';
+  const VERSION = 'parent-commands-v1', TRANSPORT = 'git-transport-v1';
   const MAX_RESPONSE = 8 * 1024 * 1024, MAX_RESULT = 32 * 1024 * 1024;
   const INLINE = 32768, CHUNK = 12288, MAX_OPS = 4096;
   const ALLOW = Object.freeze(['fetch', 'create_tree', 'create_commit', 'create_branch',
@@ -35,31 +43,6 @@
       parts.push(decodeURIComponent(escaped)); start = end;
     }
     return parts.join('');
-  }
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  function base64(bytes) {
-    let out = '';
-    for (let i = 0; i < bytes.length; i += 3) {
-      const a = bytes[i], b = bytes[i + 1], c = bytes[i + 2];
-      out += alphabet[a >> 2] + alphabet[(a & 3) << 4 | (b || 0) >> 4] +
-        (b === undefined ? '=' : alphabet[(b & 15) << 2 | (c || 0) >> 6]) +
-        (c === undefined ? '=' : alphabet[c & 63]);
-    }
-    return out;
-  }
-  function unbase64(text) {
-    if (typeof text !== 'string' || text.length % 4 ||
-        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) fail('invalid_base64');
-    const out = [];
-    for (let i = 0; i < text.length; i += 4) {
-      const a = alphabet.indexOf(text[i]), b = alphabet.indexOf(text[i + 1]);
-      const c = alphabet.indexOf(text[i + 2]), d = alphabet.indexOf(text[i + 3]);
-      out.push(a << 2 | b >> 4);
-      if (c >= 0) out.push((b & 15) << 4 | c >> 2);
-      if (d >= 0) out.push((c & 3) << 6 | d);
-    }
-    if (base64(out) !== text) fail('invalid_base64');
-    return out;
   }
   // Portable SHA-256: functions.exec supplies no Node crypto or browser globals.
   function sha256(input) {
@@ -109,7 +92,7 @@
   }
 
   function create(cap) {
-    if (!cap || !object(cap.tools) || !['load','store','attachArtifact','sleep','yield'].every(k => typeof cap[k] === 'function'))
+    if (!cap || !object(cap.tools) || !['load','store','attachArtifact','sleep','yield','writeResponseFile'].every(k => typeof cap[k] === 'function'))
       fail('parent_capabilities_required');
     const tools = cap.tools, now = cap.now || (() => Date.now());
     const key = cap.stateKey || 'trusted-git-bridge';
@@ -135,7 +118,7 @@
       }
     }
     function shell(command, args) {
-      return [executable, '-m', 'harness.git_transport', command, '--run-id', state.run, ...args].map(quote).join(' ');
+      return [executable, '-m', 'harness.parent_commands', command, '--run-id', state.run, ...args].map(quote).join(' ');
     }
     function output(result, budget = 22000) {
       if (!object(result) || typeof result.output !== 'string' || result.isError === true ||
@@ -149,8 +132,8 @@
         fail('tool_output_too_large');
       return result.output;
     }
-    async function finish(first, initial = '') {
-      let result = first, text = initial + output(first), turns = 0;
+    async function finish(first) {
+      let result = first, text = output(first), turns = 0;
       if (utf8(text).length > 200000) fail('tool_output_too_large');
       while (result.session_id !== undefined && result.exit_code === undefined) {
         if (++turns > 7200) fail('transport_wait_limit');
@@ -162,79 +145,67 @@
       if (!Number.isInteger(result.exit_code)) fail('missing_exit_code');
       return {text, code: result.exit_code};
     }
-    async function invoke(command, args = [], response) {
+    async function invoke(command, args = []) {
       await event('transport_start', {operation: command});
       const started = now();
-      let result;
-      if (response === undefined) {
-        result = await finish(await tools.exec_command({cmd: shell(command, args), login: false,
-          yield_time_ms: 1000, max_output_tokens: 22000}));
-      } else {
-        const raw = utf8(JSON.stringify(response));
-        if (raw.length > MAX_RESPONSE) fail('response_too_large');
-        const encoded = base64(raw), lines = encoded.match(/.{1,2048}/g) || [];
-        const frame = lines.join('\n') + '\n.\n';
-        let first = await tools.exec_command({cmd: 'stty -echo && exec ' + shell(command, args.concat('--stdin-base64')),
-          tty: true, login: false, yield_time_ms: 1000, max_output_tokens: 22000});
-        let prefix = output(first), turns = 0;
-        while (!prefix.includes(READY)) {
-          if (!first.session_id || first.exit_code !== undefined || ++turns > 30) fail('stdin_not_ready');
-          await cap.yield();
-          first = await tools.write_stdin({session_id: first.session_id, chars: '', yield_time_ms: 1000, max_output_tokens: 22000});
-          prefix += output(first);
-          if (prefix.length > 256) fail('stdin_protocol_invalid');
-        }
-        if (prefix.replace(READY, '').trim() || first.exit_code !== undefined) fail('stdin_protocol_invalid');
-        // No response bytes occur in a shell command or OS argv. No echo, no EOF.
-        let last = first, collected = '';
-        for (let offset = 0; offset < frame.length; offset += 65536) {
-          if (!last.session_id || last.exit_code !== undefined) fail('stdin_ended_early');
-          last = await tools.write_stdin({session_id: last.session_id, chars: frame.slice(offset, offset+65536),
-            yield_time_ms: 1, max_output_tokens: 22000});
-          if (offset + 65536 < frame.length) {
-            collected += output(last);
-            if (utf8(collected).length > 200000) fail('tool_output_too_large');
-          }
-        }
-        result = await finish(last, collected);
+      const result = await finish(await tools.exec_command({cmd: shell(command, args), login: false,
+        yield_time_ms: 1000, max_output_tokens: 22000}));
+      const parent = json(result.text.trim());
+      if (!object(parent) || parent.version !== VERSION || parent.command !== command ||
+          !(parent.run === state.run || (parent.run === null && parent.stage === 'arguments' &&
+            parent.code === 'invalid_arguments' && parent.status === 'failed')) ||
+          typeof parent.status !== 'string' || typeof parent.stage !== 'string' ||
+          typeof parent.code !== 'string' || typeof parent.executed !== 'boolean' || !object(parent.side_effects) ||
+          !object(parent.next_action) || typeof parent.next_action.action !== 'string' ||
+          !(parent.native_exit_code === null || (Number.isInteger(parent.native_exit_code) &&
+            parent.native_exit_code >= 0))) fail('parent_result_invalid');
+      const expectedExit = parent.native_exit_code ||
+        (['failed','needs_reconciliation'].includes(parent.status) ? (parent.stage === 'arguments' ? 2 : 1) : 0);
+      if (result.code !== expectedExit) fail('parent_exit_code_invalid');
+      state.parent = parent; state.nativeExitCode = parent.native_exit_code;
+      if (parent.transport === undefined) {
+        if (!['failed','needs_reconciliation','awaiting_ci'].includes(parent.status) ||
+            parent.next_action.action !== 'stop' || parent.native !== undefined || parent.result_file !== undefined)
+          fail('parent_result_invalid');
+        delete state.native; delete state.transport;
+        await event('transport_end', {operation: command, duration_ms: now()-started});
+        return {parent, exitCode: result.code};
       }
-      const env = json(result.text.trim());
-      if (!object(env) || env.version !== VERSION) fail('transport_envelope_invalid');
+      const env = parent.transport;
+      if (!object(env) || env.version !== TRANSPORT) fail('transport_envelope_invalid');
       if (!hex(env.operation_id) || !hex(env.sha256) || !Number.isInteger(env.bytes) ||
           env.bytes < 1 || env.bytes > MAX_RESULT || !Number.isInteger(env.native_exit_code) ||
-          result.code !== env.native_exit_code) fail('transport_refused_or_truncated');
+          parent.native_exit_code !== env.native_exit_code) fail('transport_refused_or_truncated');
       let raw;
       if (Object.prototype.hasOwnProperty.call(env, 'inline')) {
-        if (typeof env.inline !== 'string' || env.bytes > INLINE || env.chunks !== undefined) fail('inline_invalid');
+        if (typeof env.inline !== 'string' || env.bytes > INLINE || env.chunks !== undefined ||
+            parent.result_file !== undefined || !object(parent.native)) fail('inline_invalid');
         raw = utf8(env.inline);
       } else {
         const c = env.chunks;
         if (env.bytes <= INLINE || !object(c) || c.bytes !== CHUNK || c.encoding !== 'base64' ||
             c.count !== Math.ceil(env.bytes / CHUNK)) fail('chunk_metadata_invalid');
-        raw = new Uint8Array(env.bytes);
-        for (let i = 0; i < c.count; ++i) {
-          const read = await finish(await tools.exec_command({cmd: shell('chunk', ['--operation-id', env.operation_id, '--index', String(i)]),
-            login: false, yield_time_ms: 1000, max_output_tokens: 22000}));
-          const part = json(read.text.trim());
-          if (read.code !== 0 || part.version !== VERSION || part.operation_id !== env.operation_id ||
-              part.index !== i || part.offset !== i*CHUNK || part.total_bytes !== env.bytes ||
-              part.sha256 !== env.sha256 || part.bytes !== Math.min(CHUNK, env.bytes-i*CHUNK) ||
-              typeof part.data !== 'string' || part.data.length > 16384) fail('chunk_invalid');
-          const bytes = unbase64(part.data);
-          if (bytes.length !== part.bytes) fail('chunk_size_invalid');
-          raw.set(bytes, part.offset);
-          await cap.yield();
-        }
+        const d = parent.result_file;
+        if (!object(d) || d.version !== 'parent-result-file-v1' || d.encoding !== 'utf-8-json' ||
+            typeof d.path !== 'string' || !d.path.startsWith('/') || d.path.includes('\0') ||
+            d.bytes !== env.bytes || d.sha256 !== env.sha256 || parent.native !== undefined ||
+            typeof cap.readResultFile !== 'function') fail('result_file_invalid');
+        // Capability reads only an owned private no-follow file, bounded by d.bytes.
+        // Native chunk retrieval and verification belong entirely to the CLI.
+        const text = await cap.readResultFile(d);
+        if (typeof text !== 'string' || text.length > MAX_RESULT) fail('result_file_invalid');
+        raw = utf8(text);
       }
       if (raw.length !== env.bytes || sha256(raw) !== env.sha256) fail('payload_digest_invalid');
       const native = json(decode(raw));
       if (!object(native)) fail('native_result_invalid');
+      if (parent.native !== undefined && JSON.stringify(parent.native) !== JSON.stringify(native)) fail('native_result_invalid');
       const failedWithoutRun = native.run_id === undefined && native.status === 'failed' &&
         env.native_exit_code !== 0 && native.request === undefined;
       if (native.run_id !== state.run && !failedWithoutRun) fail('native_result_invalid');
       state.native = native; state.nativeExitCode = env.native_exit_code;
       state.transport = env; await event('transport_end', {operation: command, duration_ms: now()-started});
-      return {native, exitCode: env.native_exit_code};
+      return {native, parent, exitCode: result.code};
     }
     async function observe(native) {
       const gh = native.github;
@@ -247,17 +218,37 @@
     }
     async function drive(current) {
       for (let count = 0; count < MAX_OPS; ++count) {
+        if (!current.native) return current; // Preserve the exact CLI failure, including stage/code.
         const n = current.native, gh = n.github || {};
         await observe(n);
+        if (current.parent.next_action.action === 'stop' || current.exitCode !== 0) return current;
         if (['needs_reconciliation','failed','awaiting_ci','cleanup_pending'].includes(gh.status) ||
             n.status === 'failed' || n.status === 'needs_reconciliation') return current;
         const job = n.request;
         if (job === null || job === undefined) return current; // archive pending is preserved, never passed
-        if (current.exitCode !== 0 && !(gh.status === 'merged' && /^cleanup_/.test(gh.step || ''))) return current;
-        if (!['awaiting_connector','waiting_for_ci'].includes(gh.status) &&
-            !(gh.status === 'merged' && /^cleanup_/.test(gh.step || ''))) fail('native_state_invalid');
+        if (!['awaiting_connector','waiting_for_ci'].includes(gh.status)) fail('native_state_invalid');
         if (!object(job) || !hex(job.request_id) || !ALLOW.includes(job.tool) ||
             !object(job.arguments) || typeof tools[job.tool] !== 'function') fail('request_tool_invalid');
+        if (job.tool === 'mcp__codex_apps__github_merge_pull_request') fail('stop_before_merge');
+        const action = current.parent.next_action;
+        const dispatch = action.action === 'read_private_result_file' ? action.then : action;
+        if (!object(dispatch) || !['call_connector','call_connector_once'].includes(dispatch.action) ||
+            dispatch.trusted_parent_only !== true || dispatch.tool !== job.tool || dispatch.request_id !== job.request_id ||
+            (action.action === 'read_private_result_file' ?
+              JSON.stringify(action.descriptor) !== JSON.stringify(current.parent.result_file) ||
+                dispatch.arguments_from !== 'verified_native.request.arguments' :
+              JSON.stringify(dispatch.arguments) !== JSON.stringify(job.arguments))) fail('parent_action_invalid');
+        const followup = dispatch.then;
+        const required = object(followup) && followup.required_arguments;
+        // Refuse an unusable followup before making a possibly mutating call.
+        // A1 can supply only these four arguments; it cannot invent an adapter
+        // for a changed command contract after the connector has already run.
+        if (!object(followup) || followup.command !== 'agent-git-accept-file' ||
+            !object(required) || required.run_id !== state.run || required.request_id !== job.request_id ||
+            typeof required.response_file !== 'string' || !required.response_file.trim() ||
+            typeof required.sha256 !== 'string' || !required.sha256.trim() ||
+            Object.keys(required).some(k => !['run_id','request_id','response_file','sha256'].includes(k)))
+          fail('parent_action_invalid');
         if (Object.keys(state.operations).length >= MAX_OPS || state.operations[job.request_id]) fail('duplicate_dispatch');
         const poll = n.poll_after_seconds;
         if (typeof poll !== 'number' || !Number.isFinite(poll) || poll < 0 || poll > 1800) fail('poll_invalid');
@@ -274,15 +265,30 @@
         op.response = response; op.phase = 'responded';
         // Preserve backend created_at and the exact original response privately.
         await event('connector_response', {duration_ms: now()-started});
-        current = await invoke('accept', ['--request-id', job.request_id], response);
-        op.phase = 'accepted'; await save();
+        const text = JSON.stringify(response);
+        if (typeof text !== 'string' || text.length > MAX_RESPONSE) fail('response_too_large');
+        const raw = utf8(text);
+        if (raw.length > MAX_RESPONSE) fail('response_too_large');
+        const digest = sha256(raw);
+        // Storage-only capability: exclusive owned 0600 file in a private directory,
+        // fsync/readback, retained on every outcome. It must never invoke transport.
+        const file = await cap.writeResponseFile({runId: state.run, requestId: job.request_id,
+          text, bytes: raw.length, sha256: digest});
+        if (!object(file) || typeof file.path !== 'string' || !file.path.startsWith('/') ||
+            file.path.includes('\0') || file.bytes !== raw.length || file.sha256 !== digest) fail('response_file_invalid');
+        op.responseFile = file; await save();
+        current = await invoke('agent-git-accept-file', ['--request-id', job.request_id,
+          '--response-file', file.path, '--sha256', digest]);
+        op.phase = (current.parent.stage === 'complete' &&
+          ['native_result','stop_before_merge'].includes(current.parent.code)) ? 'accepted' : 'stopped';
+        await save();
         await cap.yield();
       }
       return fail('operation_limit');
     }
     async function publish(run) {
       await init(run);
-      return drive(await invoke('request'));
+      return drive(await invoke('agent-git-next'));
     }
     async function handoff(initial, mode) {
       if (!object(mode) || mode.readOnly !== false || mode.demo !== false || mode.git !== true) fail('workflow_mode_not_publishable');
@@ -306,11 +312,11 @@
       await init(final.run_id);
       state.workflow = final;
       await event('workflow_ready', {ready_at_ms: readyAt, native_progress_time: final.current && final.current.time});
-      return drive(await invoke('request'));
+      return drive(await invoke('agent-git-next'));
     }
     return Object.freeze({publish, handoff});
   }
-  const api = Object.freeze({create, allowlist: ALLOW, sha256, utf8, base64, summary});
+  const api = Object.freeze({create, allowlist: ALLOW, sha256, utf8, summary});
   root.TavernGitBridge = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

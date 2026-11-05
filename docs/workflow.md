@@ -3,6 +3,15 @@
 자동 검사 선택은 [ADR0031](adr/0031-change-scoped-automatic-validation.md)이 우선한다.
 새 review 뒤 실제 최종 diff로 기존 targets를 선택한다. CI 증명·Git/cleanup 권한 경계는 유지한다.
 
+2026-11-05 사용자 직접 승인 A1은 [ADR0039](adr/0039-standard-parent-git-commands.md)를 따른다.
+이번 하네스·정책 변경은 full `make check` 대상이며 아래 일반 merge/cleanup/archive 설명은
+A1 실행 권한이 아니다. parent는 네 상위 명령만 사용하고 즉석 게시·복원 script를 금지한다.
+workflow 새 1회에서 새 Claude 독립 의미검토 승인 후 full 검사를 수행하고, parent가 GitHub PR과
+필수 CI3 성공을 별도 기록한 뒤 merge 전에 멈춘다. 실패 시 workflow·모델·검사를 다시 실행하지
+않고 기존 native bounded repair만 허용한다. 현재 운영 배포·VM 이전은 하지 않으며 2026-11-10까지
+배포 체계와 모델/예산/auth/storage/scheduler 설정을 유지한다. 각 리뷰에서 문서 영향을 재평가하고
+최종 독립 Claude가 `documentation={status,files,reason}`을 새로 판단한다.
+
 최신 잠금·격리·실패 복구 계약은 [ADR0027](adr/0027-inspection-lock-isolation-and-diagnostics.md)이다.
 일반/READ_ONLY workflow는 실행 소유권만 최종 save까지 유지하고 source mutex는 capture와
 apply에 한정한다. review diff도 capture의 승인 파일 original 사본에서 만들며 live 원본을
@@ -36,6 +45,9 @@ runtime37개 승인 scope·auth/provider/model·예산/호출·slot·게시 정�
 재생성하지 않으며 합성 회귀 작성은 실제9단계·새 오전 보고 성공 관측이 아니다.
 
 ## 현재 저장·검증·복구 순서
+
+이 절의 기존 archive/resume 계약은 일반 native 근거다. A1은 이를 자동 호출하지 않으며
+reconcile/resume-ci/external-merge/archive-verify가 필요하면 현재 승인 복구 절차로 별도 조정하거나 멈춘다.
 
 [ADR0021](adr/0021-local-work-and-result-archives.md)의 명시 v2에서 workspace/checks/logs/backup/
 Git journal은 local active artifacts, 비인증 임시는 local temporary다. archive는 terminal 결과만
@@ -668,19 +680,26 @@ report.github의 merge_status/merge_sha와 cleanup의 remote/local/prune/sync/co
 
 메인은 아래 bridge를 workflow 시작 전에 준비하고 `awaiting_github` 완료 직후 같은 async 흐름에서
 반환된 앱 도구와 인자를 실행한다. 앱 응답 저장·검증·다음 요청 읽기는 transport accept 한 호출로 묶는다. 메인이 이 과정을 계속 수행하므로
-사용자가 커밋·push·PR·merge 명령을 별도로 입력할 필요가 없다. CLI 단독 실행에는 앱 도구가 없어서
+사용자가 커밋·push·PR 명령을 별도로 입력할 필요가 없다. A1은 merge 요청을 실행하지 않는다. CLI 단독 실행에는 앱 도구가 없어서
 메인 Codex가 이어받을 때까지 대기하며, 서버의 상주 GitHub 봇을 설치하는 기능은 포함하지 않는다.
 
-다음 옛 CLI는 기존 journal의 명시 복구와 CI resume/cleanup에 계속 사용한다.
+다음은 A1의 네 상위 진입점이다. Python 3.8 표준라이브러리 CLI는 같은 이름의 subcommand를
+`python3 -m harness.parent_commands` 뒤에 받는다. 아래 값은 private parent가 검증한 값으로
+대체하며 공개 출력하지 않는다. accept는 다음 요청을 직접 반환하므로 매번 next를 다시 호출하지 않는다.
 
 ```bash
-make agent-git-doctor
-make agent-git-request RUN_ID=보고서의_run_id
-# 메인 Codex가 반환된 request.tool(request.arguments)을 GitHub 앱으로 실행한 뒤:
-make agent-git-accept RUN_ID=보고서의_run_id REQUEST_ID=요청_id RESPONSE_FILE=/private/path/response.json
-make agent-git-resume RUN_ID=CI_또는_cleanup_대기중인_run_id
-make agent-git-cleanup RUN_ID=이미_merged된_run_id
+make agent-git-next RUN_ID="$RUN_ID"
+make agent-git-accept-file RUN_ID="$RUN_ID" REQUEST_ID="$REQUEST_ID" RESPONSE_FILE="$RESPONSE_FILE" RESPONSE_SHA256="$RESPONSE_SHA256"
+make agent-worktree-park RUN_ID="$RUN_ID"
+make storage-path TARGET=reports CATEGORY=checks RUN_ID="$RUN_ID"
+# 명시적 준비가 필요한 경우에만 같은 storage-path 인자에 PREPARE=1 추가
 ```
+
+`agent-git-next`는 첫 요청에서만 native transport request를 한 번 호출한다. 기존 receipt/pending/
+inflight가 있으면 최신 완료 receipt의 current journal hash·run·request identity를 대조한 뒤
+불명 dispatch를 내보내지 않고 멈춘다. 기존 결과가 있다는 이유로 다음 쓰기를 재반환하지 않는다.
+legacy/transport mismatch·stale ID·duplicate begin/complete/inflight는 새 ID나 pending 재발급으로
+해결하지 않는다. 실제 race의 최종 권위는 native claim이다.
 
 `github.json`은 대상·변경 내용·기준 SHA·단계·CI 결과를 private 로그에 기록한다. 별도 private
 `github-approved.json`에 검토·검증된 파일 hash·권한과 게시 정책을 고정하며, 로드한 journal을 그 사본과
@@ -730,11 +749,13 @@ API가 `merged=true`와 유효한 merge SHA를 반환하면 merge_status=merged�
 먼저 durable journal에 기록하고 아래 cleanup proof를 자동 요청한다. 정리 완료 전 passed가 될 수 없다.
 확정 merge SHA를 테스트 merge SHA와 구분한다.
 30분 동안 검사와 규칙이 완료되지 않으면 PR을 보존하고 `awaiting_ci`로 기록한다.
-`agent-git-resume`은 새 모델 호출·새 커밋·새 PR 없이 그 PR을 다시 확인한다.
+기존 `agent-git-resume`의 재확인은 A2 근거이며 A1 상위 명령에는 없다. A1의 `awaiting_ci`는
+성공으로 바꾸지 않고 반환된 stop과 승인 복구 절차에 따라 별도 조정한다.
 
 ### Trusted-parent bridge와 즉시 handoff
 
-[ADR0024](adr/0024-immediate-batched-github-transport.md)의 bridge는 메인 Codex의
+[ADR0039](adr/0039-standard-parent-git-commands.md)는 [ADR0024](adr/0024-immediate-batched-github-transport.md)의
+전송 경계 위에 네 상위 명령을 둔다. bridge는 메인 Codex의
 `functions.exec`에 주입된 도구만 호출한다. 새 service·token·HTTP client·daemon이나
 모델 역할/권한·검증 면제를 추가하지 않는다. worker/reviewer는 검사·Git·네트워크·workflow·
 재위임을 실행하지 않으며 실제 실행·앱·full 검사·관측은 parent가 담당한다.
@@ -747,6 +768,14 @@ wrapper의 명시적 잘림/error·출력 token 예산과 승인 소스 전체 �
 도구 결과를 text/notify로 출력하지 않는다. 아래는 같은 exec 안의 호출 형태다.
 `parentAttachArtifact(url)`은 parent가 기존 `codex_app.attach_artifact`의 실제 도구 schema에
 맞춰 주입하는 함수이며, bridge가 새 앱을 발견하거나 임의 schema를 만들지 않는다.
+`parentWriteResponseFile({runId,requestId,text,bytes,sha256})`는 trusted parent의 기존 private
+파일 저장 capability다. 검증된 private 디렉터리에 owned 0600/nlink=1 regular 파일을 exclusive
+생성하고 UTF-8 bytes·SHA256·fsync/readback을 확인한 뒤 `{path,bytes,sha256}`만 반환한다.
+원응답은 모든 결과에서 보존한다. `parentReadResultFile(descriptor)`는 descriptor의 bytes로
+제한하여 no-follow/owner/mode/nlink를 확인하고 정확한 UTF-8 문자열을 읽기만 한다.
+두 capability는 사전에 parent가 주입한다. transport 재구현·임시 Python launcher·ledger/receipt
+수정을 하지 않으며 frame/READY/hash 검증·임시 frame 삭제는 CLI 책임이다. capability가 없으면
+중단한다. 즉석 adapter를 만들어 게시·복원을 대체하지 않는다.
 `approved-workflow-command`는 parent가 이미 준비한 정확한 task/files·storage·Python 선택을
 포함한 명령이다. private load/store의 key는 run마다 새로 선택하고, 기존 state를 덮어써 재시도하지 않는다.
 
@@ -769,68 +798,114 @@ const bridge = TavernGitBridge.create({
   tools, load, store, stateKey: load("new-private-bridge-state-key"),
   python: load("approved-python-executable"),
   attachArtifact: parentAttachArtifact,
+  writeResponseFile: parentWriteResponseFile,
+  readResultFile: parentReadResultFile,
   notify: meta => notify(meta),
   sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
   yield: yield_control
 });
+// 저장·읽기 capability와 승인 명령은 workflow 시작 전에 준비되어 있어야 한다.
+// 이미 시작한 workflow는 아래에서 새로 시작하지 않고 그 결과를 handoff에 넘긴다.
 const started = await tools.exec_command({
   cmd: load("approved-workflow-command"),
   yield_time_ms: 1000, max_output_tokens: 16000
 });
 const result = await bridge.handoff(started, {readOnly: false, demo: false, git: true});
 store("private-github-result", result);
-// parent가 native status/exitCode/archive를 판독한다. raw result를 출력하지 않는다.
+// result.parent의 stage/code/status/next_action과 native/exitCode를 그대로 판독한다.
+// PR 및 CI3 증거를 별도 기록하고 merge 전 stop한다. 원문 결과는 출력하지 않는다.
 ```
 
 이미 시작한 `exec_command`의 `{session_id, output}`도 `handoff`에 그대로 줄 수 있다.
-짧은 `write_stdin` poll·yield로 완료를 추적하고 exit_code=0·마지막 완전한 JSON summary·
+빈 `chars: ''`의 짧은 `write_stdin` poll·yield로 완료만 추적하고 exit_code=0·마지막 완전한 JSON summary·
 실제 awaiting_github·simulated=false·변경 존재·native 게시 준비 상태를 요구한다.
 parent는 실제 시작 모드를 함께 넘긴다. read-only/demo/GIT=0·실패·변경 없음·summary 누락/오류에서는
 게시하지 않는다. 고정 준비 sleep이나 사람 확인 단계를 추가하지 않는다. 단독 make는 기존처럼 대기한다.
 bridge를 미리 준비하지 못한 새 pending 없는 run은 `bridge.publish(exactRunId)`로 시작할 수 있다.
 이 경우에도 private state/receipt 존재 시 자동 재개하지 않는다.
 
+호출 흐름은 `agent-git-next` → allowlist의 connector를 한 번 호출 → `writeResponseFile`로 원응답
+저장 → `agent-git-accept-file --run-id … --request-id … --response-file … --sha256 …` →
+그 결과의 다음 요청 직접 사용이다. 이 흐름은 위 `bridge.handoff` 또는 최초 `bridge.publish`가
+수행하므로 parent가 별도 transport adapter를 작성할 필요가 없다. connector는 trusted parent 앱만
+호출하며 request의 tool/arguments를 코드로 eval하지 않는다.
+
 bridge의 exact tool allowlist는 기존 publisher의 fetch/create_tree/create_commit/create_branch/
-create_pull_request/merge_pull_request와 같다. 도구 존재와 allowlist를 검사하고 반환된 arguments를
-그대로 호출한다. tree → commit → branch → pinned ref read → PR 및 모든 CI 게이트는 native가 결정한다.
+create_pull_request/merge_pull_request와 같다. A1은 merge 항목을 실행 전에 차단한다.
+도구 존재와 allowlist를 검사하고 반환된 arguments를 그대로 호출한다.
+tree → commit → branch → pinned ref read → PR 및 모든 CI 게이트는 native가 결정한다.
 dispatch 전 ID·작업 상태를 private store에 기록하고 원응답·backend created_at을 보존한다.
 connector 예외도 같은 ID의 isError=true 응답으로 accept한다. PR 확인 직후 artifact를 연결하며
 다음 요청보다 먼저 수행한다. poll_after_seconds를 지키며 sleep은 최대30초씩 나누고 yield한다.
 parent는 exec의 yield를 이어받아 60초 이내 진행을 안내할 수 있다. notify는 제한된 stage metadata만 사용한다.
 
-일반 accept는 shell 실행 한 번이다. `stty -echo` 후 Python을 exec하는 PTY에 READY를 확인하고
-2048문자 이하 base64 줄과 마지막 dot 줄을 `write_stdin`으로 보낸다. 큰 입력도 response 본문을
-shell/OS argv에 넣지 않는다. 입력 상한은 decoded UTF-8 JSON 8MiB다. native stdout 전체는
-selected run의 owned 0700 `transport` 안에 0600 파일로 fsync한다. 약17KiB create_tree를 포함해
-32KiB 이하 native 결과는 size/SHA256와 inline으로 반환한다. 전체 결과 상한은32MiB다.
-큰 결과만 12288byte 단위 base64 chunk를 읽어 정확한 offset/count/size·전체 digest·UTF-8/JSON을
-검증한다. 임의 파일 read API가 아니며 최신 완료 transport operation만 읽는다. chunk 명령은
-디렉터리를 만들거나 native main을 호출하지 않는다.
-bridge는 wrapper의 명시적 잘림/error와 호출별 출력 token 예산을 확인하고 bounded JSON 전체
-framing·bytes/SHA256·chunk를 검증한다. 정상 본문의 `Warning: truncated output`, `tokens truncated`,
-`Output truncated` 인용은 그대로 전달하며, 불완전/잘못된 출력은 새 요청이나 쓰기 재전송 없이 거부한다.
+`agent-git-accept-file`만 입력 파일의 absolute/no-follow 경로·symlink/hardlink·owner/mode/size와
+UTF-8/JSON/SHA256을 검증하고 실행 중 파일·부모 디렉터리 교체를 검사한다. 입력 상한은8MiB다.
+owned private 디렉터리의0600 frame에 각 줄<=2048의 base64와 마지막 `.` 줄을 쓰고 fsync/readback한
+검증된 fd를 subprocess stdin에 연결한다. `shell=False` 인자 배열로 native `accept --stdin-base64`를
+호출한다. 응답 본문을 shell argv·대화형 stdin·PTY·nonempty `write_stdin`으로 보내지 않는다.
+stdout 첫 줄이 정확히 `transport-input-ready-v1`인 경우 그 한 줄만 제거하고 나머지를 단일 JSON으로
+파싱한다. READY 누락/추가·잘림·부분 frame·추가 JSON·자식 종료불명은 stop이며 재accept하지 않는다.
+자기 임시 frame을 오류 때도 삭제하고 입력 원본·durable native receipt와 attempt 증거는 보존한다.
 
-```text
-python3 -m harness.git_transport request --run-id EXACT_RUN
-python3 -m harness.git_transport accept --run-id EXACT_RUN --request-id EXACT_ID --stdin-base64
-python3 -m harness.git_transport chunk --run-id EXACT_RUN --operation-id RECEIPT_DIGEST --index 0
-```
+전체 native 결과 상한32MiB·inline32KiB·chunk12288byte를 유지한다. CLI가 transport envelope와
+chunk의 offset/count/size/hash를 검증하며 큰 결과는 `parent-result-file-v1`의 private path/bytes/
+sha256/encoding descriptor로 반환한다. bridge는 주입된 read capability로 정확한 파일 bytes를
+읽고 전체 hash·UTF-8/JSON을 다시 대조한다. wrapper 잘림/error와 출력 예산을 확인하며 정상 본문의
+`Warning: truncated output` 같은 인용만으로 잘림을 판단하지 않는다. 공개 terminal에는 credential·
+원응답·파일내용·private 설정을 출력하지 않는다.
 
-위 출력은 private parent 소비용이며 terminal/commentary에 본문·ID·경로를 출력하지 않는다.
-native stdout·exit code·error/status·poll·completion/archive는 그대로 보존한다. merged/cleanup_*의
-다음 읽기 proof를 계속 처리하지만 awaiting_ci는 기존 명시 resume다. cleanup_pending/실제 실패는
-중단하고 archive pending의 nonzero를 성공으로 바꾸지 않는다. 보관 전 전체 완료를 보고하지 않는다.
+CLI 성공·실패·인자 오류 모두 단일 `parent-commands-v1` JSON이다. `command/run/status/stage/code`,
+`executed/side_effects/native_exit_code`, `next_action`을 보존하며 인자 오류의 run은 null일 수 있다.
+`next_action`에는 허용 connector와 exact ID/arguments·후속 명령의 필수 인자 또는 승인 필요 여부와
+stop 사유가 구조화된다. `failed/needs_reconciliation/awaiting_ci`와 native exit code를 합치지 않는다.
+bridge의 `{parent,native?,exitCode}`에서 실패 stage/code를 그대로 전달하고 nonzero를 성공으로 바꾸지 않는다.
+
+`run`이 JSON 필드명이고 CLI 입력명은 `--run-id`다. 인자 오류는 `stage=arguments`,
+`code=invalid_arguments`, `run=null`로 반환하며 인식하지 못한 명령은 `command=null`일 수 있다.
+프로세스 종료 코드는 native nonzero가 있으면 그대로, 그 외 failed/needs_reconciliation은1
+(인자 오류는2), 나머지는0이다. 종료 코드0만으로 게시·CI·park·전체 완료를 판단하지 않는다.
+`executed`와 `side_effects`를 함께 읽어 시도 여부·실제 생성/삭제·native 호출 상태를 보존한다.
+
+| 반환된 action/상태 | parent가 다음에 할 수 있는 정확한 행동 |
+| --- | --- |
+| `call_connector` | 검증한 allowlist tool/arguments와 exact request ID로 한 번 호출하고, 저장 capability의 파일 경로·SHA256을 `then.required_arguments`의 run/request ID와 함께 accept-file에 전달한다. |
+| `read_private_result_file` | descriptor의 정확한 bytes/hash·UTF-8/JSON을 read capability와 bridge가 검증한 뒤 `then`의 connector 요청을 한 번 실행한다. 검증 실패 시 stop한다. |
+| `stop` | stage/code·승인 필요 여부와 보존된 증거를 parent에 인계하고 중단한다. `approval_required=false`여도 새로운 명령 실행 권한은 아니다. |
+| `awaiting_ci` | 현재 PR과 CI 관측을 보존하고 stop한다. A1에는 이 결과를 resume하는 명령이 없으며 next/accept 재호출로 대체하지 않는다. |
+| `awaiting_approval` + `stop_before_merge` | PR/CI3 성공 근거를 별도 기록하고 merge 전에 멈춘다. 반환된 native merge 요청을 실행하지 않는다. |
+| storage의 `ready` + `return_path` 또는 park의 `parked` + `stop` | 각각 유효한 목적지 반환 또는 source park 결과로만 소비한다. `path=null`을 임의 경로로 보정하거나 parked를 게시 완료로 기록하지 않는다. |
 
 native 진입 전에 run/operation/request ID/response digest를 결합한 durable begin receipt와
 inflight marker를 만든다. 시작/완료 중단·중복·변경 응답·stale ID·잘림·invalid JSON은 자동
 native 재호출/새 request/unknown write 재전송을 하지 않는다. completed receipt의 journal hash와
 현재 native pending 상태가 다르면 reconciliation이다. 원래 response·receipt·native journal과
-실제 connector 결과를 parent가 확인하고, 원래 exact request ID와 saved response를 옛 accept CLI에
-명시 전달해 복구한다. 확인 없이 receipt/state를 지우거나 새 key로 같은 쓰기를 재전송하지 않는다.
+실제 connector 결과를 parent가 확인하되 A1에서 옛 accept CLI로 우회하지 않는다.
+반환된 `next_action`이 stop이면 현재 승인 복구 절차로 별도 조정하거나 멈춘다.
+receipt/state 삭제·재작성, 새 key/ID로 unknown write 재전송과 자동 retry는 금지한다.
 functions.exec store는 parent 세션의 상태다. 프로세스 재시작까지 보존하려면 parent가 동일 계약의
 durable private load/store를 주입한다. 세션 상태를 잃어도 native pending/transport receipt가 새 발급을 차단한다.
-완료 상태를 조정한 뒤에는 옛 CLI를 이어 사용하며 transport head를 임의 재작성하지 않는다.
-보관만 pending이면 기존 archive-only 재개를 사용한다. local active/v1 설정·옛 absolute journal을 보존한다.
+reconcile/resume-ci/external-merge/archive-verify는 A2 미구현이다. native resume으로 journal이 바뀌어
+transport head hash가 어긋나도 head/receipt를 임의 고치지 않는다. local active/v1·옛 journal을 보존한다.
+
+`agent-worktree-park`는 전체 `github-approved.json` scope·review/check/apply·local HEAD baseline·
+index/status·파일 hash+POSIX mode와 native backup before를 먼저 대조한다. 승인 after snapshot을
+보관하고 add/edit/delete/mode를 파일별 baseline으로 복원한 뒤 git status clean을 확인한다.
+unrelated tracked/staged/untracked 또는 같은 파일의 사용자 변경은 source mutation 전에 전부 거절한다.
+ignored 운영데이터는 건드리지 않는다. reset/clean/stash/전체 add/commit/branch 변경/remote Git/
+서비스 실행은 금지한다. snapshot 충돌은 덮어쓰지 않으며 durable file별 checkpoint와 snapshot을
+검증한다. 중단 checkpoint는 자동 재개하지 않고 reconciliation stop이다. 이미 parked면 read-only
+확인만 하며 blind 복원하지 않는다. parked 성공은 merge 후 cleanup/완료가 아니다.
+잠금 순서는 project/source → GitHub다. 없는 lock은 안전한 no-follow exclusive 생성 경로로 만들며
+기존 lock은 inode/owner/regular/nlink를 검증하고 inode/mode를 보존한다. symlink/다른 owner/busy면
+source mutation하지 않는다. cron 공통 lock을 교체·chmod하지 않고 workflow apply와 source 쓰기를 직렬화한다.
+
+`storage-path`는 기존 resolver의 `reports/workflows/artifacts/temporary/context` 대상만 반환한다.
+reports는 category와 선택 run을 받으며 v2에서는 active artifacts 안이어야 한다. absolute/private/
+no-follow/mount/floor 계약과 no fallback을 유지하고 archive root 속성을 추측하지 않는다.
+기본 resolve는 read-only이고 `--prepare`(Make의 `PREPARE=1`)만 명시적으로 디렉터리를 준비한다.
+JSON의 prepared/executed/side_effects.created를 확인하며 준비 실패 후 전달·검사를 실행하지 않는다.
+private storage 설정은 모델 입력에 제공하지 않는다.
 
 시간은 workflow_ready·bridge_start·connector dispatch/response·transport start/end·PR observed의
 private timestamp/duration과 backend PR created_at, 기존 native progress event를 함께 비교한다.
@@ -838,12 +913,19 @@ PR54 parent 관측은 검증→준비11.448초(모델10.848), 준비→첫 reque
 첫 request→PR52.363초, 총105.047초,11요청·앞10회 accept 간격26.552초다.
 import0.089·identity/scope/hash/mode0.043·로컬 두 durable save0.016초는 부분 probe다.
 줄어들 것으로 기대하는 항목은 parent 전달 도구 왕복이며 모델·네트워크 가속은 주장하지 않는다.
-parent가 이 bridge를 실제 사용해 구현 PR과 별도 문서 PR의 required CI·merge·cleanup/archive를
-관측하고 동일 구간을 PR54와 비교한다. PR 생성 전 새 NFS archive 호출을 넣지 않는다.
-이번 harness 변경은 기존 publisher 회귀와 신규 두 테스트를 포함한 full `make check`가 필수다.
-테스트 작성·합성 Node 순서 확인은 실제 PR 성능이나 검사 성공 증거가 아니다. 모두 parent 검증 대기다.
+위 과거 관측은 새 성공 증거가 아니다. parent는 run 전후 같은 고정-cutoff metrics와 scope/config/cron
+불변을 비교한다. workflow 새1회·새 Claude 독립 의미검토 승인 후 full `make check`·scoped apply·
+parent GitHub PR 및 CI3 성공 기록까지 수행하고 merge 전에 멈춘다. 실패 시 workflow/모델/검사
+재실행 없이 기존 native bounded repair만 허용한다. 가짜 connector·격리 임시 Git 및 실제 subprocess
+파일 stdin/READY 회귀는 orchestrator가 실행한다. 작성된 테스트는 성공 증거가 아니다.
+protected private `logs/harness/harness-runbook-core.json`은 모델 승인 범위에서 제외하고 열람·편집하지
+않는다. parent가 검토·검사 완료 후 사용자 요청한 “게시 단계는 이 명령만 사용, 즉석 스크립트 금지”
+한 줄을 추가할 책임을 진다. 문서 완전성은 매 리뷰와 최종 독립 Claude의 새 documentation 판단 대상이다.
 
 ## 머지 후 브랜치 정리
+
+아래는 기존 native 계약이며 A1에서 실행하지 않는다. A1은 PR/CI3 증거 후 merge 전에 멈추며,
+external-merge·cleanup·archive 조정은 현재 승인 복구 절차로 별도 다루거나 stop한다.
 
 merge accept는 다음 fetch 요청을 반환한다. 메인은 게시 때처럼 기존 GitHub 앱 읽기 요청을 계속 실행한다.
 PR을 재조회해 merged=true/closed, PR 번호·repository·base.ref·head.ref/head SHA·확정 merge SHA를
