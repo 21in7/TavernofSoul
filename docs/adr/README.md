@@ -43,6 +43,7 @@
 | [0036](0036-serialized-region-cron.md) | iTOS·jTOS·kTOS 공통 실행 잠금·단계 종료/분리 로그/알림·map 경고 후 계속·cron 시각 유지·B2 유예 | 승인(accepted), 사용자 B1 정책 결정; 알림 시점·빈도만 [0037](0037-cron-final-notifications.md), 로그 누적 정책만 [0038](0038-cron-log-retention.md)로 부분 대체; 새 검토·검증·PR/CI3 대기, merge 전 중지·운영 전환 별도 승인 | 2026-11-04 |
 | [0037](0037-cron-final-notifications.md) | B1.1 변경 없음·잠금 경합은 로그만 보존, 갱신 성공·단계 실패는 공통 EXIT 최종 알림 1회, map_exit 통합 | 승인(accepted), 2026-11-04 사용자 승인; 0036의 알림 시점·빈도만 부분 대체; 새 독립 검토·전체 검사·PR/CI3 대기, merge 전 중지·실제 운영 미배포 | 2026-11-04 |
 | [0038](0038-cron-log-retention.md) | 공통 잠금 획득 직후 실행 지역 직하위 일반 로그의 strict 30일 mtime 정리·현재 로그 제외·삭제 성공 수·실패 격리 | 승인(accepted), 2026-11-04 사용자 승인; 0036의 로그 누적 정책만 부분 대체·0037 알림 유지; 새 독립 검토·전체 검사·PR/CI3 대기, merge 전 중지·운영 정리/배포 미실행 | 2026-11-04 |
+| [0039](0039-standard-parent-git-commands.md) | A1 네 parent 명령·비대화형 file accept·버전 JSON/action 판독·승인 snapshot park·storage resolver와 보수적 stop | 승인(accepted), 사용자 직접 승인; 새 독립 Claude 의미검토·full make check·parent PR/CI3 대기, merge 전 정지·A2 미구현·운영 미배포 | 2026-11-05 |
 
 ## 상태와 근거의 의미
 
