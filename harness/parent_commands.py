@@ -1,14 +1,14 @@
 """Trusted-parent commands. JSON on stdout is private parent consumption.
 
-No connector, retry, reconciliation, CI resume, merge or archive transfer lives
-here. Archive verification is read-only. Native journals/receipts are read-only
-except through native entry.
+No connector, retry, reconciliation or CI resume lives here. External UI squash
+cleanup uses saved GET proof, native journal APIs and one archive attempt.
 """
 import argparse
 import base64
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, ExitStack, redirect_stderr, redirect_stdout
 import fcntl
 import math
+import json
 import os
 from pathlib import Path
 import secrets
@@ -20,7 +20,7 @@ from harness import git_cleanup, git_publish as native, git_transport as transpo
 
 VERSION = 'parent-commands-v1'
 COMMANDS = ('agent-git-next', 'agent-git-accept-file', 'agent-worktree-park', 'storage-path',
-            'archive-verify')
+            'archive-verify', 'agent-git-external-merge')
 MAX_WIRE = transport.INLINE_BYTES * 6 + 16384
 PROCESS_TIMEOUT = 120
 
@@ -44,6 +44,8 @@ def result_for(command, run):
                             'reason': 'Review retained evidence through the approved recovery procedure; no automatic retry.'}}
     if command == 'archive-verify':
         result['side_effects'].update(read_only=True, archive_transfer_invoked=False, writes=False)
+    if command == 'agent-git-external-merge':
+        result['completed_stages'] = []
     return result
 
 
@@ -123,6 +125,35 @@ def context(run):
             git_cleanup.enabled(report, ledger['config']),
             'side_effects_disabled')
     return selected, directory, ledger
+
+
+def response_snapshot(selected, path, sha256):
+    """One no-follow open; subsequent work owns immutable bounded memory bytes.
+
+    This is intentionally separate from attached internal journal/attempt reads.
+    No post-read path stat, parent re-open, or response re-open is permitted.
+    """
+    from harness.storage import _absolute
+    require(isinstance(sha256, str) and transport.HEX.fullmatch(sha256), 'invalid_response_sha256')
+    path = _absolute(path, 'Private response')
+    parent = selected.fs.open_directory(path.parent)
+    try:
+        transport.private(os.fstat(parent), directory=True)
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            initial = os.fstat(fd)
+            transport.private(initial)
+            require(0 <= initial.st_size <= transport.MAX_RESPONSE, 'input_too_large')
+            with os.fdopen(os.dup(fd), 'rb') as handle:
+                raw = handle.read(transport.MAX_RESPONSE + 1)
+            require(len(raw) <= transport.MAX_RESPONSE, 'input_too_large')
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+    require(transport.digest(raw) == sha256, 'response_digest_mismatch')
+    require(len(raw) == initial.st_size, 'input_size_changed')
+    return raw
 
 
 def operation(command, run, request=None):
@@ -380,6 +411,7 @@ def finish(result, run, envelope, code, expected_operation, response_sha256=None
 def git_next(result, run):
     result['stage'] = 'validate_run'
     selected, directory, ledger = context(run)
+    external_not_owned(selected, directory)
     result.update(stage='inspect', status='needs_reconciliation')
     saved, _ = evidence(run, ledger)
     if saved is not None:
@@ -540,35 +572,33 @@ def accept_file(result, run, request, response_file, sha256):
     require(isinstance(sha256, str) and transport.HEX.fullmatch(sha256), 'invalid_response_sha256')
     result['stage'] = 'validate_input'
     selected, directory, ledger = context(run)
-    with private_input(selected, response_file, transport.MAX_RESPONSE, private_parent=True) as (raw, check):
-        require(transport.digest(raw) == sha256, 'response_digest_mismatch')
-        require(isinstance(transport.parse(raw), (dict, list)), 'invalid_response')
-        result.update(stage='inspect', status='needs_reconciliation')
-        saved, completes = evidence(run, ledger)
-        require(saved is not None, 'accept_requires_transport_receipt')
-        existing = completes.get(operation('accept', run, request))
-        if existing is not None:
-            raise Stop('duplicate_response' if existing['response_sha256'] == sha256 else 'conflicting_response')
-        require(ledger.get('pending_request_id') == request, 'stale_request_id')
-        accept_request(result, saved, request)
-        premerge(ledger)
-        native_lock_preflight(selected, directory)
-        attempt_marker(selected, directory, run, request, sha256, result)
-        result.update(stage='frame', status='needs_reconciliation')
-        with scratch(selected, directory, result['side_effects']) as (fd, owned):
-            with new_file(fd, 'frame', owned) as frame, new_file(fd, 'stdout', owned) as stdout, new_file(fd, 'stderr', owned) as stderr:
-                frame_file(frame, raw)
-                os.fsync(fd)
-                check()
-                selected.check_ready()
-                selected.validate_run_directory(directory, local_default=native.local_reports())
-                attempt_marker(selected, directory, run, request, sha256, result, create=True)
-                result['stage'] = 'native_accept'
-                envelope, code = accept_process(run, request, frame, stdout, stderr, result)
-                check()
-                frame.seek(0)
-                require(transport.stdin_response(frame) == raw and frame.read(1) == b'', 'frame_changed')
-                finish(result, run, envelope, code, operation('accept', run, request), sha256)
+    raw = response_snapshot(selected, response_file, sha256)
+    external_not_owned(selected, directory)
+    require(isinstance(transport.parse(raw), (dict, list)), 'invalid_response')
+    result.update(stage='inspect', status='needs_reconciliation')
+    saved, completes = evidence(run, ledger)
+    require(saved is not None, 'accept_requires_transport_receipt')
+    existing = completes.get(operation('accept', run, request))
+    if existing is not None:
+        raise Stop('duplicate_response' if existing['response_sha256'] == sha256 else 'conflicting_response')
+    require(ledger.get('pending_request_id') == request, 'stale_request_id')
+    accept_request(result, saved, request)
+    premerge(ledger)
+    native_lock_preflight(selected, directory)
+    attempt_marker(selected, directory, run, request, sha256, result)
+    result.update(stage='frame', status='needs_reconciliation')
+    with scratch(selected, directory, result['side_effects']) as (fd, owned):
+        with new_file(fd, 'frame', owned) as frame, new_file(fd, 'stdout', owned) as stdout, new_file(fd, 'stderr', owned) as stderr:
+            frame_file(frame, raw)
+            os.fsync(fd)
+            selected.check_ready()
+            selected.validate_run_directory(directory, local_default=native.local_reports())
+            attempt_marker(selected, directory, run, request, sha256, result, create=True)
+            result['stage'] = 'native_accept'
+            envelope, code = accept_process(run, request, frame, stdout, stderr, result)
+            frame.seek(0)
+            require(transport.stdin_response(frame) == raw and frame.read(1) == b'', 'frame_changed')
+            finish(result, run, envelope, code, operation('accept', run, request), sha256)
 
 
 def storage_path(result, target, category=None, report_dir=None, prepare=False, run=None):
@@ -637,6 +667,368 @@ def archive_verify(result, run):
                              'reason': 'Retain this readback evidence; no transfer, retry or delivery action is authorized.'}
 
 
+def external_not_owned(selected, directory):
+    path = selected.record_path(directory, 'external-merge.json', local_default=native.local_reports())
+    require(not path.exists() and not path.is_symlink(), 'external_merge_owns_journal')
+
+
+class ExternalMerge:
+    """A2c only. Immutable transport history is never repaired or replayed."""
+    NAME = 'external-merge.json'
+
+    def __init__(self, result, run, pr_number, proof_file, proof_sha256, resume):
+        self.result, self.run, self.pr = result, run, pr_number
+        self.proof_file, self.proof_hash, self.resume = proof_file, proof_sha256, resume
+        self.state = None
+        self.effects = result['side_effects']
+        self.effects.update(created_locks=[], journal_writes=False, park_invoked=False,
+                            cleanup_invoked=False, archive_transfer_invoked=False)
+        result['completed_stages'] = []
+
+    def read(self, name, optional=False):
+        path = self.selected.record_path(self.directory, name, local_default=native.local_reports())
+        try:
+            with private_input(self.selected, path, transport.MAX_RESULT) as (raw, _):
+                return transport.parse(raw), transport.digest(raw)
+        except FileNotFoundError:
+            if optional:
+                return None, None
+            raise Stop('external_record_missing') from None
+
+    def guard(self):
+        self.selected.check_ready()
+        self.selected.validate_run_directory(self.directory, local_default=native.local_reports())
+        for check in self.lock_checks:
+            check()
+
+    @contextmanager
+    def locks(self):
+        # Reuse the park lock's no-follow creation and inode/mode preservation.
+        from harness.worktree_park import _lock, Stop as ParkStop
+        self.selected.fs.create_directory(self.selected.project_lock_path.parent)
+        try:
+            with ExitStack() as stack:
+                self.lock_checks = [stack.enter_context(_lock(
+                    self.selected, self.selected.project_lock_path, self.effects))]
+                path = self.selected.record_path(self.directory, 'github.lock', local_default=native.local_reports())
+                self.lock_checks.append(stack.enter_context(_lock(self.selected, path, self.effects)))
+                self.guard()
+                yield
+                self.guard()
+        except ParkStop as exc:
+            # Preserve the park API's fixed codes without exposing OS diagnostics.
+            raise Stop(str(exc)) from None
+        finally:
+            self.lock_checks = []
+
+    def persist(self):
+        self.guard()
+        path = self.selected.record_path(self.directory, self.NAME, local_default=native.local_reports())
+        self.result['executed'] = True
+        git_cleanup.durable_json(path, self.state)
+        self.result['completed_stages'] = list(self.state['completed'])
+
+    def done(self, stage):
+        if stage not in self.state['completed']:
+            self.state['completed'].append(stage)
+            self.persist()
+
+    def transport_inventory(self):
+        """Pin every historical receipt and parent attempt, including old IDs."""
+        found = {}
+        try:
+            records = transport.Records(self.run, create=False)
+        except FileNotFoundError:
+            raise Stop('external_transport_required') from None
+        try:
+            names = set(os.listdir(records.fd))
+            require(len(names) <= transport.MAX_OPERATIONS * 6 and
+                    not names & {'inflight.json', 'head.next'}, 'inflight_requires_reconciliation')
+            for name in sorted(names - {'claim'}):
+                found['transport/' + name] = transport.digest(records.read(name, transport.MAX_RESULT))
+        finally:
+            records.close()
+        fd = self.selected.fs.open_directory(self.directory)
+        try:
+            names = os.listdir(fd)
+        finally:
+            os.close(fd)
+        for name in sorted(name for name in names if name.startswith('parent-accept-')):
+            require(name.endswith('.json') and transport.HEX.fullmatch(name[14:-5]),
+                    'unknown_accept_attempt')
+            _, found[name] = self.read(name)
+        return found
+
+    @staticmethod
+    def report_identity(report):
+        # These four fields are owned by native.save; everything else is fixed.
+        return transport.digest(transport.encode({key: value for key, value in report.items()
+                                                  if key not in ('github', 'status', 'current', 'events')}))
+
+    def reload(self):
+        self.ledger, self.journal_hash = self.read('github.json')
+        self.report, self.report_hash = self.read('report.json')
+        self.approval, self.approval_hash = self.read('github-approved.json')
+        native.validate_journal(self.directory, self.ledger, selected=self.selected)
+        require(git_cleanup.enabled(self.report, self.ledger['config']), 'side_effects_disabled')
+        if self.state is not None:
+            require(self.approval_hash == self.state['approval_sha256'] and
+                    self.report_identity(self.report) == self.state['report_identity_sha256'],
+                    'external_approval_changed')
+            require(self.transport_inventory() == self.state['transport'], 'external_transport_changed')
+            transition = self.state.get('journal_transition')
+            if transition:
+                require(self.journal_hash == transition['post'], 'external_journal_transition_unknown')
+                require(self.report.get('github') == native.summary(self.ledger),
+                        'external_native_save_incomplete')
+                require(self.report.get('status') == ('passed' if native.cleanup_complete(self.ledger)
+                                                     else 'awaiting_github'), 'external_native_save_incomplete')
+                self.state['journal_sha256'] = self.journal_hash
+                self.state['report_sha256'] = self.report_hash
+                self.state.setdefault('journal_history', []).append({**transition, 'post_report': self.report_hash})
+                del self.state['journal_transition']
+                self.persist()
+            require(self.journal_hash == self.state['journal_sha256'] and
+                    self.report_hash == self.state['report_sha256'], 'external_journal_or_report_changed')
+
+    def save_native(self, ledger):
+        self.guard()
+        require(self.read('github.json')[1] == self.state['journal_sha256'], 'external_journal_changed')
+        require(self.read('report.json')[1] == self.state['report_sha256'], 'external_report_changed')
+        # native durable_json's exact encoding; an interrupted save is accepted
+        # only when BOTH the expected journal and native report are observable.
+        post = transport.digest((json.dumps(ledger, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        self.state['journal_transition'] = {'pre': self.state['journal_sha256'], 'post': post,
+            'pre_report': self.state['report_sha256'], 'stage': self.result['stage']}
+        self.persist()
+        self.effects['journal_writes'] = True
+        self.effects['native_invoked'] = True
+        native.save(self.directory, ledger)
+        require(self.read('github.json')[1] == post, 'external_native_save_incomplete')
+        report, report_hash = self.read('report.json')
+        require(report.get('github') == native.summary(ledger), 'external_native_save_incomplete')
+        self.state.setdefault('journal_history', []).append({**self.state['journal_transition'],
+                                                            'post_report': report_hash})
+        self.state['journal_sha256'] = post
+        self.state['report_sha256'] = report_hash
+        del self.state['journal_transition']
+        self.ledger = ledger
+        self.persist()
+
+    def verify_park(self):
+        from harness import worktree_park as park
+        saved, digest = self.read(park.STATE)
+        require(digest == self.state['park_sha256'], 'external_park_changed')
+        # Snapshot verification does not require a pre-merge publication state.
+        verifier = park._Park(native.ROOT, self.directory, self.selected,
+                              git_cleanup.Git(native.ROOT), self.result, self.lock_checks)
+        verifier.files, verifier.limit = self.approval['files'], self.approval['max_file_bytes']
+        verifier.approval_hash, verifier.head = self.approval_hash, self.ledger['base_sha']
+        verifier.snapshots(saved)
+        require(saved.get('phase') == 'parked' and
+                saved.get('checkpoints') == {name: 'restored' for name in verifier.files},
+                'external_park_incomplete')
+        cleanup_state, _ = self.read('cleanup.json', optional=True)
+        before_sync = not cleanup_state or (not cleanup_state.get('external_attempts', {}).get('sync') and
+                                           cleanup_state.get('sync', {}).get('status') != 'complete')
+        if before_sync:
+            verifier.ledger = self.ledger
+            verifier.source_state(parked=True)
+
+    def proof(self):
+        try:
+            return native.external_merge_proof(self.ledger, self.proof_value, self.pr)
+        except native.ExternalProofError as exc:
+            if exc.next_get:
+                self.result['next_action'] = {'action': 'collect_get', 'approval_required': False,
+                                              **exc.next_get, 'then': self.invocation()}
+            raise Stop(str(exc)) from None
+
+    def invocation(self):
+        return {'command': 'agent-git-external-merge', 'required_arguments': {
+            'run_id': self.run, 'pr_number': self.pr, 'proof_file': str(self.proof_file),
+            'sha256': self.proof_hash, 'resume': self.resume or self.state is not None}}
+
+    def run_command(self):
+        self.result['stage'] = 'proof_file'
+        require(type(self.pr) is int and self.pr > 0 and isinstance(self.proof_hash, str) and
+                transport.HEX.fullmatch(self.proof_hash), 'external_arguments_invalid')
+        self.selected, self.directory, self.ledger = context(self.run)
+        self.lock_checks = []
+        raw = response_snapshot(self.selected, self.proof_file, self.proof_hash)
+        self.proof_value = transport.parse(raw)
+        self.result['stage'] = 'proof'
+        self.proof()  # Missing GETs return before locks, Git or durable writes.
+        with self.locks():
+            self.state, _ = self.read(self.NAME, optional=True)
+            if self.state is not None:
+                if not self.resume:
+                    self.result['next_action'] = {'action': 'explicit_resume', 'approval_required': True,
+                                                  **self.invocation()}
+                require(self.resume, 'external_explicit_resume_required')
+                require(self.state.get('version') == 'external-merge-v1' and
+                        self.state.get('run_id') == self.run and self.state.get('pr_number') == self.pr and
+                        self.state.get('proof_sha256') == self.proof_hash, 'external_resume_identity_mismatch')
+                self.result['completed_stages'] = list(self.state['completed'])
+            else:
+                require(not self.resume, 'external_resume_checkpoint_missing')
+            self.reload()
+            candidate = self.proof()  # Missing/failed reads cause no Git or journal writes.
+            if self.state is None:
+                require(self.ledger.get('step') == 'merge' and
+                        self.ledger.get('status') == 'awaiting_connector' and
+                        self.ledger.get('pending_write') is True and
+                        isinstance(self.ledger.get('pending_request_id'), str) and
+                        transport.HEX.fullmatch(self.ledger['pending_request_id']) and
+                        not self.ledger.get('merge_sha'), 'external_pending_merge_required')
+                request_id = self.ledger['pending_request_id']
+                # Receipts for the operation which EMITTED this merge are
+                # historical; only accept(current pending ID) denotes sending it.
+                saved, completes = evidence(self.run, self.ledger)
+                require(saved is not None and saved[0]['native_exit_code'] == 0,
+                        'external_transport_required')
+                request = saved[2].get('request')
+                require(isinstance(request, dict) and request.get('tool') == native.TOOLS['merge_pull_request'] and
+                        request.get('arguments') == {'repository_full_name': self.ledger['config']['repository'],
+                            'pr_number': self.pr, 'expected_head_sha': self.ledger['head_sha'],
+                            'merge_method': 'squash'}, 'external_pending_request_mismatch')
+                require(operation('accept', self.run, request_id) not in completes,
+                        'external_pending_merge_sent')
+                attempt_marker(self.selected, self.directory, self.run, request_id, None, self.result)
+                self.state = {'version': 'external-merge-v1', 'run_id': self.run, 'pr_number': self.pr,
+                    'proof_sha256': self.proof_hash, 'approval_sha256': self.approval_hash,
+                    'report_identity_sha256': self.report_identity(self.report),
+                    'original_report_sha256': self.report_hash, 'report_sha256': self.report_hash,
+                    'original_journal_sha256': self.journal_hash, 'journal_sha256': self.journal_hash,
+                    'journal_history': [], 'transport': self.transport_inventory(), 'completed': ['proof', 'discard'],
+                    'discard': {'request_id': request_id, 'merge_sha': candidate['merge_sha'],
+                                'proof_sha256': self.proof_hash, 'status': 'unsent_discarded'}}
+                self.persist()
+            require(self.state['discard']['merge_sha'] == candidate['merge_sha'], 'external_merge_mismatch')
+            need_park = 'native_cleanup' not in self.state['completed'] and not self.ledger.get('merge_sha')
+
+        if need_park:
+            # park owns the same source -> GitHub locks. Never call it while
+            # holding those locks (a separate flock fd would deadlock).
+            from harness.worktree_park import park
+            self.result['stage'] = 'park'
+            self.effects['park_invoked'] = True
+            parked = park(self.run)
+            self.result['park'] = {key: parked[key] for key in ('status', 'stage', 'code')}
+            self.effects['park'] = parked['side_effects']
+            self.result['executed'] |= parked['executed']
+            require(parked['status'] == 'parked', 'external_park_failed')
+
+        with self.locks():
+            self.reload()
+            candidate = self.proof()
+            if need_park:
+                self.state['park_sha256'] = self.read('worktree-park.json')[1]
+                self.done('park')
+            self.verify_park()
+            if 'native_cleanup' not in self.state['completed']:
+                self.result['stage'] = 'native_cleanup'
+                if not self.ledger.get('merge_sha'):
+                    # native begin_cleanup already ran on this proved copy;
+                    # no agent merge response or transport receipt is forged.
+                    self.save_native(candidate)
+                require(self.ledger.get('merge_sha') == candidate['merge_sha'], 'external_merge_mismatch')
+                self.done('native_cleanup')
+            self.result['merge'] = {'status': 'merged', 'sha': self.ledger['merge_sha'], 'source': 'user_ui'}
+            self.result['stage'] = 'cleanup'
+            cleanup = git_cleanup.Cleanup(native.ROOT, self.directory, self.ledger,
+                self.report, self.approval, storage_guard=self.guard)
+            if 'cleanup' in self.state['completed'] or (
+                    cleanup.state.get('status') == 'complete' and native.cleanup_complete(self.ledger)):
+                require(cleanup.state.get('status') == 'complete' and native.cleanup_complete(self.ledger),
+                        'external_cleanup_evidence_changed')
+                self.verify_cleanup(cleanup)
+                self.done('cleanup')
+            else:
+                self.effects['cleanup_invoked'] = True
+                self.result['executed'] = True
+                try:
+                    cleaned = cleanup.run_external()
+                except git_cleanup.Pending as exc:
+                    self.result['completed_stages'].extend(key for key in (
+                        'sync', 'remote', 'prune', 'local', 'completion') if cleanup.state.get(
+                            key, {}).get('status') in ('complete', 'deleted', 'absent'))
+                    self.result['cleanup'] = {'status': 'pending', 'code': str(exc)}
+                    self.result['next_action'] = {'action': 'explicit_resume_or_stop', 'approval_required': True,
+                        **self.invocation(), 'reason': 'Review actual state; unknown writes are never replayed.'}
+                    raise Stop(str(exc)) from None
+                self.ledger['cleanup'] = {key: cleaned[key] for key in (
+                    'version', 'status', 'remote', 'prune', 'sync', 'local', 'completion')}
+                self.ledger.update(status='merged', step='done')
+                self.save_native(self.ledger)
+                self.done('cleanup')
+            self.result['cleanup'] = {'status': 'complete'}
+            self.result['stage'] = 'archive'
+            attempt_archive = 'archive_attempted' not in self.state
+            if attempt_archive:
+                # Do not take the archive/store mutex under the source locks.
+                existing = any(self.read(name, optional=True)[0] is not None for name in (
+                    'archive-state.json', 'archive-transfer.json', 'archive-frozen.json'))
+                payload = self.directory / 'archive-payload'
+                attempt_archive = not (existing or payload.exists() or payload.is_symlink())
+                self.state['archive_attempted'] = True
+                self.persist()
+
+        self.archive_phase(attempt_archive, cleanup)
+
+    def archive_phase(self, attempt_archive, cleanup):
+        from harness import archive
+        if attempt_archive:
+            self.effects['archive_transfer_invoked'] = True
+            self.result['executed'] = True
+            # Intent is durable even if archive raises or the process dies.
+            try:
+                archive.archive_run(self.selected, self.directory)
+            except (Exception, KeyboardInterrupt):
+                pass
+        self.result['stage'] = 'archive_verify'
+        self.result['executed'] = True
+        self.effects['archive_readback_invoked'] = True
+        try:
+            verified = archive.verify_run_archive(self.selected, self.directory)
+            archive.verify_current_result(self.selected, self.directory, 'workflows',
+                archive.terminal_report(self.selected, self.directory, 'workflows'),
+                self.directory / 'archive-payload')
+        except Exception:
+            self.result['archive'] = {'status': 'pending'}
+            self.result['next_action'] = {'action': 'stop', 'approval_required': True,
+                'reason': 'Separate approval for existing archive recovery is required; do not repeat archive_run.',
+                'readback': {'command': 'archive-verify', 'required_arguments': {'run_id': self.run}},
+                'after_recovery': self.invocation()}
+            raise Stop('external_archive_pending') from None
+        with self.locks():
+            self.reload()
+            self.verify_cleanup(cleanup)
+            self.done('archive')
+            self.done('archive_verify')
+        self.result.update(status='verified', stage='complete', code='external_merge_verified',
+                           archive={'status': 'verified', **verified})
+        self.result['next_action'] = {'action': 'stop', 'approval_required': False,
+                                     'reason': 'UI merge, cleanup and archive readback verified.'}
+
+    def verify_cleanup(self, cleanup):
+        git = cleanup.git
+        cleanup.proof()
+        git_cleanup.validate_origin(git, self.ledger['config']['repository'])
+        cleanup.prune_refspec()
+        cleanup.external_index()
+        tip = git.remote('refs/heads/' + self.ledger['config']['base'])
+        require(tip == self.ledger['merge_sha'] and git.ref('HEAD') == tip and
+                git.text('symbolic-ref', '-q', 'HEAD', allow=(0, 1)) ==
+                'refs/heads/' + self.ledger['config']['base'] and not git_cleanup.status(git),
+                'external_checkout_changed')
+        cleanup.inspect(tip)
+        cleanup.external_files()
+        for ref in ('refs/heads/', 'refs/remotes/origin/'):
+            require(git.ref(ref + self.ledger['branch']) is None, 'external_ref_reappeared')
+        require(git.remote('refs/heads/' + self.ledger['branch']) is None, 'external_ref_reappeared')
+
+
 def execute(command, run=None, **kwargs):
     result = result_for(command, run)
     try:
@@ -655,11 +1047,16 @@ def execute(command, run=None, **kwargs):
                 storage_path(result, run=run, **kwargs)
             elif command == 'archive-verify':
                 archive_verify(result, run)
+            elif command == 'agent-git-external-merge':
+                ExternalMerge(result, run, kwargs['pr_number'], kwargs['proof_file'],
+                              kwargs['sha256'], kwargs.get('resume', False)).run_command()
             else:
                 raise Stop('invalid_command')
     except (Stop, transport.TransportError) as exc:
         # TransportError messages are fixed protocol codes, not private paths.
         result['code'] = str(exc)
+        if command == 'agent-git-external-merge' and (result['executed'] or result.get('completed_stages')):
+            result['status'] = 'needs_reconciliation'
         if result['status'] not in ('failed', 'awaiting_ci', 'needs_reconciliation'):
             result['status'] = 'needs_reconciliation'
         if command in ('agent-git-next', 'agent-git-accept-file') and result['stage'] != 'authorization':
@@ -678,7 +1075,7 @@ def execute(command, run=None, **kwargs):
         result.pop('native', None)
         result.pop('transport', None)
         result.pop('result_file', None)
-    if result['code'] != 'native_result' and result['status'] not in ('ready', 'parked', 'awaiting_approval', 'verified'):
+    if command != 'agent-git-external-merge' and result['code'] != 'native_result' and result['status'] not in ('ready', 'parked', 'awaiting_approval', 'verified'):
         result['next_action'] = result_for(command, run)['next_action']
     return result
 
@@ -711,6 +1108,11 @@ def main(argv=None):
             item.add_argument('--request-id', type=hex_argument, required=True)
             item.add_argument('--response-file', required=True)
             item.add_argument('--sha256', type=hex_argument, required=True)
+        if command == 'agent-git-external-merge':
+            item.add_argument('--pr-number', type=int, required=True)
+            item.add_argument('--proof-file', required=True)
+            item.add_argument('--sha256', type=hex_argument, required=True)
+            item.add_argument('--resume', action='store_true')
         if command == 'storage-path':
             item.add_argument('--target', choices=('reports', 'workflows', 'artifacts', 'temporary', 'context'), default='reports')
             item.add_argument('--category')

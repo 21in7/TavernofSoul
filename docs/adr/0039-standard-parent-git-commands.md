@@ -43,8 +43,16 @@ trusted parent는 저장 전용 `writeResponseFile({runId,requestId,text,bytes,s
 `{path,bytes,sha256}`을 반환한다. 원응답은 모든 결과에서 보존한다. capability는 저장만 하며
 transport·임시 Python launcher·ledger 수정을 구현하지 않는다.
 
-accept-file 명령이 입력 경로의 no-follow/owner/mode/nlink/size·UTF-8/JSON/SHA256과 실행 중
-파일/부모 교체를 검증한다. 입력 상한8MiB를 유지한다. 명령이 owned private0600 frame에 각 줄
+최신 사용자 결정으로 accept-file과 A2c external-merge의 응답 입력은 single-open immutable memory
+snapshot이다. private 부모 디렉터리와 초기 no-follow fd의 owner/regular0600/nlink1/size 상한8MiB를
+확인해 파일을 한 번 열고 bounded bytes를 읽는다. dup(fd)는 경로 재오픈이 아니다. 메모리 bytes의
+SHA256을 parent 값과 정확히 대조한 뒤 UTF-8/duplicate key/추가 JSON/schema를 검사한다. 초기
+digest 불일치는 dispatch·lock·checkpoint 전에 side effects 없이 거절한다. 이후 응답 경로를 다시
+열거나 size/mtime/ino·부모 attachment를 재검사하지 않는다. disk 입력 교체·수정·삭제에도 기존
+snapshot만 frame/proof/native receipt에 사용하고 이미 수락한 작업을 실패로 바꾸거나 재전송하지 않는다.
+원응답 삭제는 추가하지 않는다. 내부 journal/approval/receipt freshness·private_input attachment와
+source/lock identity·frame ownership/fsync/readback/cleanup은 다른 계약이며 유지한다.
+명령이 owned private0600 frame에 각 줄
 <=2048의 base64와 마지막 `.` 줄을 쓰고 fsync/readback한 fd를 비대화형 subprocess stdin에
 연결한다. native `python -m harness.git_transport accept --stdin-base64` 호출은 shell=False
 인자 배열이다. 응답 본문 shell argv·대화형 stdin·PTY·nonempty write_stdin은 금지한다.
@@ -90,6 +98,43 @@ v2 reports는 active artifacts 내부이며 private/absolute/no-follow/mount/flo
 resolve는 read-only, prepare만 명시적으로 생성하며 JSON에 실행·생성 경로를 기록한다.
 private storage 설정은 모델에 주지 않는다. archive root 속성을 추측하거나 자동 fallback하지 않는다.
 
+### A2c 사용자 UI merge 이후 명령 연결
+
+사용자가 후속 범위를 A2c 하나로 승인했다. 기존 구조/소유권을 유지하고 기존 proof/park/cleanup/archive
+계약을 parent의 한 명령으로 연결한다. 표준 Make 입력은 `agent-git-external-merge RUN_ID=<run>
+PR_NUMBER=<n> PROOF_FILE=<private-json> RESPONSE_SHA256=<sha256>`이며 CLI는 같은 의미의
+`--run-id/--pr-number/--proof-file/--sha256`이다. GitHub GET은 parent가 수행한다. 정확한 versioned
+schema와 required GET, 중단/재개 예제는 [merge cleanup](../ops/merge-cleanup.md)에 둔다.
+external-merge-proof-v1은 원래 run/PR/repository/base/head/squash identity와 complete GET responses를
+고정하고 native CI3/check_suite/skip·cleanup gate를 재사용한다. 원래 승인 head/base와 동일한 전체
+tree·단일 parent 관계를 요구해 Update branch head나 증명 불가 base 전진을 자동 승인하지 않는다.
+누락 GET은 정확한 method/url을 반환하고 mutation 없이 stop한다. 단순 merged=true로 쓰지 않는다.
+
+현재 pending exact merge ID의 begin/complete/parent attempt/inflight/불명 dispatch가 없는 경우만
+ID·merge SHA·evidence digest가 있는 durable 폐기 기록을 만든다. 다른 과거 요청의 완료 receipt와
+external 소유 journal 전환은 구별하고 historical transport/attempt bytes를 고정·보존한다.
+native begin_cleanup/save의 journal/report pre→post hash를 external-merge-v1 checkpoint에 연결한다.
+receipt/head rewrite나 merge 응답 위조는 금지하며 external 소유 run의 native request/accept/resume/
+cleanup와 parent next/accept를 막는다. A2d reconcile/resume-ci는 추가하지 않는다.
+
+순서는 proof → 미전송 폐기 → park/복원 검증 → fetch/ff-only → exact branch compare-delete/prune/
+local cleanup → 완료 검증/native save → archive 단1회 → 실제 archive 재읽기다. 기존 Cleanup.run은
+바꾸지 않고 opt-in run_external에서 순서를 보장한다. source → GitHub 잠금과 기존 inode/mode를
+유지하고 park와 archive는 그 mutex 밖에서 기존 API로 호출한다. 사용자 변경·origin/fetch mapping·
+다른 worktree·operation·local commit 보호를 유지하며 ff 후 승인 bytes/full POSIX mode를 확인한다.
+
+재개는 사람이 같은 identity로 새 `--resume`(Make RESUME=1)을 명시한 경우만 허용한다. 완료 쓰기는
+반복하지 않고 crash 후 실제 HEAD/bytes/mode·ref 부재로 확인한다. native post journal hash와 report의 native summary/완료 status를 함께 확인한 경우만 전환을 회수하고
+report hash를 history에 고정한다. partial/unknown은 stop한다. archive_attempted를 먼저 durable 기록해
+pending에서도 merge/cleanup 완료를 보존한다. 별도 승인된 기존 archive 복구 후 같은 proof로 재개하면
+verify_run_archive/verify_current_result만 재읽으며 archive_run을 다시 호출하지 않는다.
+
+역사적 실패 관측도 보존한다. 이전 run은 native 2라운드 뒤 exhausted_repair/applied=[]로 끝났고,
+같은 2bytes 덮어쓰기 뒤 attachment check가 input_changed를 내지 않은 테스트가 있었다. 실패 당시
+stat 값이 없어 timestamp 동일성/파일시스템 원인은 미확정이다. 새 회귀는 읽기 전 same-size 변경과
+명시적 mtime 복원에도 digest mismatch를 요구하고, 검증 후 변경은 old snapshot·실제 child 입력·durable
+receipt 불변 성공으로 분리한다. 이전 승인/검사 결과와 #119 완료는 새 실행의 성공 근거가 아니다.
+
 ## 비교 대안
 
 - 즉석 parent script와 PTY accept 유지: 저장·framing·오류 처리가 매 호출에 분산되고 과거 교착 경계를 반복한다.
@@ -104,8 +149,9 @@ private storage 설정은 모델에 주지 않는다. archive root 속성을 추
 
 ## 결과·비용·제약
 
-A2 reconcile/resume-ci/external-merge/archive-verify는 미구현이다. 필요하면 현재 승인 복구
-절차로 별도 조정하거나 stop한다. 옛 CLI/즉석 script/transport head rewrite로 우회하지 않는다.
+A2b archive-verify는 읽기 전용 검증이며 A2c external-merge는 위 후속 결정으로 연결한다.
+A2d reconcile/resume-ci는 미구현이다. 필요하면 현재 승인 복구 절차로 별도 조정하거나 stop한다.
+옛 CLI/즉석 script/transport head rewrite로 우회하지 않는다.
 child/discovery/unattended/read_only/demo/no_git 거절 경계와 기존 모델/예산/auth/storage/
 scheduler 설정을 유지한다. 일반 native merge/cleanup/archive 문서는 A1 실행 권한이 아니다.
 
@@ -125,4 +171,5 @@ parent가 검토·검사 완료 후 “게시 단계는 이 명령만 사용, �
 
 - [명령](../../harness/parent_commands.py), [park](../../harness/worktree_park.py), [Make](../../Makefile), [bridge](../../harness/git_bridge.js)
 - [명령 회귀](../../harness/test_parent_commands.py), [park 회귀](../../harness/test_worktree_park.py), [bridge 회귀](../../harness/test_git_bridge.py): fake connector·격리 임시 Git 및 실제 subprocess 파일 stdin/READY 등 boundary 검증은 orchestrator 실행 책임이다. 이 문서는 검사 성공을 주장하지 않는다.
+- [외부 merge 회귀](../../harness/test_external_merge.py): 자체 격리 fixture로 proof·순서·미전송 폐기·명시 재개·archive at-most-once·응답 snapshot을 검증한다. 실행은 orchestrator 책임이다.
 - [설계](../harness-design.md#trusted-parent-전송과-native-검증-경계), [workflow](../workflow.md#trusted-parent-bridge와-즉시-handoff), [GitHub 전달 경계](../ops/github-transport.md)

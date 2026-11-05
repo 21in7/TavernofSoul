@@ -289,6 +289,9 @@ class Cleanup:
         durable_json(self.path, self.state)
 
     def checkpoint(self, target, state, reason=None):
+        if self.state.get('external_order') == 'external-merge-v1':
+            if (target, state) in (('sync', 'synchronizing'), ('local', 'deleting')):
+                self.state.setdefault('external_attempts', {})[target] = True
         self.state[target] = {'status': state, **({'reason': reason} if reason else {})}
         self.state['events'].append({'target': target, **self.state[target]})
         self.state['status'] = 'cleanup_pending'
@@ -567,7 +570,7 @@ class Cleanup:
             raise Pending('tracking_ref_remains')
         self.checkpoint('prune', 'complete')
 
-    def local_cleanup(self, remote_base):
+    def local_cleanup(self, remote_base, *, sync_only=False):
         current, head = self.inspect(remote_base)
         changes = status(self.git)
         allowed = [name for name, entry in self.ledger['files'].items()
@@ -600,8 +603,10 @@ class Cleanup:
             self.checkpoint('sync', 'switching')
             self.git.run('switch', '--no-recurse-submodules', base)
         self.checkpoint('sync', 'fetching')
-        remote_base = self.fetch(prune=True)
+        remote_base = self.fetch(prune=self.state.get('external_order') != 'external-merge-v1')
         self.inspect(remote_base)
+        if self.state.get('external_order') == 'external-merge-v1':
+            self.external_patch(remote_base)
         if self.state.get('restore') and self.state['restore']['phase'] != 'synced':
             for name, entry in self.ledger['files'].items():
                 if not same_entry(tree_file(self.git, remote_base, name), entry['after']):
@@ -609,6 +614,11 @@ class Cleanup:
         self.collisions(self.git.ref('HEAD'), remote_base)
         if status(self.git):
             raise Pending('worktree_changed_before_sync')
+        if self.state.get('external_order') == 'external-merge-v1':
+            if self.git.ref('HEAD') != self.ledger['base_sha'] or any(
+                    fingerprint(self.root, name, self.approval['max_file_bytes']) != item['before']
+                    for name, item in self.approval['files'].items()):
+                raise Pending('external_baseline_file_changed')
         if self.state.get('restore'):
             self.state['restore']['phase'] = 'syncing'
         self.checkpoint('sync', 'synchronizing')
@@ -618,6 +628,11 @@ class Cleanup:
         if self.state.get('restore'):
             self.state['restore']['phase'] = 'synced'
         self.checkpoint('sync', 'complete')
+        if sync_only:
+            return
+        self.delete_local(remote_base)
+
+    def delete_local(self, remote_base):
         self.target = 'local'
         ref = 'refs/heads/' + self.ledger['branch']
         tip = self.git.ref(ref)
@@ -638,12 +653,130 @@ class Cleanup:
             raise Pending('local_ref_remains')
         self.checkpoint('local', 'deleted')
 
+    def external_patch(self, remote_base):
+        """Conservative squash: the original base and the entire approved tree."""
+        if remote_base != self.ledger['merge_sha']:
+            raise Pending('external_base_advanced')
+        parents = self.git.text('show', '-s', '--format=%P', remote_base).split()
+        if parents != [self.ledger['base_sha']] or self.git.text(
+                'show', '-s', '--format=%T', remote_base) != self.ledger['new_tree']:
+            raise Pending('external_patch_unproven')
+        changed = set(filter(None, self.git.run('diff', '--name-only', '-z', '--no-renames',
+                             self.ledger['base_sha'], remote_base, '--')[1].decode('utf-8').split('\0')))
+        expected = {name for name, entry in self.ledger['files'].items()
+                    if not same_entry(entry['before'], entry['after'])}
+        if changed != expected:
+            raise Pending('external_patch_scope_mismatch')
+        for name, entry in self.ledger['files'].items():
+            for sha, version in ((self.ledger['base_sha'], 'before'), (remote_base, 'after')):
+                if not same_entry(tree_file(self.git, sha, name), entry[version]):
+                    raise Pending('external_patch_unproven')
+
+    def external_files(self, *, repair_mode=False):
+        """Git tracks executable bits only; require the full approval fingerprint."""
+        for name, item in self.approval['files'].items():
+            expected = item['after']
+            current = fingerprint(self.root, name, self.approval['max_file_bytes'])
+            if current == expected:
+                continue
+            if not repair_mode or not current or not expected or current['sha256'] != expected['sha256']:
+                raise Pending('external_approved_file_mismatch')
+            path = workspace.safe_path(self.root, name)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                before = os.fstat(fd)
+                def stable(info):
+                    return (info.st_dev, info.st_ino, info.st_uid, info.st_nlink, info.st_mode,
+                            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or before.st_nlink != 1:
+                    raise Pending('external_unsafe_mode_repair')
+                with os.fdopen(os.dup(fd), 'rb') as handle:
+                    raw = handle.read(self.approval['max_file_bytes'] + 1)
+                if hashlib.sha256(raw).hexdigest() != expected['sha256'] or \
+                        stable(os.fstat(fd)) != stable(before) or \
+                        stable(os.stat(path, follow_symlinks=False)) != stable(before):
+                    raise Pending('external_approved_file_mismatch')
+                self.storage_guard()
+                if stable(os.fstat(fd)) != stable(before) or \
+                        stable(os.stat(path, follow_symlinks=False)) != stable(before):
+                    raise Pending('external_approved_file_mismatch')
+                os.fchmod(fd, expected['mode'])
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            if fingerprint(self.root, name, self.approval['max_file_bytes']) != expected:
+                raise Pending('external_approved_file_mismatch')
+
+    def run_external(self):
+        """Opt-in ordering; the ordinary native cleanup path is unchanged.
+
+        A durable write intent can only be resolved by actual state. A remaining
+        old ref/HEAD is never permission to replay an uncertain ff or deletion.
+        """
+        if not enabled(self.report, self.ledger['config']):
+            raise Pending('cleanup_side_effects_disabled')
+        if self.state.get('events') and self.state.get('external_order') != 'external-merge-v1':
+            raise Pending('external_cleanup_checkpoint_conflict')
+        self.state['external_order'] = 'external-merge-v1'
+        self.proof()
+        self.external_index()
+        self.target = 'fetch'
+        remote_base = self.fetch()
+        self.external_patch(remote_base)
+        self.inspect(remote_base)
+        self.target = 'sync'
+        if self.state.get('external_attempts', {}).get('sync') or self.state['sync'].get('status') == 'complete':
+            if self.git.ref('HEAD') != remote_base or status(self.git) or self.git.text(
+                    'symbolic-ref', '-q', 'HEAD', allow=(0, 1)) != 'refs/heads/' + self.ledger['config']['base']:
+                raise Pending('external_ff_unknown')
+            self.external_files()  # No mode repair when resolving an uncertain write.
+            if self.state['sync'].get('status') != 'complete':
+                self.checkpoint('sync', 'complete')
+        else:
+            self.local_cleanup(remote_base, sync_only=True)
+            self.external_files(repair_mode=True)
+        self.target = 'remote'
+        if self.state['remote'].get('status') in ('deleted', 'absent'):
+            if self.git.remote('refs/heads/' + self.ledger['branch']) is not None:
+                raise Pending('remote_branch_reappeared')
+        else:
+            self.remote_cleanup()
+        self.target = 'prune'
+        if self.state['prune'].get('status') == 'complete':
+            if self.git.ref('refs/remotes/origin/' + self.ledger['branch']) is not None:
+                raise Pending('tracking_ref_reappeared')
+        else:
+            self.prune()
+        self.target = 'local'
+        tip = self.git.ref('refs/heads/' + self.ledger['branch'])
+        if self.state['local'].get('status') in ('deleted', 'absent'):
+            if tip is not None:
+                raise Pending('local_branch_reappeared')
+        elif self.state.get('external_attempts', {}).get('local') and tip is not None:
+            raise Pending('external_local_delete_unknown')
+        else:
+            self.delete_local(remote_base)
+        self.external_files()
+        self.complete()
+        self.state['status'] = 'complete'
+        self.persist()
+        return self.state
+
+    def external_index(self):
+        rows = self.git.run('ls-files', '-v', '-z')[1].split(b'\0')
+        if any(row and not row.startswith(b'H ') for row in rows) or self.git.run(
+                'diff', '--cached', '--quiet', '--no-ext-diff', 'HEAD', '--', allow=(0, 1))[0]:
+            raise Pending('external_index_changed')
+
     def complete(self):
         # A branch can be recreated after deletion or another process can switch
         # HEAD. Completion checks actual state once more; locks do not stop editors.
         self.target = 'completion'
         base = self.fetch(prune=True)
         self.inspect(base)
+        if self.state.get('external_order') == 'external-merge-v1':
+            self.external_patch(base)
+            self.external_files()
         if self.git.text('symbolic-ref', '-q', 'HEAD', allow=(0, 1)) != \
                 'refs/heads/' + self.ledger['config']['base'] or self.git.ref('HEAD') != base or status(self.git):
             raise Pending('checkout_changed_before_completion')

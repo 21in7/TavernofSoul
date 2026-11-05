@@ -24,8 +24,14 @@ PR 설명도 자동 승인 검토 대상이다. PR #102의 설명 거절과 상�
 parent는 저장 전용 `writeResponseFile` capability로 원응답을 owned private 디렉터리의 exclusive
 0600/nlink=1 JSON 파일에 보존하고 fsync/readback한 `{path,bytes,sha256}`을 받는다. capability는
 transport·임시 Python launcher·ledger를 구현하지 않는다. `agent-git-accept-file`에 run ID·exact
-request ID·response-file·예상 SHA256만 전달한다. 명령이 no-follow/owner/mode/nlink/size·UTF-8/JSON/
-hash와 실행 중 파일/부모 교체를 검증한다. 입력 상한8MiB이며 원응답은 오류 때도 보존한다.
+request ID·response-file·예상 SHA256만 전달한다. 명령이 private 부모 디렉터리와 초기 fd의
+no-follow/owner/regular0600/nlink1/size 상한8MiB를 확인하고 파일을 단1회 열어 bounded bytes를 읽는다.
+dup(fd)는 경로 재오픈이 아니다. 메모리 bytes의 SHA256을 parent 값과 대조한 뒤 UTF-8/duplicate key/
+추가 JSON을 검사한다. 초기 hash 불일치는 dispatch·lock·checkpoint 전 side effects 없이 거절한다.
+검증 후 파일/부모 경로를 재stat/재오픈하지 않는다. 입력이 교체·수정·삭제돼도 검증된 snapshot만
+frame/native receipt에 사용하며 이미 수락한 작업을 응답 경로 변화 때문에 실패로 바꾸거나 재전송하지 않는다.
+명령은 원응답을 삭제하지 않는다. internal journal/attempt의 private_input attachment/freshness와
+lock/frame의 ownership/fsync/readback/cleanup은 응답 snapshot과 별개로 유지한다.
 
 명령이 owned private0600 frame에 각 줄<=2048의 base64와 마지막 `.` 줄을 쓰고 fsync/readback한다.
 검증된 fd를 `python -m harness.git_transport accept --stdin-base64`의 stdin으로 연결하는
@@ -74,9 +80,34 @@ mount 확인 실패는 `archive_integrity_failed`로 stop한다. 예외 원문�
 side_effects는 읽기뿐임을 기록하며 prepare·lock/임시 파일·전송·freeze/repack·journal/receipt/state
 쓰기·fallback·자동 retry 없이 증거를 보존한다. 실패 시 next_action의 stop에 따라 별도 조정한다.
 
-A2c external-merge와 A2d reconcile/resume-ci는 미구현이다. 필요하면 현재 승인된
-[GitHub 복구](../lessons/github-recovery.md) 절차로 별도 조정하거나 stop한다. 옛 CLI나 즉석 script로
-우회하지 않으며 native resume 뒤 journal/transport head mismatch를 head rewrite로 해결하지 않는다.
+A2c는 사용자 UI squash merge 이후의 `make agent-git-external-merge RUN_ID=<run> PR_NUMBER=<n>
+PROOF_FILE=<private-json> RESPONSE_SHA256=<sha256>`와 동일 인자의 parent_commands CLI로 연결한다.
+CLI는 `--run-id/--pr-number/--proof-file/--sha256`, 명시 재개는 `--resume`(Make는 RESUME=1)이다.
+external-merge-proof-v1의 정확 schema/필수 GET과 단계별 절차는 [merge cleanup](merge-cleanup.md)에 둔다.
+응답 입력은 위 accept-file과 동일한 single-open immutable memory snapshot이다. parent가 실제 읽은
+PR/head/squash/CI/status/repository/branch protection/tip/open PR 전체 조회를 native gate로 검증하고
+누락 시 `next_action={action:collect_get,method,url,then}`과 stop을 반환한다. 불완전 페이지·오류는 부재가 아니다.
+원래 승인 head/base와 squash 전체 tree/단일 parent 관계를 증명해야 하며 Update branch head 변경과
+base 전진/추가 patch는 보수적으로 stop한다. GitHub 앱/HTTP 호출은 parent만 수행한다.
+
+proof → 현재 exact pending 미전송 merge ID의 durable 폐기 → park/복원 검증 → fetch/ff-only →
+exact SHA lease remote delete/prune/local delete → cleanup 검증/native save → archive 단1회 → 실제
+archive-verify 재읽기 순서다. 현재 pending begin/complete/parent attempt/inflight/unknown dispatch는
+거절한다. 과거 다른 요청의 완료 receipt는 현재 전송으로 오인하지 않으며 historical transport bytes를
+고정·보존한다. UI merge를 agent 응답으로 위조하지 않는다. external checkpoint가 journal/report
+pre/post hash를 연결하고, 해당 run의 native request/accept/resume/cleanup와 parent next/accept를 막는다.
+
+checkpoint 이후 일반 재호출은 중단하고 사람이 같은 run/PR/proof/approval identity로 새 명시 --resume을
+호출해야 한다. 실제 상태로 완료된 ff/ref 삭제만 회수하고 불명 쓰기를 반복하지 않는다. archive intent를
+먼저 기록하며 pending이면 merge/cleanup 증거를 유지한다. 기존 archive 복구를 별도 승인받아 완료한 뒤
+external --resume은 verify_run_archive/verify_current_result만 재읽고 archive_run을 재전송하지 않는다.
+parent-commands-v1의 stage/code/executed/side_effects/completed_stages/next_action을 읽어 남은 필수 인자와
+중단 단계를 구별한다. A2d reconcile/resume-ci는 미구현이며 필요하면 현재 승인된
+[GitHub 복구](../lessons/github-recovery.md)로 별도 조정한다. 옛 CLI나 즉석 script로 우회하지 않으며
+native resume 뒤 journal/transport head mismatch를 head rewrite로 해결하지 않는다.
+
+parent는 최종 독립 검토·full check·게시 뒤 protected/private runbook core의 새 표준 명령 사용 규칙을
+실제 CLI에 맞춰 갱신한다. 이 두 ops 절은 기존 proof/park/cleanup/archive 계약의 연결 범위를 설명한다.
 
 park는 승인 전체 scope/review/check/apply·HEAD baseline·index/status·hash+POSIX mode·native backup
 before를 검증한 뒤 approved after snapshot과 file별 durable checkpoint를 보관하고 baseline 복원·
