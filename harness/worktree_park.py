@@ -172,7 +172,7 @@ class _Park:
             check()
 
     def load(self):
-        self.ledger, _ = _record(self.selected, self.directory, 'github.json')
+        self.ledger, self.ledger_hash = _record(self.selected, self.directory, 'github.json')
         self.report, self.report_hash = _record(self.selected, self.directory, 'report.json')
         self.approval, self.approval_hash = _record(self.selected, self.directory, 'github-approved.json')
         report, ledger, approval = self.report, self.ledger, self.approval
@@ -181,9 +181,7 @@ class _Park:
         _require(not any(report.get(k) for k in ('read_only', 'simulated', 'no_git', 'demo')) and
                  report.get('github_enabled') is not False and ledger['config'].get('enabled') is True,
                  'side_effects_disabled')
-        _require(not ledger.get('merge_sha') and ledger.get('step') not in ('merge', 'done', 'cleanup_execute') and
-                 ledger.get('status') in ('awaiting_connector', 'awaiting_ci', 'waiting_for_ci'),
-                 'publication_state_requires_reconciliation')
+        self.publication_state()
         _require(report.get('review', {}).get('verdict') == 'approved', 'review_not_approved')
         # This is the native prepare gate, reused rather than a status-only test.
         from harness import failure_feedback
@@ -234,6 +232,85 @@ class _Park:
             _require(git_cleanup.same_entry(git_cleanup.tree_file(self.git, self.head, name),
                                             ledger['files'][name]['before']), 'baseline_tree_mismatch')
 
+    def publication_state(self):
+        ledger = self.ledger
+        code = 'publication_state_requires_reconciliation'
+        step, pending = ledger.get('step'), ledger.get('pending_request_id')
+        _require(isinstance(step, str) and step != 'done' and not step.startswith('cleanup') and
+                 not ledger.get('merge_sha') and ledger.get('merge_status') != 'merged' and
+                 ledger.get('status') in ('awaiting_connector', 'awaiting_ci', 'waiting_for_ci'), code)
+        _require('pending_write' not in ledger or type(ledger['pending_write']) is bool, code)
+        if pending is not None:
+            _require(isinstance(pending, str) and git_transport.HEX.fullmatch(pending), code)
+        if step == 'merge' or ledger.get('pending_write'):
+            _require(step == 'merge' and ledger.get('status') == 'awaiting_connector' and
+                     ledger.get('pending_write') is True and pending is not None, code)
+
+        transport = self.directory / 'transport'
+        try:
+            fd = self.selected.fs.open_directory(transport)
+        except FileNotFoundError:
+            return  # No transport records, hence no begin or inflight marker.
+        try:
+            _owned(os.fstat(fd), private=True, directory=True)
+            names = set(os.listdir(fd))
+            _require(len(names) <= git_transport.MAX_OPERATIONS * 6, code)
+        finally:
+            os.close(fd)
+
+        def optional(name):
+            raw, _ = _read(self.selected, transport / name, MAX_RECORD, private=True)
+            if raw is None:
+                return None
+            value = git_transport.parse(raw)
+            _require(isinstance(value, dict), code)
+            return value
+
+        _require(optional('inflight.json') is None, code)
+        if pending is not None:
+            # Native accept identity is request-specific; an older successful
+            # accept may be the operation that emitted this pending merge.
+            operation = git_transport.digest(git_transport.encode([self.directory.name, 'accept', pending]))
+            _require(optional(operation + '.begin.json') is None and
+                     not any(name.startswith(operation + '.') for name in names), code)
+        # Partial or unrecognized records cannot prove a completed old operation.
+        for name in names - {'claim', 'head.json'}:
+            identity, separator, suffix = name.partition('.')
+            _require(separator and git_transport.HEX.fullmatch(identity) and
+                     suffix in ('begin.json', 'complete.json', 'response.json', 'stdout', 'stderr') and
+                     identity + '.begin.json' in names and identity + '.complete.json' in names, code)
+        head = optional('head.json')
+        if head is None:
+            _require(names <= {'claim'}, code)
+            return
+        command, request_id = head.get('operation'), head.get('request_id')
+        _require(head.get('run_id') == self.directory.name and command in ('request', 'accept') and
+                 ((command == 'request' and request_id is None) or
+                  (command == 'accept' and isinstance(request_id, str) and
+                   git_transport.HEX.fullmatch(request_id))), code)
+        operation = git_transport.digest(git_transport.encode([self.directory.name, command, request_id]))
+        _require(head.get('operation_id') == operation and head.get('journal_sha256') == self.ledger_hash and
+                 type(head.get('native_exit_code')) is int and head['native_exit_code'] == 0 and
+                 optional(operation + '.complete.json') == head, code)
+        begin = optional(operation + '.begin.json')
+        _require(begin is not None and set(begin) == {
+                     'run_id', 'operation', 'operation_id', 'request_id', 'response_sha256',
+                     'journal_sha256', 'started_at'} and
+                 set(head) == set(begin) | {'bytes', 'sha256', 'native_exit_code', 'ended_at'} and
+                 all(begin.get(key) == head.get(key) for key in
+                 ('run_id', 'operation', 'operation_id', 'request_id', 'response_sha256', 'started_at')) and
+                 isinstance(begin.get('journal_sha256'), str) and
+                 git_transport.HEX.fullmatch(begin['journal_sha256']), code)
+        response_hash = begin['response_sha256']
+        _require((command == 'request' and response_hash is None) or
+                 (command == 'accept' and isinstance(response_hash, str) and
+                  git_transport.HEX.fullmatch(response_hash)), code)
+        _require(type(head['started_at']) in (int, float) and type(head['ended_at']) in (int, float) and
+                 0 <= head['started_at'] <= head['ended_at'] < float('inf'), code)
+        raw, _ = _read(self.selected, transport / (operation + '.stdout'), MAX_RECORD, private=True)
+        _require(raw is not None and type(head.get('bytes')) is int and len(raw) == head['bytes'] and
+                 git_transport.digest(raw) == head.get('sha256'), code)
+
     def source(self, name):
         return _read(self.selected, workspace.safe_path(self.root, name), self.limit)[1]
 
@@ -263,8 +340,9 @@ class _Park:
     def evidence_unchanged(self):
         for name, digest in (('github-approved.json', self.approval_hash), ('report.json', self.report_hash)):
             _require(_record(self.selected, self.directory, name)[1] == digest, 'approval_changed')
-        ledger, _ = _record(self.selected, self.directory, 'github.json')
-        _require(ledger == self.ledger, 'journal_changed')
+        ledger, identity = _record(self.selected, self.directory, 'github.json')
+        _require(ledger == self.ledger and identity == self.ledger_hash, 'journal_changed')
+        self.publication_state()
 
     def persist(self, state):
         self.ready()

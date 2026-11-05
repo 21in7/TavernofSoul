@@ -153,6 +153,127 @@ def evidence(repo):
             for name in ('github.json', 'github-approved.json', 'report.json')}
 
 
+def pending_merge(repo, previous_receipt=True):
+    """Model the native accept that emitted a merge request, without dispatch."""
+    transport_api = parking.git_transport
+    directory = repo['directory']
+    journal_before = transport_api.digest((directory / 'github.json').read_bytes())
+    ledger = copy.deepcopy(repo['ledger'])
+    ledger.update(step='merge', status='awaiting_connector', pending_write=True,
+                  pending_request_id='a' * 64, pr_number=1, head_sha='b' * 40)
+    git_cleanup.durable_json(directory / 'github.json', ledger)
+    if not previous_receipt:
+        return ledger, None
+    transport = directory / 'transport'
+    transport.mkdir(mode=0o700)
+    previous_id = 'c' * 64
+    operation = transport_api.digest(transport_api.encode([repo['run_id'], 'accept', previous_id]))
+    response = transport_api.encode({'result': {}})
+    begin = {'run_id': repo['run_id'], 'operation': 'accept', 'operation_id': operation,
+             'request_id': previous_id, 'response_sha256': transport_api.digest(response),
+             'journal_sha256': journal_before, 'started_at': 1.0}
+    stdout = transport_api.encode({'request': {'request_id': ledger['pending_request_id'],
+                                             **native.next_request(copy.deepcopy(ledger))}})
+    complete = {**begin, 'journal_sha256': transport_api.digest((directory / 'github.json').read_bytes()),
+                'bytes': len(stdout), 'sha256': transport_api.digest(stdout),
+                'native_exit_code': 0, 'ended_at': 2.0}
+    for name, value in ((operation + '.begin.json', begin), (operation + '.complete.json', complete),
+                        ('head.json', complete)):
+        git_cleanup.durable_json(transport / name, value)
+    for suffix, raw in (('.response.json', response), ('.stdout', stdout), ('.stderr', b'')):
+        path = transport / (operation + suffix)
+        path.write_bytes(raw)
+        path.chmod(0o600)
+    return ledger, begin
+
+
+def transport_image(repo):
+    transport = repo['directory'] / 'transport'
+    return {path.name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+            for path in transport.iterdir()} if transport.exists() else {}
+
+
+@pytest.mark.parametrize('previous_receipt', [False, True])
+def test_unsent_pending_merge_allows_park_and_preserves_receipts(parked_repo, previous_receipt):
+    repo = parked_repo
+    pending_merge(repo, previous_receipt)
+    records, receipts = evidence(repo), transport_image(repo)
+    index = (repo['root'] / '.git/index').read_bytes()
+    result = repo['run']()
+    assert result['status'] == 'parked', result
+    assert result['executed'] and set(result['side_effects']['restored_files']) == set(repo['scope'])
+    assert evidence(repo) == records and transport_image(repo) == receipts
+    assert (repo['root'] / '.git/index').read_bytes() == index
+    for name, entry in repo['approval']['files'].items():
+        assert workspace.fingerprint(repo['root'] / name, 4096) == entry['before']
+    assert repo['run']()['code'] == 'already_parked'
+    assert evidence(repo) == records and transport_image(repo) == receipts
+
+
+@pytest.mark.parametrize('kind', [
+    'sent', 'inflight', 'null_inflight', 'invalid_begin', 'orphan_complete',
+    'stale_head', 'wrong_run', 'wrong_operation', 'missing_complete', 'missing_head', 'invalid_head',
+    'invalid_pending_id', 'nonboolean_write', 'other_pending_write',
+    'merge_without_pending', 'merge_waiting_ci', 'merged', 'done', 'cleanup',
+])
+def test_publication_uncertainty_preserves_source_index_and_evidence(parked_repo, kind):
+    repo = parked_repo
+    ledger, previous = pending_merge(repo)
+    transport = repo['directory'] / 'transport'
+    api = parking.git_transport
+    operation = api.digest(api.encode([repo['run_id'], 'accept', ledger['pending_request_id']]))
+    begin = {**previous, 'operation_id': operation, 'request_id': ledger['pending_request_id'],
+             'journal_sha256': api.digest((repo['directory'] / 'github.json').read_bytes())}
+    if kind in ('sent', 'invalid_begin'):
+        git_cleanup.durable_json(transport / (operation + '.begin.json'),
+                                 begin if kind == 'sent' else [])
+    elif kind in ('inflight', 'null_inflight'):
+        git_cleanup.durable_json(transport / 'inflight.json', begin if kind == 'inflight' else None)
+    elif kind == 'orphan_complete':
+        git_cleanup.durable_json(transport / (operation + '.complete.json'), begin)
+    elif kind == 'missing_complete':
+        (transport / (previous['operation_id'] + '.complete.json')).unlink()
+    elif kind == 'missing_head':
+        (transport / 'head.json').unlink()
+    elif kind in ('stale_head', 'wrong_run', 'wrong_operation', 'invalid_head'):
+        head = json.loads((transport / 'head.json').read_text())
+        if kind == 'stale_head':
+            head['journal_sha256'] = '0' * 64
+        elif kind == 'wrong_run':
+            head['run_id'] = '654321-fedcba'
+        elif kind == 'wrong_operation':
+            head['operation_id'] = '../unapproved'
+        else:
+            head = []
+        git_cleanup.durable_json(transport / 'head.json', head)
+    else:
+        if kind == 'invalid_pending_id':
+            ledger['pending_request_id'] = '../unapproved'
+        elif kind == 'nonboolean_write':
+            ledger['pending_write'] = 1
+        elif kind == 'other_pending_write':
+            ledger['step'] = 'create_pr'
+        elif kind == 'merge_without_pending':
+            ledger.pop('pending_request_id')
+        elif kind == 'merge_waiting_ci':
+            ledger['status'] = 'waiting_for_ci'
+        elif kind == 'merged':
+            ledger.update(status='merged', merge_sha='d' * 40)
+        elif kind == 'done':
+            ledger['step'] = 'done'
+        else:
+            ledger['step'] = 'cleanup_pr'
+        git_cleanup.durable_json(repo['directory'] / 'github.json', ledger)
+    before, records, receipts = source_image(repo), evidence(repo), transport_image(repo)
+    result = repo['run']()
+    assert result['status'] == 'needs_reconciliation', result
+    assert result['code'] == 'publication_state_requires_reconciliation', result
+    assert not result['executed'] and source_image(repo) == before
+    assert evidence(repo) == records and transport_image(repo) == receipts
+    assert not (repo['directory'] / parking.SNAPSHOTS).exists()
+    assert not (repo['directory'] / parking.STATE).exists()
+
+
 def test_edit_add_delete_mode_and_readonly_reinvocation(parked_repo):
     repo = parked_repo
     native_before = evidence(repo)
