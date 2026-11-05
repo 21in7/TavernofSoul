@@ -685,7 +685,7 @@ def payload_records(policy, payload, names):
     return records
 
 
-def previous_archive(policy, directory):
+def previous_archive(policy, directory, *, records=True):
     """Read only: never repair, transfer, or update the original archive/receipt."""
     payload = directory / 'archive-payload'
     manifest = verify_payload(policy, payload)
@@ -712,7 +712,88 @@ def previous_archive(policy, directory):
             not isinstance(receipt['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', receipt['token']) or
             verify_archive(policy, destination, 'workflows', directory.name) != manifest):
         raise storage.StorageError('Previous committed archive or receipt differs.')
-    return manifest, digest(receipt_data), payload_records(policy, payload, {'report.json', 'github.json'})
+    return manifest, digest(receipt_data), (payload_records(
+        policy, payload, {'report.json', 'github.json'}) if records else {})
+
+
+class ArchiveReadbackError(storage.StorageError):
+    """Fixed parent-facing stage/code; never expose private exception text."""
+
+    def __init__(self, stage, code):
+        super().__init__(code)
+        self.stage, self.code = stage, code
+
+
+def verify_run_archive(policy, directory):
+    """Read an existing workflow archive only; no prepare, lock or recovery.
+
+    Completion requires both the local archived checkpoint and actual committed
+    destination bytes. This proves archive integrity, not delivery success.
+    """
+    stage, code = 'resolve_archive', 'archive_destination_unresolved'
+    try:
+        directory = Path(directory)
+        if (policy.version != 2 or policy.archive is None or
+                not storage.RUN_ID.fullmatch(directory.name) or
+                not storage._within(directory, policy.artifact_root)):
+            raise ArchiveReadbackError(stage, code)
+        policy.check_ready()
+        policy.validate_run_directory(directory)
+        fd = private_directory(policy, directory)
+        try:
+            run_identity = directory_identity(policy, fd)
+        finally:
+            os.close(fd)
+        stage, code = 'archive_state', 'archive_state_invalid'
+        state_data = read_file(policy, directory / 'archive-state.json')
+        state = json.loads(state_data)
+        if not isinstance(state, dict) or state.get('run_id') != directory.name:
+            raise ArchiveReadbackError(stage, code)
+        if state.get('status') != 'archived':
+            raise ArchiveReadbackError(stage, 'archive_pending')
+        stage, code = 'resolve_destination', 'archive_destination_unresolved'
+        destination = policy.archive.path / 'workflows' / directory.name
+        receipt_data = read_file(policy, directory / 'archive-transfer.json')
+        receipt = json.loads(receipt_data)
+        if (not isinstance(receipt, dict) or receipt.get('destination') != str(destination) or
+                not storage._within(destination, policy.archive.path)):
+            raise ArchiveReadbackError(stage, code)
+        stage, code = 'verify_archive', 'archive_integrity_failed'
+        # Classify a missing destination before path guards wrap its absence.
+        # Check the archive mount first; an unavailable mount is not missing evidence.
+        archive_ready(policy)
+        if storage._info(policy.fs, destination) is None:
+            raise ArchiveReadbackError(stage, 'archive_evidence_missing')
+        frozen_data = read_file(policy, directory / 'archive-frozen.json')
+        manifest, receipt_hash, _ = previous_archive(policy, directory, records=False)
+        if (state != {'status': 'archived', 'run_id': directory.name, **manifest} or
+                receipt_hash != digest(receipt_data) or frozen_data != encoded(manifest)):
+            raise ArchiveReadbackError(stage, 'archive_local_evidence_mismatch')
+        # Recheck local evidence and remote attachment after the full readback.
+        archive_ready(policy, destination)
+        for path, expected in ((directory, run_identity),
+                (destination.parent, receipt['category_identity']),
+                (destination, receipt['directory_identity'])):
+            fd = private_directory(policy, path)
+            try:
+                if directory_identity(policy, fd) != expected:
+                    raise ArchiveReadbackError(stage, 'archive_attachment_changed')
+            finally:
+                os.close(fd)
+        for name, before in (('archive-state.json', state_data),
+                             ('archive-transfer.json', receipt_data),
+                             ('archive-frozen.json', frozen_data)):
+            if read_file(policy, directory / name) != before:
+                raise ArchiveReadbackError(stage, 'archive_local_evidence_changed')
+        return {'destination': str(destination), 'receipt_sha256': receipt_hash,
+                'inventory_sha256': manifest['inventory_sha256'],
+                'bundle_sha256': manifest['bundle_sha256'], 'bundle_bytes': manifest['bundle_bytes']}
+    except ArchiveReadbackError:
+        raise
+    except FileNotFoundError:
+        raise ArchiveReadbackError(stage, 'archive_evidence_missing') from None
+    except Exception:
+        raise ArchiveReadbackError(stage, code) from None
 
 
 def resumed_evidence(policy, directory, report, old):

@@ -1054,3 +1054,248 @@ def test_regular_archive_cli_retains_git_zero_terminal_support(selected, monkeyp
     monkeypatch.setattr(storage, 'resolve_storage', lambda: policy)
     assert archive.main(['--run-id', directory.name]) == 0
     assert json.loads(archive.read_file(policy, directory / 'report.json'))['status'] == 'failed'
+
+
+def readback_only(monkeypatch, policy):
+    """Arm only after synthetic archive setup; shared fixtures stay unchanged."""
+    import builtins
+    import subprocess
+    from harness import parent_commands
+
+    # Simulate a trusted parent only in these tests, including under full check.
+    for key in ('TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY',
+                'TAVERN_IMPROVEMENT_UNATTENDED', 'READ_ONLY', 'GIT',
+                'TAVERN_WORKFLOW_DEMO', 'TAVERN_NO_GIT'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(parent_commands.native, 'storage_policy', lambda: policy)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('readback attempted execution, transfer, lock or mutation')
+
+    for name in ('archive_run', 'archive_resumed_run', 'freeze', 'transfer', 'transfer_file',
+                 'atomic_state', 'write_file', 'publish_directory', 'publish_file', 'finish_link',
+                 'archive_mutex'):
+        monkeypatch.setattr(archive, name, forbidden)
+    monkeypatch.setattr(policy, 'prepare', forbidden)
+    monkeypatch.setattr(policy, 'ensure_directory', forbidden)
+    monkeypatch.setattr(policy.fs, 'create_directory', forbidden)
+    monkeypatch.setattr(parent_commands.transport, 'transact', forbidden)
+    monkeypatch.setattr(subprocess, 'run', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(archive.fcntl, 'flock', forbidden)
+    for name in ('write', 'mkdir', 'makedirs', 'chmod', 'fchmod', 'rename', 'replace',
+                 'unlink', 'remove', 'rmdir', 'link', 'symlink', 'fsync'):
+        monkeypatch.setattr(os, name, forbidden)
+    original_open = os.open
+
+    def open_readonly(path, flags, *args, **kwargs):
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+            forbidden()
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', open_readonly)
+    for module in (builtins, io):
+        original = module.open
+
+        def file_readonly(path, mode='r', *args, _open=original, **kwargs):
+            if any(flag in mode for flag in 'wax+'):
+                forbidden()
+            return _open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(module, 'open', file_readonly)
+    original_import = builtins.__import__
+
+    def no_execution_import(name, globals=None, locals=None, fromlist=(), level=0):
+        blocked = {'workflow', 'agent_models', 'checks'}
+        if ((name.startswith('harness.') and name.split('.')[1] in blocked) or
+                (name == 'harness' and blocked.intersection(fromlist or ()))):
+            forbidden()
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, '__import__', no_execution_import)
+    return parent_commands
+
+
+def test_archive_verify_reads_completed_bytes_without_mutation(selected, tmp_path, monkeypatch):
+    policy, fs = selected
+    directory = result(policy)
+    saved = archive.archive_run(policy, directory)
+    assert saved['status'] == 'archived'
+    destination = policy.archive.path / 'workflows' / directory.name
+    # Source/workspace files are not consulted by archive verification.
+    policy.ensure_directory(directory / 'workspace')
+    archive.write_file(policy, directory / 'workspace' / 'source.txt', b'PRIVATE SOURCE')
+    before = preserved_tree(tmp_path)
+    commands = readback_only(monkeypatch, policy)
+    fingerprint, read = archive.bundle_fingerprint, archive.read_file
+    hashed, files = [], []
+
+    def observed_hash(policy, path):
+        hashed.append(path)
+        return fingerprint(policy, path)
+
+    def observed_read(policy, path, *args, **kwargs):
+        assert path.name not in ('report.json', 'source.txt', 'changes.diff')
+        files.append(path)
+        return read(policy, path, *args, **kwargs)
+
+    monkeypatch.setattr(archive, 'bundle_fingerprint', observed_hash)
+    monkeypatch.setattr(archive, 'read_file', observed_read)
+    verified = commands.execute('archive-verify', directory.name)
+    assert verified['version'] == 'parent-commands-v1'
+    assert (verified['status'], verified['stage'], verified['code']) == (
+        'verified', 'complete', 'archive_verified')
+    assert verified['run'] == directory.name and verified['destination'] == str(destination)
+    for key in ('inventory_sha256', 'bundle_sha256', 'bundle_bytes'):
+        assert verified[key] == saved[key]
+    assert verified['receipt_sha256'] == archive.digest(read(policy, directory / 'archive-transfer.json'))
+    assert destination / 'bundle.tar.gz' in hashed
+    assert {destination / name for name in ('manifest.json', 'inventory.json', 'commit.json')} <= set(files)
+    assert verified['executed'] is True and verified['native_exit_code'] is None
+    assert verified['side_effects'] == {
+        'transport_invoked': False, 'native_invoked': False, 'created': [], 'removed': [],
+        'read_only': True, 'archive_transfer_invoked': False, 'writes': False}
+    assert verified['next_action']['action'] == 'return_archive_evidence'
+    assert 'PRIVATE SOURCE' not in json.dumps(verified) and 'SECRET RAW' not in json.dumps(verified)
+    assert preserved_tree(tmp_path) == before
+
+
+@pytest.mark.parametrize('fault,stage,code', [
+    ('bundle', 'verify_archive', 'archive_integrity_failed'),
+    ('inventory', 'verify_archive', 'archive_integrity_failed'),
+    ('missing_bundle', 'verify_archive', 'archive_integrity_failed'),
+    ('missing_marker', 'verify_archive', 'archive_integrity_failed'),
+    ('marker', 'verify_archive', 'archive_integrity_failed'),
+    ('missing_receipt', 'resolve_destination', 'archive_evidence_missing'),
+    ('missing_state', 'archive_state', 'archive_evidence_missing'),
+    ('pending', 'archive_state', 'archive_pending'),
+    ('state_hash', 'verify_archive', 'archive_local_evidence_mismatch'),
+    ('frozen', 'verify_archive', 'archive_integrity_failed'),
+    ('mode', 'verify_archive', 'archive_integrity_failed'),
+    ('symlink', 'verify_archive', 'archive_integrity_failed'),
+    ('hardlink', 'verify_archive', 'archive_integrity_failed'),
+    ('receipt_uncommitted', 'verify_archive', 'archive_integrity_failed'),
+    ('directory_identity', 'verify_archive', 'archive_integrity_failed'),
+    ('destination', 'resolve_destination', 'archive_destination_unresolved'),
+    ('destination_missing', 'verify_archive', 'archive_evidence_missing'),
+    ('category_missing', 'verify_archive', 'archive_evidence_missing'),
+    ('archive_root_missing', 'verify_archive', 'archive_evidence_missing'),
+    ('unmounted', 'verify_archive', 'archive_integrity_failed'),
+])
+def test_archive_verify_fails_closed_and_preserves_evidence(
+        selected, tmp_path, monkeypatch, fault, stage, code):
+    policy, fs = selected
+    directory = result(policy)
+    assert archive.archive_run(policy, directory)['status'] == 'archived'
+    destination = policy.archive.path / 'workflows' / directory.name
+    if fault in ('bundle', 'inventory', 'marker'):
+        name = {'bundle': 'bundle.tar.gz', 'inventory': 'inventory.json', 'marker': 'commit.json'}[fault]
+        path = destination / name
+        path.write_bytes(path.read_bytes() + b' ')
+    elif fault in ('missing_bundle', 'missing_marker'):
+        (destination / ('bundle.tar.gz' if fault == 'missing_bundle' else 'commit.json')).unlink()
+    elif fault in ('missing_receipt', 'missing_state'):
+        (directory / ('archive-transfer.json' if fault == 'missing_receipt' else 'archive-state.json')).unlink()
+    elif fault in ('pending', 'state_hash'):
+        path = directory / 'archive-state.json'
+        state = json.loads(path.read_bytes())
+        state.update({'status': 'pending'} if fault == 'pending' else {'bundle_sha256': '0' * 64})
+        path.write_bytes(archive.encoded(state))
+    elif fault == 'frozen':
+        path = directory / 'archive-frozen.json'
+        path.write_bytes(path.read_bytes() + b' ')
+    elif fault == 'mode':
+        (destination / 'inventory.json').chmod(0o644)
+    elif fault == 'symlink':
+        path = destination / 'inventory.json'
+        path.unlink()
+        path.symlink_to(directory / 'archive-payload' / 'inventory.json')
+    elif fault == 'hardlink':
+        os.link(destination / 'inventory.json', directory / 'retained-alias')
+    elif fault in ('destination', 'receipt_uncommitted', 'directory_identity'):
+        path = directory / 'archive-transfer.json'
+        receipt = json.loads(path.read_bytes())
+        if fault == 'destination':
+            receipt['destination'] = str(fs.remote / 'outside' / directory.name)
+        elif fault == 'receipt_uncommitted':
+            receipt['committed'] = False
+        else:
+            receipt['directory_identity'][1] += 1
+        path.write_bytes(archive.encoded(receipt))
+    elif fault in ('destination_missing', 'category_missing', 'archive_root_missing'):
+        path = {'destination_missing': destination, 'category_missing': destination.parent,
+                'archive_root_missing': policy.archive.path}[fault]
+        path.rename(path.with_name('retained-' + path.name))
+    else:
+        fs.remote_online = False
+    before = preserved_tree(tmp_path)
+    commands = readback_only(monkeypatch, policy)
+    failed = commands.execute('archive-verify', directory.name)
+    assert (failed['status'], failed['stage'], failed['code']) == ('failed', stage, code), (fault, failed)
+    assert failed['next_action']['action'] == 'stop'
+    assert failed['side_effects']['writes'] is False
+    assert failed['side_effects']['transport_invoked'] is False
+    assert 'destination' not in failed and 'bundle_sha256' not in failed
+    assert 'SECRET RAW' not in json.dumps(failed)
+    assert preserved_tree(tmp_path) == before
+
+
+@pytest.mark.parametrize('case', ['verified', 'pending', 'hash_mismatch', 'unresolved_run',
+                                'missing_run', 'invalid_run', 'extra_argument'])
+def test_archive_verify_parent_cli_json_and_exit(selected, tmp_path, monkeypatch, capsys, case):
+    policy, fs = selected
+    directory = result(policy)
+    assert archive.archive_run(policy, directory)['status'] == 'archived'
+    if case == 'pending':
+        archive.atomic_state(policy, directory, {'run_id': directory.name, 'status': 'pending'})
+    elif case == 'hash_mismatch':
+        path = policy.archive.path / 'workflows' / directory.name / 'inventory.json'
+        path.write_bytes(path.read_bytes() + b' ')
+    before = preserved_tree(tmp_path)
+    commands = readback_only(monkeypatch, policy)
+    args = ['archive-verify', '--run-id', directory.name]
+    if case == 'unresolved_run':
+        def unavailable(*args, **kwargs):
+            raise ValueError('PRIVATE credential from destination resolver')
+        monkeypatch.setattr(policy, 'find_run', unavailable)
+    elif case == 'missing_run':
+        args = ['archive-verify']
+    elif case == 'invalid_run':
+        args[-1] = '../not-a-run'
+    elif case == 'extra_argument':
+        args.append('--prepare')
+    exit_code = commands.main(args)
+    captured = capsys.readouterr()
+    value = json.loads(captured.out)
+    assert captured.err == ''  # json.loads above also rejects extra JSON/diagnostics.
+    assert value['version'] == 'parent-commands-v1' and value['command'] == 'archive-verify'
+    assert value['run'] == (None if case in ('missing_run', 'invalid_run', 'extra_argument') else directory.name)
+    assert value['side_effects']['writes'] is False
+    if case == 'verified':
+        assert exit_code == 0 and value['status'] == 'verified'
+    else:
+        assert value['status'] == 'failed' and value['next_action']['action'] == 'stop'
+        assert exit_code == (2 if case in ('missing_run', 'invalid_run', 'extra_argument') else 1)
+    if case == 'unresolved_run':
+        assert value['stage'] == 'resolve' and value['code'] == 'validation_or_io_failed'
+    assert 'PRIVATE' not in captured.out and 'credential' not in captured.out
+    assert preserved_tree(tmp_path) == before
+
+
+@pytest.mark.parametrize('marker,value', [
+    ('TAVERN_WORKFLOW_CHILD', '1'), ('TAVERN_IMPROVEMENT_DISCOVERY', '1'),
+    ('TAVERN_IMPROVEMENT_UNATTENDED', '1'), ('READ_ONLY', '1'), ('GIT', '0'),
+    ('TAVERN_WORKFLOW_DEMO', '1'), ('TAVERN_NO_GIT', '1'),
+])
+def test_archive_verify_excluded_context_never_resolves_storage(monkeypatch, marker, value):
+    from harness import parent_commands
+    monkeypatch.setenv(marker, value)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('excluded context accessed archive storage')
+
+    monkeypatch.setattr(parent_commands.native, 'storage_policy', forbidden)
+    refused = parent_commands.execute('archive-verify', '100-abcdef')
+    assert refused['status'] == 'failed' and refused['stage'] == 'authorization'
+    assert refused['executed'] is False and refused['side_effects']['writes'] is False
+    assert refused['next_action']['action'] == 'stop'

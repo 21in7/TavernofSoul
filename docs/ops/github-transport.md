@@ -6,7 +6,7 @@
 네 명령·file accept·merge 전 stop 경계가 적용되며, 과거 runbook 지시로 PTY 입력이나 즉석
 게시·복원을 허용하지 않는다. 이 요약은 게시 권한이나 복구 정책을 새로 부여하지 않는다.
 
-사용자 직접 승인 A1은 [ADR0039](../adr/0039-standard-parent-git-commands.md)를 따른다. parent는
+사용자 직접 승인 A1은 [ADR0039](../adr/0039-standard-parent-git-commands.md)를 따른다. A1 게시·park에서 parent는
 `agent-git-next`·`agent-git-accept-file`·`agent-worktree-park`·`storage-path` 네 상위 명령만 사용하며
 즉석 게시·복원 script는 금지한다. Make와 Python3.8 표준라이브러리 CLI의 호출·capability 주입 예제는
 [workflow](../workflow.md#trusted-parent-bridge와-즉시-handoff)에 둔다. runbook core는 protected
@@ -62,7 +62,19 @@ stale ID·같은/다른 응답 중복·begin/complete/inflight·legacy/transport
 race의 최종 권위는 native claim이다. pending 재발급·새 ID·unknown dispatch 재전송·receipt 삭제/
 재작성·자동 retry를 금지한다. 실제 ledger 값·요청 ID·응답 본문은 공개하지 않는다.
 
-reconcile/resume-ci/external-merge/archive-verify는 A2 미구현이다. 필요하면 현재 승인된
+`make archive-verify RUN_ID=<run>` 또는
+`python -m harness.parent_commands archive-verify --run-id <run>`은 A2b 읽기 전용 검증이다.
+resolved active run의 local archived state·frozen payload·receipt를 대조하고, receipt 목적지가
+resolved archive 경계의 `workflows/<run>`인지 확인한 뒤 원격 manifest/inventory·bundle·완료
+marker를 실제로 다시 읽는다. `verified` 결과의 run·destination·inventory_sha256·bundle_sha256/
+bundle_bytes·receipt_sha256은 이 재읽기 근거이며 Git 전달 성공이나 재시도 권한을 뜻하지 않는다.
+pending/미완료 state, 누락, hash/marker 불일치, 목적지 해석 실패는 non-success JSON의 stage/code와
+실패 종료 코드로 구별한다. mount 확인 뒤 목적지 경로 누락은 `archive_evidence_missing`으로,
+mount 확인 실패는 `archive_integrity_failed`로 stop한다. 예외 원문과 source/workspace 내용은 출력하지 않는다. 실행 여부와
+side_effects는 읽기뿐임을 기록하며 prepare·lock/임시 파일·전송·freeze/repack·journal/receipt/state
+쓰기·fallback·자동 retry 없이 증거를 보존한다. 실패 시 next_action의 stop에 따라 별도 조정한다.
+
+A2c external-merge와 A2d reconcile/resume-ci는 미구현이다. 필요하면 현재 승인된
 [GitHub 복구](../lessons/github-recovery.md) 절차로 별도 조정하거나 stop한다. 옛 CLI나 즉석 script로
 우회하지 않으며 native resume 뒤 journal/transport head mismatch를 head rewrite로 해결하지 않는다.
 
