@@ -72,6 +72,7 @@ git status clean을 확인한다. unrelated tracked/staged/untracked·사용자 
 거절하고 ignored 운영데이터를 보존한다. project/source → GitHub lock 순서와 기존 inode/mode를
 유지하고 없는 lock도 안전한 no-follow 생성 경로로 처리한다. busy/다른 owner/symlink lock은 거절한다.
 snapshot 충돌·중단은 stop, 이미 parked는 read-only 재확인이다. parked는 merge 후 완료가 아니다.
+현재 pending merge 요청에 begin receipt와 inflight가 없는 미전송 merge 대기는 park를 허용하고, 전송 증거가 있는 pending 쓰기와 inflight는 거절한다.
 storage-path는 read-only resolve와 explicit prepare를 구분하고 생성 경로를 JSON에 기록한다.
 v2 reports는 active artifacts 내부이며 private/absolute/no-follow/mount/floor·no fallback을 유지한다.
 archive root 속성을 추측하지 않고 prepare 실패 시 전달·검사를 실행하지 않는다.
