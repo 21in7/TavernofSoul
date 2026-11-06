@@ -20,7 +20,7 @@ from harness import git_cleanup, git_publish as native, git_transport as transpo
 
 VERSION = 'parent-commands-v1'
 COMMANDS = ('agent-git-next', 'agent-git-accept-file', 'agent-worktree-park', 'storage-path',
-            'archive-verify', 'agent-git-external-merge')
+            'archive-verify', 'agent-git-external-merge', 'agent-git-proof-build', 'agent-git-next-file')
 MAX_WIRE = transport.INLINE_BYTES * 6 + 16384
 PROCESS_TIMEOUT = 120
 
@@ -360,7 +360,7 @@ def finish(result, run, envelope, code, expected_operation, response_sha256=None
     result['stage'] = 'verify_result'
     result['native_exit_code'] = code
     payload = decode_envelope(run, envelope, code)
-    _, directory, ledger = context(run)
+    selected, directory, ledger = context(run)
     saved, _ = evidence(run, ledger)
     require(saved is not None and saved[1] == envelope and saved[2] == payload, 'receipt_result_mismatch')
     require(saved[0]['operation_id'] == expected_operation and
@@ -406,6 +406,18 @@ def finish(result, run, envelope, code, expected_operation, response_sha256=None
                                           'tool': request['tool'], 'request_id': request['request_id'],
                                           'arguments_from': 'verified_native.request.arguments',
                                           'then': followup}}
+    try:
+        descriptor = save_next_file(selected, directory, run, saved, result)
+        verified = result_for('agent-git-next-file', run)
+        next_file(verified, run, descriptor['path'], descriptor['sha256'])
+        result['request_file'] = descriptor
+    except (Exception, KeyboardInterrupt):
+        # Accept already completed. Keep its receipt/result; never ask to accept
+        # the response again just because the additive export could not finish.
+        result.update(status='needs_reconciliation', code='next_file_write_failed',
+                      native_result_retained=True)
+        result['next_action'] = {'action': 'stop', 'approval_required': True,
+                                 'reason': 'Native result retained; inspect the export failure. Do not reaccept or redispatch.'}
 
 
 def git_next(result, run):
@@ -471,9 +483,11 @@ def scratch(selected, directory, effects):
             os.close(parent)
 
 
-def new_file(directory_fd, name, owned=None):
+def new_file(directory_fd, name, owned=None, created=None):
     fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
     try:
+        if created is not None:
+            created()
         if owned is not None:
             info = os.fstat(fd)
             owned[name] = (info.st_dev, info.st_ino)
@@ -599,6 +613,236 @@ def accept_file(result, run, request, response_file, sha256):
             frame.seek(0)
             require(transport.stdin_response(frame) == raw and frame.read(1) == b'', 'frame_changed')
             finish(result, run, envelope, code, operation('accept', run, request), sha256)
+
+
+def durable_output(selected, directory, name, raw, result):
+    """Exclusive output; record even an incomplete file and never overwrite it."""
+    selected.check_ready()
+    selected.validate_run_directory(directory, local_default=native.local_reports())
+    path = selected.record_path(directory, name, local_default=native.local_reports())
+    partial = {'path': str(path), 'complete': False}
+
+    def created():
+        result['executed'] = True
+        result['side_effects']['created'].append(str(path))
+        if 'partial_outputs' in result:
+            result['partial_outputs'].append(partial)
+
+    fd = selected.fs.open_directory(directory)
+    try:
+        transport.private(os.fstat(fd), directory=True)
+        with new_file(fd, name, created=created) as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+            handle.seek(0)
+            require(handle.read(len(raw) + 1) == raw, 'output_readback_mismatch')
+            before = os.fstat(handle.fileno())
+            transport.private(before)
+            attached(selected, path, fd, handle.fileno(), before, private_parent=True)
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+    descriptor = {'path': str(path), 'bytes': len(raw), 'sha256': transport.digest(raw),
+                  'encoding': 'utf-8-json'}
+    partial.update(descriptor, complete=True)
+    return descriptor
+
+
+def next_document(run, directory, saved):
+    head, envelope, payload = saved
+    request = payload['request']
+    poll = payload.get('poll_after_seconds', 0)
+    require(type(poll) in (int, float) and math.isfinite(poll) and poll >= 0, 'poll_interval_invalid')
+    raw = transport.encode(request)
+    return {'version': 'parent-next-file-v1', 'run_id': run, 'request_id': request['request_id'],
+            'operation_id': head['operation_id'], 'journal_sha256': head['journal_sha256'],
+            'request_sha256': transport.digest(raw),
+            'request': request if len(raw) <= transport.INLINE_BYTES else None,
+            'poll_after_seconds': poll,
+            'result_file': {'version': 'parent-result-file-v1', 'path': str(
+                directory / 'transport' / (head['operation_id'] + '.stdout')),
+                'bytes': envelope['bytes'], 'sha256': envelope['sha256'], 'encoding': 'utf-8-json'}}
+
+
+def save_next_file(selected, directory, run, saved, result):
+    document = next_document(run, directory, saved)
+    name = 'parent-next-' + document['request_id'] + '.json'
+    return dict(durable_output(selected, directory, name, transport.encode(document), result),
+                version='parent-next-file-v1', run_id=run, request_id=document['request_id'])
+
+
+def next_file(result, run, request_file, sha256):
+    """Verify the saved exact request; this reader grants no dispatch permission."""
+    result['stage'] = 'validate_next_file'
+    result['side_effects'].update(read_only=True, writes=False)
+    selected, directory, ledger = context(run)
+    external_not_owned(selected, directory)
+    saved, completes = evidence(run, ledger)
+    require(saved is not None, 'next_file_requires_transport_receipt')
+    request = saved[2].get('request')
+    require(isinstance(request, dict) and isinstance(request.get('request_id'), str) and
+            transport.HEX.fullmatch(request['request_id']), 'next_file_requires_pending_request')
+    request_id = request['request_id']
+    accept_request(result, saved, request_id)
+    premerge(ledger)
+    require(operation('accept', run, request_id) not in completes, 'request_already_accepted')
+    attempt_marker(selected, directory, run, request_id, None, result)
+    expected_path = selected.record_path(directory, 'parent-next-' + request_id + '.json',
+                                         local_default=native.local_reports())
+    # Keep the caller spelling: Path normalization must not hide traversal.
+    require(str(request_file) == str(expected_path), 'next_file_path_mismatch')
+    raw = response_snapshot(selected, request_file, sha256)
+    document = transport.parse(raw)
+    require(isinstance(document, dict) and
+            transport.encode(document) == transport.encode(next_document(run, directory, saved)),
+            'next_file_identity_mismatch')
+    # evidence rereads actual immutable stdout; caller descriptors are never opened.
+    _, current_directory, current = context(run)
+    fresh, _ = evidence(run, current)
+    require(current_directory == directory and current == ledger and fresh == saved, 'next_file_state_changed')
+    external_not_owned(selected, directory)
+    attempt_marker(selected, directory, run, request_id, None, result)
+    result.update(status='ready', stage='complete', code='exact_request_verified',
+                  poll_after_seconds=document['poll_after_seconds'], redispatch_authorized=False,
+                  native_receipt={key: saved[0][key] for key in
+                                  ('operation_id', 'sha256', 'journal_sha256', 'native_exit_code')})
+    followup = {'command': 'agent-git-accept-file', 'required_arguments': {
+        'run_id': run, 'request_id': request_id,
+        'response_file': '<owned 0600 JSON file in a private directory>',
+        'sha256': '<sha256 of exact saved response bytes>'}}
+    result['next_action'] = {'action': 'use_verified_request_once', 'trusted_parent_only': True,
+                             'redispatch_authorized': False, 'tool': request['tool'],
+                             'request_id': request_id, 'then': followup}
+    if document['request'] is not None:
+        result['exact_request'] = request
+        result['next_action']['arguments'] = request['arguments']
+    else:
+        result['exact_request_file'] = dict(document['result_file'], run_id=run,
+                                             request_id=request_id, operation_id=document['operation_id'],
+                                             request_sha256=document['request_sha256'],
+                                             request_from='verified_native.request')
+        result['next_action'].update(descriptor=result['exact_request_file'],
+                                     arguments_from='verified_native.request.arguments')
+
+
+def proof_build(result, run, pr_number, input_dir, sha256):
+    """Build from saved GET snapshots using the unmodified pure native gates."""
+    result['stage'] = 'proof_manifest'
+    result['proof_build'] = {'version': 'parent-proof-build-v1', 'complete': False}
+    selected, directory, ledger = context(run)
+    external_not_owned(selected, directory)
+    require(type(pr_number) is int and pr_number > 0, 'external_arguments_invalid')
+    bundle = Path(input_dir)
+    require(str(bundle) == str(input_dir) and bundle.parent == directory and
+            bundle.name.startswith('proof-input-') and bundle.name != 'proof-input-',
+            'proof_input_path_mismatch')
+    manifest_raw = response_snapshot(selected, bundle / 'manifest.json', sha256)
+    manifest = transport.parse(manifest_raw)
+    require(isinstance(manifest, dict) and set(manifest) == {
+        'version', 'run_id', 'pr_number', 'journal_sha256', 'approval_sha256', 'merge_sha', 'responses'} and
+        manifest['version'] == 'parent-proof-input-v1' and manifest['run_id'] == run and
+        type(manifest['pr_number']) is int and manifest['pr_number'] == pr_number and
+        isinstance(manifest['merge_sha'], str) and len(manifest['merge_sha']) == 40 and
+        all(c in '0123456789abcdef' for c in manifest['merge_sha']), 'proof_manifest_invalid')
+
+    def current_identity():
+        values = []
+        for name in ('github.json', 'github-approved.json'):
+            path = selected.record_path(directory, name, local_default=native.local_reports())
+            with private_input(selected, path, transport.MAX_RESULT) as (raw, _):
+                values.append(transport.digest(raw))
+        return values
+
+    initial = current_identity()
+    require(initial == [manifest['journal_sha256'], manifest['approval_sha256']],
+            'proof_manifest_identity_mismatch')
+    rows = manifest['responses']
+    require(isinstance(rows, list) and len(rows) <= 500, 'proof_response_limit')
+    responses, urls, files = [], set(), set()
+    total = len(manifest_raw)
+    prefix = 'https://api.github.com/repos/' + ledger['config']['repository']
+    result['stage'] = 'proof_responses'
+    for row in rows:
+        require(isinstance(row, dict) and set(row) == {
+            'method', 'url', 'status', 'complete', 'file', 'bytes', 'sha256'}, 'proof_response_invalid')
+        url, name = row['url'], row['file']
+        require(row['method'] == 'GET' and type(row['status']) is int and row['status'] == 200 and
+                row['complete'] is True, 'proof_response_incomplete')
+        require(isinstance(url, str) and (url == prefix or url.startswith(prefix + '/')) and
+                url not in urls, 'proof_response_url_mismatch')
+        require(isinstance(name, str) and name not in ('', '.', '..', 'manifest.json') and
+                '/' not in name and '\\' not in name and name not in files, 'proof_response_path_invalid')
+        require(type(row['bytes']) is int and 0 < row['bytes'] <= transport.MAX_RESPONSE,
+                'proof_response_size_invalid')
+        total += row['bytes']
+        require(total <= transport.MAX_RESULT, 'proof_bundle_too_large')
+        raw = response_snapshot(selected, bundle / name, row['sha256'])
+        require(len(raw) == row['bytes'], 'proof_response_size_mismatch')
+        body = transport.parse(raw)
+        require(isinstance(body, (dict, list)), 'invalid_response')
+        responses.append({key: row[key] for key in ('method', 'url', 'status', 'complete')})
+        responses[-1]['body'] = body
+        urls.add(url)
+        files.add(name)
+    native.validate_journal(directory, ledger, selected=selected)
+    saved, _ = evidence(run, ledger)
+    require(saved is not None, 'external_transport_required')
+    proof = {'version': 'external-merge-proof-v1', 'run_id': run, 'pr_number': pr_number,
+             'repository': ledger['config']['repository'],
+             'base': {'ref': ledger['config']['base'], 'sha': ledger['base_sha']},
+             'head': {'ref': ledger['branch'], 'sha': ledger['head_sha']},
+             'merge_sha': manifest['merge_sha'], 'responses': responses}
+    checks_prefix = prefix + '/commits/' + ledger['head_sha'] + '/check-runs?filter=latest&per_page=100&page='
+    head_pages = [row for row in responses if row['url'].startswith(checks_prefix)]
+    # Native head checks require numeric page order even if saved GETs arrived
+    # out of order. Reject alternate URL spellings rather than normalize them.
+    for row in head_pages:
+        page = row['url'][len(checks_prefix):]
+        require(1 <= len(page) <= 3 and page.isascii() and page.isdigit() and 1 <= int(page) <= 100 and
+                str(int(page)) == page, 'proof_response_url_mismatch')
+    checks = {'version': 'external-merge-checks-v1', 'run_id': run, 'pr_number': pr_number,
+              'repository': ledger['config']['repository'], 'head_sha': ledger['head_sha'],
+              'responses': sorted(head_pages, key=lambda row: int(row['url'][len(checks_prefix):]))}
+    result['stage'] = 'validate_proof'
+    try:
+        native.external_merge_proof(ledger, proof, pr_number)
+        native.external_head_checks(ledger, checks, proof)
+    except native.ExternalProofError as exc:
+        if exc.next_get:
+            result['proof_build']['missing_get'] = exc.next_get
+            result['next_action'] = {'action': 'collect_get', 'trusted_parent_only': True,
+                                     'approval_required': False, **exc.next_get,
+                                     'then': {'command': 'agent-git-proof-build',
+                                              'required_arguments': {'run_id': run, 'pr_number': pr_number,
+                                                  'input_dir': str(bundle),
+                                                  'sha256': '<sha256 of updated manifest bytes>'},
+                                              'reason': 'Save the actual GET and updated manifest; no outputs were created.'}}
+        raise Stop(str(exc)) from None
+    proof_raw, checks_raw = transport.encode(proof), transport.encode(checks)
+    require(max(len(proof_raw), len(checks_raw)) <= transport.MAX_RESPONSE, 'proof_output_too_large')
+    _, current_directory, current = context(run)
+    require(current_directory == directory and current == ledger and current_identity() == initial,
+            'proof_state_changed')
+    external_not_owned(selected, directory)
+    fresh, _ = evidence(run, current)
+    require(fresh == saved, 'proof_state_changed')
+    names = ('parent-proof.json', 'parent-checks.json')
+    for name in names:
+        path = selected.record_path(directory, name, local_default=native.local_reports())
+        require(not path.exists() and not path.is_symlink(), 'proof_output_exists')
+    result.update(stage='save_proof', executed=True)
+    result['partial_outputs'] = []
+    proof_file = durable_output(selected, directory, names[0], proof_raw, result)
+    checks_file = durable_output(selected, directory, names[1], checks_raw, result)
+    result.pop('partial_outputs')
+    result.update(status='ready', stage='complete', code='proof_built', proof_file=proof_file, checks_file=checks_file)
+    result['proof_build']['complete'] = True
+    result['next_action'] = {'action': 'invoke_external_merge', 'trusted_parent_only': True,
+                             'command': 'agent-git-external-merge', 'required_arguments': {
+                                 'run_id': run, 'pr_number': pr_number,
+                                 'proof_file': proof_file['path'], 'sha256': proof_file['sha256'],
+                                 'checks_file': checks_file['path'], 'checks_sha256': checks_file['sha256']}}
 
 
 def storage_path(result, target, category=None, report_dir=None, prepare=False, run=None):
@@ -1128,6 +1372,10 @@ def execute(command, run=None, **kwargs):
                 git_next(result, run)
             elif command == 'agent-git-accept-file':
                 accept_file(result, run, kwargs['request_id'], kwargs['response_file'], kwargs['sha256'])
+            elif command == 'agent-git-next-file':
+                next_file(result, run, kwargs['request_file'], kwargs['sha256'])
+            elif command == 'agent-git-proof-build':
+                proof_build(result, run, kwargs['pr_number'], kwargs['input_dir'], kwargs['sha256'])
             elif command == 'agent-worktree-park':
                 from harness.worktree_park import park
                 result = park(run)
@@ -1165,7 +1413,9 @@ def execute(command, run=None, **kwargs):
         result.pop('native', None)
         result.pop('transport', None)
         result.pop('result_file', None)
-    if command != 'agent-git-external-merge' and result['code'] != 'native_result' and result['status'] not in ('ready', 'parked', 'awaiting_approval', 'verified'):
+    if command != 'agent-git-external-merge' and result['code'] not in ('native_result', 'next_file_write_failed') and result['status'] not in ('ready', 'parked', 'awaiting_approval', 'verified') and not (
+            command == 'agent-git-proof-build' and result['code'] == 'external_get_required' and
+            result['next_action'].get('action') == 'collect_get'):
         result['next_action'] = result_for(command, run)['next_action']
     return result
 
@@ -1197,6 +1447,13 @@ def main(argv=None):
         if command == 'agent-git-accept-file':
             item.add_argument('--request-id', type=hex_argument, required=True)
             item.add_argument('--response-file', required=True)
+            item.add_argument('--sha256', type=hex_argument, required=True)
+        if command == 'agent-git-next-file':
+            item.add_argument('--request-file', required=True)
+            item.add_argument('--sha256', type=hex_argument, required=True)
+        if command == 'agent-git-proof-build':
+            item.add_argument('--pr-number', type=int, required=True)
+            item.add_argument('--input-dir', required=True)
             item.add_argument('--sha256', type=hex_argument, required=True)
         if command == 'agent-git-external-merge':
             item.add_argument('--pr-number', type=int, required=True)
