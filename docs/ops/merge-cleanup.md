@@ -19,10 +19,19 @@ make agent-git-external-merge RUN_ID=<run> PR_NUMBER=<n> PROOF_FILE=<private-jso
 python -m harness.parent_commands agent-git-external-merge --run-id <run> --pr-number <n> --proof-file <private-json> --sha256 <sha256>
 ```
 
+위 인자는 기존 `awaiting_connector/step=merge`의 정확한 미전송 merge 요청 경로다. 원래 journal이
+`awaiting_ci`에서 멈췄고 현재 pending write/request가 없으면 별도 승인 head check-runs 파일도 필수다.
+두 파일은 parent가 실제 GET으로 확보하며, UI merge 전에는 이 명령을 호출하지 않는다.
+
+```sh
+make agent-git-external-merge RUN_ID=<run> PR_NUMBER=<n> PROOF_FILE=<private-proof-json> RESPONSE_SHA256=<proof-sha256> CHECKS_FILE=<private-checks-json> CHECKS_SHA256=<checks-sha256>
+python -m harness.parent_commands agent-git-external-merge --run-id <run> --pr-number <n> --proof-file <private-proof-json> --sha256 <proof-sha256> --checks-file <private-checks-json> --checks-sha256 <checks-sha256>
+```
+
 GitHub 앱/HTTP GET은 parent가 실제 수행하고 아래 schema의 응답 묶음을 private 파일로 저장한다.
 명령은 connector·모델·workflow·검사·새 credential을 호출하거나 UI merge를 agent 응답으로 위조하지 않는다.
 원응답 shell argv·대화형 stdin·PTY는 금지하며 Git fetch와 정확한 ref 삭제는 기존 git_cleanup 경로만 사용한다.
-이 명령은 PR 생성/merge 권한을 추가하지 않는다. A2d reconcile/resume-ci는 구현 범위 밖이다.
+이 명령은 PR 생성/merge 권한을 추가하지 않는다. A2d2 reconcile/resume-ci/connector dispatch는 구현 범위 밖이다.
 
 parent는 삭제 전에 정확한 브랜치·tip·보호 여부·다른 작업/PR의 사용 여부·CI·merge 증거를 비교한다. 완료된 PR과 대상이 일치해야 하며 다른 진행 작업과 사용자 변경을 보존한다. 이름이나 merge 알림만으로 삭제하지 않는다.
 
@@ -79,10 +88,49 @@ external-merge와 accept-file은 같은 immutable memory snapshot 계약이다. 
 proof/frame에 사용하며 입력 파일을 명령이 삭제하지 않는다. 내부 journal/approval/receipt freshness,
 source/lock identity와 임시 frame ownership/fsync/readback/cleanup은 별도 계약으로 그대로 유지한다.
 
+## Awaiting CI의 별도 check-runs 계약
+
+`CHECKS_FILE`/`CHECKS_SHA256` (`--checks-file`/`--checks-sha256`)은 반드시 함께 제공한다.
+기존 known-unsent 경로는 둘 없이도 동작한다. `awaiting_ci` 경로의 파일은 아래 정확한 top-level 필드를
+갖는 `external-merge-checks-v1`이다. `head_sha`는 original approved head이며 squash/test-merge SHA가 아니다.
+
+```json
+{
+  "version": "external-merge-checks-v1",
+  "run_id": "<run>",
+  "pr_number": 123,
+  "repository": "21in7/TavernofSoul",
+  "head_sha": "<original-head-40hex>",
+  "responses": [
+    {"method": "GET", "url": "https://api.github.com/repos/21in7/TavernofSoul/commits/<original-head-40hex>/check-runs?filter=latest&per_page=100&page=1", "status": 200, "complete": true, "body": {"total_count": 0, "check_runs": []}}
+  ]
+}
+```
+
+이 예제의 빈 collection은 shape 설명일 뿐 성공 근거가 아니다. 각 response의 필드는 정확히
+method/url/status/complete/body다. page=1부터 순서대로 모든 실제 page를 저장한다. HTTP 200과
+complete=true, 페이지당 최대100개, 일정한 total_count, 전체 길이 일치와 중복 없는 양의 check ID를
+검증한다. plain REST body의 total_count가 check_runs 길이와 같으면 한 페이지 완료로 인정한다.
+total_count가 더 크면 추가 page가 필수이며, truncated=true/complete=false, 누락·중복·다른 URL은 거절한다.
+body는 실제 REST object 또는 기존 response_data가 해석하는 connector envelope만 허용한다.
+proof의 같은 head/page GET과 normalization 후 전체 body가 같아야 하며 실패/성공·suite가 충돌하면 중단한다.
+proof의 기존 head/test-merge check-runs, status와 나머지 모든 GET 계약도 그대로 필수다.
+
+native checks_gate의 latest-name, GitHub Actions app, check-suite, selection/execution plan 및 status gate를
+그대로 적용한다. `Offline harness (SQLite)`, `MySQL harness`, `Chromium browser harness` 각각이 정확한
+승인 head에서 completed/success여야 한다. missing/pending/failure/cancelled/skipped/neutral을 성공으로
+추정하지 않으며 다른 head의 결과나 suite metadata를 섞지 않는다. 별도 성공 증거는 merged cleanup의
+진입만 허용한다. 예전 journal CI 기록이나 transport receipt를 고치거나 새 CI를 실행하지 않는다.
+
+두 파일 각각을 위와 같은 response_snapshot으로 단 한 번 열고 bytes/hash를 메모리에 고정한다.
+파일 누락·digest 불일치·malformed JSON/schema/coverage는 cleanup checkpoint나 Git mutation 전에 중단한다.
+검증 후 경로를 재오픈하지 않으며 두 입력 모두 resume와 next_action의 정확한 경로/hash에 고정된다.
+
 ## Cleanup과 archive의 순서
 
-외부 경로의 순서는 proof 검증 → 현재 exact ID의 미전송 merge 요청 durable 폐기 기록 → park/복원
-검증 → fetch/ff-only → exact SHA lease 원격 compare-delete → prune → local compare-delete → 완료
+외부 경로의 순서는 proof/필요한 checks 검증 → 현재 exact ID의 미전송 merge 요청 durable 폐기 기록
+(awaiting_ci는 request_id=null/status=no_request라는 별도 disposition) → park/복원 검증 또는
+already_synced readback → 필요한 fetch/ff-only → exact SHA lease 원격 compare-delete → prune → local compare-delete → 완료
 검증 → native save → archive 단1회 → 실제 archive 재읽기다. 기존 Cleanup.run 기본 순서는 유지하고
 run_external opt-in만 sync를 원격 삭제 앞으로 옮긴다. native begin_cleanup/accept_cleanup/save를
 사용하며 external checkpoint가 journal/report 전후 해시를 연결한다. UI merge는 transport receipt가 아니다.
@@ -92,6 +140,13 @@ inflight 또는 불명 dispatch가 있으면 거절한다. 다른 과거 요청�
 아니며 모든 historical transport/attempt bytes를 보존한다. receipt/head.json을 새 journal hash로 고치거나
 삭제하지 않는다. external checkpoint가 있으면 native request/accept/resume/cleanup와 parent next/accept를 차단한다.
 
+awaiting_ci에서는 승인 PR/head를 대조하고 현재 pending write/request, incomplete begin receipt,
+inflight/unknown dispatch 또는 완료 receipt로 설명되지 않는 parent attempt가 있으면 거절한다.
+최신 receipt와 현재 journal의 일치도 최초 진입 때 확인한다. 완료된 과거 receipt의 nonzero exit가
+awaiting_ci 종료를 나타낼 수 있으며 이를 새 pending write로 간주하지 않는다. merge 요청을 만들거나
+accept하지 않고 native resume/inspection/publication을 호출하지 않으며 기존 deadline도 갱신하지 않는다.
+이 허용은 기존 정확한 known-unsent merge 요청의 폐기를 없애거나 sent 요청을 허용하지 않는다.
+
 park 호출은 source/GitHub mutex 밖에서 기존 API로 수행하며 각 critical 단계는 source → GitHub 순서로
 잠근다. 없는 lock은 no-follow로 생성하고 기존 inode/mode를 보존한다. 승인 after가 checkout에 남으면
 park가 전체 승인/backup을 검증하고 복원한다. 이미 parked면 before hash+full POSIX mode·HEAD·index/status·
@@ -99,14 +154,23 @@ after snapshot을 재확인한다. ff-only 후에는 승인 bytes/full POSIX mod
 승인 bytes를 다시 확인한 파일만 허용한다. 사용자 변경, staged/untracked/ignored 충돌, 다른 worktree,
 operation, hidden index flags, local commit과 origin raw/effective URL·fetch mapping 보호를 유지한다.
 
+운영 checkout이 올바른 base branch에서 **정확한 proven merge SHA**에 이미 도달했다면 park를 호출해
+base로 되돌리거나 redundant merge를 하지 않는다. 승인 전체 tree/범위/blob hash/full POSIX mode,
+backup/workspace, source/index/status, origin/refspec/remote base 및 존재하는 retained park snapshot을
+검증하고 external `already_synced` 단계와 cleanup sync의 `already_synced_readback` 사유를 기록한다.
+retained park checkpoint의 존재만으로 현재 HEAD를 원래 base로 가정하지 않는다. park 증거가 없으면
+이를 만들거나 parked 상태를 위조하지 않는다. 다른 commit/branch, dirty/staged/untracked 상태,
+ignored 충돌, hidden index flag, 다른 worktree의 ref 점유는 기존처럼 중단한다. mode만 다르면 정확한
+승인 bytes를 다시 검증한 기존 좁은 repair만 허용하며 사용자 bytes를 교체하지 않는다.
+
 역사적 관측: 사용자 제공 자료에는 archive가 cleanup보다 먼저 호출됐다는 문제가 있었고 당시 위치는
 `harness/git_publish.py:904`였다. 줄 번호는 영구 API가 아니며 그 관측과 #119의 성공을 이번 구현의 검사
 성공 근거로 재사용하지 않는다. 이번 worker는 코드를 편집했으며 실행 검증은 orchestrator 책임이다.
 
 ## 중단과 명시적 재개
 
-`external-merge.json`은 version=`external-merge-v1`이며 run/PR/proof/approval identity, original journal/report
-해시, 보존된 historical transport/attempt 해시, discard exact ID/merge SHA/evidence digest, park hash,
+`external-merge.json`은 version=`external-merge-v1`이며 run/PR/proof/checks/approval identity, original journal/report
+해시, 보존된 historical transport/attempt 해시, discard exact ID 또는 no_request disposition/merge SHA/evidence digest, park hash 또는 실제 부재,
 completed 단계, native journal/report pre→post intent/history와 archive_attempted를 durable 기록한다.
 반환 JSON은 parent-commands-v1의 stage/code/executed/side_effects/completed_stages/next_action으로 완료와
 시도·불명을 구분한다. 성공 관측된 merge/cleanup은 뒤 archive pending에도 보존한다.
@@ -116,9 +180,12 @@ completed 단계, native journal/report pre→post intent/history와 archive_att
 
 ```sh
 make agent-git-external-merge RUN_ID=<same-run> PR_NUMBER=<same-n> PROOF_FILE=<same-proof> RESPONSE_SHA256=<same-sha256> RESUME=1
+# awaiting_ci로 시작한 run은 완료 후 재진입에도 두 입력을 모두 그대로 제공한다.
+make agent-git-external-merge RUN_ID=<same-run> PR_NUMBER=<same-n> PROOF_FILE=<same-proof> RESPONSE_SHA256=<same-proof-sha256> CHECKS_FILE=<same-checks> CHECKS_SHA256=<same-checks-sha256> RESUME=1
+python -m harness.parent_commands agent-git-external-merge --run-id <same-run> --pr-number <same-n> --proof-file <same-proof> --sha256 <same-proof-sha256> --checks-file <same-checks> --checks-sha256 <same-checks-sha256> --resume
 ```
 
-CLI는 같은 인자와 `--resume`이다. run/PR/proof bytes·hash/approval 및 실제 상태가 다시 일치해야 한다.
+CLI는 같은 인자와 `--resume`이다. run/PR/proof/checks 경로·bytes·hash/approval 및 실제 상태가 다시 일치해야 한다.
 완료된 ff/delete/archive 쓰기를 반복하지 않는다. write intent 후 crash가 발생하면 실제 HEAD/승인
 bytes/mode나 ref 부재로 완료를 읽어 확인한다. 이전 ref가 그대로이거나 결과가 불명이면 stop한다.
 재개 시 fetch/prune은 기존 cleanup의 검증 경계를 따르며 중단된 park는 기존 park의 조정 경계를 유지한다.
