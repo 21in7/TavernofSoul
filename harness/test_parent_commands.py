@@ -5,6 +5,7 @@ the connector/native publisher; offline_child still runs the real transport
 module, frame parser, READY protocol and durable receipts in a real subprocess.
 """
 import base64
+import copy
 import fcntl
 import json
 import os
@@ -17,7 +18,8 @@ from types import SimpleNamespace
 import pytest
 
 from harness import git_publish as native, git_transport as transport, parent_commands as parent, storage
-from harness.test_git_publish import isolated_storage_environment, prepared
+from harness.test_git_publish import (isolated_storage_environment, prepared, to_pr, pr_data,
+                                      rows_for, cleanup_pr_data, HEAD, MERGE, TEST_MERGE)
 from harness.test_git_transport import seam, durable, RUN, REQUEST, NEXT
 
 
@@ -764,3 +766,629 @@ def test_real_isolated_git_fixture_unrelated_index_is_preserved(prepared):
     result = parent.execute('agent-worktree-park', RUN)
     assert result['status'] == 'needs_reconciliation'
     assert index.read_bytes() == before
+
+
+def saved_descriptor(descriptor):
+    path = Path(descriptor['path'])
+    raw = path.read_bytes()
+    assert len(raw) == descriptor['bytes'] and transport.digest(raw) == descriptor['sha256']
+    info = path.stat()
+    assert info.st_uid == os.geteuid() and info.st_nlink == 1
+    assert stat.S_IMODE(info.st_mode) == 0o600
+    return transport.parse(raw)
+
+
+def retained_files(item):
+    """Actual approved sources, index, snapshots, journal and receipt bytes/modes."""
+    root, directory = item['root'], item['directory']
+    paths = [root / name for name in ('edit.py', 'new.py', 'unrelated.py', '.git/index')]
+    paths += [directory / name for name in ('github.json', 'github-approved.json', 'report.json')]
+    for name in ('workspace', 'backup', 'transport'):
+        paths += [path for path in (directory / name).rglob('*') if path.is_file()]
+    return {str(path): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in paths}
+
+
+def write_proof_input(item):
+    """Save exact connector JSON pages; never invent missing native responses."""
+    directory = item['directory']
+    bundle = directory / 'proof-input-fixture'
+    bundle.mkdir(mode=0o700, exist_ok=True)
+    manifest = {'version': 'parent-proof-input-v1', 'run_id': directory.name, 'pr_number': 11,
+                'journal_sha256': transport.digest((directory / 'github.json').read_bytes()),
+                'approval_sha256': transport.digest((directory / 'github-approved.json').read_bytes()),
+                'merge_sha': MERGE, 'responses': []}
+    for index, response in enumerate(item['proof']['responses']):
+        name = 'get-' + str(index) + '.json'
+        raw = transport.encode(response['body'])
+        (bundle / name).write_bytes(raw)
+        (bundle / name).chmod(0o600)
+        manifest['responses'].append({key: response[key] for key in ('method', 'url', 'status', 'complete')})
+        manifest['responses'][-1].update(file=name, bytes=len(raw), sha256=transport.digest(raw))
+    item.update(bundle=bundle, manifest=manifest)
+    return save_proof_manifest(item)
+
+
+def save_proof_manifest(item):
+    raw = transport.encode(item['manifest'])
+    path = item['bundle'] / 'manifest.json'
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    return transport.digest(raw)
+
+
+def build_proof(item, sha256=None):
+    return parent.execute('agent-git-proof-build', item['directory'].name, pr_number=11,
+                          input_dir=str(item['bundle']), sha256=sha256 or save_proof_manifest(item))
+
+
+def checks_for(proof):
+    prefix = ('https://api.github.com/repos/' + proof['repository'] + '/commits/' + HEAD +
+              '/check-runs?filter=latest&per_page=100&page=')
+    return {'version': 'external-merge-checks-v1', 'run_id': proof['run_id'], 'pr_number': 11,
+            'repository': proof['repository'], 'head_sha': HEAD,
+            'responses': sorted([row for row in proof['responses'] if row['url'].startswith(prefix)],
+                                key=lambda row: int(row['url'][len(prefix):]))}
+
+
+@pytest.fixture
+def native_proof_input(prepared, monkeypatch):
+    # All gates and the request/receipt are real native calls. Only storage and
+    # ambient guard settings are isolated; no native success seam is installed.
+    for key in ('READ_ONLY', 'GIT', 'TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY',
+                'TAVERN_IMPROVEMENT_UNATTENDED', 'TAVERN_WORKFLOW_DEMO', 'TAVERN_NO_GIT'):
+        monkeypatch.delenv(key, raising=False)
+    ledger, directory = prepared['ledger'], prepared['directory']
+    to_pr(ledger)
+    native.accept(ledger, pr_data(ledger, merge_commit_sha=TEST_MERGE))
+    native.save(directory, ledger)
+    first = parent.execute('agent-git-next', directory.name)
+    assert first['code'] == 'native_result' and first['native_exit_code'] == 0
+    assert first['request_file']['run_id'] == directory.name
+    ledger = json.loads((directory / 'github.json').read_text())
+    prefix = 'https://api.github.com/repos/' + ledger['config']['repository']
+    responses = []
+
+    def get(path, body):
+        responses.append({'method': 'GET', 'url': prefix + path, 'status': 200,
+                          'complete': True, 'body': body})
+
+    get('/pulls/11', cleanup_pr_data(ledger))
+    for sha in (HEAD, MERGE):
+        get('/git/commits/' + sha, {'sha': sha, 'tree': {'sha': ledger['new_tree']},
+                                   'parents': [{'sha': ledger['base_sha']}]})
+    # Ten head pages distinguish numeric ordering from string sorting. Every
+    # check is native-valid, and the required CI3 names occur on the last page.
+    rows = [{'id': i + 10, 'name': 'extra-' + str(i), 'head_sha': HEAD,
+             'app': {'slug': 'github-actions'}, 'status': 'completed', 'conclusion': 'success'}
+            for i in range(900)]
+    rows += [dict(row, id=1000 + index) for index, row in enumerate(rows_for(ledger))]
+    for page in range(1, 11):
+        body = {'total_count': len(rows), 'check_runs': rows[(page - 1) * 100:page * 100]}
+        # Preserve and normalize a real supported connector envelope as well.
+        if page == 1:
+            body = {'structuredContent': {'content': json.dumps(body)}}
+        get('/commits/' + HEAD + '/check-runs?filter=latest&per_page=100&page=' + str(page), body)
+    get('/commits/' + TEST_MERGE + '/check-runs?filter=latest&per_page=100&page=1',
+        {'total_count': len(rows_for(ledger)), 'check_runs': rows_for(ledger, sha=TEST_MERGE)})
+    for sha in (HEAD, TEST_MERGE):
+        get('/commits/' + sha + '/status', {'sha': sha, 'total_count': 0, 'statuses': []})
+    get('', {'full_name': ledger['config']['repository'], 'default_branch': ledger['config']['base']})
+    get('/branches?per_page=100&page=1', [{'name': 'other-' + str(i)} for i in range(100)])
+    get('/branches?per_page=100&page=2',
+        {'complete': True, 'page': 2, 'per_page': 100, 'truncated': False,
+         'items': [{'name': ledger['branch'], 'protected': False, 'commit': {'sha': HEAD}}]})
+    # This exact percent encoding is native cleanup_request's contract.
+    get('/pulls?state=open&head=21in7%3Acodex%2F' + directory.name + '&per_page=100&page=1', [])
+    proof = {'version': 'external-merge-proof-v1', 'run_id': directory.name, 'pr_number': 11,
+             'repository': ledger['config']['repository'],
+             'base': {'ref': ledger['config']['base'], 'sha': ledger['base_sha']},
+             'head': {'ref': ledger['branch'], 'sha': HEAD}, 'merge_sha': MERGE,
+             'responses': list(reversed(responses))}
+    prepared.update(ledger=ledger, proof=proof, first=first, prefix=prefix)
+    write_proof_input(prepared)
+    return prepared
+
+
+def test_proof_build_real_complete_gets_native_roundtrip(native_proof_input):
+    item = native_proof_input
+    before = retained_files(item)
+    result = build_proof(item)
+    assert result['code'] == 'proof_built' and result['status'] == 'ready'
+    assert result['proof_build'] == {'version': 'parent-proof-build-v1', 'complete': True}
+    proof, checks = [saved_descriptor(result[key]) for key in ('proof_file', 'checks_file')]
+    candidate = native.external_merge_proof(item['ledger'], proof, 11)
+    native.external_head_checks(item['ledger'], checks, proof)
+    assert candidate['cleanup_proof']['check_sha'] == TEST_MERGE
+    assert candidate['cleanup_proof']['open_prs'] == []
+    assert candidate['cleanup_proof']['branch']['sha'] == HEAD
+    assert checks['responses'] == checks_for(proof)['responses']
+    assert [row['url'].rsplit('=', 1)[-1] for row in checks['responses']] == [str(i) for i in range(1, 11)]
+    bodies = {row['url']: row['body'] for row in proof['responses']}
+    assert all(row['body'] == bodies[row['url']] for row in checks['responses'])
+    assert result['next_action'] == {'action': 'invoke_external_merge', 'trusted_parent_only': True,
+        'command': 'agent-git-external-merge', 'required_arguments': {
+            'run_id': item['directory'].name, 'pr_number': 11,
+            'proof_file': result['proof_file']['path'], 'sha256': result['proof_file']['sha256'],
+            'checks_file': result['checks_file']['path'], 'checks_sha256': result['checks_file']['sha256']}}
+    assert result['side_effects']['created'] == [result[key]['path'] for key in ('proof_file', 'checks_file')]
+    assert not result['side_effects']['transport_invoked'] and not result['side_effects']['native_invoked']
+    assert retained_files(item) == before
+
+
+@pytest.mark.parametrize('fault', ['missing_page', 'head', 'url'])
+def test_proof_build_and_both_native_gates_reject_head_collection(native_proof_input, fault):
+    item = native_proof_input
+    proof = item['proof']
+    suffix = '/commits/' + HEAD + '/check-runs?filter=latest&per_page=100&page=2'
+    target = next(row for row in proof['responses'] if row['url'].endswith(suffix))
+    if fault == 'missing_page':
+        proof['responses'].remove(target)
+    elif fault == 'head':
+        target['body']['check_runs'][0]['head_sha'] = MERGE
+    else:
+        target['url'] = target['url'][:-1] + '02'
+    checks = checks_for(proof)
+    before = retained_files(item)
+    with pytest.raises(native.ExternalProofError):
+        native.external_merge_proof(item['ledger'], proof, 11)
+    with pytest.raises(native.ExternalProofError):
+        native.external_head_checks(item['ledger'], checks, proof)
+    write_proof_input(item)
+    result = build_proof(item)
+    assert result['status'] == 'failed' and not result['executed']
+    assert result['proof_build']['complete'] is False
+    assert not result['side_effects']['created']
+    assert not (item['directory'] / 'parent-proof.json').exists()
+    if fault == 'missing_page':
+        exact = {'method': 'GET', 'url': item['prefix'] + suffix}
+        assert result['code'] == 'external_get_required'
+        assert result['proof_build']['missing_get'] == exact
+        assert {key: result['next_action'][key] for key in exact} == exact
+        assert result['next_action']['action'] == 'collect_get'
+        assert result['next_action']['then']['required_arguments']['input_dir'] == str(item['bundle'])
+    else:
+        assert result['next_action']['action'] == 'stop'
+    assert retained_files(item) == before
+
+
+@pytest.mark.parametrize('path', ['/pulls/11', '/git/commits/' + MERGE,
+    '/commits/' + TEST_MERGE + '/check-runs?filter=latest&per_page=100&page=1',
+    '/commits/' + TEST_MERGE + '/status', '', '/branches?per_page=100&page=2', 'open_prs'])
+def test_proof_missing_required_get_collects_exact_url(native_proof_input, path):
+    item = native_proof_input
+    proof = item['proof']
+    target = next(row for row in proof['responses'] if
+                  ('/pulls?state=open&head=' in row['url'] if path == 'open_prs' else
+                   row['url'] == item['prefix'] + path))
+    proof['responses'].remove(target)
+    write_proof_input(item)
+    with pytest.raises(native.ExternalProofError) as error:
+        native.external_merge_proof(item['ledger'], proof, 11)
+    assert error.value.next_get == {'method': 'GET', 'url': target['url']}
+    result = build_proof(item)
+    assert result['code'] == 'external_get_required' and not result['executed']
+    assert result['proof_build']['missing_get'] == error.value.next_get
+    assert result['next_action']['action'] == 'collect_get'
+    assert result['next_action']['url'] == target['url']
+    assert not result['side_effects']['created']
+
+
+@pytest.mark.parametrize('fault', ['pr_head', 'squash', 'update_branch', 'branch_head', 'protected',
+    'test_merge_checks', 'test_merge_status', 'status_coverage', 'branch_page', 'open_pr_page'])
+def test_proof_native_semantic_faults_never_build(native_proof_input, fault):
+    item = native_proof_input
+    rows = item['proof']['responses']
+    def body(suffix):
+        return next(row['body'] for row in rows if row['url'] == item['prefix'] + suffix)
+    if fault == 'pr_head':
+        body('/pulls/11')['head']['sha'] = MERGE
+    elif fault == 'squash':
+        body('/pulls/11')['merge_commit_sha'] = TEST_MERGE
+    elif fault == 'update_branch':
+        body('/git/commits/' + HEAD)['parents'].append({'sha': TEST_MERGE})
+    elif fault in ('branch_head', 'protected'):
+        branch = body('/branches?per_page=100&page=2')['items'][0]
+        if fault == 'protected':
+            branch['protected'] = True
+        else:
+            branch['commit']['sha'] = MERGE
+    elif fault == 'test_merge_checks':
+        body('/commits/' + TEST_MERGE + '/check-runs?filter=latest&per_page=100&page=1')['check_runs'][0]['conclusion'] = 'failure'
+    elif fault == 'test_merge_status':
+        body('/commits/' + TEST_MERGE + '/status').update(total_count=1, statuses=[{}], state='failure')
+    elif fault == 'status_coverage':
+        body('/commits/' + HEAD + '/status')['total_count'] = 1
+    elif fault == 'branch_page':
+        body('/branches?per_page=100&page=2')['page'] = 1
+    else:
+        row = next(row for row in rows if '/pulls?state=open&head=' in row['url'])
+        row['body'] = {'complete': True, 'page': 1, 'per_page': 100, 'truncated': True, 'items': []}
+    with pytest.raises(native.ExternalProofError):
+        native.external_merge_proof(item['ledger'], item['proof'], 11)
+    write_proof_input(item)
+    before = retained_files(item)
+    result = build_proof(item)
+    assert result['stage'] == 'validate_proof' and result['status'] == 'failed'
+    assert not result['executed'] and not result['side_effects']['created']
+    assert result['next_action']['action'] == 'stop' and retained_files(item) == before
+
+
+def test_native_open_pr_full_page_requires_final_short_page_then_still_blocks(native_proof_input):
+    item = native_proof_input
+    proof = item['proof']
+    row = next(row for row in proof['responses'] if '/pulls?state=open&head=' in row['url'])
+    row['body'] = [{'state': 'open', 'head': {'ref': item['ledger']['branch'],
+                    'repo': {'full_name': item['ledger']['config']['repository']}}} for _ in range(100)]
+    url = row['url'][:-1] + '2'
+    with pytest.raises(native.ExternalProofError) as error:
+        native.external_merge_proof(item['ledger'], proof, 11)
+    assert error.value.next_get == {'method': 'GET', 'url': url}
+    write_proof_input(item)
+    assert build_proof(item)['next_action']['url'] == url
+    proof['responses'].append({'method': 'GET', 'url': url, 'status': 200, 'complete': True, 'body': []})
+    with pytest.raises(native.ExternalProofError, match='external_branch_not_deletable'):
+        native.external_merge_proof(item['ledger'], proof, 11)
+    write_proof_input(item)
+    assert build_proof(item)['code'] == 'external_branch_not_deletable'
+
+
+def test_native_checks_reject_conflicting_proof_body_even_with_successful_ci(native_proof_input):
+    item = native_proof_input
+    proof, checks = item['proof'], copy.deepcopy(checks_for(item['proof']))
+    checks['responses'][-1]['body']['check_runs'][0]['check_suite'] = {'id': 987}
+    native.external_merge_proof(item['ledger'], proof, 11)
+    with pytest.raises(native.ExternalProofError, match='external_checks_proof_mismatch'):
+        native.external_head_checks(item['ledger'], checks, proof)
+
+
+@pytest.mark.parametrize('fault', ['incomplete', 'http_error', 'duplicate_id', 'old_run', 'head_identity'])
+def test_native_proof_and_checks_both_reject_invalid_collections(native_proof_input, fault):
+    item = native_proof_input
+    proof = item['proof']
+    checks = checks_for(proof)
+    row = checks['responses'][-1]  # same in-memory response object as proof
+    if fault == 'incomplete':
+        row['complete'] = False
+    elif fault == 'http_error':
+        row['status'] = 500
+    elif fault == 'duplicate_id':
+        row['body']['check_runs'][0]['id'] = row['body']['check_runs'][1]['id']
+    elif fault == 'old_run':
+        proof['run_id'] = checks['run_id'] = '999999-abcdef'
+    else:
+        proof['head']['sha'] = checks['head_sha'] = MERGE
+    with pytest.raises(native.ExternalProofError):
+        native.external_merge_proof(item['ledger'], proof, 11)
+    with pytest.raises(native.ExternalProofError):
+        native.external_head_checks(item['ledger'], checks, proof)
+
+
+@pytest.mark.parametrize('fault,code', [
+    ('run', 'proof_manifest_invalid'), ('pr', 'proof_manifest_invalid'),
+    ('journal', 'proof_manifest_identity_mismatch'), ('approval', 'proof_manifest_identity_mismatch'),
+    ('method', 'proof_response_incomplete'), ('status', 'proof_response_incomplete'),
+    ('incomplete', 'proof_response_incomplete'), ('duplicate_url', 'proof_response_url_mismatch'),
+    ('repository_url', 'proof_response_url_mismatch'), ('duplicate_file', 'proof_response_path_invalid'),
+    ('traversal', 'proof_response_path_invalid'), ('size', 'proof_response_size_mismatch'),
+    ('hash', 'response_digest_mismatch')])
+def test_proof_input_manifest_faults_preserve_sources(native_proof_input, fault, code):
+    item = native_proof_input
+    manifest = item['manifest']
+    row = manifest['responses'][0]
+    if fault == 'run':
+        manifest['run_id'] = '999999-abcdef'
+    elif fault == 'pr':
+        manifest['pr_number'] = 12
+    elif fault in ('journal', 'approval'):
+        manifest[fault + '_sha256'] = '0' * 64
+    elif fault == 'method':
+        row['method'] = 'POST'
+    elif fault == 'status':
+        row['status'] = 206
+    elif fault == 'incomplete':
+        row['complete'] = False
+    elif fault == 'duplicate_url':
+        manifest['responses'][1]['url'] = row['url']
+    elif fault == 'repository_url':
+        row['url'] = 'https://api.github.com/repos/other/repo/pulls/11'
+    elif fault == 'duplicate_file':
+        manifest['responses'][1]['file'] = row['file']
+    elif fault == 'traversal':
+        row['file'] = '../get.json'
+    elif fault == 'size':
+        row['bytes'] += 1
+    else:
+        row['sha256'] = '0' * 64
+    before = retained_files(item)
+    result = build_proof(item)
+    assert result['code'] == code and result['proof_build']['complete'] is False
+    assert not result['executed'] and not result['side_effects']['created']
+    assert retained_files(item) == before
+
+
+@pytest.mark.parametrize('unsafe', ['mode', 'hardlink', 'symlink', 'parent_mode', 'manifest_hash', 'old_run'])
+def test_proof_input_private_boundary(native_proof_input, unsafe):
+    item = native_proof_input
+    path = item['bundle'] / item['manifest']['responses'][0]['file']
+    if unsafe == 'mode':
+        path.chmod(0o644)
+    elif unsafe == 'hardlink':
+        os.link(str(path), str(item['bundle'] / 'alias'))
+    elif unsafe == 'symlink':
+        original = item['bundle'] / 'original'
+        path.rename(original)
+        path.symlink_to(original)
+    elif unsafe == 'parent_mode':
+        item['bundle'].chmod(0o755)
+    before = retained_files(item)
+    if unsafe == 'old_run':
+        result = parent.execute('agent-git-proof-build', item['directory'].name, pr_number=11,
+            input_dir=str(item['directory'].parent / '999999-abcdef' / item['bundle'].name),
+            sha256=save_proof_manifest(item))
+        assert result['code'] == 'proof_input_path_mismatch'
+    else:
+        result = build_proof(item, '0' * 64 if unsafe == 'manifest_hash' else None)
+    assert result['status'] == 'failed' and not result['executed']
+    assert not result['side_effects']['created'] and retained_files(item) == before
+
+
+@pytest.mark.parametrize('name', ['parent-proof.json', 'parent-checks.json'])
+def test_proof_output_collision_preserves_existing_file(native_proof_input, name):
+    item = native_proof_input
+    path = item['directory'] / name
+    path.write_bytes(b'user retained output\n')
+    path.chmod(0o640)
+    before = retained_files(item)
+    result = build_proof(item)
+    assert result['code'] == 'proof_output_exists' and not result['executed']
+    assert path.read_bytes() == b'user retained output\n' and stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert result['proof_build']['complete'] is False and not result['side_effects']['created']
+    assert retained_files(item) == before
+
+
+@pytest.mark.parametrize('failure_at', [1, 2, 3, 4])
+def test_proof_partial_fsync_failure_reports_actual_outputs(native_proof_input, monkeypatch, failure_at):
+    item = native_proof_input
+    before = retained_files(item)
+    real_fsync, calls = os.fsync, []
+    def fail(fd):
+        calls.append(fd)
+        if len(calls) == failure_at:
+            raise OSError('isolated output fsync failure')
+        return real_fsync(fd)
+    monkeypatch.setattr(parent.os, 'fsync', fail)
+    result = build_proof(item)
+    assert result['status'] == 'needs_reconciliation' and result['executed']
+    assert result['proof_build']['complete'] is False and result['next_action']['action'] == 'stop'
+    expected = ['parent-proof.json'] + (['parent-checks.json'] if failure_at > 2 else [])
+    assert [Path(row['path']).name for row in result['partial_outputs']] == expected
+    assert result['side_effects']['created'] == [str(item['directory'] / name) for name in expected]
+    assert result['partial_outputs'][-1]['complete'] is False
+    if failure_at > 2:
+        assert result['partial_outputs'][0]['complete'] is True
+        saved_descriptor(result['partial_outputs'][0])
+    for name in expected:
+        assert (item['directory'] / name).exists()
+        assert stat.S_IMODE((item['directory'] / name).stat().st_mode) == 0o600
+    assert retained_files(item) == before
+    assert len(calls) == failure_at  # no automatic retry
+
+
+def test_proof_readback_failure_retains_partial_file(native_proof_input, monkeypatch):
+    item = native_proof_input
+    real_new = parent.new_file
+    class BadReadback:
+        def __init__(self, handle):
+            self.handle = handle
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+        def read(self, size):
+            return b'wrong output readback'
+    def output(directory_fd, name, *args, **kwargs):
+        handle = real_new(directory_fd, name, *args, **kwargs)
+        return BadReadback(handle) if name == 'parent-proof.json' else handle
+    monkeypatch.setattr(parent, 'new_file', output)
+    result = build_proof(item)
+    assert result['code'] == 'output_readback_mismatch' and result['executed']
+    assert result['proof_build']['complete'] is False
+    assert result['partial_outputs'] == [{'path': str(item['directory'] / 'parent-proof.json'), 'complete': False}]
+    assert (item['directory'] / 'parent-proof.json').exists()
+    assert not (item['directory'] / 'parent-checks.json').exists()
+
+
+def test_proof_responses_are_read_once_then_only_memory_used(native_proof_input, monkeypatch):
+    item = native_proof_input
+    real_snapshot = parent.response_snapshot
+    reads = []
+    def snapshot(selected, path, sha256):
+        reads.append(str(path))
+        raw = real_snapshot(selected, path, sha256)
+        # Replacing connector files after their one safe read must neither
+        # change outputs nor cause another response-path read/stat.
+        Path(path).unlink()
+        return raw
+    monkeypatch.setattr(parent, 'response_snapshot', snapshot)
+    result = build_proof(item)
+    assert result['code'] == 'proof_built'
+    assert len(reads) == len(set(reads)) == len(item['manifest']['responses']) + 1
+    proof, checks = [saved_descriptor(result[key]) for key in ('proof_file', 'checks_file')]
+    assert proof == item['proof']
+    native.external_merge_proof(item['ledger'], proof, 11)
+    native.external_head_checks(item['ledger'], checks, proof)
+
+
+def read_next(descriptor, run=RUN, sha256=None, path=None):
+    return parent.execute('agent-git-next-file', run, request_file=path or descriptor['path'],
+                          sha256=sha256 or descriptor['sha256'])
+
+
+def test_next_file_roundtrip_preserves_bridge_and_receipts(parent_seam, offline_child):
+    directory, calls, response = parent_seam
+    first = parent.execute('agent-git-next', RUN)
+    descriptor = first['request_file']
+    document = saved_descriptor(descriptor)
+    assert document['version'] == 'parent-next-file-v1' and document['run_id'] == RUN
+    assert document['request'] == first['native']['request']
+    assert document['request_sha256'] == transport.digest(transport.encode(document['request']))
+    assert document['operation_id'] == first['transport']['operation_id']
+    before = {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()}
+    journal = (directory / 'github.json').read_bytes()
+    result = read_next(descriptor)
+    assert result['code'] == 'exact_request_verified' and result['status'] == 'ready'
+    assert result['exact_request'] == document['request'] and result['poll_after_seconds'] == 0
+    assert result['redispatch_authorized'] is False
+    assert result['side_effects']['read_only'] and result['side_effects']['writes'] is False
+    assert result['side_effects']['created'] == [] and not result['executed']
+    assert result['next_action']['tool'] == first['next_action']['tool']
+    assert result['next_action']['arguments'] == first['next_action']['arguments']
+    assert result['next_action']['then'] == first['next_action']['then']
+    assert {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()} == before
+    assert (directory / 'github.json').read_bytes() == journal and len(calls) == 1
+    second = accept(response)
+    assert second['request_file']['request_id'] == NEXT
+    assert read_next(descriptor)['next_action']['action'] == 'stop'
+    assert len(offline_child['calls']) == 1
+
+
+def test_next_large_request_has_run_bound_verified_native_descriptor(parent_seam, offline_child):
+    directory, _, response = parent_seam
+    parent.execute('agent-git-next', RUN)
+    offline_child['mode'] = 'large'
+    accepted = accept(response)
+    descriptor = accepted['request_file']
+    document = saved_descriptor(descriptor)
+    assert document['request'] is None
+    result = read_next(descriptor)
+    assert result['code'] == 'exact_request_verified' and 'exact_request' not in result
+    exact = result['exact_request_file']
+    payload = saved_descriptor(exact)
+    assert exact['run_id'] == RUN and exact['request_id'] == NEXT
+    assert exact['path'] == str(directory / 'transport' / (exact['operation_id'] + '.stdout'))
+    assert exact['request_sha256'] == transport.digest(transport.encode(payload['request']))
+    assert result['next_action']['arguments_from'] == 'verified_native.request.arguments'
+    assert result['next_action']['redispatch_authorized'] is False
+    assert len(transport.encode(result)) < parent.MAX_WIRE
+    assert accepted['next_action']['action'] == 'read_private_result_file'
+
+
+@pytest.mark.parametrize('fault', ['new_hash_tamper', 'descriptor_tamper', 'old_run', 'traversal', 'hash'])
+def test_next_file_identity_rejects_tamper_and_wrong_path(parent_seam, fault):
+    directory, calls, _ = parent_seam
+    first = parent.execute('agent-git-next', RUN)
+    descriptor = first['request_file']
+    path, digest = descriptor['path'], descriptor['sha256']
+    if fault in ('new_hash_tamper', 'descriptor_tamper'):
+        document = saved_descriptor(descriptor)
+        if fault == 'new_hash_tamper':
+            document['request']['arguments']['url'] = 'different'
+        else:
+            document['result_file']['path'] = '/unapproved/descriptor/stdout'
+        raw = transport.encode(document)
+        Path(path).write_bytes(raw)
+        digest = transport.digest(raw)
+    elif fault == 'old_run':
+        path = str(directory.parent / '999999-abcdef' / Path(path).name)
+    elif fault == 'traversal':
+        path = str(directory) + '/proof-input-fixture/../' + Path(path).name
+    else:
+        digest = '0' * 64
+    before = {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()}
+    result = read_next(descriptor, path=path, sha256=digest)
+    assert result['next_action']['action'] == 'stop' and not result['executed']
+    assert result['code'] == ('next_file_identity_mismatch' if fault.endswith('tamper') else
+                              'response_digest_mismatch' if fault == 'hash' else 'next_file_path_mismatch')
+    assert {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()} == before
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('fault', ['inflight.json', 'head.next', 'orphan.begin.json', 'begin', 'attempt', 'external', 'stale'])
+def test_next_file_rejects_unknown_dispatch_checkpoint_and_stale_pending(parent_seam, fault):
+    directory, calls, _ = parent_seam
+    descriptor = parent.execute('agent-git-next', RUN)['request_file']
+    if fault == 'external':
+        durable(directory / 'external-merge.json', {'version': 'external-merge-v1'})
+    elif fault == 'attempt':
+        durable(directory / ('parent-accept-' + parent.operation('accept', RUN, REQUEST) + '.json'),
+                {'version': 'parent-accept-attempt-v1', 'run_id': RUN,
+                 'request_id': REQUEST, 'response_sha256': '0' * 64})
+    elif fault == 'stale':
+        ledger = json.loads((directory / 'github.json').read_text())
+        ledger['pending_request_id'] = NEXT
+        durable(directory / 'github.json', ledger)
+    elif fault == 'begin':
+        durable(directory / 'transport' / (parent.operation('accept', RUN, REQUEST) + '.begin.json'), {})
+    else:
+        durable(directory / 'transport' / fault, {})
+    result = read_next(descriptor)
+    assert result['status'] == 'failed' and result['next_action']['action'] == 'stop'
+    assert not result['executed'] and not result['side_effects']['created'] and len(calls) == 1
+
+
+@pytest.mark.parametrize('mode', ['merge', 'awaiting_ci', 'native_failure', 'failed_pending_read'])
+def test_next_file_never_exports_terminal_native_result(parent_seam, offline_child, mode):
+    _, _, response = parent_seam
+    first = parent.execute('agent-git-next', RUN)
+    offline_child['mode'] = mode
+    terminal = accept(response)
+    assert terminal['next_action']['action'] == 'stop' and 'request_file' not in terminal
+    if mode == 'merge':
+        assert terminal['code'] == 'stop_before_merge'
+    result = read_next(first['request_file'])
+    assert result['next_action']['action'] == 'stop' and 'exact_request' not in result
+    assert not result['executed'] and len(offline_child['calls']) == 1
+
+
+@pytest.mark.parametrize('failure', ['collision', 'fsync', 'reader'])
+def test_accept_success_export_failure_preserves_native_result_no_reaccept(parent_seam, offline_child, monkeypatch, failure):
+    directory, _, response = parent_seam
+    parent.execute('agent-git-next', RUN)
+    path = directory / ('parent-next-' + NEXT + '.json')
+    if failure == 'collision':
+        path.write_bytes(b'existing user output')
+        path.chmod(0o640)
+    elif failure == 'reader':
+        def denied(*args, **kwargs):
+            raise parent.Stop('isolated reader failure')
+        monkeypatch.setattr(parent, 'next_file', denied)
+    else:
+        real_save = parent.save_next_file
+        def fail_export(*args, **kwargs):
+            # Inject only export IO, after the native child has durably accepted.
+            def fail(fd):
+                raise OSError('isolated export fsync failure')
+            with monkeypatch.context() as patch:
+                patch.setattr(parent.os, 'fsync', fail)
+                return real_save(*args, **kwargs)
+        monkeypatch.setattr(parent, 'save_next_file', fail_export)
+    result = accept(response)
+    assert result['code'] == 'next_file_write_failed' and result['native_result_retained'] is True
+    assert result['status'] == 'needs_reconciliation' and result['next_action']['action'] == 'stop'
+    assert result['native_exit_code'] == 0 and result['native']['request']['request_id'] == NEXT
+    assert result['transport']['operation_id'] == parent.operation('accept', RUN, REQUEST)
+    before = {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()}
+    assert accept(response)['code'] == 'duplicate_response'
+    assert {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()} == before
+    assert len(offline_child['calls']) == 1
+    if failure == 'collision':
+        assert path.read_bytes() == b'existing user output' and stat.S_IMODE(path.stat().st_mode) == 0o640
+    else:
+        assert str(path) in result['side_effects']['created'] and path.exists()
+
+
+@pytest.mark.parametrize('argv', [
+    ['agent-git-proof-build'], ['agent-git-next-file'],
+    ['agent-git-proof-build', '--run-id', RUN, '--pr-number', 'x', '--input-dir', '/x', '--sha256', '0' * 64],
+    ['agent-git-proof-build', '--run-id', RUN, '--pr-number', '11', '--input-dir', '/x'],
+    ['agent-git-next-file', '--run-id', RUN, '--request-file', '/x', '--sha256', 'bad'],
+    ['agent-git-next-file', '--run-id', RUN, '--request-file', '/x', '--sha256', '0' * 64, '--request-id', REQUEST]])
+def test_new_file_commands_cli_errors_are_versioned_json(capsys, argv):
+    assert parent.main(argv) == 2
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert not captured.err and result['version'] == parent.VERSION
+    assert result['code'] == 'invalid_arguments' and not result['executed']

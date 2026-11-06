@@ -39,6 +39,39 @@ parent는 삭제 전에 정확한 브랜치·tip·보호 여부·다른 작업/P
 
 parent는 비교 후 해당 브랜치를 삭제하고 cleanup, archive를 수행한다. 사용자 UI merge를 자동 merge로 대체하지 않는다.
 
+## 저장된 GET 증거 생성과 다음 요청 파일 확인
+
+두 명령은 trusted parent 전용이며 connector를 호출하지 않는다. 기존 수동 절차의 전체 전환과
+다른 운영·설계 문서의 정리는 후속 A2d2a-docs PR 범위다.
+
+```sh
+make agent-git-proof-build RUN_ID=<run> PR_NUMBER=<n> INPUT_DIR=<resolved-run>/proof-input-<label> RESPONSE_SHA256=<manifest-sha256>
+make agent-git-next-file RUN_ID=<run> REQUEST_FILE=<returned-request-file-path> RESPONSE_SHA256=<returned-request-file-sha256>
+```
+
+proof 입력은 실제 resolver로 찾은 run의 직계 `proof-input-*` private 디렉터리다. owned 0600/nlink1인
+`manifest.json`은 `version=parent-proof-input-v1`, `run_id`, `pr_number`, `journal_sha256`,
+`approval_sha256`, `merge_sha`, `responses`를 갖는다. 각 response는 `method=GET`, 정확한 페이지 `url`,
+`status=200`, `complete=true`, 디렉터리 안의 단일 파일명 `file`, 원문 `bytes`/`sha256`를 갖는다.
+본문 파일에는 parent가 실제 받은 JSON을 저장한다. 아래 native proof/checks의 모든 GET 계약이 그대로
+적용되며, 각 원문은 한 번 읽은 memory snapshot으로만 검증·생성한다.
+
+반환은 `parent-commands-v1` JSON이다. 성공 `proof_built`는 `proof_build.version=parent-proof-build-v1`,
+`complete=true`, exclusive 0600 `proof_file`/`checks_file`의 경로·bytes·sha256과 정확한
+`agent-git-external-merge` 인자를 제공한다. 누락은 `missing_get`과 `next_action.action=collect_get`의
+정확한 GET을 반환하며 출력은 생성하지 않는다. parent가 실제 GET과 manifest를 보완하고 새 manifest hash로
+명시 호출한다. 충돌 파일은 보존한다. IO 실패는 `complete=false`, `executed`, `side_effects.created`,
+`partial_outputs`의 실제 생성 경로·파일별 완료 여부를 남긴다. 자동 재시도하지 않으며 부분 출력은 검토 후 처리한다.
+
+`next`/`accept-file`의 기존 native/transport/result_file/next_action에 `request_file` descriptor가 추가된다.
+`parent-next-file-v1`은 run/request ID, tool/arguments 또는 큰 요청의 run-bound native stdout descriptor,
+operation/journal/result/request digest와 poll interval을 연결한다. reader는 receipt와 pending 상태를 다시
+검증해 `exact_request_verified`와 정확한 요청 또는 descriptor를 반환한다. 다른 run·변조·stale·전송 불명·
+수락 완료·external checkpoint는 거절하고 merge/awaiting_ci/failure에서는 멈춘다. reader는 전송 허가가 아니다.
+parent만 기존 권한 안에서 connector를 한 번 호출하고 원응답을 private 파일로 저장해 `accept-file`에 넘긴다.
+export 실패 `next_file_write_failed`/`native_result_retained=true`는 native 결과와 receipt를 보존하고 stop한다.
+이미 성공한 accept를 재accept하거나 요청을 자동 재전송하지 않는다. 본문은 shell argv·PTY·대화형 stdin에 넣지 않는다.
+
 ## Proof v1과 입력 snapshot
 
 `external-merge-proof-v1`의 top-level은 정확히 아래 필드다. base는 승인 당시 원래 base이며 head도
