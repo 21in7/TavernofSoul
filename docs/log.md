@@ -35,3 +35,21 @@
 실패·복구의 상세 교훈은 사용자 제공 관측으로 구분해 [설정과 크기](lessons/config-and-size.md), [GitHub 복구](lessons/github-recovery.md), [run 수명](lessons/run-lifecycle.md)에 둔다. commit 제목만으로 그 원인과 운영 결과를 독립 검증했다고 쓰지 않는다. 공개 정보 한계와 증거 수준은 [공개 근거](lessons/public-evidence.md)를 따른다.
 
 [index로 돌아가기](index.md)
+
+```text
+2026-11-03 | #108 | fix(ipf): update IPFUnpacker gitlink and document deployment
+2026-11-03 | #109 | fix(parser): preserve revise_mon_hp scope during Lua loading
+2026-11-03 | #110 | 검색 Item_Type 이름 중복 제거 및 이름 필터·기존 ID URL 호환 수정
+2026-11-04 | #111 | Python 2.7 map_image 호환을 위해 DB 계약 import를 실제 Python 3 검증 메서드로 지연
+2026-11-04 | #112 | 세 지역 cron 공통 실행부·잠금·단계 오류 처리·실행별 로그
+2026-11-04 | #113 | 수동 collectstatic-itos 타깃·회귀 테스트·운영 문서
+2026-11-04 | #114 | cron 무변경·잠금 경합은 로그만, map 경고 포함 최종 알림1회
+2026-11-04 | #115 | cron 실행 로그 30일 초과 정리, 현재 로그 보존 및 정리 실패 격리
+2026-11-04 | #116 | 활성 importAll·migrate_recipe_ids의 Item_Type 정확한 이름·장비 flag 쌍 재사용 및 중복 WARNING
+2026-11-05 | #117 | trusted parent 게시·응답 파일 수락·작업 트리 park·storage 경로 명령 표준화
+2026-11-05 | #118 | 미전송 pending merge의 worktree park 허용
+2026-11-05 | #119 | 읽기 전용 archive-verify 명령
+2026-11-06 | #120 | A2c 외부 squash merge 정리 명령
+2026-11-06 | #121 | awaiting_ci 증거 기반 external-merge·이미 ff-only된 checkout 처리
+2026-11-06 | #122 | 저장된 GET 증거 생성 및 exact 다음 요청 파일 검증 명령
+```
