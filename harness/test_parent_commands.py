@@ -55,6 +55,8 @@ def fake(args):
     d = n.REPORTS / args[2]
     source = Path(args[6])
     assert isinstance(t.parse(source.read_bytes()), (dict, list))
+    (d / 'fixture-received.json').write_bytes(source.read_bytes())
+    os.chmod(str(d / 'fixture-received.json'), 0o600)
     if mode == 'native_failure':
         print(json.dumps({'status': 'failed', 'error_type': 'ValueError'}))
         return 7
@@ -420,7 +422,7 @@ def test_unsafe_response_path_and_hash_never_spawn(parent_seam, offline_child, u
     no_frame(directory)
 
 
-def test_input_replaced_after_frame_fails_before_spawn(parent_seam, offline_child, monkeypatch):
+def test_input_replaced_after_frame_uses_snapshot(parent_seam, offline_child, monkeypatch):
     directory, _, response = parent_seam
     parent.execute('agent-git-next', RUN)
     original = parent.frame_file
@@ -428,18 +430,20 @@ def test_input_replaced_after_frame_fails_before_spawn(parent_seam, offline_chil
     def replace(handle, raw):
         original(handle, raw)
         replacement = response.with_name('replacement')
-        replacement.write_bytes(RESPONSE)
+        replacement.write_bytes(b'{"replacement":true}')
         replacement.chmod(0o600)
         replacement.replace(response)
 
     monkeypatch.setattr(parent, 'frame_file', replace)
     result = accept(response)
-    assert result['code'] == 'input_changed' and not result['executed']
-    assert not offline_child['calls'] and response.read_bytes() == RESPONSE
+    assert result['status'] == 'awaiting_connector' and result['executed']
+    assert len(offline_child['calls']) == 1 and response.read_bytes() == b'{"replacement":true}'
+    assert (directory / 'fixture-received.json').read_bytes() == RESPONSE
+    assert (directory / 'transport' / (parent.operation('accept', RUN, REQUEST) + '.response.json')).read_bytes() == RESPONSE
     no_frame(directory)
 
 
-def test_input_replaced_while_child_runs_retains_receipt_but_stops(parent_seam, offline_child, monkeypatch):
+def test_input_replaced_while_child_runs_retains_snapshot_and_receipt(parent_seam, offline_child, monkeypatch):
     directory, _, response = parent_seam
     parent.execute('agent-git-next', RUN)
     original = parent.accept_process
@@ -454,14 +458,15 @@ def test_input_replaced_while_child_runs_retains_receipt_but_stops(parent_seam, 
 
     monkeypatch.setattr(parent, 'accept_process', replace)
     result = accept(response)
-    assert result['code'] == 'input_changed' and result['executed']
+    assert result['status'] == 'awaiting_connector' and result['executed']
     assert response.read_bytes() == b'{"user":"newer response"}'
     assert (directory / 'transport' / (parent.operation('accept', RUN, REQUEST) + '.response.json')).read_bytes() == RESPONSE
+    assert (directory / 'fixture-received.json').read_bytes() == RESPONSE
     no_frame(directory)
 
 
 @pytest.mark.parametrize('during_child', [False, True])
-def test_input_parent_losing_private_mode_stops_at_readback(parent_seam, offline_child, monkeypatch, during_child):
+def test_input_parent_losing_private_mode_after_snapshot(parent_seam, offline_child, monkeypatch, during_child):
     directory, _, response = parent_seam
     parent.execute('agent-git-next', RUN)
     original = parent.accept_process if during_child else parent.frame_file
@@ -473,13 +478,76 @@ def test_input_parent_losing_private_mode_stops_at_readback(parent_seam, offline
 
     monkeypatch.setattr(parent, 'accept_process' if during_child else 'frame_file', expose)
     result = accept(response)
-    assert result['code'] == 'unsafe_private_record' and result['status'] == 'needs_reconciliation'
-    assert result['executed'] is during_child and len(offline_child['calls']) == int(during_child)
-    assert result['next_action']['action'] == 'stop' and response.read_bytes() == RESPONSE
+    assert result['status'] == 'awaiting_connector'
+    assert result['executed'] and len(offline_child['calls']) == 1
+    assert response.read_bytes() == RESPONSE
     saved = directory / 'transport' / (parent.operation('accept', RUN, REQUEST) + '.response.json')
-    assert saved.exists() is during_child
-    if during_child:
-        assert saved.read_bytes() == RESPONSE
+    assert saved.read_bytes() == RESPONSE
+    assert (directory / 'fixture-received.json').read_bytes() == RESPONSE
+    no_frame(directory)
+
+
+def test_same_size_mutation_before_read_with_restored_mtime_fails_digest(parent_seam, offline_child):
+    directory, _, response = parent_seam
+    parent.execute('agent-git-next', RUN)
+    before = response.stat()
+    changed = RESPONSE.replace(b'text', b'next')
+    assert len(changed) == len(RESPONSE) and changed != RESPONSE
+    response.write_bytes(changed)
+    os.utime(response, ns=(before.st_atime_ns, before.st_mtime_ns))
+    result = accept(response)
+    assert result['code'] == 'response_digest_mismatch' and not result['executed']
+    assert not offline_child['calls']
+    assert not (directory / ('parent-accept-' + parent.operation('accept', RUN, REQUEST) + '.json')).exists()
+    no_frame(directory)
+
+
+def test_snapshot_does_not_reopen_or_restat_response_after_read(parent_seam, offline_child, monkeypatch):
+    directory, _, response = parent_seam
+    parent.execute('agent-git-next', RUN)
+    original = parent.frame_file
+    real_open, real_stat = os.open, os.stat
+
+    def forbid_open(path, *args, **kwargs):
+        assert isinstance(path, int) or os.fspath(path) not in (response.name, str(response))
+        return real_open(path, *args, **kwargs)
+
+    def forbid_stat(path, *args, **kwargs):
+        assert isinstance(path, int) or os.fspath(path) not in (response.name, str(response))
+        return real_stat(path, *args, **kwargs)
+
+    def remove(handle, raw):
+        original(handle, raw)
+        response.unlink()
+        monkeypatch.setattr(parent.os, 'open', forbid_open)
+        monkeypatch.setattr(parent.os, 'stat', forbid_stat)
+
+    monkeypatch.setattr(parent, 'frame_file', remove)
+    result = accept(response)
+    assert result['status'] == 'awaiting_connector'
+    assert (directory / 'fixture-received.json').read_bytes() == RESPONSE
+    assert (directory / 'transport' / (parent.operation('accept', RUN, REQUEST) + '.response.json')).read_bytes() == RESPONSE
+
+
+def test_accept_snapshot_changed_during_fd_read_fails_before_dispatch(parent_seam, offline_child, monkeypatch):
+    directory, _, response = parent_seam
+    parent.execute('agent-git-next', RUN)
+    target = response.stat()
+    original = os.fdopen
+    changed = []
+
+    def fdopen(fd, *args, **kwargs):
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino) and not changed:
+            response.write_bytes(RESPONSE.replace(b'text', b'next'))
+            os.utime(response, ns=(target.st_atime_ns, target.st_mtime_ns))
+            changed.append(True)
+        return original(fd, *args, **kwargs)
+
+    monkeypatch.setattr(parent.os, 'fdopen', fdopen)
+    result = accept(response)
+    assert result['code'] == 'response_digest_mismatch' and not result['executed']
+    assert not offline_child['calls']
     no_frame(directory)
 
 

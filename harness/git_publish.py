@@ -711,6 +711,104 @@ def cleanup_complete(ledger):
         all(cleanup.get(key, {}).get('status') == 'complete' for key in ('prune', 'sync', 'completion'))
 
 
+class ExternalProofError(ValueError):
+    """Fixed public code plus an optional exact read for the trusted parent."""
+    def __init__(self, code, next_get=None):
+        super().__init__(code)
+        self.next_get = next_get
+
+
+def external_merge_proof(ledger, proof, pr_number):
+    """Validate saved GETs without dispatch or mutating the native journal.
+
+    Reuse the native cleanup pagination, PR, CI3/check-suite/skip, repository
+    and branch gates. Restrict squash provenance to one unchanged original base.
+    """
+    def require(value, code):
+        if not value:
+            raise ExternalProofError(code)
+
+    cfg = validate_config(ledger['config'])
+    require(type(pr_number) is int and pr_number > 0 and ledger.get('pr_number') == pr_number,
+            'external_pr_mismatch')
+    require(isinstance(proof, dict) and set(proof) == {
+        'version', 'run_id', 'pr_number', 'repository', 'base', 'head', 'merge_sha', 'responses'} and
+        proof.get('version') == 'external-merge-proof-v1', 'external_proof_schema')
+    require(proof['run_id'] == ledger['run_id'] and type(proof['pr_number']) is int and
+            proof['pr_number'] == pr_number and
+            proof['repository'] == cfg['repository'] and
+            proof['base'] == {'ref': cfg['base'], 'sha': ledger['base_sha']}, 'external_identity_mismatch')
+    require(proof['head'] == {'ref': ledger['branch'], 'sha': ledger['head_sha']}, 'external_head_mismatch')
+    try:
+        merge = valid_sha(proof['merge_sha'])
+    except ValueError:
+        raise ExternalProofError('external_merge_identity_invalid') from None
+    require(merge not in (ledger['head_sha'], ledger['base_sha']), 'external_not_squash')
+    rows = proof['responses']
+    require(isinstance(rows, list) and len(rows) <= 500, 'external_response_limit')
+    responses = {}
+    prefix = 'https://api.github.com/repos/' + cfg['repository']
+    for row in rows:
+        # The repository GET itself has no trailing slash.
+        require(isinstance(row, dict) and set(row) == {'method', 'url', 'status', 'complete', 'body'} and
+                row['method'] == 'GET' and type(row['status']) is int and row['status'] == 200 and
+                row['complete'] is True and isinstance(row['url'], str) and
+                (row['url'] == prefix or row['url'].startswith(prefix + '/')) and
+                row['url'] not in responses, 'external_get_invalid')
+        responses[row['url']] = row['body']
+
+    used = set()
+    def get(url):
+        if url not in responses:
+            raise ExternalProofError('external_get_required', {'method': 'GET', 'url': url})
+        used.add(url)
+        try:
+            return response_data(responses[url])
+        except (ValueError, TypeError):
+            raise ExternalProofError('external_get_failed') from None
+
+    pr = get(prefix + '/pulls/' + str(pr_number))
+    require(isinstance(pr, dict) and pr.get('merged') is True and pr.get('state') == 'closed',
+            'external_pr_not_merged')
+    require(object_data(pr.get('head')).get('sha') == ledger['head_sha'], 'external_head_mismatch')
+    require(object_data(pr.get('base')).get('sha') in (ledger['base_sha'], merge), 'external_base_advanced')
+    for sha in (ledger['head_sha'], merge):
+        commit = get(prefix + '/git/commits/' + sha)
+        require(isinstance(commit, dict) and commit.get('sha') == sha and
+                object_data(commit.get('tree')).get('sha') == ledger['new_tree'] and
+                isinstance(commit.get('parents'), list) and
+                [object_data(parent).get('sha') for parent in commit['parents']] == [ledger['base_sha']],
+                'external_patch_unproven')
+    candidate = copy.deepcopy(ledger)
+    candidate.update(merge_sha=merge, merge_status='merged', status='merged')
+    begin_cleanup(candidate)
+    try:
+        for _ in range(500):
+            job = cleanup_request(candidate)
+            require(job is not None, 'external_native_gate_stopped')
+            data = get(job['arguments']['url'])
+            if candidate['step'] == 'cleanup_statuses':
+                require(isinstance(data, dict) and isinstance(data.get('statuses'), list) and
+                        type(data.get('total_count')) is int and
+                        data['total_count'] == len(data['statuses']), 'external_status_coverage_incomplete')
+            accept_cleanup(candidate, data)
+            if candidate['step'] == 'cleanup_execute':
+                break
+        else:
+            raise ExternalProofError('external_response_limit')
+        require(len(used) == len(responses), 'external_unexpected_get')
+        # Reject a moved/protected tip or another open PR before any local write.
+        git_cleanup.identity(candidate)
+        branch = candidate['cleanup_proof'].get('branch')
+        require((branch is None or (branch['protected'] is False and branch['sha'] == ledger['head_sha'])) and
+                candidate['cleanup_proof'].get('open_prs') == [], 'external_branch_not_deletable')
+    except ExternalProofError:
+        raise
+    except (ValueError, KeyError, TypeError):
+        raise ExternalProofError('external_native_gate_rejected') from None
+    return candidate
+
+
 def directory_for(run_id, *, selected=None):
     if not RUN_ID.fullmatch(run_id):
         raise ValueError('Invalid workflow run ID.')
@@ -836,6 +934,9 @@ def main(argv=None):
             lock.close()
             raise ValueError('Another GitHub delivery controller is running.') from None
         path = private_record(selected, directory, 'github.json')
+        external = selected.record_path(directory, 'external-merge.json', local_default=local_reports())
+        if external.exists() or external.is_symlink():
+            raise ValueError('External merge owns this journal; use its explicit resume entry.')
         ledger = json.loads(path.read_text(encoding='utf-8'))
         validate_journal(directory, ledger, selected=selected)
         report = json.loads(private_record(selected, directory, 'report.json').read_text(encoding='utf-8'))
