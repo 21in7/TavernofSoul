@@ -63,7 +63,7 @@ help:
 	@echo "agent-git-doctor Inspect GitHub delivery policy without API calls"
 	@echo "agent-git-next   Trusted parent: first request only, RUN_ID=..."
 	@echo "agent-git-accept-file Accept saved private JSON: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=... RESPONSE_SHA256=..."
-	@echo "agent-git-external-merge UI squash cleanup: RUN_ID=... PR_NUMBER=... PROOF_FILE=... RESPONSE_SHA256=... [RESUME=1]"
+	@echo "agent-git-external-merge UI squash cleanup: RUN_ID=... PR_NUMBER=... PROOF_FILE=... RESPONSE_SHA256=... [CHECKS_FILE=... CHECKS_SHA256=... (required for awaiting_ci)] [RESUME=1]"
 	@echo "agent-worktree-park Preserve approved after files and restore baseline: RUN_ID=..."
 	@echo "storage-path    Resolve private output: TARGET=reports CATEGORY=... [RUN_ID=... PREPARE=1]"
 	@echo "agent-git-request Prepare the parent's next GitHub tool call: RUN_ID=..."
@@ -172,7 +172,7 @@ agent-git-accept-file:
 	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-id $(call improve_quote,$(REQUEST_ID)) --response-file $(call improve_quote,$(RESPONSE_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256))
 
 agent-git-external-merge:
-	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --pr-number $(call improve_quote,$(PR_NUMBER)) --proof-file $(call improve_quote,$(PROOF_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256)) $(if $(filter 1,$(RESUME)),--resume)
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --pr-number $(call improve_quote,$(PR_NUMBER)) --proof-file $(call improve_quote,$(PROOF_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256)) $(if $(CHECKS_FILE),--checks-file $(call improve_quote,$(CHECKS_FILE))) $(if $(CHECKS_SHA256),--checks-sha256 $(call improve_quote,$(CHECKS_SHA256))) $(if $(filter 1,$(RESUME)),--resume)
 
 storage-path:
 	@$(PYTHON) -m harness.parent_commands $@ --target $(call improve_quote,$(if $(TARGET),$(TARGET),reports)) $(if $(CATEGORY),--category $(call improve_quote,$(CATEGORY))) $(if $(RUN_ID),--run-id $(call improve_quote,$(RUN_ID))) $(if $(REPORT_DIR),--report-dir $(call improve_quote,$(REPORT_DIR))) $(if $(filter 1,$(PREPARE)),--prepare)

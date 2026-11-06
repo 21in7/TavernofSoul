@@ -453,11 +453,13 @@ class Cleanup:
         self.persist()
         self.finish_restore(head)
 
-    def finish_restore(self, head):
+    def finish_restore(self, head, *, read_only=False):
         """Resume per-file baseline restoration; never replace an unknown edit."""
         restore = self.state.get('restore')
         if not restore:
             return
+        if read_only and head == restore['head']:
+            raise Pending('restore_head_changed')
         approved = self.approval['files']
         if set(restore['files']) != set(approved) or not SHA.fullmatch(restore['head']) or \
                 any(item.get(version) != approved[name][version]
@@ -486,8 +488,9 @@ class Cleanup:
                 elif not entry or hashlib.sha256(self.git.run('cat-file', 'blob', entry['sha'])[1]).hexdigest() != current['sha256'] or \
                         ('100755' if current['mode'] & 0o111 else '100644') != entry['mode']:
                     raise Pending('recovery_user_edit')
-            restore['phase'] = 'synced'
-            self.persist()
+            if not read_only:
+                restore['phase'] = 'synced'
+                self.persist()
             return
         changes = status(self.git)
         if set(changes) - set(restore['files']):
@@ -572,6 +575,14 @@ class Cleanup:
 
     def local_cleanup(self, remote_base, *, sync_only=False):
         current, head = self.inspect(remote_base)
+        if self.state.get('external_order') == 'external-merge-v1' and head == self.ledger['merge_sha']:
+            self.external_synced(remote_base, repair_mode=True)
+            if self.state.get('restore') and self.state['restore'].get('phase') != 'synced':
+                self.finish_restore(head)
+            self.checkpoint('sync', 'complete', 'already_synced_readback')
+            if not sync_only:
+                self.delete_local(remote_base)
+            return
         changes = status(self.git)
         allowed = [name for name, entry in self.ledger['files'].items()
                    if entry['before'] is None and entry['after'] is not None and
@@ -627,6 +638,8 @@ class Cleanup:
             raise Pending('sync_incomplete')
         if self.state.get('restore'):
             self.state['restore']['phase'] = 'synced'
+        if self.state.get('external_order') == 'external-merge-v1':
+            self.external_files(repair_mode=True)
         self.checkpoint('sync', 'complete')
         if sync_only:
             return
@@ -707,6 +720,20 @@ class Cleanup:
             if fingerprint(self.root, name, self.approval['max_file_bytes']) != expected:
                 raise Pending('external_approved_file_mismatch')
 
+    def external_synced(self, remote_base, *, repair_mode=False):
+        """Read back an exact installed squash without restoring its old base."""
+        self.proof()
+        self.origin_validator(self.git, self.ledger['config']['repository'])
+        self.prune_refspec()
+        self.external_index()
+        self.external_patch(remote_base)
+        current, head = self.inspect(remote_base)
+        if current != 'refs/heads/' + self.ledger['config']['base'] or head != remote_base or status(self.git):
+            raise Pending('external_checkout_changed')
+        self.collisions(self.ledger['base_sha'], remote_base)
+        self.finish_restore(remote_base, read_only=True)
+        self.external_files(repair_mode=repair_mode)
+
     def run_external(self):
         """Opt-in ordering; the ordinary native cleanup path is unchanged.
 
@@ -729,7 +756,9 @@ class Cleanup:
             if self.git.ref('HEAD') != remote_base or status(self.git) or self.git.text(
                     'symbolic-ref', '-q', 'HEAD', allow=(0, 1)) != 'refs/heads/' + self.ledger['config']['base']:
                 raise Pending('external_ff_unknown')
-            self.external_files()  # No mode repair when resolving an uncertain write.
+            self.external_synced(remote_base)  # No mode repair for an uncertain write.
+            if self.state.get('restore') and self.state['restore'].get('phase') != 'synced':
+                self.finish_restore(remote_base)
             if self.state['sync'].get('status') != 'complete':
                 self.checkpoint('sync', 'complete')
         else:

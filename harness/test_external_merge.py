@@ -196,6 +196,153 @@ def engine(f):
     return cleanup.Cleanup(f.root, f.directory, proved(f), f.report, f.approval)
 
 
+def saved_checks(f):
+    return {'version': 'external-merge-checks-v1', 'run_id': RUN, 'pr_number': 123,
+            'repository': REPO, 'head_sha': f.head,
+            'responses': [copy.deepcopy(row) for row in f.proof['responses']
+                          if '/commits/' + f.head + '/check-runs?' in row['url']]}
+
+
+def save_checks(f, value=None):
+    path = f.directory / 'checks.json'
+    raw = json.dumps(saved_checks(f) if value is None else value).encode()
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    return str(path), digest(raw), raw
+
+
+def retained_park(f):
+    """Real retained snapshots, never a claim that the current HEAD is base."""
+    effects = {'created_records': [], 'restored_files': [], 'attempted_files': []}
+    obj = park._Park(f.root, f.directory, f.selected, cleanup.Git(f.root),
+                     {'side_effects': effects}, [])
+    obj.files, obj.limit, obj.head = f.approval['files'], 4096, f.base
+    obj.ledger, obj.before = f.ledger, {'sample.txt': b'before\n'}
+    obj.approval_hash = digest((f.directory / 'github-approved.json').read_bytes())
+    (f.directory / park.SNAPSHOTS).mkdir(mode=0o700)
+    obj.write_snapshot(f.directory / park.SNAPSHOTS / '0', b'approved after\n')
+    obj.persist({'version': 'worktree-park-v1', 'run_id': RUN, 'approval_sha256': obj.approval_hash,
+                 'head': f.base, 'files': obj.files, 'phase': 'parked',
+                 'checkpoints': {'sample.txt': 'restored'}})
+    return obj
+
+
+@pytest.fixture
+def external_parent(isolated, monkeypatch):
+    """Fake connector/storage boundary, real parent receipt and cleanup logic."""
+    f = isolated
+    monkeypatch.setattr(parent.transport, 'trusted_parent', lambda: None)
+    transfers, parks = [], []
+
+    def prepare(admission='awaiting_ci', layout='base'):
+        if admission == 'awaiting_ci':
+            f.ledger.update(status='awaiting_ci', step='head_checks', deadline=1)
+            f.ledger.pop('pending_request_id', None)
+            f.ledger.pop('pending_write', None)
+            f.report.update(status='awaiting_ci', github=native.summary(f.ledger))
+            cleanup.durable_json(f.directory / 'github.json', f.ledger)
+            cleanup.durable_json(f.directory / 'report.json', f.report)
+        if layout in ('parked', 'synced'):
+            retained_park(f)
+        if layout.startswith('synced'):
+            f.git('merge', '--ff-only', '--no-edit', f.merge)
+            f.source.chmod(0o750)
+        elif layout == 'approved':
+            f.source.write_bytes(b'approved after\n')
+            f.source.chmod(0o750)
+        proof_file, proof_hash, _ = save_proof(f)
+        arguments = {'pr_number': 123, 'proof_file': proof_file, 'sha256': proof_hash}
+        if admission == 'awaiting_ci':
+            checks_file, checks_hash, _ = save_checks(f)
+            arguments.update(checks_file=checks_file, checks_sha256=checks_hash)
+        folder = f.directory / 'transport'
+        folder.mkdir(mode=0o700)
+        old_id = 'b' * 64
+        response = b'{}'
+        request = {'tool': native.TOOLS['merge_pull_request'], 'request_id': PENDING,
+                   'arguments': {'repository_full_name': REPO, 'pr_number': 123,
+                                 'expected_head_sha': f.head, 'merge_method': 'squash'}}
+        payload = {'run_id': RUN, 'github': native.summary(f.ledger)}
+        if admission != 'awaiting_ci':
+            payload['request'] = request
+        journal_hash = digest((f.directory / 'github.json').read_bytes())
+        for index, operation, request_id in ((0, 'request', None), (1, 'accept', old_id)):
+            op = parent.operation(operation, RUN, request_id)
+            stdout = parent.transport.encode(payload)
+            begin = {'run_id': RUN, 'operation': operation, 'operation_id': op, 'request_id': request_id,
+                     'response_sha256': digest(response) if request_id else None,
+                     'journal_sha256': 'c' * 64, 'started_at': 1 + index * 2}
+            complete = {**begin, 'journal_sha256': journal_hash, 'bytes': len(stdout), 'sha256': digest(stdout),
+                        'native_exit_code': 1 if admission == 'awaiting_ci' and index else 0,
+                        'ended_at': 2 + index * 2}
+            for name, value in ((op + '.begin.json', begin), (op + '.complete.json', complete)):
+                cleanup.durable_json(folder / name, value)
+            for name, raw in ((op + '.stdout', stdout), (op + '.stderr', b'')):
+                (folder / name).write_bytes(raw)
+                (folder / name).chmod(0o600)
+            if request_id:
+                (folder / (op + '.response.json')).write_bytes(response)
+                (folder / (op + '.response.json')).chmod(0o600)
+        cleanup.durable_json(folder / 'head.json', complete)
+        cleanup.durable_json(f.directory / ('parent-accept-' + op + '.json'),
+                             {'version': 'parent-accept-attempt-v1', 'run_id': RUN, 'request_id': old_id,
+                              'response_sha256': digest(response)})
+
+        class Records:
+            def __init__(self, *args, **kwargs):
+                self.fd = f.selected.fs.open_directory(folder)
+
+            def read(self, name, limit=parent.transport.MAX_RESULT):
+                raw = (folder / name).read_bytes()
+                assert len(raw) <= limit
+                return raw
+
+            def optional(self, name):
+                path = folder / name
+                return parent.transport.parse(self.read(name)) if path.exists() else None
+
+            def close(self):
+                os.close(self.fd)
+
+        monkeypatch.setattr(parent.transport, 'Records', Records)
+        monkeypatch.setattr(parent.transport, 'journal', lambda records: (
+            f.ledger, digest((f.directory / 'github.json').read_bytes())))
+        monkeypatch.setattr(parent.transport, 'verify_head', lambda records, sha: records.optional('head.json'))
+        monkeypatch.setattr(parent.transport, 'envelope', lambda *args: {})
+        f.calls.clear()
+        return arguments
+
+    def park_boundary(run):
+        parks.append(run)
+        assert run == RUN and f.git('rev-parse', 'HEAD') == f.base
+        if (f.directory / park.STATE).exists():
+            obj = park._Park(f.root, f.directory, f.selected, cleanup.Git(f.root),
+                             {'side_effects': {}}, [])
+            obj.files, obj.limit, obj.head, obj.ledger = f.approval['files'], 4096, f.base, f.ledger
+            obj.approval_hash = digest((f.directory / 'github-approved.json').read_bytes())
+            obj.snapshots(json.loads((f.directory / park.STATE).read_text()))
+        else:
+            obj = retained_park(f)
+            if f.source.read_bytes() == b'approved after\n':
+                obj.source_state()
+                obj.restore('sample.txt')
+        obj.source_state(parked=True)
+        return {'status': 'parked', 'stage': 'complete', 'code': 'fixture_parked',
+                'side_effects': {}, 'executed': True}
+
+    def archive_boundary(*args):
+        assert native.cleanup_complete(json.loads((f.directory / 'github.json').read_text()))
+        transfers.append(args)
+
+    monkeypatch.setattr(park, 'park', park_boundary)
+    monkeypatch.setattr(archive, 'archive_run', archive_boundary)
+    monkeypatch.setattr(archive, 'verify_run_archive', lambda *args: {
+        'destination': 'fixture/workflows/' + RUN, 'receipt_sha256': '1' * 64,
+        'inventory_sha256': '2' * 64, 'bundle_sha256': '3' * 64, 'bundle_bytes': 123})
+    monkeypatch.setattr(archive, 'verify_current_result', lambda *args: None)
+    return SimpleNamespace(f=f, prepare=prepare, transfers=transfers, parks=parks)
+
+
 def test_saved_gets_use_native_gates_without_mutating_input(isolated):
     f = isolated
     original = copy.deepcopy((f.ledger, f.proof))
@@ -204,6 +351,56 @@ def test_saved_gets_use_native_gates_without_mutating_input(isolated):
     assert candidate['cleanup_proof']['verified'] is True
     assert (f.ledger, f.proof) == original
     assert not (f.directory / 'cleanup.json').exists()
+
+
+@pytest.mark.parametrize('envelope', [False, True])
+def test_separate_checks_complete_pagination_uses_native_normalization(isolated, envelope):
+    f = isolated
+    first = f.proof['responses'][3]
+    rows = first['body']['check_runs']
+    for index in range(len(rows), 101):
+        rows.append({'id': index + 1, 'name': 'extra-' + str(index), 'head_sha': f.head,
+                     'status': 'completed', 'conclusion': 'success',
+                     'check_suite': {'id': 1}, 'app': {'slug': 'github-actions'}})
+    last = copy.deepcopy(first)
+    first['body'] = {'total_count': 101, 'check_runs': rows[:100]}
+    last['url'] = last['url'][:-1] + '2'
+    last['body'] = {'total_count': 101, 'check_runs': rows[100:]}
+    f.proof['responses'].append(last)
+    checks = saved_checks(f)
+    if envelope:
+        for row in checks['responses']:
+            row['body'] = {'structuredContent': {'content': json.dumps(row['body'])}}
+    original = copy.deepcopy((f.ledger, f.proof, checks))
+    native.external_head_checks(f.ledger, checks, f.proof)
+    assert proved(f)['cleanup_proof']['verified'] is True
+    assert (f.ledger, f.proof, checks) == original
+    # A supposedly complete short first page is truncated even if later pages
+    # have enough distinct IDs to make the aggregate total look right.
+    f.proof['responses'][3]['body']['check_runs'].pop()
+    f.proof['responses'][-1]['body']['check_runs'].insert(0, rows[99])
+    with pytest.raises(native.ExternalProofError, match='external_checks_coverage_incomplete'):
+        native.external_head_checks(f.ledger, saved_checks(f), f.proof)
+
+
+@pytest.mark.parametrize('name', sorted(native.REQUIRED))
+def test_successful_test_merge_cannot_hide_missing_approved_head_check(isolated, name):
+    f = isolated
+    f.ledger['test_merge_sha'] = f.merge
+    head_checks = f.proof['responses'][3]
+    merge_checks = copy.deepcopy(head_checks)
+    merge_checks['url'] = merge_checks['url'].replace(f.head, f.merge)
+    for row in merge_checks['body']['check_runs']:
+        row['head_sha'] = f.merge
+    f.proof['responses'].append(merge_checks)
+    f.proof['responses'].append({'method': 'GET', 'url': URL + '/commits/' + f.merge + '/status',
+        'status': 200, 'complete': True,
+        'body': {'sha': f.merge, 'state': 'success', 'total_count': 0, 'statuses': []}})
+    head_checks['body']['check_runs'] = [row for row in head_checks['body']['check_runs'] if row['name'] != name]
+    head_checks['body']['total_count'] -= 1
+    assert proved(f)['cleanup_proof']['check_sha'] == f.merge
+    with pytest.raises(native.ExternalProofError, match='external_checks_rejected'):
+        native.external_head_checks(f.ledger, saved_checks(f), f.proof)
 
 
 @pytest.mark.parametrize('change,code', [
@@ -274,6 +471,346 @@ def test_parent_entry_missing_get_preserves_input_and_performs_no_git(isolated, 
     assert Path(path).read_bytes() == raw
     assert not f.selected.project_lock_path.exists()
     assert not (f.directory / 'external-merge.json').exists()
+
+
+@pytest.mark.parametrize('admission', ['awaiting_ci', 'known_unsent'])
+@pytest.mark.parametrize('layout', ['approved', 'parked', 'synced', 'synced_without_park'])
+def test_external_admission_and_exact_installed_squash(external_parent, admission, layout):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare(admission, layout)
+    before = {p.name: p.read_bytes() for p in (f.directory / 'transport').iterdir()}
+    attempts = {p.name: p.read_bytes() for p in f.directory.glob('parent-accept-*.json')}
+    original_deadline = f.ledger['deadline']
+    result = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert result['status'] == 'verified', result
+    checkpoint = json.loads((f.directory / 'external-merge.json').read_text())
+    journal = json.loads((f.directory / 'github.json').read_text())
+    assert journal['deadline'] == original_deadline
+    assert native.cleanup_complete(journal)
+    assert checkpoint['discard']['status'] == ('no_request' if admission == 'awaiting_ci' else 'unsent_discarded')
+    assert checkpoint['discard']['request_id'] == (None if admission == 'awaiting_ci' else PENDING)
+    assert checkpoint['checks_sha256'] == arguments.get('checks_sha256')
+    assert f.git('rev-parse', 'HEAD') == f.merge
+    assert stat.S_IMODE(f.source.stat().st_mode) == 0o750
+    if layout.startswith('synced'):
+        assert not fixture.parks and not result['side_effects']['park_invoked']
+        assert 'already_synced' in checkpoint['completed']
+        assert json.loads((f.directory / 'cleanup.json').read_text())['sync']['reason'] == 'already_synced_readback'
+        assert not any(call[0] in ('merge', 'switch', 'checkout', 'reset') for call in f.calls)
+        if layout == 'synced_without_park':
+            assert checkpoint['park_sha256'] is None and not (f.directory / park.STATE).exists()
+    assert len(fixture.transfers) == 1
+    f.calls.clear()
+    resumed = parent.execute('agent-git-external-merge', RUN, resume=True, **arguments)
+    assert resumed['status'] == 'verified', resumed
+    assert len(fixture.transfers) == 1
+    assert not any(call[0] in ('fetch', 'merge', 'push', 'update-ref') for call in f.calls)
+    assert {p.name: p.read_bytes() for p in (f.directory / 'transport').iterdir()} == before
+    assert {p.name: p.read_bytes() for p in f.directory.glob('parent-accept-*.json')} == attempts
+
+
+@pytest.mark.parametrize('fault', [
+    'failure', 'cancelled', 'skipped', 'neutral', 'pending', 'missing', 'head',
+    'duplicate', 'coverage', 'truncated', 'page', 'incomplete', 'malformed', 'sha',
+    'same_size', 'no_file', 'no_hash', 'neither', 'contradiction',
+])
+def test_awaiting_ci_checks_reject_before_durable_writes(external_parent, fault):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare()
+    checks = saved_checks(f)
+    body = checks['responses'][0]['body']
+    required = next(row for row in body['check_runs'] if row['name'] in native.REQUIRED)
+    if fault in ('failure', 'cancelled', 'skipped', 'neutral'):
+        required['conclusion'] = fault
+    elif fault == 'pending':
+        required.update(status='in_progress', conclusion=None)
+    elif fault == 'missing':
+        body['check_runs'].remove(required)
+        body['total_count'] -= 1
+    elif fault == 'head':
+        required['head_sha'] = f.merge
+    elif fault == 'duplicate':
+        body['check_runs'].append(copy.deepcopy(required))
+        body['total_count'] += 1
+    elif fault == 'coverage':
+        body['total_count'] += 1
+    elif fault == 'truncated':
+        body['truncated'] = True
+    elif fault == 'page':
+        checks['responses'][0]['url'] = checks['responses'][0]['url'][:-1] + '2'
+    elif fault == 'incomplete':
+        checks['responses'][0]['complete'] = False
+    elif fault == 'contradiction':
+        # Successful separate evidence must never override failed proof evidence.
+        next(row for row in f.proof['responses'][3]['body']['check_runs']
+             if row['name'] in native.REQUIRED)['conclusion'] = 'failure'
+        arguments['proof_file'], arguments['sha256'], _ = save_proof(f)
+    path, sha, _ = save_checks(f, checks)
+    arguments.update(checks_file=path, checks_sha256=sha)
+    if fault in ('malformed', 'same_size'):
+        raw = b'{bad json' if fault == 'malformed' else b' ' * Path(path).stat().st_size
+        Path(path).write_bytes(raw)
+        if fault == 'malformed':
+            arguments['checks_sha256'] = digest(raw)
+    elif fault == 'sha':
+        arguments['checks_sha256'] = '0' * 64
+    elif fault == 'no_file':
+        Path(path).unlink()
+    elif fault == 'no_hash':
+        arguments.pop('checks_sha256')
+    elif fault == 'neither':
+        arguments.pop('checks_file')
+        arguments.pop('checks_sha256')
+    retained = {p.name: p.read_bytes() for p in f.directory.iterdir() if p.is_file()}
+    result = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert result['status'] == 'failed', result
+    assert not result['executed'] and f.calls == []
+    assert not (f.directory / 'external-merge.json').exists()
+    assert not (f.directory / 'cleanup.json').exists() and not f.selected.project_lock_path.exists()
+    assert {p.name: p.read_bytes() for p in f.directory.iterdir() if p.is_file()} == retained
+    assert not fixture.parks and not fixture.transfers
+
+
+@pytest.mark.parametrize('conclusion,status', [
+    ('failure', 'completed'), ('cancelled', 'completed'), ('skipped', 'completed'),
+    ('neutral', 'completed'), (None, 'queued'), ('success', 'in_progress'),
+])
+@pytest.mark.parametrize('name', sorted(native.REQUIRED))
+def test_separate_checks_require_each_actual_ci3_success(isolated, conclusion, status, name):
+    f = isolated
+    row = next(row for row in f.proof['responses'][3]['body']['check_runs'] if row['name'] == name)
+    row.update(conclusion=conclusion, status=status)
+    with pytest.raises(native.ExternalProofError, match='external_checks_rejected'):
+        native.external_head_checks(f.ledger, saved_checks(f), f.proof)
+
+
+@pytest.mark.parametrize('fault', ['commit', 'dirty', 'staged', 'untracked', 'hidden', 'branch', 'park', 'backup'])
+def test_presynced_refuses_user_or_snapshot_changes_before_delete(external_parent, fault):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare(layout='synced')
+    if fault in ('commit', 'dirty', 'staged'):
+        f.source.write_bytes(b'user edit\n')
+        if fault != 'dirty':
+            f.git('add', '--', 'sample.txt')
+        if fault == 'commit':
+            f.git('commit', '-m', 'unrelated')
+    elif fault == 'untracked':
+        (f.root / 'untracked.txt').write_bytes(b'user data\n')
+    elif fault == 'hidden':
+        f.git('update-index', '--assume-unchanged', 'sample.txt')
+    elif fault == 'branch':
+        f.git('switch', '-c', 'other')
+    elif fault == 'park':
+        (f.directory / park.SNAPSHOTS / '0').write_bytes(b'changed snapshot\n')
+    else:
+        (f.directory / 'backup/sample.txt').write_bytes(b'changed backup\n')
+    source = f.source.read_bytes()
+    result = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert result['status'] in ('failed', 'needs_reconciliation'), result
+    assert not any(call[0] in ('merge', 'push', 'update-ref', 'switch', 'checkout', 'reset') for call in f.calls)
+    assert not fixture.transfers and f.source.read_bytes() == source
+    assert f.head in f.git('ls-remote', str(f.remote), 'refs/heads/codex/' + RUN)
+
+
+@pytest.mark.parametrize('admission', ['awaiting_ci', 'known_unsent'])
+@pytest.mark.parametrize('fault', ['pending', 'sent', 'begin', 'inflight', 'attempt', 'stale'])
+def test_both_admissions_refuse_uncertain_transport(external_parent, admission, fault):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare(admission)
+    folder = f.directory / 'transport'
+    if fault in ('pending', 'sent') and admission == 'awaiting_ci':
+        f.ledger.update(pending_request_id=PENDING, pending_write=True)
+        cleanup.durable_json(f.directory / 'github.json', f.ledger)
+    elif fault == 'sent':
+        old = parent.operation('accept', RUN, 'b' * 64)
+        op = parent.operation('accept', RUN, PENDING)
+        begin = json.loads((folder / (old + '.begin.json')).read_text())
+        complete = json.loads((folder / (old + '.complete.json')).read_text())
+        begin.update(operation_id=op, request_id=PENDING, started_at=1)
+        complete.update(operation_id=op, request_id=PENDING, started_at=1, ended_at=2)
+        cleanup.durable_json(folder / (op + '.begin.json'), begin)
+        cleanup.durable_json(folder / (op + '.complete.json'), complete)
+    elif fault == 'inflight':
+        cleanup.durable_json(folder / 'inflight.json', {})
+    elif fault == 'attempt':
+        parent.attempt_marker(f.selected, f.directory, RUN, PENDING, 'e' * 64,
+                              parent.result_for('agent-git-external-merge', RUN), create=True)
+    elif fault == 'stale':
+        head = json.loads((folder / 'head.json').read_text())
+        head['journal_sha256'] = 'f' * 64
+        cleanup.durable_json(folder / 'head.json', head)
+    else:
+        op = parent.operation('accept', RUN, PENDING)
+        cleanup.durable_json(folder / (op + '.begin.json'), {})
+    journal = (f.directory / 'github.json').read_bytes()
+    retained = {p.name: p.read_bytes() for p in folder.iterdir()}
+    result = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert result['status'] == 'failed', result
+    assert not (f.directory / 'external-merge.json').exists()
+    assert not fixture.parks and not fixture.transfers
+    assert (f.directory / 'github.json').read_bytes() == journal
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == retained
+
+
+def test_presynced_mode_repair_requires_approved_bytes(external_parent):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare(layout='synced')
+    f.source.chmod(0o755)
+    result = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert result['status'] == 'verified', result
+    assert stat.S_IMODE(f.source.stat().st_mode) == 0o750
+    assert not fixture.parks and not any(call[0] == 'merge' for call in f.calls)
+
+
+def test_checks_snapshot_is_immutable_after_read(external_parent, monkeypatch):
+    fixture = external_parent
+    arguments = fixture.prepare(layout='synced')
+    f = fixture.f
+    original = native.external_head_checks
+    expected = saved_checks(f)
+    seen = []
+
+    def checks(ledger, value, proof):
+        assert value == expected
+        if not seen:
+            Path(arguments['checks_file']).unlink()
+        seen.append(copy.deepcopy(value))
+        return original(ledger, value, proof)
+
+    monkeypatch.setattr(native, 'external_head_checks', checks)
+    result = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert result['status'] == 'verified', result
+    assert len(seen) > 1 and not Path(arguments['checks_file']).exists()
+
+
+@pytest.mark.parametrize('boundary', [
+    'proof', 'no_request', 'park', 'already_synced', 'native_save', 'cleanup_save',
+    'sync', 'remote', 'prune', 'local', 'completion', 'cleanup', 'archive', 'archive_verify', 'readback',
+])
+def test_explicit_parent_reentry_at_durable_boundaries(external_parent, monkeypatch, boundary):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare(layout='synced' if boundary == 'already_synced' else 'base')
+    persisted = parent.ExternalMerge.persist
+    checkpointed = cleanup.Cleanup.checkpoint
+    saved = native.save
+    current_result = archive.verify_current_result
+    stopped = []
+
+    def interrupt():
+        stopped.append(boundary)
+        raise parent.Stop('fixture_boundary')
+
+    def persist(worker):
+        persisted(worker)
+        if not stopped and worker.state['completed'][-1] == boundary:
+            interrupt()
+
+    def checkpoint(worker, target, state, reason=None):
+        checkpointed(worker, target, state, reason)
+        if not stopped and target == boundary and state in ('complete', 'deleted', 'absent'):
+            interrupt()
+
+    def save(directory, ledger):
+        saved(directory, ledger)
+        if not stopped and ((boundary == 'native_save' and not native.cleanup_complete(ledger)) or
+                            (boundary == 'cleanup_save' and native.cleanup_complete(ledger))):
+            interrupt()
+
+    def readback(*args):
+        current_result(*args)
+        if not stopped and boundary == 'readback':
+            interrupt()
+
+    monkeypatch.setattr(parent.ExternalMerge, 'persist', persist)
+    monkeypatch.setattr(cleanup.Cleanup, 'checkpoint', checkpoint)
+    monkeypatch.setattr(native, 'save', save)
+    monkeypatch.setattr(archive, 'verify_current_result', readback)
+    first = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert stopped == [boundary] and first['status'] == 'needs_reconciliation', first
+    rejected = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert rejected['code'] == 'external_explicit_resume_required'
+    resumed = parent.execute('agent-git-external-merge', RUN, resume=True, **arguments)
+    assert resumed['status'] == 'verified', resumed
+    checkpoint = json.loads((f.directory / 'external-merge.json').read_text())
+    assert len(checkpoint['journal_history']) == 2
+    assert all(row['pre'] != row['post'] and row['post_report'] for row in checkpoint['journal_history'])
+    assert len(fixture.transfers) == 1
+    assert sum(call[0] == 'merge' for call in f.calls) == (0 if boundary == 'already_synced' else 1)
+    assert sum(call[0] == 'push' for call in f.calls) == 1
+    assert sum(call[:2] == ('update-ref', '-d') for call in f.calls) == 1
+    durable = {name: (f.directory / name).read_bytes() for name in (
+        'github.json', 'report.json', 'cleanup.json', 'external-merge.json')}
+    f.calls.clear()
+    replay = parent.execute('agent-git-external-merge', RUN, resume=True, **arguments)
+    assert replay['status'] == 'verified', replay
+    assert len(fixture.transfers) == 1
+    assert not any(call[0] in ('fetch', 'merge', 'push', 'update-ref') for call in f.calls)
+    assert {name: (f.directory / name).read_bytes() for name in durable} == durable
+
+
+@pytest.mark.parametrize('change', ['hash', 'file', 'omit'])
+def test_explicit_resume_pins_checks_identity(external_parent, monkeypatch, change):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare(layout='synced')
+    first = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert first['status'] == 'verified', first
+    before = {name: (f.directory / name).read_bytes() for name in (
+        'github.json', 'report.json', 'cleanup.json', 'external-merge.json')}
+    if change == 'omit':
+        arguments.pop('checks_file')
+        arguments.pop('checks_sha256')
+    elif change == 'file':
+        old = Path(arguments['checks_file'])
+        new = old.with_name('other-checks.json')
+        new.write_bytes(old.read_bytes())
+        new.chmod(0o600)
+        arguments['checks_file'] = str(new)
+    else:
+        path = Path(arguments['checks_file'])
+        path.write_bytes(path.read_bytes() + b'\n')
+        arguments['checks_sha256'] = digest(path.read_bytes())
+    f.calls.clear()
+    result = parent.execute('agent-git-external-merge', RUN, resume=True, **arguments)
+    assert result['code'] == 'external_resume_identity_mismatch', result
+    assert not any(call[0] in ('fetch', 'merge', 'push', 'update-ref') for call in f.calls)
+    assert len(fixture.transfers) == 1
+    assert {name: (f.directory / name).read_bytes() for name in before} == before
+
+
+def test_resume_without_checkpoint_and_archive_intent_are_not_retries(external_parent, monkeypatch):
+    fixture = external_parent
+    f = fixture.f
+    arguments = fixture.prepare(layout='synced')
+    refused = parent.execute('agent-git-external-merge', RUN, resume=True, **arguments)
+    assert refused['code'] == 'external_resume_checkpoint_missing'
+    persisted = parent.ExternalMerge.persist
+    interrupted = []
+
+    def persist(worker):
+        persisted(worker)
+        if worker.state.get('archive_attempted') and not interrupted:
+            interrupted.append(True)
+            raise parent.Stop('fixture_before_archive_dispatch')
+
+    def missing(*args):
+        raise archive.ArchiveReadbackError('archive_state', 'archive_pending')
+
+    monkeypatch.setattr(parent.ExternalMerge, 'persist', persist)
+    monkeypatch.setattr(archive, 'verify_run_archive', missing)
+    first = parent.execute('agent-git-external-merge', RUN, **arguments)
+    assert first['code'] == 'fixture_before_archive_dispatch'
+    for _ in range(2):
+        pending = parent.execute('agent-git-external-merge', RUN, resume=True, **arguments)
+        assert pending['code'] == 'external_archive_pending'
+        assert pending['merge']['status'] == 'merged' and pending['cleanup']['status'] == 'complete'
+    assert not fixture.transfers
 
 
 @pytest.mark.parametrize('resume', [False, True])

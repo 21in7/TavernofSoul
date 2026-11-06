@@ -517,7 +517,7 @@ def accept(ledger, result):
     return ledger
 
 
-def begin_cleanup(ledger):
+def begin_cleanup(ledger, *, saved_evidence=False):
     """Explicit migration of github-v1 merged journals; never sends merge again."""
     valid_sha(ledger['merge_sha'])
     valid_sha(ledger['head_sha'])
@@ -525,8 +525,9 @@ def begin_cleanup(ledger):
         raise ValueError('Merged PR identity is required for cleanup.')
     ledger.update(status='merged', merge_status='merged', step='cleanup_pr',
                   cleanup={**ledger.get('cleanup', {}), 'version': 'cleanup-v1', 'status': 'awaiting_github'},
-                  cleanup_proof={}, cleanup_page=1, cleanup_rows=[],
-                  deadline=time.time() + ledger['config']['wait_seconds'])
+                  cleanup_proof={}, cleanup_page=1, cleanup_rows=[])
+    if not saved_evidence:
+        ledger['deadline'] = time.time() + ledger['config']['wait_seconds']
     ledger.pop('pending_request_id', None)
     ledger.pop('pending_write', None)
     ledger.pop('error', None)
@@ -534,8 +535,8 @@ def begin_cleanup(ledger):
         ledger.pop(key, None)
 
 
-def cleanup_request(ledger):
-    if time.time() >= ledger['deadline']:
+def cleanup_request(ledger, *, saved_evidence=False):
+    if not saved_evidence and time.time() >= ledger['deadline']:
         ledger.update(status='cleanup_pending', error='Cleanup proof deadline reached; merge remains recorded.')
         ledger['cleanup']['status'] = 'cleanup_pending'
         ledger['cleanup']['proof'] = {'status': 'pending', 'reason': 'github_proof_deadline'}
@@ -718,6 +719,66 @@ class ExternalProofError(ValueError):
         self.next_get = next_get
 
 
+def external_head_checks(ledger, checks, proof):
+    """Separate immutable approval-head GETs; never repair native CI history.
+
+    Each response is one complete page at its exact latest/100/page URL. Both
+    saved inputs must describe the same head collection, including suite data.
+    """
+    def require(value, code):
+        if not value:
+            raise ExternalProofError(code)
+
+    require(isinstance(checks, dict) and set(checks) == {
+        'version', 'run_id', 'pr_number', 'repository', 'head_sha', 'responses'} and
+        checks.get('version') == 'external-merge-checks-v1', 'external_checks_schema')
+    require(checks['run_id'] == ledger['run_id'] and type(checks['pr_number']) is int and
+            checks['pr_number'] == ledger['pr_number'] and
+            checks['repository'] == ledger['config']['repository'] and
+            checks['head_sha'] == ledger['head_sha'], 'external_checks_identity_mismatch')
+    pages = checks['responses']
+    require(isinstance(pages, list) and 0 < len(pages) <= 100, 'external_checks_coverage_incomplete')
+    prefix = 'https://api.github.com/repos/' + checks['repository'] + '/commits/' + \
+        checks['head_sha'] + '/check-runs?filter=latest&per_page=100&page='
+    proof_pages = {row['url']: row['body'] for row in proof['responses']}
+    records, total = [], None
+    try:
+        for page, row in enumerate(pages, 1):
+            url = prefix + str(page)
+            require(isinstance(row, dict) and set(row) == {'method', 'url', 'status', 'complete', 'body'} and
+                    row['method'] == 'GET' and row['url'] == url and
+                    type(row['status']) is int and row['status'] == 200 and row['complete'] is True,
+                    'external_checks_get_invalid')
+            data = object_data(response_data(row['body']))
+            runs, count = data.get('check_runs'), data.get('total_count')
+            require(isinstance(runs, list) and len(runs) <= 100 and type(count) is int and count >= 0 and
+                    (total is None or total == count) and data.get('truncated', False) is False and
+                    data.get('complete', True) is True, 'external_checks_coverage_incomplete')
+            total = count
+            records.extend(runs)
+            require(len(records) <= total and (page == len(pages) or (len(runs) == 100 and len(records) < total)),
+                    'external_checks_coverage_incomplete')
+            require(url in proof_pages and data == response_data(proof_pages[url]),
+                    'external_checks_proof_mismatch')
+        ids = [row.get('id') for row in records if isinstance(row, dict)]
+        require(len(records) == total and len(ids) == total and
+                all(type(value) is int and value > 0 for value in ids) and len(set(ids)) == len(ids),
+                'external_checks_coverage_incomplete')
+        passed, _ = checks_gate(records, ledger['config'], ledger['head_sha'])
+        latest = {}
+        for row in records:
+            if object_data(row.get('app', {})).get('slug') == ledger['config']['check_app'] and (
+                    row['name'] not in latest or row['id'] > latest[row['name']]['id']):
+                latest[row['name']] = row
+        require(passed and all(name in latest and latest[name].get('status') == 'completed' and
+                latest[name].get('conclusion') == 'success' for name in REQUIRED),
+                'external_checks_rejected')
+    except ExternalProofError:
+        raise
+    except (ValueError, KeyError, TypeError):
+        raise ExternalProofError('external_checks_rejected') from None
+
+
 def external_merge_proof(ledger, proof, pr_number):
     """Validate saved GETs without dispatch or mutating the native journal.
 
@@ -781,10 +842,10 @@ def external_merge_proof(ledger, proof, pr_number):
                 'external_patch_unproven')
     candidate = copy.deepcopy(ledger)
     candidate.update(merge_sha=merge, merge_status='merged', status='merged')
-    begin_cleanup(candidate)
+    begin_cleanup(candidate, saved_evidence=True)
     try:
         for _ in range(500):
-            job = cleanup_request(candidate)
+            job = cleanup_request(candidate, saved_evidence=True)
             require(job is not None, 'external_native_gate_stopped')
             data = get(job['arguments']['url'])
             if candidate['step'] == 'cleanup_statuses':
