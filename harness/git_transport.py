@@ -332,7 +332,8 @@ def chunk(run_id, operation_id, index):
         part = raw[offset:offset + CHUNK_BYTES]
         return {'version': VERSION, 'operation_id': operation_id, 'index': index,
                 'offset': offset, 'bytes': len(part), 'total_bytes': len(raw),
-                'sha256': head['sha256'], 'data': base64.b64encode(part).decode('ascii')}
+                'sha256': head['sha256'], 'chunk_sha256': digest(part),
+                'data': base64.b64encode(part).decode('ascii')}
     finally:
         records.close()
 

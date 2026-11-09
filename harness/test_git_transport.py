@@ -248,7 +248,11 @@ def test_bounded_inline_and_chunk_readback_fail_closed(seam, monkeypatch):
     for i in range(result['chunks']['count']):
         part = transport.chunk(RUN, result['operation_id'], i)
         assert part['offset'] == len(raw)
-        raw += base64.b64decode(part['data'], validate=True)
+        data = base64.b64decode(part['data'], validate=True)
+        assert part['chunk_sha256'] == transport.digest(data)
+        assert part['sha256'] == result['sha256']
+        assert part['chunk_sha256'] != part['sha256']
+        raw += data
     assert transport.digest(raw) == result['sha256'] and len(raw) == result['bytes']
     assert json.loads(raw) == payload
     for index in [-1, True, result['chunks']['count']]:

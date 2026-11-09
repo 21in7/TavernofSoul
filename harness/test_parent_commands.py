@@ -10,9 +10,11 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
 import stat
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +34,8 @@ def parent_seam(seam, monkeypatch):
     for key in ('READ_ONLY', 'GIT', 'TAVERN_WORKFLOW_DEMO', 'TAVERN_NO_GIT'):
         monkeypatch.delenv(key, raising=False)
     durable(directory / 'github.json', {'run_id': RUN, 'step': 'repository',
-                                       'status': 'awaiting_connector', 'config': {'enabled': True}})
+                                       'status': 'awaiting_connector', 'config': {'enabled': True},
+                                       'deadline': time.time() + 1800})
     durable(directory / 'report.json', {'run_id': RUN, 'simulated': False, 'read_only': False,
                                        'changed_files': ['fixture.py']})
     response_dir = directory / 'parent-responses'
@@ -70,6 +73,10 @@ def fake(args):
         print(json.dumps({'run_id': d.name, 'github': {'status': ledger['status']}, 'request': None}))
         return 1
     ledger['pending_request_id'] = '2' * 64
+    if mode == 'write_missing_deadline':
+        ledger.pop('deadline')
+    if mode == 'write_bad_deadline':
+        ledger['deadline'] = True
     if mode == 'awaiting_ci':
         ledger.pop('pending_request_id')
         ledger['status'] = 'awaiting_ci'
@@ -80,6 +87,10 @@ def fake(args):
         'request_id': '2' * 64, 'tool': n.TOOLS['fetch'], 'arguments': {'url': 'fixture'}}
     if mode == 'large':
         job['arguments']['text'] = '한글 🐈' * 7000
+    if mode in ('write', 'large_write', 'write_missing_deadline', 'write_bad_deadline'):
+        job['tool'] = n.TOOLS['create_tree']
+        if mode == 'large_write':
+            job['arguments']['text'] = '한글 🐈' * 21000
     if mode == 'merge':
         job['tool'] = n.TOOLS['merge_pull_request']
     payload = {'run_id': d.name, 'github': {'status': ledger['status']},
@@ -1255,7 +1266,7 @@ def test_next_file_roundtrip_preserves_bridge_and_receipts(parent_seam, offline_
     assert len(offline_child['calls']) == 1
 
 
-def test_next_large_request_has_run_bound_verified_native_descriptor(parent_seam, offline_child):
+def test_next_large_request_has_run_bound_verified_exact_descriptor(parent_seam, offline_child):
     directory, _, response = parent_seam
     parent.execute('agent-git-next', RUN)
     offline_child['mode'] = 'large'
@@ -1268,9 +1279,11 @@ def test_next_large_request_has_run_bound_verified_native_descriptor(parent_seam
     exact = result['exact_request_file']
     payload = saved_descriptor(exact)
     assert exact['run_id'] == RUN and exact['request_id'] == NEXT
-    assert exact['path'] == str(directory / 'transport' / (exact['operation_id'] + '.stdout'))
-    assert exact['request_sha256'] == transport.digest(transport.encode(payload['request']))
-    assert result['next_action']['arguments_from'] == 'verified_native.request.arguments'
+    assert exact['path'] == str(directory / ('parent-exact-' + NEXT + '.json'))
+    assert exact['version'] == 'parent-exact-request-v1'
+    assert payload['tool'] == native.TOOLS['fetch'] and payload['request_id'] == NEXT
+    assert exact['request_sha256'] == transport.digest(transport.encode(payload))
+    assert result['next_action']['arguments_from'] == 'verified_exact_request.arguments'
     assert result['next_action']['redispatch_authorized'] is False
     assert len(transport.encode(result)) < parent.MAX_WIRE
     assert accepted['next_action']['action'] == 'read_private_result_file'
@@ -1366,10 +1379,15 @@ def test_accept_success_export_failure_preserves_native_result_no_reaccept(paren
                 return real_save(*args, **kwargs)
         monkeypatch.setattr(parent, 'save_next_file', fail_export)
     result = accept(response)
-    assert result['code'] == 'next_file_write_failed' and result['native_result_retained'] is True
+    assert result['code'] == ('isolated reader failure' if failure == 'reader' else 'next_file_write_failed')
+    assert result['native_result_retained'] is True
     assert result['status'] == 'needs_reconciliation' and result['next_action']['action'] == 'stop'
-    assert result['native_exit_code'] == 0 and result['native']['request']['request_id'] == NEXT
-    assert result['transport']['operation_id'] == parent.operation('accept', RUN, REQUEST)
+    assert result['native_exit_code'] == 0
+    if failure == 'reader':
+        assert 'native' not in result and 'transport' not in result
+    else:
+        assert result['native']['request']['request_id'] == NEXT
+        assert result['transport']['operation_id'] == parent.operation('accept', RUN, REQUEST)
     before = {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()}
     assert accept(response)['code'] == 'duplicate_response'
     assert {p.name: p.read_bytes() for p in (directory / 'transport').iterdir()} == before
@@ -1392,3 +1410,541 @@ def test_new_file_commands_cli_errors_are_versioned_json(capsys, argv):
     result = json.loads(captured.out)
     assert not captured.err and result['version'] == parent.VERSION
     assert result['code'] == 'invalid_arguments' and not result['executed']
+
+
+@pytest.fixture
+def large_request(prepared, monkeypatch):
+    """Real private FS, isolated Git checkout and transport; only native API is fake."""
+    directory = prepared['directory']
+    for key in ('READ_ONLY', 'GIT', 'TAVERN_WORKFLOW_DEMO', 'TAVERN_NO_GIT',
+                'TAVERN_WORKFLOW_CHILD', 'TAVERN_IMPROVEMENT_DISCOVERY', 'TAVERN_IMPROVEMENT_UNATTENDED'):
+        monkeypatch.delenv(key, raising=False)
+    selected = storage.resolve_storage(prepared['root'], env={})
+    monkeypatch.setattr(native, 'storage_policy', lambda: selected)
+    request = {'tool': native.TOOLS['create_tree'], 'arguments': {'owner': 'fixture', 'repo': 'fixture',
+               'tree': [{'path': 'fixture.txt', 'mode': '100644', 'type': 'blob',
+                         'content': '한글 🐈' * 20000}]}, 'request_id': REQUEST}
+    request['arguments']['tree'][0]['content'] += 'x' * (251052 - len(transport.encode(request)))
+    assert len(transport.encode(request)) == 251052
+    calls = []
+
+    def fake(args):
+        calls.append(args)
+        ledger = json.loads((directory / 'github.json').read_text())
+        ledger.update(pending_request_id=REQUEST, pending_write=True,
+                      status='awaiting_connector')
+        durable(directory / 'github.json', ledger)
+        print(json.dumps({'run_id': RUN, 'github': {'status': 'awaiting_connector'},
+                          'request': request, 'poll_after_seconds': 0}, ensure_ascii=False))
+        return 0
+
+    monkeypatch.setattr(native, 'main', fake)
+    return SimpleNamespace(directory=directory, request=request, calls=calls, prepared=prepared)
+
+
+def native_bytes(directory):
+    return {'github.json': (directory / 'github.json').read_bytes(),
+            **{p.name: p.read_bytes() for p in (directory / 'transport').iterdir()}}
+
+
+def assert_no_dispatch(result):
+    assert result['next_action']['action'] == 'stop'
+    assert not any(key in result for key in ('native', 'transport', 'result_file', 'request_file',
+                                              'exact_request', 'exact_request_file'))
+    assert not any(key in result['next_action'] for key in ('tool', 'arguments', 'descriptor'))
+
+
+def test_251052_byte_create_tree_assembles_private_file_and_revalidates(large_request, monkeypatch):
+    item = large_request
+    chunk = transport.chunk
+    reads = []
+
+    def observed(run, operation, index):
+        part = chunk(run, operation, index)
+        reads.append(index)
+        data = base64.b64decode(part['data'], validate=True)
+        assert part['chunk_sha256'] == transport.digest(data)
+        assert part['sha256'] != part['chunk_sha256']
+        return part
+
+    monkeypatch.setattr(transport, 'chunk', observed)
+    first = parent.execute('agent-git-next', RUN)
+    assert first['code'] == 'native_result' and first['transport']['chunks']['count'] == 21
+    assert reads == list(range(21)) * 2  # finish and its real next-file reader
+    exact = first['exact_request_file']
+    assert exact['version'] == 'parent-exact-request-v1' and exact['bytes'] == 251052
+    path = Path(exact['path'])
+    assert path.parent == item.directory and path.name == 'parent-exact-' + REQUEST + '.json'
+    assert path.read_bytes() == transport.encode(item.request)
+    assert exact['sha256'] == transport.digest(path.read_bytes()) == exact['request_sha256']
+    assert saved_descriptor(exact) == item.request
+    info = path.stat()
+    assert info.st_uid == os.geteuid() and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600
+    assert str(path) in first['side_effects']['created']
+    assert first['executed'] and first['side_effects']['writes'] and not first['side_effects']['read_only']
+    before = native_bytes(item.directory)
+    for _ in range(2):
+        result = read_next(first['request_file'])
+        assert result['code'] == 'exact_request_verified' and result['exact_request_file'] == exact
+        assert result['redispatch_authorized'] is False and not result['executed']
+        assert result['side_effects']['read_only'] and not result['side_effects']['writes']
+        assert result['side_effects']['created'] == []
+        assert parent.identity(path.stat()) == parent.identity(info)
+        assert native_bytes(item.directory) == before
+    assert len(item.calls) == 1
+    assert (item.prepared['root'] / '.git/index').read_bytes() == item.prepared['index_before']
+
+
+@pytest.mark.parametrize('fault,code', [
+    ('missing', 'chunk_invalid'), ('operation_id', 'chunk_invalid'), ('index', 'chunk_invalid'),
+    ('offset', 'chunk_invalid'), ('bytes', 'chunk_invalid'), ('total_bytes', 'chunk_invalid'),
+    ('boolean', 'chunk_invalid'), ('sha256', 'chunk_invalid'),
+    ('chunk_sha256', 'chunk_digest_invalid'), ('data', 'chunk_digest_invalid'),
+    ('assembled_sha', 'payload_digest_invalid')])
+def test_large_chunk_faults_never_export_or_dispatch(large_request, monkeypatch, fault, code):
+    chunk = transport.chunk
+
+    def corrupt(run, operation, index):
+        part = chunk(run, operation, index)
+        if index == 1:
+            if fault == 'missing':
+                return None
+            if fault in ('data', 'assembled_sha'):
+                data = bytearray(base64.b64decode(part['data']))
+                data[0] ^= 1
+                part['data'] = base64.b64encode(data).decode('ascii')
+                if fault == 'assembled_sha':
+                    part['chunk_sha256'] = transport.digest(data)
+            elif fault == 'boolean':
+                part['index'] = True
+            elif fault in ('sha256', 'chunk_sha256', 'operation_id'):
+                part[fault] = '0' * 64
+            else:
+                part[fault] += 1
+        return part
+
+    monkeypatch.setattr(transport, 'chunk', corrupt)
+    result = parent.execute('agent-git-next', RUN)
+    assert result['code'] == code
+    assert_no_dispatch(result)
+    assert not list(large_request.directory.glob('parent-*.json'))
+    assert len(large_request.calls) == 1
+
+
+@pytest.mark.parametrize('fault', ['collision', 'partial', 'tamper', 'symlink', 'hardlink', 'mode'])
+def test_exact_file_conflicts_are_preserved_and_stop(large_request, fault):
+    directory = large_request.directory
+    path = directory / ('parent-exact-' + REQUEST + '.json')
+    if fault in ('tamper', 'hardlink', 'mode'):
+        first = parent.execute('agent-git-next', RUN)
+        if fault == 'tamper':
+            path.write_bytes(path.read_bytes().replace(b'fixture.txt', b'changed.txt'))
+        elif fault == 'hardlink':
+            os.link(str(path), str(directory / 'retained-link'))
+        else:
+            path.chmod(0o640)
+    elif fault == 'symlink':
+        target = directory / 'retained-target'
+        target.write_bytes(b'preserve')
+        path.symlink_to(target)
+    else:
+        path.write_bytes(b'conflict' if fault == 'collision' else transport.encode(large_request.request)[:100])
+        path.chmod(0o600)
+    before = path.read_bytes()
+    inode = path.lstat().st_ino
+    result = read_next(first['request_file']) if fault in ('tamper', 'hardlink', 'mode') else (
+        parent.execute('agent-git-next', RUN))
+    if fault in ('tamper', 'hardlink', 'mode', 'collision', 'partial'):
+        assert_no_dispatch(result)
+    assert result['next_action']['action'] == 'stop'
+    assert 'exact_request_file' not in result
+    assert path.read_bytes() == before and path.lstat().st_ino == inode
+    if fault in ('collision', 'partial', 'tamper'):
+        assert result['code'] == 'exact_request_file_conflict'
+    assert len(large_request.calls) == 1
+
+
+@pytest.mark.parametrize('fault', ['old_run', 'stale'])
+def test_large_request_run_and_pending_freshness(large_request, fault):
+    first = parent.execute('agent-git-next', RUN)
+    descriptor = first['request_file']
+    if fault == 'old_run':
+        path = str(large_request.directory.parent / '999999-abcdef' / Path(descriptor['path']).name)
+        result = read_next(descriptor, path=path)
+    else:
+        ledger = json.loads((large_request.directory / 'github.json').read_text())
+        ledger['pending_request_id'] = NEXT
+        durable(large_request.directory / 'github.json', ledger)
+        result = read_next(descriptor)
+    assert_no_dispatch(result)
+    assert not result['executed'] and len(large_request.calls) == 1
+
+
+@pytest.mark.parametrize('remaining', [301, 300, 299.5])
+def test_first_next_and_reader_write_deadline_boundary(large_request, monkeypatch, remaining):
+    deadline = json.loads((large_request.directory / 'github.json').read_text())['deadline']
+    clock = {'now': deadline - remaining}
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: clock['now']))
+    first = parent.execute('agent-git-next', RUN)
+    assert first['publish_remaining_seconds'] == remaining and first['minimum_write_seconds'] == 300
+    if remaining < 300:
+        assert first['code'] == 'deadline_insufficient'
+        assert_no_dispatch(first)
+        assert not list(large_request.directory.glob('parent-*.json'))
+    else:
+        assert first['code'] == 'native_result'
+        descriptor = first['request_file']
+        before = native_bytes(large_request.directory)
+        clock['now'] = deadline - 300
+        reader = read_next(descriptor)
+        assert reader['code'] == 'exact_request_verified' and reader['publish_remaining_seconds'] == 300
+        clock['now'] += 0.5
+        reader = read_next(descriptor)
+        assert reader['code'] == 'deadline_insufficient'
+        assert reader['publish_remaining_seconds'] == 299.5
+        assert_no_dispatch(reader)
+        assert native_bytes(large_request.directory) == before
+        assert not reader['executed'] and reader['side_effects']['writes'] is False
+    assert len(large_request.calls) == 1
+
+
+@pytest.mark.parametrize('entry', ['reader', 'accept'])
+def test_time_drops_during_chunk_assembly_at_every_export_boundary(
+        parent_seam, offline_child, monkeypatch, entry):
+    directory, _, response = parent_seam
+    deadline = json.loads((directory / 'github.json').read_text())['deadline']
+    clock = {'now': deadline - 301}
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: clock['now']))
+    first = parent.execute('agent-git-next', RUN)
+    if entry == 'reader':
+        offline_child['mode'] = 'large_write'
+        first = accept(response)
+    chunk = transport.chunk
+    native_after_accept = {}
+
+    def falling(run, operation, index):
+        part = chunk(run, operation, index)
+        if index == 1:
+            clock['now'] = deadline - 299
+        return part
+
+    monkeypatch.setattr(transport, 'chunk', falling)
+    if entry == 'accept':
+        offline_child['mode'] = 'large_write'
+        real = parent.accept_process
+
+        def snapshot(*args):
+            result = real(*args)
+            native_after_accept.update(native_bytes(directory))
+            return result
+
+        monkeypatch.setattr(parent, 'accept_process', snapshot)
+        result = accept(response)
+        assert result['native_result_retained'] is True
+        assert native_bytes(directory) == native_after_accept
+        assert accept(response)['code'] == 'duplicate_response'
+    else:
+        before = native_bytes(directory)
+        result = read_next(first['request_file'])
+        assert native_bytes(directory) == before
+    assert result['code'] == 'deadline_insufficient' and result['publish_remaining_seconds'] == 299
+    assert_no_dispatch(result)
+    assert len(offline_child['calls']) == 1
+
+
+def test_first_next_time_drops_during_assembly(large_request, monkeypatch):
+    deadline = json.loads((large_request.directory / 'github.json').read_text())['deadline']
+    clock = {'now': deadline - 301}
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: clock['now']))
+    chunk = transport.chunk
+
+    def falling(run, operation, index):
+        part = chunk(run, operation, index)
+        if index == 1:
+            clock['now'] = deadline - 299
+        return part
+
+    monkeypatch.setattr(transport, 'chunk', falling)
+    result = parent.execute('agent-git-next', RUN)
+    assert result['code'] == 'deadline_insufficient' and result['publish_remaining_seconds'] == 299
+    assert_no_dispatch(result)
+    assert len(large_request.calls) == 1
+
+
+@pytest.mark.parametrize('mode', ['write', 'large_write'])
+def test_accept_retains_current_response_once_and_blocks_only_next_write(
+        parent_seam, offline_child, monkeypatch, mode):
+    directory, calls, response = parent_seam
+    deadline = json.loads((directory / 'github.json').read_text())['deadline']
+    clock = {'now': deadline - 301}
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: clock['now']))
+    first = parent.execute('agent-git-next', RUN)
+    assert first['code'] == 'native_result'
+    offline_child['mode'] = mode
+    clock['now'] = deadline - 299
+    real = parent.accept_process
+    retained = {}
+
+    def snapshot(*args):
+        result = real(*args)
+        retained.update(native_bytes(directory))
+        return result
+
+    monkeypatch.setattr(parent, 'accept_process', snapshot)
+    result = accept(response)
+    assert result['code'] == 'deadline_insufficient'
+    assert result['publish_remaining_seconds'] == 299 and result['minimum_write_seconds'] == 300
+    assert result['native_result_retained'] is True and result['native_exit_code'] == 0
+    assert_no_dispatch(result)
+    assert native_bytes(directory) == retained
+    assert (directory / 'fixture-received.json').read_bytes() == RESPONSE
+    assert accept(response)['code'] == 'duplicate_response'
+    assert len(calls) == len(offline_child['calls']) == 1
+    assert native_bytes(directory) == retained
+    assert not (directory / ('parent-next-' + NEXT + '.json')).exists()
+
+
+def test_reads_keep_inline_contract_even_with_no_time(parent_seam, offline_child, monkeypatch):
+    directory, _, response = parent_seam
+    deadline = json.loads((directory / 'github.json').read_text())['deadline']
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: deadline + 1))
+    first = parent.execute('agent-git-next', RUN)
+    assert first['code'] == 'native_result' and first['publish_remaining_seconds'] == 0
+    result = read_next(first['request_file'])
+    assert result['exact_request'] == first['native']['request']
+    assert result['code'] == 'exact_request_verified' and result['publish_remaining_seconds'] == 0
+    second = accept(response)
+    assert second['code'] == 'native_result' and second['publish_remaining_seconds'] == 0
+    assert second['native_result_retained'] is True
+
+
+@pytest.mark.parametrize('value', [None, True, False, 0, -1, '1800', float('nan'), float('inf'), -float('inf')])
+def test_invalid_deadline_stops_before_native_or_local_output(parent_seam, value):
+    directory, calls, _ = parent_seam
+    ledger = json.loads((directory / 'github.json').read_text())
+    if value is None:
+        ledger.pop('deadline')
+    else:
+        ledger['deadline'] = value
+    # Deliberately invalid JSON constants also exercise strict journal decoding.
+    (directory / 'github.json').write_text(json.dumps(ledger))
+    before = (directory / 'github.json').read_bytes()
+    result = parent.execute('agent-git-next', RUN)
+    assert result['code'] in ('invalid_publish_deadline', 'invalid_json')
+    assert_no_dispatch(result)
+    assert not calls and not result['executed'] and not (directory / 'transport').exists()
+    assert (directory / 'github.json').read_bytes() == before
+
+
+@pytest.mark.parametrize('value', [None, True, False, 0, -1, '300', float('nan'), float('inf'), -float('inf')])
+@pytest.mark.parametrize('command', ['agent-git-next', 'agent-git-next-file', 'agent-git-accept-file'])
+def test_invalid_minimum_is_local_input_and_has_no_effects(parent_seam, value, command):
+    directory, calls, _ = parent_seam
+    before = (directory / 'github.json').read_bytes()
+    result = parent.execute(command, RUN, minimum_write_seconds=value)
+    assert result['code'] == 'invalid_minimum_write_seconds'
+    assert_no_dispatch(result)
+    assert not calls and not result['executed'] and not (directory / 'transport').exists()
+    assert (directory / 'github.json').read_bytes() == before
+
+
+@pytest.mark.parametrize('mode', ['native_failure', 'awaiting_ci', 'failed_pending_write', 'merge'])
+def test_low_time_preserves_terminal_native_failure_and_merge_stop(parent_seam, offline_child, monkeypatch, mode):
+    directory, _, response = parent_seam
+    parent.execute('agent-git-next', RUN)
+    deadline = json.loads((directory / 'github.json').read_text())['deadline']
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: deadline - 1))
+    offline_child['mode'] = mode
+    result = accept(response)
+    assert result['code'] == ('stop_before_merge' if mode == 'merge' else 'native_result')
+    assert result['next_action']['action'] == 'stop' and 'request_file' not in result
+    assert result['publish_remaining_seconds'] == 1 and result['native_result_retained'] is True
+    assert result['native_exit_code'] == (7 if mode == 'native_failure' else 1 if mode == 'failed_pending_write' else 0)
+    assert len(offline_child['calls']) == 1
+
+
+@pytest.mark.parametrize('command', ['agent-git-next', 'agent-git-next-file', 'agent-git-accept-file'])
+@pytest.mark.parametrize('value', ['0', '-1', 'true', 'nan', 'inf', '-inf'])
+def test_minimum_cli_rejects_invalid_values_without_execution(monkeypatch, capsys, command, value):
+    def forbidden(*args, **kwargs):
+        pytest.fail('invalid minimum reached execution')
+    monkeypatch.setattr(parent, 'execute', forbidden)
+    argv = [command, '--run-id', RUN, '--minimum-write-seconds=' + value]
+    if command == 'agent-git-next-file':
+        argv += ['--request-file', '/unused', '--sha256', '0' * 64]
+    if command == 'agent-git-accept-file':
+        argv += ['--request-id', REQUEST, '--response-file', '/unused', '--sha256', '0' * 64]
+    assert parent.main(argv) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['code'] == 'invalid_arguments' and not result['executed']
+
+
+@pytest.mark.parametrize('command', ['agent-git-next', 'agent-git-next-file', 'agent-git-accept-file'])
+@pytest.mark.parametrize('minimum', [None, '12.5'])
+def test_make_and_cli_forward_local_minimum(monkeypatch, capsys, command, minimum):
+    # Dry-run only, when the orchestrator runs this regression; no publication.
+    argv = ['make', '--no-print-directory', '--dry-run', command, 'PYTHON=python3', 'RUN_ID=' + RUN,
+            'REQUEST_ID=' + REQUEST, 'REQUEST_FILE=/unused/request',
+            'RESPONSE_FILE=/unused/response', 'RESPONSE_SHA256=' + '0' * 64]
+    if minimum is not None:
+        argv.append('MINIMUM_WRITE_SECONDS=' + minimum)
+    output = subprocess.run(argv, cwd=str(Path(__file__).resolve().parents[1]),
+                            check=True, capture_output=True, text=True).stdout.strip()
+    words = shlex.split(output)
+    assert words[:3] == ['python3', '-m', 'harness.parent_commands']
+    seen = []
+
+    def capture(command, run, **kwargs):
+        seen.append((command, run, kwargs))
+        result = parent.result_for(command, run)
+        result['code'] = 'test_stop'
+        return result
+
+    monkeypatch.setattr(parent, 'execute', capture)
+    assert parent.main(words[3:]) == 1
+    assert json.loads(capsys.readouterr().out)['code'] == 'test_stop'
+    assert len(seen) == 1 and seen[0][:2] == (command, RUN)
+    assert seen[0][2]['minimum_write_seconds'] == (300 if minimum is None else 12.5)
+
+
+def test_custom_minimum_is_not_persisted_or_extended(large_request, monkeypatch):
+    deadline = json.loads((large_request.directory / 'github.json').read_text())['deadline']
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: deadline - 12.5))
+    first = parent.execute('agent-git-next', RUN, minimum_write_seconds=12.5)
+    assert first['code'] == 'native_result' and first['minimum_write_seconds'] == 12.5
+    before = native_bytes(large_request.directory)
+    result = parent.execute('agent-git-next-file', RUN, request_file=first['request_file']['path'],
+                            sha256=first['request_file']['sha256'], minimum_write_seconds=12.5)
+    assert result['code'] == 'exact_request_verified' and result['publish_remaining_seconds'] == 12.5
+    assert native_bytes(large_request.directory) == before
+    ledger = json.loads(before['github.json'])
+    assert ledger['deadline'] == deadline and 'minimum_write_seconds' not in ledger
+    assert 'minimum_write_seconds' not in ledger['config']
+    assert read_next(first['request_file'])['code'] == 'deadline_insufficient'
+
+
+def test_exact_partial_output_is_retained_with_accurate_write_metadata(large_request, monkeypatch):
+    write = parent.durable_output
+    retained = {}
+
+    def fail(selected, directory, name, raw, result):
+        if name.startswith('parent-exact-'):
+            def fsync(fd):
+                raise OSError('isolated exact fsync failure')
+            with monkeypatch.context() as patch:
+                patch.setattr(parent.os, 'fsync', fsync)
+                try:
+                    return write(selected, directory, name, raw, result)
+                finally:
+                    retained['bytes'] = (directory / name).read_bytes()
+        return write(selected, directory, name, raw, result)
+
+    monkeypatch.setattr(parent, 'durable_output', fail)
+    result = parent.execute('agent-git-next', RUN)
+    path = large_request.directory / ('parent-exact-' + REQUEST + '.json')
+    assert result['code'] == 'next_file_write_failed' and result['next_action']['action'] == 'stop'
+    assert result['executed'] and result['side_effects']['writes'] and not result['side_effects']['read_only']
+    assert str(path) in result['side_effects']['created'] and path.read_bytes() == retained['bytes']
+    assert 'exact_request_file' not in result and len(large_request.calls) == 1
+
+
+def test_deadline_drops_after_exact_file_fsync_without_leaking_payload(large_request, monkeypatch):
+    directory = large_request.directory
+    deadline = json.loads((directory / 'github.json').read_text())['deadline']
+    clock = {'now': deadline - 301}
+    monkeypatch.setattr(parent, 'time', SimpleNamespace(time=lambda: clock['now']))
+    save = parent.save_exact_request
+    retained = {}
+
+    def falling(*args):
+        descriptor = save(*args)
+        retained.update(native_bytes(directory))
+        clock['now'] = deadline - 299
+        return descriptor
+
+    monkeypatch.setattr(parent, 'save_exact_request', falling)
+    result = parent.execute('agent-git-next', RUN)
+    assert result['code'] == 'deadline_insufficient' and result['publish_remaining_seconds'] == 299
+    assert_no_dispatch(result)
+    path = directory / ('parent-exact-' + REQUEST + '.json')
+    assert path.read_bytes() == transport.encode(large_request.request)
+    assert str(path) in result['side_effects']['created'] and result['side_effects']['writes']
+    assert not result['side_effects']['read_only'] and result['executed']
+    assert native_bytes(directory) == retained and len(large_request.calls) == 1
+
+
+def test_reader_created_exact_file_reports_local_writes(large_request):
+    directory = large_request.directory
+    first = parent.execute('agent-git-next', RUN)
+    path = Path(first['exact_request_file']['path'])
+    path.unlink()
+    before = native_bytes(directory)
+    result = read_next(first['request_file'])
+    assert result['code'] == 'exact_request_verified' and result['executed']
+    assert result['side_effects']['created'] == [str(path)]
+    assert result['side_effects']['writes'] and not result['side_effects']['read_only']
+    assert path.read_bytes() == transport.encode(large_request.request)
+    assert native_bytes(directory) == before and len(large_request.calls) == 1
+
+
+def test_state_change_after_chunk_verification_stops_before_exact_file_write(large_request, monkeypatch):
+    directory = large_request.directory
+    first = parent.execute('agent-git-next', RUN)
+    path = directory / ('parent-exact-' + REQUEST + '.json')
+    path.unlink()  # Simulate a missing local export; the native request stays pending.
+    decode = parent.decode_envelope
+
+    def stale(*args):
+        payload = decode(*args)
+        ledger = json.loads((directory / 'github.json').read_text())
+        ledger['pending_request_id'] = NEXT
+        durable(directory / 'github.json', ledger)
+        return payload
+
+    monkeypatch.setattr(parent, 'decode_envelope', stale)
+    result = read_next(first['request_file'])
+    assert_no_dispatch(result)
+    assert not path.exists() and not result['executed']
+    assert result['side_effects']['created'] == [] and not result['side_effects']['writes']
+    assert len(large_request.calls) == 1
+
+
+@pytest.mark.parametrize('mode', ['write_missing_deadline', 'write_bad_deadline'])
+def test_accept_invalid_native_deadline_retains_response_and_fails_closed(
+        parent_seam, offline_child, monkeypatch, mode):
+    directory, _, response = parent_seam
+    parent.execute('agent-git-next', RUN)
+    offline_child['mode'] = mode
+    process = parent.accept_process
+    retained = {}
+
+    def snapshot(*args):
+        result = process(*args)
+        retained.update(native_bytes(directory))
+        return result
+
+    monkeypatch.setattr(parent, 'accept_process', snapshot)
+    result = accept(response)
+    assert result['code'] == 'invalid_publish_deadline' and result['native_result_retained'] is True
+    assert_no_dispatch(result)
+    assert native_bytes(directory) == retained and len(offline_child['calls']) == 1
+    assert accept(response)['code'] == 'duplicate_response'
+
+
+@pytest.mark.parametrize('value', [True, None, float('nan'), float('inf')])
+def test_reader_invalid_deadline_is_fail_closed_without_writes(parent_seam, monkeypatch, value):
+    directory, _, _ = parent_seam
+    first = parent.execute('agent-git-next', RUN)
+    path = directory / 'github.json'
+    ledger = json.loads(path.read_text())
+    if value is None:
+        ledger.pop('deadline')
+    else:
+        ledger['deadline'] = value
+    path.write_text(json.dumps(ledger))
+    before = native_bytes(directory)
+    result = read_next(first['request_file'])
+    assert result['code'] in ('invalid_publish_deadline', 'invalid_json')
+    assert_no_dispatch(result)
+    assert not result['executed'] and result['side_effects']['created'] == []
+    assert native_bytes(directory) == before
