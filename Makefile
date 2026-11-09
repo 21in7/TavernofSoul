@@ -1,5 +1,6 @@
 PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(if $(wildcard TavernofSoul/itos/3.8/bin/python),TavernofSoul/itos/3.8/bin/python,python3))
 PYTEST_WORKERS ?= 2
+MINIMUM_WRITE_SECONDS ?= 300
 
 .PHONY: help doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql check-mysql-container doctor-browser check-browser check-browser-container
 .PHONY: prepare-ipf-unpacker
@@ -62,10 +63,10 @@ help:
 	@echo "agent-workflow-demo Exercise fixture orchestration without API calls or source edits"
 	@echo "agent-workflow-status Show the latest stage, role and model [RUN_ID=...]"
 	@echo "agent-git-doctor Inspect GitHub delivery policy without API calls"
-	@echo "agent-git-next   Trusted parent: first request only, RUN_ID=..."
-	@echo "agent-git-accept-file Accept saved private JSON: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=... RESPONSE_SHA256=..."
+	@echo "agent-git-next   Trusted parent: first request only, RUN_ID=... [MINIMUM_WRITE_SECONDS=300]"
+	@echo "agent-git-accept-file Accept saved private JSON: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=... RESPONSE_SHA256=... [MINIMUM_WRITE_SECONDS=300]"
 	@echo "agent-git-proof-build Build saved GET proof: RUN_ID=... PR_NUMBER=... INPUT_DIR=... RESPONSE_SHA256=<manifest-sha256>"
-	@echo "agent-git-next-file Verify saved exact request: RUN_ID=... REQUEST_FILE=... RESPONSE_SHA256=... (no dispatch permission)"
+	@echo "agent-git-next-file Verify saved exact request: RUN_ID=... REQUEST_FILE=... RESPONSE_SHA256=... [MINIMUM_WRITE_SECONDS=300] (no dispatch permission)"
 	@echo "agent-git-external-merge UI squash cleanup: RUN_ID=... PR_NUMBER=... PROOF_FILE=... RESPONSE_SHA256=... [CHECKS_FILE=... CHECKS_SHA256=... (required for awaiting_ci)] [RESUME=1]"
 	@echo "agent-worktree-park Preserve approved after files and restore baseline: RUN_ID=..."
 	@echo "storage-path    Resolve private output: TARGET=reports CATEGORY=... [RUN_ID=... PREPARE=1]"
@@ -168,17 +169,20 @@ agent-git-accept:
 	$(PYTHON) -m harness.git_publish accept --run-id "$(RUN_ID)" --request-id "$(REQUEST_ID)" --response-file "$(RESPONSE_FILE)"
 
 # A1 parent entry points: response bodies never enter shell words or a PTY.
-agent-git-next agent-worktree-park:
+agent-worktree-park:
 	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID))
 
+agent-git-next:
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --minimum-write-seconds $(call improve_quote,$(MINIMUM_WRITE_SECONDS))
+
 agent-git-accept-file:
-	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-id $(call improve_quote,$(REQUEST_ID)) --response-file $(call improve_quote,$(RESPONSE_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256))
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-id $(call improve_quote,$(REQUEST_ID)) --response-file $(call improve_quote,$(RESPONSE_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256)) --minimum-write-seconds $(call improve_quote,$(MINIMUM_WRITE_SECONDS))
 
 agent-git-proof-build:
 	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --pr-number $(call improve_quote,$(PR_NUMBER)) --input-dir $(call improve_quote,$(INPUT_DIR)) --sha256 $(call improve_quote,$(RESPONSE_SHA256))
 
 agent-git-next-file:
-	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-file $(call improve_quote,$(REQUEST_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256))
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-file $(call improve_quote,$(REQUEST_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256)) --minimum-write-seconds $(call improve_quote,$(MINIMUM_WRITE_SECONDS))
 
 agent-git-external-merge:
 	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --pr-number $(call improve_quote,$(PR_NUMBER)) --proof-file $(call improve_quote,$(PROOF_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256)) $(if $(CHECKS_FILE),--checks-file $(call improve_quote,$(CHECKS_FILE))) $(if $(CHECKS_SHA256),--checks-sha256 $(call improve_quote,$(CHECKS_SHA256))) $(if $(filter 1,$(RESUME)),--resume)

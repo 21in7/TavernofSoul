@@ -15,6 +15,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import time
 
 from harness import git_cleanup, git_publish as native, git_transport as transport
 
@@ -23,6 +24,7 @@ COMMANDS = ('agent-git-next', 'agent-git-accept-file', 'agent-worktree-park', 's
             'archive-verify', 'agent-git-external-merge', 'agent-git-proof-build', 'agent-git-next-file')
 MAX_WIRE = transport.INLINE_BYTES * 6 + 16384
 PROCESS_TIMEOUT = 120
+MINIMUM_WRITE_SECONDS = 300
 
 
 class Stop(ValueError):
@@ -319,6 +321,29 @@ def native_lock_preflight(selected, directory):
             os.close(fd)
 
 
+def minimum_write_seconds(value):
+    try:
+        valid = type(value) in (int, float) and math.isfinite(value) and value > 0
+    except OverflowError:
+        valid = False
+    require(valid, 'invalid_minimum_write_seconds')
+    return value
+
+
+def deadline_gate(result, ledger, request=None):
+    """Local pre-dispatch budget only; never renew or persist native timeouts."""
+    deadline = ledger.get('deadline')
+    try:
+        valid = type(deadline) in (int, float) and math.isfinite(deadline) and deadline > 0
+    except OverflowError:
+        valid = False
+    require(valid, 'invalid_publish_deadline')
+    remaining = max(0, deadline - time.time())
+    result['publish_remaining_seconds'] = remaining
+    if request is not None and request['tool'] != native.TOOLS['fetch']:
+        require(remaining >= result['minimum_write_seconds'], 'deadline_insufficient')
+
+
 def decode_envelope(run, envelope, code):
     require(isinstance(envelope, dict) and envelope.get('version') == transport.VERSION and
             isinstance(envelope.get('operation_id'), str) and transport.HEX.fullmatch(envelope['operation_id']) and
@@ -341,12 +366,16 @@ def decode_envelope(run, envelope, code):
             part = transport.chunk(run, envelope['operation_id'], index)
             size = min(transport.CHUNK_BYTES, envelope['bytes'] - index * transport.CHUNK_BYTES)
             require(isinstance(part, dict) and part.get('version') == transport.VERSION and
-                    part.get('operation_id') == envelope['operation_id'] and part.get('index') == index and
-                    part.get('offset') == index * transport.CHUNK_BYTES and part.get('bytes') == size and
-                    part.get('total_bytes') == envelope['bytes'] and part.get('sha256') == envelope['sha256'] and
+                    part.get('operation_id') == envelope['operation_id'] and
+                    type(part.get('index')) is int and part['index'] == index and
+                    type(part.get('offset')) is int and part['offset'] == index * transport.CHUNK_BYTES and
+                    type(part.get('bytes')) is int and part['bytes'] == size and
+                    type(part.get('total_bytes')) is int and part['total_bytes'] == envelope['bytes'] and
+                    part.get('sha256') == envelope['sha256'] and
                     isinstance(part.get('data'), str) and len(part['data']) <= 16384, 'chunk_invalid')
             data = base64.b64decode(part['data'], validate=True)
             require(len(data) == size and base64.b64encode(data).decode('ascii') == part['data'], 'chunk_size_invalid')
+            require(part.get('chunk_sha256') == transport.digest(data), 'chunk_digest_invalid')
             parts.append(data)
         raw = b''.join(parts)
     require(len(raw) == envelope['bytes'] and transport.digest(raw) == envelope['sha256'], 'payload_digest_invalid')
@@ -359,13 +388,30 @@ def decode_envelope(run, envelope, code):
 def finish(result, run, envelope, code, expected_operation, response_sha256=None):
     result['stage'] = 'verify_result'
     result['native_exit_code'] = code
-    payload = decode_envelope(run, envelope, code)
     selected, directory, ledger = context(run)
     saved, _ = evidence(run, ledger)
-    require(saved is not None and saved[1] == envelope and saved[2] == payload, 'receipt_result_mismatch')
+    require(saved is not None, 'receipt_result_mismatch')
     require(saved[0]['operation_id'] == expected_operation and
             saved[0]['response_sha256'] == response_sha256, 'receipt_input_mismatch')
     result['side_effects']['native_invoked'] = True
+    if response_sha256 is not None:
+        result['native_result_retained'] = True
+    payload = saved[2]
+    status = payload.get('github', {}).get('status', payload.get('status'))
+    terminal = status in ('failed', 'needs_reconciliation', 'awaiting_ci') or code != 0
+    request = payload.get('request')
+    # Current accept is already durable. Gate only the next non-merge write.
+    if not terminal:
+        require(isinstance(request, dict) and request.get('tool') in native.TOOLS.values() and
+                isinstance(request.get('arguments'), dict), 'request_tool_invalid')
+        deadline_gate(result, ledger, None if request['tool'] == native.TOOLS['merge_pull_request'] else request)
+    else:
+        try:
+            deadline_gate(result, ledger)
+        except Stop as exc:
+            result['deadline_code'] = str(exc)  # Preserve the native terminal failure.
+    require(decode_envelope(run, envelope, code) == payload and saved[1] == envelope,
+            'receipt_result_mismatch')
     result.update(native=payload, transport=envelope)
     status = payload.get('github', {}).get('status', payload.get('status'))
     result.update(status=status or 'needs_reconciliation', stage='complete', code='native_result')
@@ -409,8 +455,21 @@ def finish(result, run, envelope, code, expected_operation, response_sha256=None
     try:
         descriptor = save_next_file(selected, directory, run, saved, result)
         verified = result_for('agent-git-next-file', run)
-        next_file(verified, run, descriptor['path'], descriptor['sha256'])
+        verified['minimum_write_seconds'] = result['minimum_write_seconds']
+        try:
+            next_file(verified, run, descriptor['path'], descriptor['sha256'])
+        finally:
+            result['side_effects']['created'].extend(verified['side_effects']['created'])
+            if verified['executed']:
+                result['executed'] = True
+                result['side_effects'].update(read_only=False, writes=True)
+            if 'publish_remaining_seconds' in verified:
+                result['publish_remaining_seconds'] = verified['publish_remaining_seconds']
+        if 'exact_request_file' in verified:
+            result['exact_request_file'] = verified['exact_request_file']
         result['request_file'] = descriptor
+    except (Stop, transport.TransportError):
+        raise
     except (Exception, KeyboardInterrupt):
         # Accept already completed. Keep its receipt/result; never ask to accept
         # the response again just because the additive export could not finish.
@@ -423,6 +482,7 @@ def finish(result, run, envelope, code, expected_operation, response_sha256=None
 def git_next(result, run):
     result['stage'] = 'validate_run'
     selected, directory, ledger = context(run)
+    deadline_gate(result, ledger)
     external_not_owned(selected, directory)
     result.update(stage='inspect', status='needs_reconciliation')
     saved, _ = evidence(run, ledger)
@@ -586,6 +646,11 @@ def accept_file(result, run, request, response_file, sha256):
     require(isinstance(sha256, str) and transport.HEX.fullmatch(sha256), 'invalid_response_sha256')
     result['stage'] = 'validate_input'
     selected, directory, ledger = context(run)
+    try:
+        deadline_gate(result, ledger)
+    except Stop as exc:
+        # Acceptance of an already executed connector response comes first.
+        result['deadline_code'] = str(exc)
     raw = response_snapshot(selected, response_file, sha256)
     external_not_owned(selected, directory)
     require(isinstance(transport.parse(raw), (dict, list)), 'invalid_response')
@@ -668,8 +733,46 @@ def next_document(run, directory, saved):
 def save_next_file(selected, directory, run, saved, result):
     document = next_document(run, directory, saved)
     name = 'parent-next-' + document['request_id'] + '.json'
-    return dict(durable_output(selected, directory, name, transport.encode(document), result),
-                version='parent-next-file-v1', run_id=run, request_id=document['request_id'])
+    try:
+        return dict(durable_output(selected, directory, name, transport.encode(document), result),
+                    version='parent-next-file-v1', run_id=run, request_id=document['request_id'])
+    finally:
+        if str(directory / name) in result['side_effects']['created']:
+            result['side_effects'].update(read_only=False, writes=True)
+
+
+def save_exact_request(selected, directory, run, saved, result):
+    """Exclusive request export or byte-for-byte revalidation; never overwrite."""
+    request = saved[2]['request']
+    raw = transport.encode(request)
+    require(len(raw) <= transport.MAX_RESULT, 'exact_request_too_large')
+    name = 'parent-exact-' + request['request_id'] + '.json'
+    path = selected.record_path(directory, name, local_default=native.local_reports())
+    try:
+        descriptor = durable_output(selected, directory, name, raw, result)
+    except FileExistsError:
+        with private_input(selected, path, transport.MAX_RESULT, private_parent=True) as (existing, check):
+            require(existing == raw and transport.parse(existing) == request, 'exact_request_file_conflict')
+            check()
+        descriptor = {'path': str(path), 'bytes': len(raw), 'sha256': transport.digest(raw),
+                      'encoding': 'utf-8-json'}
+    finally:
+        if str(path) in result['side_effects']['created']:
+            result['side_effects'].update(read_only=False, writes=True)
+    return dict(descriptor, version='parent-exact-request-v1', run_id=run,
+                request_id=request['request_id'], operation_id=saved[0]['operation_id'],
+                request_sha256=transport.digest(raw), request_from='verified_exact_request')
+
+
+def next_freshness(result, run, selected, directory, ledger, saved, request):
+    # Recheck both before local export and after its fsync/readback. No journal
+    # lock or local time check can confer permission to redispatch a connector.
+    _, current_directory, current = context(run)
+    fresh, _ = evidence(run, current)
+    require(current_directory == directory and current == ledger and fresh == saved, 'next_file_state_changed')
+    external_not_owned(selected, directory)
+    attempt_marker(selected, directory, run, request['request_id'], None, result)
+    deadline_gate(result, current, request)
 
 
 def next_file(result, run, request_file, sha256):
@@ -677,6 +780,7 @@ def next_file(result, run, request_file, sha256):
     result['stage'] = 'validate_next_file'
     result['side_effects'].update(read_only=True, writes=False)
     selected, directory, ledger = context(run)
+    deadline_gate(result, ledger)
     external_not_owned(selected, directory)
     saved, completes = evidence(run, ledger)
     require(saved is not None, 'next_file_requires_transport_receipt')
@@ -688,6 +792,7 @@ def next_file(result, run, request_file, sha256):
     premerge(ledger)
     require(operation('accept', run, request_id) not in completes, 'request_already_accepted')
     attempt_marker(selected, directory, run, request_id, None, result)
+    deadline_gate(result, ledger, request)
     expected_path = selected.record_path(directory, 'parent-next-' + request_id + '.json',
                                          local_default=native.local_reports())
     # Keep the caller spelling: Path normalization must not hide traversal.
@@ -697,12 +802,14 @@ def next_file(result, run, request_file, sha256):
     require(isinstance(document, dict) and
             transport.encode(document) == transport.encode(next_document(run, directory, saved)),
             'next_file_identity_mismatch')
+    require(decode_envelope(run, saved[1], saved[0]['native_exit_code']) == saved[2],
+            'receipt_result_mismatch')
+    next_freshness(result, run, selected, directory, ledger, saved, request)
+    exact = None
+    if document['request'] is None:
+        exact = save_exact_request(selected, directory, run, saved, result)
     # evidence rereads actual immutable stdout; caller descriptors are never opened.
-    _, current_directory, current = context(run)
-    fresh, _ = evidence(run, current)
-    require(current_directory == directory and current == ledger and fresh == saved, 'next_file_state_changed')
-    external_not_owned(selected, directory)
-    attempt_marker(selected, directory, run, request_id, None, result)
+    next_freshness(result, run, selected, directory, ledger, saved, request)
     result.update(status='ready', stage='complete', code='exact_request_verified',
                   poll_after_seconds=document['poll_after_seconds'], redispatch_authorized=False,
                   native_receipt={key: saved[0][key] for key in
@@ -718,12 +825,9 @@ def next_file(result, run, request_file, sha256):
         result['exact_request'] = request
         result['next_action']['arguments'] = request['arguments']
     else:
-        result['exact_request_file'] = dict(document['result_file'], run_id=run,
-                                             request_id=request_id, operation_id=document['operation_id'],
-                                             request_sha256=document['request_sha256'],
-                                             request_from='verified_native.request')
+        result['exact_request_file'] = exact
         result['next_action'].update(descriptor=result['exact_request_file'],
-                                     arguments_from='verified_native.request.arguments')
+                                     arguments_from='verified_exact_request.arguments')
 
 
 def proof_build(result, run, pr_number, input_dir, sha256):
@@ -1368,6 +1472,9 @@ def execute(command, run=None, **kwargs):
         # Capture unexpected native diagnostics; stdout remains exactly one JSON.
         with redirect_stdout(transport.Capture()), redirect_stderr(transport.Capture()):
             authorize()
+            if command in ('agent-git-next', 'agent-git-next-file', 'agent-git-accept-file'):
+                result['minimum_write_seconds'] = minimum_write_seconds(
+                    kwargs.get('minimum_write_seconds', MINIMUM_WRITE_SECONDS))
             if command == 'agent-git-next':
                 git_next(result, run)
             elif command == 'agent-git-accept-file':
@@ -1402,6 +1509,9 @@ def execute(command, run=None, **kwargs):
         result.pop('native', None)
         result.pop('transport', None)
         result.pop('result_file', None)
+        result.pop('request_file', None)
+        result.pop('exact_request', None)
+        result.pop('exact_request_file', None)
     except KeyboardInterrupt:
         result.update(status='needs_reconciliation', code='interrupted')
         result.pop('native', None)
@@ -1413,6 +1523,10 @@ def execute(command, run=None, **kwargs):
         result.pop('native', None)
         result.pop('transport', None)
         result.pop('result_file', None)
+    if command in ('agent-git-next', 'agent-git-next-file', 'agent-git-accept-file') and result['code'] not in (
+            'native_result', 'next_file_write_failed', 'exact_request_verified', 'stop_before_merge'):
+        for key in ('native', 'transport', 'result_file', 'request_file', 'exact_request', 'exact_request_file'):
+            result.pop(key, None)
     if command != 'agent-git-external-merge' and result['code'] not in ('native_result', 'next_file_write_failed') and result['status'] not in ('ready', 'parked', 'awaiting_approval', 'verified') and not (
             command == 'agent-git-proof-build' and result['code'] == 'external_get_required' and
             result['next_action'].get('action') == 'collect_get'):
@@ -1437,6 +1551,13 @@ def hex_argument(value):
     return value
 
 
+def minimum_argument(value):
+    try:
+        return minimum_write_seconds(float(value))
+    except (Stop, ValueError, OverflowError):
+        raise argparse.ArgumentTypeError('invalid_minimum_write_seconds') from None
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = Parser(description=__doc__, add_help=False, allow_abbrev=False)
@@ -1444,6 +1565,8 @@ def main(argv=None):
     for command in COMMANDS:
         item = sub.add_parser(command, add_help=False, allow_abbrev=False)
         item.add_argument('--run-id', type=run_argument, required=command != 'storage-path')
+        if command in ('agent-git-next', 'agent-git-next-file', 'agent-git-accept-file'):
+            item.add_argument('--minimum-write-seconds', type=minimum_argument, default=MINIMUM_WRITE_SECONDS)
         if command == 'agent-git-accept-file':
             item.add_argument('--request-id', type=hex_argument, required=True)
             item.add_argument('--response-file', required=True)

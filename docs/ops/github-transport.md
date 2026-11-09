@@ -75,6 +75,30 @@ make agent-worktree-park RUN_ID=<run>
 reader는 run/request/native result/journal SHA와 receipt를 연결하며 old-run 경로·ID·stale·변조·
 begin/inflight/unknown dispatch·수락 완료를 거절한다. `redispatch_authorized=false`이며 전송 승인이나
 native request 재발급이 아니다. `next_file_write_failed`이면 보존된 native 결과를 재accept하지 않고 멈춘다.
+큰 요청의 reader는 transport chunk의 operation/index/offset/bytes·`chunk_sha256`과 전체
+bytes/`sha256`을 구별해 검증한 뒤 현재 resolved run의 `parent-exact-<request_id>.json`에
+정확한 `{tool,arguments,request_id}` JSON을 exclusive owned0600/nlink1로 저장·fsync/readback한다.
+`exact_request_file`은 `version=parent-exact-request-v1`, path/bytes/sha256/encoding,
+run_id/request_id/operation_id/request_sha256과 `request_from=verified_exact_request`를 반환한다.
+parent는21개 조각을 직접 조립하지 않고 이 파일 하나의 경로·권한·크기·hash·UTF-8/JSON·identity를
+확인해 tool/arguments를 connector에 전달한다(`arguments_from=verified_exact_request.arguments`).
+같은 현재 요청은 기존 파일의 정확한 bytes/hash/identity 재검증만 허용한다. 충돌·변조·부분 파일은
+보존하고 stop하며 수락된 요청이나 오래된 run의 재전송 권한은 생기지 않는다.
+
+next/next-file/accept-file의 `--minimum-write-seconds`(Make `MINIMUM_WRITE_SECONDS`, 기본300)는
+유한 양수인 로컬 입력이다. 0/음수/bool/NaN/무한을 거절하며 ledger/config/deadline에는 저장하지 않는다.
+next-file/accept-file 결과의 `publish_remaining_seconds`는 현재 journal의 Unix epoch 초 `deadline`에서
+현재 wall clock 초를 뺀 값(0 미만은0), `minimum_write_seconds`는 이번 명령의 최소 초다.
+deadline 누락/잘못된 값은 추정하지 않고 fail-closed한다. 게시 단계에서는 사람 승인을 기다리는 동안에도
+deadline이 흐른다. 남은 초가 최소값 **미만**이면 다음 쓰기를 `code=deadline_insufficient`,
+`next_action.action=stop`으로 막고 dispatch 가능한 요청·파일 descriptor·native/transport payload를
+반환하지 않는다. 정확히 최소값이면 허용하고 read 요청은 잔여 초를 표시하되 이 기준으로 막지 않는다.
+첫 next와 finish 내부 reader도 조립 전후 상태·시간을 재검증한다. stop이면 자동 연장·재시도 없이 멈춘다.
+예: `make agent-git-next-file ... MINIMUM_WRITE_SECONDS=300`(next/accept-file에도 같은 변수).
+이미 실행한 connector 응답은 accept-file로 한 번 수락하고 증거를 보존한 후 다음 쓰기만 gate한다.
+`native_result_retained=true`는 native 결과(accept라면 현재 응답 수락 결과)가 보존됐다는 뜻이며
+재accept·재전송 승인이 아니다.
+native timeout/terminal 실패와 merge 직전 stop 정책은 그대로 유지한다.
 기존 bridge는 next/accept 상위 CLI를 호출하고 그 CLI의 `finish`에서 다음 파일 생성·검증을 거친다.
 새 bridge 메서드나 connector-dispatch CLI는 없다. 요청 인자는 eval하지 않으며 실제 connector는
 trusted parent만 호출한다. 새 PR URL은 parent artifact에 연결하고 native `poll_after_seconds`를 지킨다.

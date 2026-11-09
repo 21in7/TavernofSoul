@@ -72,6 +72,26 @@ tool/arguments를 eval하지 않는다. PR artifact 연결·native poll interval
 유지하되 merge 요청 실행 전에 stop한다. bridge는 CLI 실패 stage/code를 그대로 전달한다.
 빈 chars의 workflow/proc 완료 polling은 응답 입력 전송과 구별한다.
 
+상위 명령의 additive 확장으로 `agent-git-next-file`은 큰 요청의 transport 조각별
+operation/index/offset/bytes/`chunk_sha256`과 기존 전체 stdout `sha256`을 구별해 검증한다.
+현재 resolved run의 `parent-exact-<request_id>.json`에 정확한 request(tool/arguments/request_id)를
+exclusive owned0600/nlink1로 저장·fsync/readback하고 `parent-exact-request-v1`의
+path/bytes/sha256/encoding·run/request/operation identity를 반환한다. parent는 이 단일 파일을
+검증해 connector에 넘기며 직접 transport 조각을 조립하지 않는다. 같은 현재 요청의 기존 파일은
+bytes/hash/identity 재검증만 가능하고 변조·충돌·부분 파일은 보존하고 stop한다. 생성/부분 생성은
+executed·side_effects에 기록한다. native journal/receipt/stdout과 bridge 반환 호환은 유지한다.
+
+next/next-file/accept-file의 `--minimum-write-seconds`(Make `MINIMUM_WRITE_SECONDS`, 기본300)는
+유한 양수 로컬 입력이며 ledger/config/deadline에 저장하거나 native timeout을 연장하지 않는다.
+`publish_remaining_seconds`는 현재 journal의 epoch 초 deadline − wall clock 초(하한0),
+`minimum_write_seconds`는 이번 명령의 최소 초다. 누락/잘못된 deadline은 추정 없이 fail-closed한다.
+첫 next와 accept의 공통 finish/reader가 조립 전후 상태·시간을 재검증해 최소 **미만**인 다음 쓰기를
+`deadline_insufficient`/stop으로 막고 dispatch 가능한 payload와 descriptor를 제거한다.
+정확히 경계이면 허용하며 read는 이 gate로 막지 않는다. 이미 실행한 현재 응답은 한 번 수락해
+native 결과를 보존한다(`native_result_retained=true`); 다음 쓰기 차단은 재accept 지시가 아니다.
+native terminal 실패·premerge/UI stop과 기존 승인/CI/merge 책임은 유지한다. 사람 승인 대기 중에도
+deadline은 흐르며 자동 연장·재시도·reconcile/resume 자동화는 추가하지 않는다.
+
 ### 저장·잠금·복원
 
 기존 pending/inflight·최신 완료 receipt의 current journal hash/run/request identity를 대조한다.

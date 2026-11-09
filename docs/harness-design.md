@@ -751,6 +751,26 @@ stdin에 연결한다. shell 문자열 실행·원응답 argv·대화형 stdin/P
 12288byte chunk metadata를 반환한다. chunk는 해당 run의 최신 완료 transport 결과만 읽고
 파일명을 받지 않는다. 디렉터리 생성·native 재호출 없는 read-only 경로다. size/hash와 정확한
 offset/count를 확인한 뒤 UTF-8/JSON을 파싱한다. 잘림/invalid JSON을 새 요청 발급으로 보정하지 않는다.
+chunk의 `sha256`은 기존 전체 stdout hash이며 추가 `chunk_sha256`만 해당 조각의 hash다.
+`agent-git-next-file`은 큰 요청을 내부 chunk 검증 후 현재 resolved run의 exclusive
+`parent-exact-<request_id>.json`(owned0600/nlink1)에 fsync/readback하고
+`parent-exact-request-v1` descriptor(path/bytes/sha256/encoding·run/request/operation identity)를
+반환한다. 파일 내용은 정확한 request(tool/arguments/request_id)이며 parent는 이 파일 하나를
+검증해 connector에 넘긴다. finish 내부 reader와 후속 reader의 같은 현재 요청은 bytes/hash/identity를
+재검증해 읽을 수 있으나 충돌·변조·부분 파일은 보존하고 stop한다. 생성·부분 생성은 executed와
+side_effects.created/read_only/writes에 반영하며 native stdout/journal/receipt는 변경하지 않는다.
+
+next/next-file/accept-file의 로컬 `--minimum-write-seconds`(Make `MINIMUM_WRITE_SECONDS`, 기본300)는
+유한 양수만 받으며 native timeout·ledger/config/deadline을 갱신하지 않는다. 결과의
+`publish_remaining_seconds`는 현재 journal의 epoch 초 deadline − wall clock 초(하한0),
+`minimum_write_seconds`는 해당 명령의 최소 초다. deadline 누락/잘못된 값/bool/NaN/무한은
+추정 없이 fail-closed한다. 첫 next와 accept의 공통 finish 및 standalone reader는 조립 전후
+current receipt/ledger/pending/attempt/inflight와 시간을 검증해 남은 초가 최소 미만인 다음 쓰기를
+`deadline_insufficient`/stop으로 막고 dispatch 가능한 요청·descriptor·native/transport를 제거한다.
+정확한 경계는 허용하며 read는 시간정보만 표시한다. 이미 실행한 현재 응답은 native가 한 번 수락한
+결과·증거를 보존한다(`native_result_retained=true`); 다음 쓰기 gate 때문에 재accept하지 않는다.
+native terminal/timeout은 원래 실패를 유지한다. 사람 승인 대기 중에도 deadline은 흐르며
+stop 후 자동 연장·재시도·reconcile/resume를 추가하지 않는다. 기존 premerge/UI merge stop은 유지한다.
 
 네 CLI는 성공/실패/인자 오류 모두 `parent-commands-v1` 단일 JSON으로 반환한다.
 `command/run/status/stage/code/executed/side_effects/native_exit_code/next_action`을 보존한다.
