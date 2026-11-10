@@ -2,6 +2,16 @@ PYTHON ?= $(if $(wildcard harness/.venv/bin/python),harness/.venv/bin/python,$(i
 PYTEST_WORKERS ?= 2
 MINIMUM_WRITE_SECONDS ?= 300
 
+# Human mistake marker, not an authorization boundary. Only protected explicit
+# goals consult it. Parse-time rejection covers the entire mixed/parallel call
+# and adds no recipe or command to make -n/--dry-run output (GNU make 4.2).
+ifneq ($(filter agent-workflow agent-git-request agent-git-accept agent-git-resume agent-git-cleanup agent-git-next agent-git-next-file agent-git-accept-file agent-git-proof-build agent-git-external-merge agent-worktree-park,$(MAKECMDGOALS)),)
+ifeq ($(strip $(file <logs/harness/host-role)),production)
+$(error Production host: workflow/Git publication/park make goals refused. This marker only prevents human mistakes, not unauthorized access.)
+endif
+endif
+
+.PHONY: deploy
 .PHONY: help doctor check check-downloader check-parser check-django check-pipeline doctor-mysql check-mysql check-mysql-container doctor-browser check-browser check-browser-container
 .PHONY: prepare-ipf-unpacker
 .PHONY: check-live check-site check-site-container
@@ -30,6 +40,7 @@ help:
 	@echo "storage-doctor  Check mounts/free space [PROBE=1: probe existing private directories]"
 	@echo "prepare-ipf-unpacker Force a native release build directly to IPFUnpacker/ipf_unpack"
 	@echo "collectstatic-itos Collect iTOS static files for manual production deployment only"
+	@echo "deploy          Manual ff-only deployment: COMMIT=<full40hex>; no migration or rollback"
 	@echo "check-downloader Run local patch, failure, and retry checks"
 	@echo "check-parser    Run parser regressions without game data [PYTEST_WORKERS=1: serial, default 2]"
 	@echo "check-django    Run importer regressions and item search tests"
@@ -89,6 +100,9 @@ help:
 
 collectstatic-itos:
 	cd TavernofSoul && ./itos/3.8/bin/python manage_itos.py collectstatic --noinput
+
+deploy:
+	$(PYTHON) -m harness.deploy --commit $(call improve_quote,$(COMMIT))
 
 prepare-ipf-unpacker:
 	$(MAKE) -C IPFUnpacker/src/ipf_unpack -B release
