@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "health_urls": {
+    "itos": "https://itos.example.invalid/health/",
+    "jtos": "https://jtos.example.invalid/health/",
+    "ktos": "https://ktos.example.invalid/health/"
+  },
+  "cache_urls": {
+    "static": ["https://itos.example.invalid/static/site.css"],
+    "application": ["https://itos.example.invalid/", "https://jtos.example.invalid/", "https://ktos.example.invalid/"],
+    "submodule": []
+  }
+}

@@ -664,6 +664,49 @@ symlink와 디렉터리 scope를 거부하며 빈 일회용 Git 저장소만 만
 보호 경로 필터와 키 치환은 임의 소스/로그에 모든 비밀이 없음을 보증하는 일반 탐지기가 아니다.
 메인은 개별 파일 공개 범위를 확인하고 private 로그를 공개 설계서/PR에 그대로 옮기지 않는다.
 
+## 개발 호스트 표시와 수동 운영 배포
+
+[ADR0040](adr/0040-development-host-and-production-deploy.md)과 [배포 운영 문서](ops/deployment.md)는
+개발 첫 PR의 축소 경계를 정의한다. Makefile은 ignored `logs/harness/host-role`을 보호 goal이
+`MAKECMDGOALS`에 있을 때만 `$(file <...)`로 읽고 `strip`한 값이 production이면 `$(error ...)`로
+해석 단계에서 호출 전체를 거절한다. 보호 11개는 agent-workflow, agent-git-request,
+agent-git-accept, agent-git-resume, agent-git-cleanup, agent-git-next, agent-git-next-file,
+agent-git-accept-file, agent-git-proof-build, agent-git-external-merge, agent-worktree-park다.
+병렬·다중 goal과 check/help를 먼저 둔 혼합 호출도 recipe를 하나도 실행하지 않는다.
+선행 recipe/order-only prerequisite/별도 guard target은 없다. 없음/development의 기존 recipe와
+`make -n`/`--dry-run` 출력, 기본 help를 보존하며 guard 명령을 추가하지 않는다.
+보호 goal 없는 check/help·status·doctor·storage·deploy는 marker 값과 무관하게 허용하고
+marker를 거절 사유로 읽거나 검사하지 않는다. 인증 경계·deploy의 production 강제·hourly 루프로
+확대하지 않는다. GNU make 4.2/Ubuntu 20.04 범위로 구현한다. standalone host_role helper의
+malformed/unsafe/I/O 거절 계약과 deploy 공통 read_file/open_directory API는 별개로 유지한다.
+
+`deploy.py`는 명시 full SHA에 대해 root/fork/master·CI·clean·고정 잠금 확인 → durable old-state
+기록 → 정확 ff-only → IPF gitlink 변경 때만 승인 submodule update/기존 prepare-ipf-unpacker →
+정적 변경 때만 기존 collectstatic-itos와 Python/템플릿 변경 때만 itos→jtos→ktos sudo systemctl reload/단1회
+is-active/HTTP 확인 → 명시 cache URL 출력만 수행한다. migration diff는 rename/delete까지 거절한다.
+GitHub public GET의 bounded 단일 완전 페이지와 기존 git_publish.checks_gate의 latest/suite/selection/
+허용 execution skip 계약을 재사용한다. private 0600 결과는 시작/완료/실패와 실제 HEAD/submodule
+HEAD를 fsync하고 원문 소스/응답/비밀은 보존하지 않는다. 고정 .workflow-lock → cron-tos.lock →
+project .lock의 nonblocking flock을 유지하며 기존 inode/owner/mode/content를 바꾸지 않는다.
+실패 즉시 중단하고 retry/rollback/purge/migration은 없다. 협조하지 않는 외부 편집까지 막지는 못한다.
+
+운영 aarch64 Ubuntu 20.04/Git 2.25.1, PR #113 collectstatic-itos 운영 사용,
+2026-11-03 prepare-ipf-unpacker 빌드 성공과 세 uWSGI ExecReload/표준 sudo systemctl reload 명령은 사용자 제공
+사실이다. 개발 VM의 Ubuntu 24.04/Git 2.43/x86_64·codex-bwrap 뒤 printf 성공도 같은 귀속이며
+make 변경·새 manage.py 경로·빈 HOME/XDG·환경 allowlist의 근거로 쓰지 않는다. 기존 운영 세션 환경을
+유지하고 health/cache URL만 ignored deploy-local.json에 운영자가 명시한다. 실제 settings를 읽지 않는다.
+
+improvements.py/improvement_loop.py와 hourly/daily/discovery/unattended 전체 루프는 이번
+읽기·구현 범위에서 제외한다. host-role 연결이나 deploy의 해당 환경 marker 탐지·전파·READ_ONLY
+export·자동 실행 거절 요구는 추가하지 않는다. 기존 worker 실행 금지 정책은 유지한다.
+worker는 standalone helper 계약과 make 해석 단계/원래 dry-run 출력/비보호 goal/혼합 호출의
+fake-only 회귀를 작성한다. 실제 check/workflow/Git/운영 CLI는 fixture에서 실행하지 않는다.
+새 전체 Claude 의미 검토/documentation 판단·full make check(GIT=1)·
+scoped apply·기존 git 역할과 표준 parent PR/실제 CI3 확인 뒤 merge 전 정지는 workflow/parent 책임이다.
+이 구현안은 과거 실패 run이나 보관을 새 성공으로 간주하지 않는다. 실패 시 parent 재시도는 없고
+기존 native round의 실제 발생은 별도로 구분 기록한다. 실제 운영은 유지하며 운영 반영은 별도
+사용자 지시를 받은 운영 세션 책임이다. 검증·운영 성공은 아직 주장하지 않는다.
+
 ## 충돌 검사·반영과 GitHub 게시
 
 반영 직전 후보 manifest가 검증 당시와 같고 모든 복사 원본의 목록·hash·권한이 baseline과 같아야 한다.

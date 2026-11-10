@@ -6,11 +6,12 @@
 
 wiki는 `logs/harness/harness-runbook-core.json`의 공개 요약이다. 정본 확인도 해당 작업의 읽기 승인 범위를 따른다. 새 실행 권한이나 정책 변경은 없으며 기존 문서는 보존한다.
 
-## Wiki 페이지 12개
+## Wiki 페이지 13개
 
 - [index](index.md): 모든 wiki와 주요 기존 문서의 안내 및 작업별 읽기 순서.
 - [작업 이력](log.md): 확인된 Git commit 날짜·제목을 근거로 정리하는 append-only 이력과 기록 원칙.
 - [workflow 운영](ops/workflow.md): 승인, 입력 준비, 단일 실행, 검토와 검증의 책임 순서.
+- [수동 배포](ops/deployment.md): host-role 보호 11개 goal의 해석 단계 거절·혼합 호출 전체 중단·비보호 goal 허용·dry-run 보존, 명시 SHA·CI·고정 잠금·조건부 기존 운영 명령과 중단 책임.
 - [GitHub 전달](ops/github-transport.md): fork 게시, 파일 기반 응답 framing, accept와 다음 요청 연결.
 - [merge와 정리](ops/merge-cleanup.md): 사용자 UI squash merge 이후 parent의 비교, 삭제, cleanup과 archive.
 - [실패 보고](ops/failure-reporting.md): 중단과 재시도 금지, 고정 비교, 증거 수준에 맞는 보고.
