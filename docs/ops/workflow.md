@@ -14,6 +14,8 @@ parent는 모든 설정 경로의 존재를 확인하고 Makefile 기본 venv·�
 
 ## 단일 실행과 역할
 
+개발 VM은 `development` 표식으로 개발 workflow·PR·CI를 담당하고, 운영은 `production` 표식으로 workflow·게시 make 진입을 거절한다. 별도 승인 운영 세션이 `make deploy COMMIT=<SHA>`를 실행한다. host-role은 사람의 실수 방지 표시이며 인증 경계가 아니다. deploy의 production 강제나 hourly 루프 통제로 확대하지 않는다. 상세는 [호스트 역할·수동 배포](deployment.md)를 따른다. archive 검증 등 parent make 명령은 [run 수명](../lessons/run-lifecycle.md#실행-전-준비)의 호스트 namespace·escalated 원칙을 따른다. 이번 문서 PR은 표식 변경이나 운영 배포 승인이 아니다.
+
 workflow는 세션 전체에서 동시에 하나만 실행한다. 구현자·reviewer는 검사·Git·운영 명령·재위임·workflow를 실행하지 않는다. parent가 승인된 실행을 소유하며 중간에 끊지 않고 종료 상태까지 기다린다. SIGINT나 parent stop-on-failure watchdog을 사용하지 않는다.
 
 run ID 생성 뒤 실패는 재시도하지 않는다. 진입 전 준비 결함의 제한된 1회 재시작 조건과 기록은 [run 수명](../lessons/run-lifecycle.md)을 따른다.
@@ -22,7 +24,7 @@ run ID 생성 뒤 실패는 재시도하지 않는다. 진입 전 준비 결함�
 
 시작과 매 검토에서 문서 영향을 판단한다. 구조·책임·계약·격리·검증·복구·게시 정책 변경에는 관련 설계·경계 문서가 필요하다. 승인 밖 필요 경로와 이유만 보고하고 범위를 늘리지 않는다. 이번 탐색층은 동작 변경이 없어 [하네스 설계](../harness-design.md)를 읽거나 수정하지 않고 새 ADR도 만들지 않는다.
 
-Claude는 새 전체 diff에서 `documentation={status,files,reason}`를 다시 판단한다. 사실성·정본 관계·공개 제한·필수 규칙·상대 링크·크기와 AGENTS.md의 지정 한 줄 외 변경 여부를 검토한다. 의미적 완전성은 확장자 검사로 보장되지 않는다.
+Claude는 새 전체 diff에서 `documentation={status,files,reason}`를 다시 판단한다. 사실성·정본 관계·공개 제한·필수 규칙·상대 링크·크기와 승인된 정확한 파일 이름 및 읽기·쓰기 경계 준수 여부를 검토한다. 의미적 완전성은 확장자 검사로 보장되지 않는다.
 
 docs_check와 make check는 workflow/parent 소유다. 실제 diff 기반 기존 선택기와 실제 결과를 따르며 AGENTS.md 때문에 full이 선택돼도 생략하거나 docs-only로 강제하지 않는다. 링크 오류는 기존 native 수정 라운드의 승인 파일 안에서 고친다. 실패 뒤 parent의 모델·workflow·검사 재시도는 금지한다.
 

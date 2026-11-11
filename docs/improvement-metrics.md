@@ -17,7 +17,7 @@ HARNESS_STORAGE_CONFIG=/path/to/improvement-storage.json make improvement-metric
 latest는 최신 보존 hourly 원본의 KST 날짜 하루다(회차 하나 아님). ROLE·nonhourly로 날짜를 고르지 않는다.
 hourly 날짜가 없으면 DATE(없으면 오늘)를 쓴다.
 day는 DATE 하루, 7d/30d는 DATE 포함 해당 일수다. DATE 기본은 오늘이다.
-기간은 [시작 KST 자정, 마지막 날 다음 자정과 현재 중 이른 시각)이다.
+기간은 \[시작 KST 자정, 마지막 날 다음 자정과 현재 중 이른 시각)이다.
 날짜는 Asia/Seoul 기준이다.
 회차·후보는 최초 보존 admission cohort, 호출은 각 admission 기준이며 끝 이후 성공은 제외한다.
 오전은 후보 cohort와 기간 내 frozen 창의 교집합이다.
