@@ -273,6 +273,17 @@ class _Park:
             operation = git_transport.digest(git_transport.encode([self.directory.name, 'accept', pending]))
             _require(optional(operation + '.begin.json') is None and
                      not any(name.startswith(operation + '.') for name in names), code)
+        if any(name.endswith('.before.json') or (name.endswith('.begin.json') and
+                (optional(name) or {}).get('operation') == 'reconcile') for name in names):
+            # The shared reader validates every historical reconcile link even
+            # when a later normal accept is the current transport head.
+            from harness import parent_commands
+            try:
+                saved, _ = parent_commands.evidence(self.directory.name, ledger)
+                _require(saved is not None and saved[0]['native_exit_code'] == 0, code)
+            except (parent_commands.Stop, git_transport.TransportError):
+                raise Stop(code) from None
+            return
         # Partial or unrecognized records cannot prove a completed old operation.
         for name in names - {'claim', 'head.json'}:
             identity, separator, suffix = name.partition('.')

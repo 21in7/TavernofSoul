@@ -81,7 +81,7 @@ def test_parent_symlink_is_refused(tmp_path):
 # Make entry points have a separate parse-time contract from the strict helper above.
 PROTECTED = ['agent-workflow', 'agent-git-request', 'agent-git-accept', 'agent-git-resume',
              'agent-git-cleanup', 'agent-git-next', 'agent-git-next-file', 'agent-git-accept-file',
-             'agent-git-proof-build', 'agent-git-external-merge', 'agent-worktree-park']
+             'agent-git-proof-build', 'agent-git-external-merge', 'agent-worktree-park', 'agent-git-reconcile']
 UNPROTECTED = ['check', 'agent-workflow-status', 'agent-workflow-plan',
                'agent-workflow-demo', 'agent-git-doctor', 'storage-status', 'storage-doctor',
                'deploy']
@@ -107,6 +107,7 @@ def make(tmp_path, goals=(), options=(), minimum=None):
                  'REQUEST_ID=fixture-request', 'RESPONSE_FILE=response.json',
                  'REQUEST_FILE=request.json', 'RESPONSE_SHA256=' + 'a' * 64,
                  'PR_NUMBER=1', 'INPUT_DIR=proof', 'PROOF_FILE=proof.json',
+                 'EVIDENCE_FILE=evidence.json', 'EVIDENCE_SHA256=' + 'a' * 64,
                  'COMMIT=' + 'b' * 40]
     if minimum is not None:
         arguments.append('MINIMUM_WRITE_SECONDS=' + minimum)
@@ -140,6 +141,8 @@ def expected_words(goal, minimum='300'):
                                minimum_args,
         'agent-git-accept-file': parent + ['--request-id', 'fixture-request', '--response-file',
                                          'response.json', '--sha256', 'a' * 64] + minimum_args,
+        'agent-git-reconcile': parent + ['--request-id', 'fixture-request', '--evidence-file',
+                                       'evidence.json', '--evidence-sha256', 'a' * 64] + minimum_args,
         'agent-git-proof-build': parent + ['--pr-number', '1', '--input-dir', 'proof',
                                          '--sha256', 'a' * 64],
         'agent-git-external-merge': parent + ['--pr-number', '1', '--proof-file', 'proof.json',

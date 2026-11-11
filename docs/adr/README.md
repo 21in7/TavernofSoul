@@ -45,6 +45,7 @@
 | [0038](0038-cron-log-retention.md) | 공통 잠금 획득 직후 실행 지역 직하위 일반 로그의 strict 30일 mtime 정리·현재 로그 제외·삭제 성공 수·실패 격리 | 승인(accepted), 2026-11-04 사용자 승인; 0036의 로그 누적 정책만 부분 대체·0037 알림 유지; 새 독립 검토·전체 검사·PR/CI3 대기, merge 전 중지·운영 정리/배포 미실행 | 2026-11-04 |
 | [0039](0039-standard-parent-git-commands.md) | A1 네 parent 명령·비대화형 file accept·버전 JSON/action 판독·승인 snapshot park·storage resolver와 보수적 stop | 승인(accepted), 사용자 직접 승인; 새 독립 Claude 의미검토·full make check·parent PR/CI3 대기, merge 전 정지·A2 미구현·운영 미배포 | 2026-11-05 |
 | [0040](0040-development-host-and-production-deploy.md) | host-role의 보호 11개 goal 해석 단계 거절·혼합 호출 전체 중단·비보호 goal 허용·기존 dry-run 보존·명시 SHA 수동 ff 배포 | 사용자 축소 계약 구현안, 새 전체 Claude 의미 검토/documentation·full make check/scoped apply·PR/실제 CI3 대기, merge 전 중지·운영 반영 별도 지시 | 2026-11-10 |
+| [0041](0041-parent-git-reconcile.md) | 완료 오류 receipt와 실제 branch/PR GET 결과의 별도 불변 연결·원 요청 확인·deadline 보존 | 사용자 A2d2b PR1 승인 구현안; 새 전체 검토·parent full check·실제 CI3 대기, merge 전 정지 | 2026-11-11 |
 
 ## 상태와 근거의 의미
 

@@ -157,7 +157,7 @@ identity로 `RESUME=1`(CLI `--resume`) 재진입만 허용하며 자동 재시�
 먼저 기록하며 pending이면 merge/cleanup 증거를 유지한다. 기존 archive 복구를 별도 승인받아 완료한 뒤
 external --resume은 verify_run_archive/verify_current_result만 재읽고 archive_run을 재전송하지 않는다.
 parent-commands-v1의 stage/code/executed/side_effects/completed_stages/next_action을 읽어 남은 필수 인자와
-중단 단계를 구별한다. reconcile/resume-ci는 미구현 A2d2b 후속이며 필요하면 사용자 승인된
+중단 단계를 구별한다. reconcile은 아래 좁은 추가 계약을 따른다. resume-ci는 미구현 A2d2b 후속이며 필요하면 사용자 승인된
 [GitHub 복구](../lessons/github-recovery.md)로 별도 조정한다. 옛 CLI나 즉석 script로 우회하지 않으며
 native resume 뒤 journal/transport head mismatch를 head rewrite로 해결하지 않는다.
 
@@ -178,6 +178,69 @@ snapshot 충돌·중단은 stop, 이미 parked는 read-only 재확인이다. par
 storage-path는 read-only resolve와 explicit prepare를 구분하고 생성 경로를 JSON에 기록한다.
 v2 reports는 active artifacts 내부이며 private/absolute/no-follow/mount/floor·no fallback을 유지한다.
 `Storage.archive_root` 같은 속성을 추측하거나 이전 run prefix를 재사용하지 않으며 prepare 실패 시 멈춘다.
+
+## 완료 오류 receipt의 관측 연결
+
+[ADR0041](../adr/0041-parent-git-reconcile.md)은 기존 A1/A2 역사 설명에 좁은 추가 계약을 둔다.
+trusted parent만 다음 명령을 호출한다. 모델 worker/reviewer는 증거 파일·실제 journal을 읽지 않는다.
+
+```sh
+make agent-git-reconcile RUN_ID=<original-run> REQUEST_ID=<original-write-id> EVIDENCE_FILE=<absolute-private-json> EVIDENCE_SHA256=<sha256-of-exact-file-bytes> MINIMUM_WRITE_SECONDS=300
+```
+
+Make 변수는 각각 CLI `--run-id`, `--request-id`, `--evidence-file`, `--evidence-sha256`,
+`--minimum-write-seconds`에 대응한다. EVIDENCE_FILE은 원응답 대체 파일이 아니라 아래 GET 묶음이다.
+부모0700·owned0600/nlink1 regular·no-follow·8MiB·UTF-8·duplicate-key 거절·SHA256 및
+single-open memory snapshot은 accept-file과 동일하다. 원문 argv/PTY/nonempty write_stdin·임의 저장/
+게시 script를 사용하지 않는다. parent는 기존 private 저장 capability를 사용하고 원본을 보존한다.
+
+top-level 필드는 정확히 `version="git-reconcile-evidence-v1"`, `run_id`, `request_id`,
+`target`, `tool_arguments_sha256`, `approval_sha256`, `journal_sha256`, `previous_receipt_sha256`,
+`responses`다. target은 `{repository,base:{ref,sha},head:{ref,sha}}`이며 승인 repository/base와
+원 pinned branch/head SHA다. tool digest는 immutable 원요청 stdout에서 찾은
+`{tool,arguments}`를 기존 transport.encode의 UTF-8 compact JSON으로 인코딩한 SHA256이다.
+나머지 hash는 각각 승인 파일·직전 journal·직전 완료 오류 receipt의 **정확한 bytes**다.
+caller target만 신뢰하지 않고 보존된 원 ID/tool/arguments와 native 요청 구성을 다시 대조한다.
+
+각 responses row의 정확한 필드는 `{method:"GET",url,status,complete,page,coverage,body}`다.
+body는 실제 REST JSON 본문이며 connector 오류를 정상 body나 빈 배열로 바꾸지 않는다.
+object는 page=null/coverage="object", collection은 실제 정수 page/coverage="page"다.
+complete=true는 parent가 해당 응답 전체를 읽었다는 진술이며 인간 신원의 증명은 아니다.
+
+- branch: 같은 repository `/git/ref/heads/<exact-branch>`의 ref/type/원 SHA를 확인한다.
+- create-PR: 위 ref와 `/pulls?state=all&head=<percent-encoded-owner:branch>&per_page=100&page=<p>`를
+  마지막 100개 미만 페이지까지 확인하고 유일한 후보의 `/pulls/<n>`을 확인한다. closed PR도
+  후보에서 빼지 않는다. 번호·repository/base/head ref와 SHA·open/non-draft·title/body/
+  maintainer_can_modify가 원요청과 같아야 한다. UI metadata 변경도 별도 승인 없이 수용하지 않는다.
+
+결과는 기존 parent-commands-v1에 `decision=matched|absent|mismatch|unknown`을 더한다.
+완전한 exact-ref 404/Not Found와 같은 repository GET의 200/full_name 증거, 또는 완전한 PR
+전 페이지의 빈 결과만 absent다. private repository 접근 실패의 404를 부재로 추정하지 않는다. 403/조회오류/
+불완전 페이지는 unknown, 대상/SHA/의미 불일치·복수 후보는 mismatch이며 모두 stop이다.
+필수 GET 누락은 unknown 및 `next_action={action:collect_get,method,url,...}`로 정확한 URL을
+반환하고 멈춘다. 명령 내부 HTTP/connector/fallback/자동 retry는 없다. merged PR은 unknown과
+`required_route=[agent-git-proof-build,agent-git-external-merge]`로 기존 proof 경로를 안내한다.
+commit/tree 등 검증하지 않는 타입, begin 미완료/inflight, legacy 변경·손상·external-merge 소유 run은 중단한다.
+
+matched만 별도 reconcile operation identity로 journal을 전진시킨다. 새 GitHub 쓰기 ID가 아니다.
+원 begin/complete/response/stdout/stderr/parent attempt와 hash를 보존하며 새 receipt의 link는
+직전 완료 hash·원 요청 ID/tool/args digest·증거/approval digest·과거 immutable 파일 hash를 연결한다.
+별도 before snapshot은 원 journal/report bytes를 보존한다. native 순수 검증/저장 API와 source →
+GitHub lock 순서를 사용하며 legacy accept CLI를 호출하지 않는다. journal의 operation/link digest,
+전후 journal hash·새 begin hash·stdout hash를 검증하고 새 complete를 durable 생성한 뒤 head를 전진시킨다.
+transport/parent evidence/next-file/park/external-merge가 같은 연결을 검증한다.
+durable intent 이후 부분 IO/interrupt는 inflight를 남겨 stop하며 fake complete·자동 재실행하지 않는다.
+같은/다른 증거 재호출은 already_reconciled/stop이고 첫 증거·다음 요청을 재반환하지 않는다.
+기존 accept-file의 conflicting_response/executed=false도 유지한다.
+
+deadline은 갱신하지 않는다. 만료 뒤에도 matched 관측을 기록할 수 있지만 다음 요청/descriptor는
+발급하지 않는다. PR이 있으면 awaiting_ci, 없으면 failed로 게시를 중단한다. 기본 최소300초의
+정확한 경계는 허용하고 검증·저장·export 중 시간 감소를 다시 검사한다. 부족하면 다음 쓰기를
+내보내지 않는다. 연결 성공은 delivery 완료·CI 성공·merge가 아니다. 시간 안의 첫 matched 결과만
+기존 next-file → catalog 대조 → 실제 connector → private response → accept-file 순서로 이어간다.
+실제 CI3/expected head/stop_before_merge와 park·사용자 UI merge proof·cleanup/archive 계약을 유지한다.
+이 회귀는 합성 작성 상태다. 새 전체 Claude 검토의 documentation 판단·parent full make check와
+실제 필수 CI3 성공을 별도로 관측해야 하며 이 문서는 실행 성공을 주장하지 않는다.
 
 ## 완료 증거
 
