@@ -7,6 +7,7 @@ Created on Sun Oct  3 21:18:15 2021
 import csv
 import logging
 import os
+import map_assets
 import re
 from os.path import exists
 from PIL import Image, ImageDraw, ImageColor, ImageFilter, ImageOps, ImageChops
@@ -88,7 +89,8 @@ def parse_maps(constants):
             constants.data['maps_by_position']['-'.join(row['WorldMap'].split('/')) if obj['WorldMap'] else ''] = obj
 
 
-def parse_maps_images(constants):
+@map_assets.summarize
+def parse_maps_images(constants, assets):
 
     logging.debug('Parsing Maps images...')
     log = logging.getLogger("parse.items")
@@ -100,13 +102,22 @@ def parse_maps_images(constants):
     with open(ies_path, 'r', encoding = 'utf-8') as ies_file:
         for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
             rows.append(row)
-            image_path = os.path.join(constants.PATH_BUILD_ASSETS_IMAGES_MAPS, row['ClassName'].lower() + '.png')
-            map = constants.data['maps_by_name'][row['ClassName']]
-            if (exists(image_path) and map['bbox'] != [0,0,0,0]):
-                continue
-            polygons = constants.importJSON(os.path.join('maps_poly',row['ClassName'].lower()+'poly.json'))
-            if polygons == {}:
-                continue
+            try:
+                image_path = os.path.join(constants.PATH_BUILD_ASSETS_IMAGES_MAPS, row['ClassName'].lower() + '.png')
+                map = constants.data['maps_by_name'][row['ClassName']]
+                before = dict(assets.counts['polygon'])
+                polygons = assets.polygon(row)
+                for reason in ('placeholder', 'missing', 'errors'):
+                    assets.counts['PNG'][reason] += assets.counts['polygon'][reason] - before[reason]
+                if polygons is not None:
+                    map['bbox'] = assets.png(row, polygons, image_path, MAP_SCALE,
+                                            lambda temp: render_map(row, polygons, temp))
+                    constants.data['maps'][map['$ID']] = map
+            except Exception as error:
+                assets.issue('PNG', 'errors', row, error)
+
+
+def render_map(row, polygons, image_path):
             # Scale map to save some space
             image_height = int(round(int(row['Height']) * MAP_SCALE))
             image_width = int(round(int(row['Width']) * MAP_SCALE))
@@ -129,18 +140,14 @@ def parse_maps_images(constants):
             image_shadow = image_shadow.filter(ImageFilter.GaussianBlur(2))
             image = Image.composite(image, image_shadow, image_shadow)
             bbox,image= trim(image)
-            log.info("map : {} bbox : {}".format(row['ClassName'], bbox))
-            # Save image to disk
+            logging.info("map : {} bbox : {}".format(row['ClassName'], bbox))
+            # The shared publisher supplies a temporary path in the PNG directory.
             try:
-                os.mkdir(constants.PATH_BUILD_ASSETS_IMAGES_MAPS)
-            except:
-                pass
-            image.save(image_path, optimize=True)
-            image.close()
-            image_shadow.close()
-            
-            map['bbox'] = bbox
-            constants.data['maps'][map['$ID']] = map
+                image.save(image_path, format='PNG', optimize=True)
+            finally:
+                image.close()
+                image_shadow.close()
+            return bbox
 
 
 def parse_links(c = None):

@@ -99,6 +99,46 @@ def test_tool_failure_preserves_cache_and_retries_without_download(workspace, se
     assert server.calls.count('1_001001.ipf') == 1
 
 
+def test_real_extract_subprocess_argv_requests_tok(workspace, server, extract_stub, monkeypatch):
+    # The offline stub extractor publishes installed files without applying
+    # the extension filter, so .tok bytes reaching the output alone prove
+    # nothing about the request. This regression records the argv of the real
+    # decrypt/extract subprocess launches: the native tool path and the
+    # argument-free decrypt call keep their shape, and the extract call
+    # carries tok in its extension list after the unchanged existing entries.
+    real_run = client.subprocess.run
+    launched = []
+
+    def recording_run(args, *rest, **kwargs):
+        launched.append(list(args))
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(client.subprocess, 'run', recording_run)
+    extract_stub.install({'ies.ipf/item.ies': VALID_ITEM_CSV,
+                          'bg.ipf/texture/bg_argv.tok': 'synthetic tok source\n'})
+    assert client.main(['itos']) == 0
+
+    tool = os.path.join('..', 'IPFUnpacker', 'ipf_unpack')
+    patches = ('1_001001.ipf', '2_001001.ipf')
+    decrypt_calls = [call for call in launched if len(call) > 2 and call[2] == 'decrypt']
+    extract_calls = [call for call in launched if len(call) > 2 and call[2] == 'extract']
+    assert decrypt_calls and extract_calls
+    for call in decrypt_calls:
+        assert len(call) == 3
+        assert call[0] == tool and call[2] == 'decrypt'
+        assert call[1] in patches
+    for call in extract_calls:
+        assert call[0] == tool
+        assert call[1] in patches
+        assert call[2] == 'extract'
+        assert call[3:] == ['ies', 'xml', 'lua', 'png', 'jpg', 'tga', 'json', 'tok']
+    # End to end, the extracted TOK source publishes with the bg.ipf tree.
+    # Context only: the filter-less stub would publish it even without the
+    # request change, which is why the argv assertions above are the
+    # regression.
+    assert (workspace / 'itos_unpack/bg.ipf/texture/bg_argv.tok').read_text() == 'synthetic tok source\n'
+
+
 VALID_ITEM_CSV = (
     'ClassID,Name,RefreshScp\n'
     '1,plain,NO\n'

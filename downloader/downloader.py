@@ -215,7 +215,9 @@ def unpack(f, region):
     IPF_PATH    = join("..", "{}_patch".format(region))
     OUTPUT_PATH = join("..", "{}_unpack".format(region))
     unpacker    = join("..", 'IPFUnpacker', 'ipf_unpack')
-    extension_needed = ['ies', 'xml', 'lua','png', 'jpg', 'tga', 'json' ]
+    # Map polygon/background generation needs the .tok sources extracted
+    # from bg.ipf together with the existing types.
+    extension_needed = ['ies', 'xml', 'lua','png', 'jpg', 'tga', 'json', 'tok' ]
     logging.warning("patching {}".format(f))
     cur_file = join(IPF_PATH, f)
     copyfile(cur_file, f)

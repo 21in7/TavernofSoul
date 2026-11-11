@@ -925,6 +925,66 @@ DB의 버전은 이력으로 쌓이며 같은 버전은 중복 생성하지 않�
 importer 실패 시 DB·이전 비교 기준·버전 복원과 재시도를 검사한다.
 이는 작은 iTOS 샘플의 검증이며 전체 원본 파이프라인이나 운영 MySQL을 대신하지 않는다.
 
+## 지도 polygon·배경 복구 계약
+
+downloader의 `unpack()`은 기존 확장자 목록에 `tok`를 추가하여 실제 extract subprocess의
+필터로 전달한다. native IPFUnpacker·gitlink, decrypt/extract 호출 구조, CSV 검증·실패 전파,
+임시 정리·다운로드 캐시 보존/삭제·버전 전진 계약은 유지한다.
+
+추적된 `parser_tidy/maps_poly/*.json` 396개는 읽기 전용 seed다. 어떤 실행도 seed를 수정하거나
+그 디렉터리에 polygon·메타데이터·임시 파일을 만들지 않는다. 새 polygon JSON과 polygon/PNG
+해시 메타데이터는 저장소 기준 `parser_tidy/.map_assets/<region>/`에만 저장한다.
+루트 ignore 항목은 `/parser_tidy/.map_assets/` 한 줄이다. seed/cache 경로는 CWD가 아닌
+프로그램 위치·입력 지역에 결합하고, 원본 경로·지역을 검증하여 지역 간 캐시 혼용을 막는다.
+
+원본 TOK를 해석하기 전에 bytes가 정확히 32바이트이고 전체가 ASCII `[0-9A-Fa-f]`인지 확인한다.
+이 MD5 placeholder만 경고·건너뜀으로 기록하며 tokutil을 호출하지 않는다. strip이나 개행 제거는
+하지 않는다. 31/33바이트, 공백·개행 포함, 32바이트 nonhex는 placeholder가 아니다.
+유효하고 비어 있지 않은 `BgName`을 우선하며 없거나 빈 값일 때만 `ClassName`을 쓴다.
+실제 `bg.ipf` TOK 파일을 색인하고 `.tok` 확장자, `bg.ipf` prefix/하위 디렉터리,
+역슬래시 표기를 일관되게 처리한다. 정확한 경로 일치가 먼저이고 다음은 대소문자를 무시한
+유일 일치이며, 실제 파일의 case를 유지한다. 중복·모호한 이름·잘못된 경로는 임의 선택하지 않는다.
+비어 있지 않은 BgName의 누락/오류를 ClassName으로 무음 대체하지 않는다.
+산출물 이름은 기존 소문자 ClassName 규칙이고 polygon JSON의 list 형식과 좌표 의미는 유지한다.
+
+`map_image.py`는 polygon 파일 존재만으로 건너뛰지 않는다. 현재 실제 TOK bytes의 SHA256,
+해석된 원본 경로·지역, polygon 변환 버전, 저장 polygon hash·형식이 모두 맞아야 cache hit다.
+정상 원본이 있고 cache가 없거나 stale/손상 상태이면 seed 유무와 관계없이 새 polygon을 만든다.
+소비 순서는 현재 원본에 대해 유효한 cache → 유효 seed → 없음이다. 원본 누락·placeholder·오류나
+stale cache는 cache hit가 아니며, 유효 seed fallback만 허용하고 원인 진단을 남긴다.
+stale cache를 정상 결과로 fallback하지 않는다. 누락·잘못된 형식·이름 충돌·파싱 실패는
+경고로 기록하고 기존 정상 산출물을 오류 결과로 덮어쓰거나 삭제하지 않는다.
+
+`maps.py`의 PNG도 존재와 bbox만으로 재사용하지 않는다. polygon 내용 SHA256, 현재 Width/Height,
+배율, 렌더 버전, 실제 PNG hash·PNG 형식, bbox 메타데이터가 모두 일치해야 한다.
+재사용 bbox도 실제 PNG와 일치해야 하며 원본/polygon·크기·배율·버전 변화, PNG 손상/부재,
+메타데이터 손상/부재는 재생성 조건이다. 지역·원본에 결합한 메타데이터로 공유 PNG의 잘못된
+재사용을 막는다. 출력은 기존 `c.PATH_BUILD_ASSETS_IMAGES_MAPS`인
+`TavernofSoul/staticfiles_itos/maps`(추적 밖)에 직접 생성한다. PNG 생성은 collectstatic과
+별개이며, 생성된 PNG를 이 경로에 쓰는 데 collectstatic 실행은 필요하지 않다.
+
+PNG는 목적 파일과 같은 디렉터리에 임시 저장하고 형식·유효 크기 검증 후 파일별 rename한다.
+polygon/cache 메타데이터도 임시 검증 후 파일별 교체하고, 메타데이터는 검증 완료 산출물에만
+결합한다. 메타데이터 저장/rename까지 실패하면 기존 정상 산출물과 메타데이터의 bytes·mode를
+보존/복구하며 임시 파일은 정리한다. 디렉터리 전체의 원자 교체를 보장하는 계약은 아니다.
+최종 교체 전에 신규 파일은 umask와 무관하게 0644, 기존 파일은 `stat.S_IMODE`로 얻은 mode를
+임시 파일에 명시적으로 설정한다. PNG·polygon JSON·메타데이터 모두 적용하며 mkstemp의 0600을
+그대로 공개하지 않는다. mode 설정 실패는 교체 전 실패이며 rollback backup/복원도 bytes와
+mode를 보존한다. Python2에 없는 `os.replace`에 직접 의존하지 않는다.
+
+polygon과 PNG는 각각 실행 요약에 `generated/reused/placeholder/missing/errors` 다섯 수를
+항상 출력한다. 앞의 두 수는 산출물 생성/재사용이고 뒤의 세 수는 입력 이상 진단이다.
+유효 seed fallback은 reused 또는 PNG 생성과 입력 이상을 함께 집계할 수 있으므로 합계가
+지도 수와 같다는 뜻은 아니다. 지도 하나의 오류를 진단하고 다른 지도 처리를 계속한다.
+map 단계의 경고 종료 코드와 기존 cron의 경고 전용 처리·후속 main/import 흐름은 유지한다.
+
+polygon 변환은 기존 Python2.7 전용 `map_image.py`/tokutil 경계에 둔다. 공유 `map_assets.py`는
+새 런타임 의존성 없이 Python2.7/3.8에서 import·실질 로직을 지원한다. Python3 `maps.py`는
+Python2가 만든 cache와 seed를 읽지만 Python2 전용 tokutil을 실행하지 않는다.
+합성 회귀는 placeholder 경계·이름 해석·지역 분리·freshness·손상/누락·실패 시 bytes/mode
+보존과 polygon+PNG 생성의 저장소 불변성을 대상으로 한다. 합성 입력의 검증은 실제 게임
+geometry나 운영 pipeline 성공의 증거가 아니며, 실제 게임 원본에 대한 검증·운영 관측과 구분한다.
+
 ## 맵·속성·버프 연결
 
 `harness/fixtures/world/`는 아이템·combat 원본에 지도/드롭/생성점·속성·버프 IES와 번역을 더한다.

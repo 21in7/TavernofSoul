@@ -65,6 +65,7 @@ venv/
 /downloader/release.csv
 /downloader/revision.csv
 /parser_tidy/parser_version.csv
+/parser_tidy/.map_assets/
 
 # Local work notes and generated reports.
 /.zcode/

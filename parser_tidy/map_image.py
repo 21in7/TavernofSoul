@@ -11,6 +11,8 @@ import sys
 import csv
 import logging
 import os
+import io
+import map_assets
 
 from os.path import exists
 from DB import ToS_DB as constants
@@ -30,7 +32,8 @@ tokutil_logger.setLevel(logging.ERROR)
 MAP_SCALE = 0.2
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def parse_maps_images(c):
+@map_assets.summarize
+def parse_maps_images(c, assets):
     """
     TOK!
     """
@@ -38,49 +41,30 @@ def parse_maps_images(c):
     ies_path = c.file_dict['map.ies']['path']
     with open(ies_path, 'rb') as ies_file:
         for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-            if exists(os.path.join('maps_poly', row['ClassName'].lower()+'poly.json')):
-                continue
-                
-            image_path = os.path.join(c.PATH_BUILD_ASSETS_IMAGES_MAPS, row['ClassName'].lower() + '.png')
-            image_path = os.path.join(c.PATH_BUILD_ASSETS_IMAGES_MAPS, row['ClassName'].lower() + '.jpg')
-            tok_path = os.path.join(c.PATH_INPUT_DATA, 'bg.ipf', row['ClassName'].lower() + '.tok')
-            
-            if not os.path.exists(tok_path):
-                continue
-                
-            # Parse .tok mesh file
-            try:
-                tok_file = open(tok_path, 'rb')
+            def convert(data):
+                tok_file = io.BytesIO(data)
                 tok_xml = tokutil.tok2xml(tok_file)
                 
                 # tok_xml이 None이거나 자식 요소가 없는 경우 건너뛰기
                 if tok_xml is None or not tok_xml.getchildren():
-                    logging.warning("Invalid tok_xml for %s", row['ClassName'])
-                    tok_file.close()
-                    continue
+                    raise ValueError('Invalid tok_xml')
                     
                 # mesh3D 요소 찾기
                 mesh3D_elems = [elem for elem in tok_xml.getchildren() if elem.tag == 'mesh3D']
                 if not mesh3D_elems:
-                    logging.warning("No mesh3D element found for %s", row['ClassName'])
-                    tok_file.close()
-                    continue
+                    raise ValueError('No mesh3D element found')
                 mesh3D = mesh3D_elems[0]
                 
                 # verts 요소 찾기
                 mesh3DVerts_elems = [elem for elem in mesh3D.getchildren() if elem.tag == 'verts']
                 if not mesh3DVerts_elems:
-                    logging.warning("No verts element found for %s", row['ClassName'])
-                    tok_file.close()
-                    continue
+                    raise ValueError('No verts element found')
                 mesh3DVerts = mesh3DVerts_elems[0]
                 
                 # mappingTo2D 요소 찾기
                 mappingTo2D_elems = [elem for elem in tok_xml.getchildren() if elem.tag == 'mappingTo2D']
                 if not mappingTo2D_elems:
-                    logging.warning("No mappingTo2D element found for %s", row['ClassName'])
-                    tok_file.close()
-                    continue
+                    raise ValueError('No mappingTo2D element found')
                 mappingTo2D = mappingTo2D_elems[0]
                 
                 polygons = []
@@ -90,20 +74,14 @@ def parse_maps_images(c):
                     for edge in polygon.getchildren():
                         try:
                             vertex_idx = int(edge.attrib['startVert'])
-                            if vertex_idx >= len(mesh3DVerts.getchildren()):
-                                continue
+                            if vertex_idx < 0 or vertex_idx >= len(mesh3DVerts.getchildren()):
+                                raise ValueError('Invalid vertex index')
                             vertex = mesh3DVerts.getchildren()[vertex_idx]
                             points.append((int(vertex.attrib['x']), -int(vertex.attrib['y'])))
                         except (ValueError, KeyError, IndexError) as e:
-                            logging.warning("Error processing polygon: %s", str(e))
-                            continue
+                            logging.warning('Skipping invalid polygon edge for %s: %s', row.get('ClassName'), e)
                     if points:  # 포인트가 하나라도 있는 경우만 추가
                         polygons.append(points)
-                
-                # 유효한 폴리곤이 있는 경우만 저장
-                if polygons:
-                    with open(os.path.join('maps_poly', row['ClassName'].lower()+'poly.json'), 'w') as f:
-                        json.dump(polygons, f)
                 
                 # Free some memory before continuing
                 tok_file.close()
@@ -112,9 +90,11 @@ def parse_maps_images(c):
                 del mesh3DVerts
                 del mappingTo2D
                 del tok_xml
-                
+                return polygons
+            try:
+                assets.polygon(row, convert)
             except Exception as e:
-                logging.error("Error processing %s: %s", row['ClassName'], str(e))
+                assets.issue('polygon', 'errors', row, e)
                 continue
 
 
