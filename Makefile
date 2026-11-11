@@ -5,7 +5,7 @@ MINIMUM_WRITE_SECONDS ?= 300
 # Human mistake marker, not an authorization boundary. Only protected explicit
 # goals consult it. Parse-time rejection covers the entire mixed/parallel call
 # and adds no recipe or command to make -n/--dry-run output (GNU make 4.2).
-ifneq ($(filter agent-workflow agent-git-request agent-git-accept agent-git-resume agent-git-cleanup agent-git-next agent-git-next-file agent-git-accept-file agent-git-proof-build agent-git-external-merge agent-worktree-park,$(MAKECMDGOALS)),)
+ifneq ($(filter agent-workflow agent-git-request agent-git-accept agent-git-resume agent-git-cleanup agent-git-next agent-git-next-file agent-git-accept-file agent-git-reconcile agent-git-proof-build agent-git-external-merge agent-worktree-park,$(MAKECMDGOALS)),)
 ifeq ($(strip $(file <logs/harness/host-role)),production)
 $(error Production host: workflow/Git publication/park make goals refused. This marker only prevents human mistakes, not unauthorized access.)
 endif
@@ -21,7 +21,7 @@ endif
 .PHONY: agent-workflow agent-workflow-plan agent-workflow-demo agent-workflow-status
 .PHONY: agent-git-doctor agent-git-request agent-git-accept agent-git-resume agent-git-cleanup
 .PHONY: agent-git-next agent-git-accept-file agent-git-external-merge agent-worktree-park storage-path
-.PHONY: agent-git-proof-build agent-git-next-file
+.PHONY: agent-git-proof-build agent-git-next-file agent-git-reconcile
 .PHONY: storage-status storage-doctor
 .PHONY: check-docs archive-run archive-verify
 .PHONY: agent-improve agent-improve-daily agent-improve-status agent-improve-approve agent-improve-reject agent-improve-execute
@@ -76,6 +76,7 @@ help:
 	@echo "agent-git-doctor Inspect GitHub delivery policy without API calls"
 	@echo "agent-git-next   Trusted parent: first request only, RUN_ID=... [MINIMUM_WRITE_SECONDS=300]"
 	@echo "agent-git-accept-file Accept saved private JSON: RUN_ID=... REQUEST_ID=... RESPONSE_FILE=... RESPONSE_SHA256=... [MINIMUM_WRITE_SECONDS=300]"
+	@echo "agent-git-reconcile Link observed result: RUN_ID=... REQUEST_ID=... EVIDENCE_FILE=... EVIDENCE_SHA256=... [MINIMUM_WRITE_SECONDS=300]"
 	@echo "agent-git-proof-build Build saved GET proof: RUN_ID=... PR_NUMBER=... INPUT_DIR=... RESPONSE_SHA256=<manifest-sha256>"
 	@echo "agent-git-next-file Verify saved exact request: RUN_ID=... REQUEST_FILE=... RESPONSE_SHA256=... [MINIMUM_WRITE_SECONDS=300] (no dispatch permission)"
 	@echo "agent-git-external-merge UI squash cleanup: RUN_ID=... PR_NUMBER=... PROOF_FILE=... RESPONSE_SHA256=... [CHECKS_FILE=... CHECKS_SHA256=... (required for awaiting_ci)] [RESUME=1]"
@@ -191,6 +192,9 @@ agent-git-next:
 
 agent-git-accept-file:
 	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-id $(call improve_quote,$(REQUEST_ID)) --response-file $(call improve_quote,$(RESPONSE_FILE)) --sha256 $(call improve_quote,$(RESPONSE_SHA256)) --minimum-write-seconds $(call improve_quote,$(MINIMUM_WRITE_SECONDS))
+
+agent-git-reconcile:
+	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --request-id $(call improve_quote,$(REQUEST_ID)) --evidence-file $(call improve_quote,$(EVIDENCE_FILE)) --evidence-sha256 $(call improve_quote,$(EVIDENCE_SHA256)) --minimum-write-seconds $(call improve_quote,$(MINIMUM_WRITE_SECONDS))
 
 agent-git-proof-build:
 	@$(PYTHON) -m harness.parent_commands $@ --run-id $(call improve_quote,$(RUN_ID)) --pr-number $(call improve_quote,$(PR_NUMBER)) --input-dir $(call improve_quote,$(INPUT_DIR)) --sha256 $(call improve_quote,$(RESPONSE_SHA256))

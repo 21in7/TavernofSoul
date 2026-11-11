@@ -18,7 +18,7 @@ Makefile은 `MAKECMDGOALS`에 다음 보호 goal이 있을 때만 GNU make의 `$
 읽은 값을 `strip`한 결과가 production이면 `$(error ...)`로 해석 단계에서 호출 전체를 거절한다.
 `agent-workflow`, `agent-git-request`, `agent-git-accept`, `agent-git-resume`,
 `agent-git-cleanup`, `agent-git-next`, `agent-git-next-file`, `agent-git-accept-file`,
-`agent-git-proof-build`, `agent-git-external-merge`, `agent-worktree-park`의 11개다.
+`agent-git-proof-build`, `agent-git-external-merge`, `agent-worktree-park`, `agent-git-reconcile`의 12개다.
 여러 goal과 `make -j`에도 recipe가 하나도 실행되지 않는다. check/help를 먼저 나열한 혼합 호출도
 전체가 거절된다. 선행 recipe/order-only prerequisite/별도 guard target은 연결하지 않는다.
 파일 없음/development이면 원래 대상 recipe를 그대로 실행하며 `make -n`/`--dry-run`에도

@@ -217,6 +217,11 @@ def next_request(ledger):
         ledger['status'] = 'awaiting_ci' if ledger.get('pr_number') else 'failed'
         ledger['error'] = 'Delivery deadline reached; no merge was claimed.'
         return None
+    return publication_request(ledger)
+
+
+def publication_request(ledger):
+    """Pure exact tool/arguments construction; never issue IDs or alter time."""
     cfg, step = validate_config(ledger['config']), ledger['step']
     repo = cfg['repository']
     prefix = 'https://api.github.com/repos/' + repo

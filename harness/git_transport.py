@@ -1,7 +1,7 @@
 """Private, single-call transport for the trusted parent's native GitHub journal.
 
-No connector lives here. Recovery deliberately uses the original publisher CLI:
-an existing receipt or uncertain dispatch is never an instruction to retry.
+No connector lives here. A completed failed write may be linked by the separate
+parent reconcile operation; an uncertain dispatch never authorizes a retry.
 """
 import argparse
 import base64
@@ -150,11 +150,13 @@ class Records:
         except FileNotFoundError:
             return None
 
-    def write(self, name, raw):
+    def write(self, name, raw, created=None):
         self.ready()
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=self.fd)
         with os.fdopen(fd, 'wb') as handle:
+            if created is not None:
+                created()
             os.fchmod(handle.fileno(), 0o600)
             private(os.fstat(handle.fileno()))
             handle.write(raw)
@@ -211,6 +213,16 @@ def journal(records):
 
 
 def verify_head(records, identity):
+    # Historical reconciliations remain part of the chain after normal accepts.
+    # Never rewrite an old receipt to fit the current journal.
+    for name in os.listdir(records.fd):
+        if name.endswith('.complete.json') and HEX.fullmatch(name[:-14]):
+            value = records.optional(name)
+            if not isinstance(value, dict):
+                raise TransportError('invalid_complete_receipt')
+            if value.get('operation') == 'reconcile':
+                from harness.git_recovery import verify
+                verify(records, value)
     head = records.optional('head.json')
     if head is not None:
         complete = records.optional(head['operation_id'] + '.complete.json')

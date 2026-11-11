@@ -1,6 +1,6 @@
 """Trusted-parent commands. JSON on stdout is private parent consumption.
 
-No connector, retry, reconciliation or CI resume lives here. External UI squash
+No connector, retry or CI resume lives here. External UI squash
 cleanup uses saved GET proof, native journal APIs and one archive attempt.
 """
 import argparse
@@ -21,7 +21,8 @@ from harness import git_cleanup, git_publish as native, git_transport as transpo
 
 VERSION = 'parent-commands-v1'
 COMMANDS = ('agent-git-next', 'agent-git-accept-file', 'agent-worktree-park', 'storage-path',
-            'archive-verify', 'agent-git-external-merge', 'agent-git-proof-build', 'agent-git-next-file')
+            'archive-verify', 'agent-git-external-merge', 'agent-git-proof-build', 'agent-git-next-file',
+            'agent-git-reconcile')
 MAX_WIRE = transport.INLINE_BYTES * 6 + 16384
 PROCESS_TIMEOUT = 120
 MINIMUM_WRITE_SECONDS = 300
@@ -48,6 +49,8 @@ def result_for(command, run):
         result['side_effects'].update(read_only=True, archive_transfer_invoked=False, writes=False)
     if command == 'agent-git-external-merge':
         result['completed_stages'] = []
+    if command == 'agent-git-reconcile':
+        result['decision'] = 'unknown'
     return result
 
 
@@ -164,10 +167,10 @@ def operation(command, run, request=None):
 
 def receipt_identity(value, run):
     require(isinstance(value, dict) and value.get('run_id') == run and
-            value.get('operation') in ('request', 'accept'), 'receipt_identity_mismatch')
+            value.get('operation') in ('request', 'accept', 'reconcile'), 'receipt_identity_mismatch')
     request = value.get('request_id')
     require((value['operation'] == 'request' and request is None and value.get('response_sha256') is None) or
-            (value['operation'] == 'accept' and isinstance(request, str) and transport.HEX.fullmatch(request) and
+            (value['operation'] in ('accept', 'reconcile') and isinstance(request, str) and transport.HEX.fullmatch(request) and
              isinstance(value.get('response_sha256'), str) and transport.HEX.fullmatch(value['response_sha256'])),
             'receipt_request_mismatch')
     require(value.get('operation_id') == operation(value['operation'], run, request) and
@@ -193,7 +196,7 @@ def evidence(run, ledger):
         require(len(names) <= transport.MAX_OPERATIONS * 6, 'receipt_limit')
         require('inflight.json' not in names and 'head.next' not in names, 'inflight_requires_reconciliation')
         ids = set()
-        suffixes = ('.begin.json', '.complete.json', '.stdout', '.stderr', '.response.json')
+        suffixes = ('.begin.json', '.complete.json', '.stdout', '.stderr', '.response.json', '.before.json')
         for name in names - {'head.json', 'claim'}:
             suffix = next((s for s in suffixes if name.endswith(s)), None)
             require(suffix is not None and transport.HEX.fullmatch(name[:-len(suffix)]), 'unknown_transport_record')
@@ -214,6 +217,11 @@ def evidence(run, ledger):
                     type(complete.get('ended_at')) in (int, float) and math.isfinite(complete['ended_at']) and
                     complete['ended_at'] >= complete['started_at'], 'invalid_complete_receipt')
             completes[op] = complete
+            if complete['operation'] == 'reconcile':
+                from harness.git_recovery import verify
+                verify(records, complete)
+            else:
+                require(op + '.before.json' not in names, 'unknown_transport_record')
         _, journal_hash = transport.journal(records)
         head = records.optional('head.json')
         if not completes:
@@ -340,6 +348,10 @@ def deadline_gate(result, ledger, request=None):
     require(valid, 'invalid_publish_deadline')
     remaining = max(0, deadline - time.time())
     result['publish_remaining_seconds'] = remaining
+    if request is not None and ledger.get('reconciliations') and (remaining == 0 or (
+            request['tool'] != native.TOOLS['fetch'] and remaining < result['minimum_write_seconds'])):
+        result['status'] = 'awaiting_ci' if ledger.get('pr_number') else 'failed'
+        raise Stop('deadline_insufficient')
     if request is not None and request['tool'] != native.TOOLS['fetch']:
         require(remaining >= result['minimum_write_seconds'], 'deadline_insufficient')
 
@@ -1475,7 +1487,12 @@ def execute(command, run=None, **kwargs):
             if command in ('agent-git-next', 'agent-git-next-file', 'agent-git-accept-file'):
                 result['minimum_write_seconds'] = minimum_write_seconds(
                     kwargs.get('minimum_write_seconds', MINIMUM_WRITE_SECONDS))
-            if command == 'agent-git-next':
+            if command == 'agent-git-reconcile':
+                from harness.git_recovery import reconcile
+                result['minimum_write_seconds'] = minimum_write_seconds(
+                    kwargs.get('minimum_write_seconds', MINIMUM_WRITE_SECONDS))
+                reconcile(result, run, kwargs['request_id'], kwargs['evidence_file'], kwargs['evidence_sha256'])
+            elif command == 'agent-git-next':
                 git_next(result, run)
             elif command == 'agent-git-accept-file':
                 accept_file(result, run, kwargs['request_id'], kwargs['response_file'], kwargs['sha256'])
@@ -1528,7 +1545,7 @@ def execute(command, run=None, **kwargs):
         for key in ('native', 'transport', 'result_file', 'request_file', 'exact_request', 'exact_request_file'):
             result.pop(key, None)
     if command != 'agent-git-external-merge' and result['code'] not in ('native_result', 'next_file_write_failed') and result['status'] not in ('ready', 'parked', 'awaiting_approval', 'verified') and not (
-            command == 'agent-git-proof-build' and result['code'] == 'external_get_required' and
+            command in ('agent-git-proof-build', 'agent-git-reconcile') and result['code'] in ('external_get_required', 'reconcile_unknown') and
             result['next_action'].get('action') == 'collect_get'):
         result['next_action'] = result_for(command, run)['next_action']
     return result
@@ -1565,8 +1582,12 @@ def main(argv=None):
     for command in COMMANDS:
         item = sub.add_parser(command, add_help=False, allow_abbrev=False)
         item.add_argument('--run-id', type=run_argument, required=command != 'storage-path')
-        if command in ('agent-git-next', 'agent-git-next-file', 'agent-git-accept-file'):
+        if command in ('agent-git-next', 'agent-git-next-file', 'agent-git-accept-file', 'agent-git-reconcile'):
             item.add_argument('--minimum-write-seconds', type=minimum_argument, default=MINIMUM_WRITE_SECONDS)
+        if command == 'agent-git-reconcile':
+            item.add_argument('--request-id', type=hex_argument, required=True)
+            item.add_argument('--evidence-file', required=True)
+            item.add_argument('--evidence-sha256', type=hex_argument, required=True)
         if command == 'agent-git-accept-file':
             item.add_argument('--request-id', type=hex_argument, required=True)
             item.add_argument('--response-file', required=True)
