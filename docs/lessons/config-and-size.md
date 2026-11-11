@@ -4,13 +4,17 @@
 
 ## 설정 fixture의 전제
 
-운영 서버는 Ubuntu 20.04, Git 2.25.1이다. 2.28 이후 옵션(git init --initial-branch 등)은 CI를 통과해도 운영 검사에서 실패한다.
+사용자 제공 환경: 운영은 aarch64·Ubuntu 20.04·Git 2.25.1·MariaDB 11.3, 개발 VM은 x86_64·Ubuntu 24.04·Git 2.43, CI는 MySQL 8.4다. CI의 OS·CPU·Git은 미제공이며 두 DB를 동일시하지 않는다. 이번에 DB·운영 환경을 조회한 근거가 아니다. 2.28 이후 옵션(git init --initial-branch 등)은 CI를 통과해도 운영 검사에서 실패한다.
 
 운영 설정을 상속하는 fixture는 설정 전환으로 깨질 수 있다. 사용자 제공 PR #103 관측에 따른 교훈은, 그런 PR 실행 전에 일회용 복사본에서 설정만 바꿔 전체 테스트를 사전 점검하는 것이다. 설정 전환 영향과 구현 결함을 구분할 근거를 준비한다.
 
 이는 이번 문서 작업에서 설정을 변경하거나 테스트를 실행하라는 지시가 아니다. 검사 소유자는 workflow/parent이며 구현자·reviewer는 실행하지 않는다. 사전 점검을 했더라도 이후 실제 diff에 필요한 검증을 대체하거나 과거 결과를 이번 성공으로 재사용하지 않는다.
 
 Makefile 기본 venv 선택을 유지하고 PYTHON 등 추가 실행 설정을 override하지 않는다. parent의 기존 실행 권한과 세션 sandbox 설정도 유지한다. 설정 경로 존재 확인과 run 생성 전후의 경계는 [run 수명](run-lifecycle.md)을 따른다.
+
+사용자 제공 교훈: 운영 umask 0002로 Git 생성 파일이 0664가 되므로 `core.sharedRepository=0644`로 고정한다(설명용: `git config --local core.sharedRepository 0644`). [make deploy](../ops/deployment.md)의 group-write 거절은 index·잠금·배포 디렉터리 등 검사 대상에 적용된다. parent는 구현의 `.git/index`에 대한 `st_mode & 0o022` 거절을 읽기 확인했다. 모든 추적 소스에 0644를 강제하거나 설정 한 번으로 기존 파일 권한을 모두 바꾼다는 뜻은 아니다.
+
+사용자 제공 관측: logrotate가 저장소 안 `*.log`를 회전시키면 미추적 회전 파일로 deploy의 clean 검사에서 거절된다. 저장소 안 포괄 회전을 피한다. 이번 작업에서 Git·logrotate 설정, 파일 삭제나 `.gitignore` 변경은 수행하지 않는다.
 
 ## PR과 수정 라운드의 크기
 
