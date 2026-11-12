@@ -957,6 +957,46 @@ importer 실패 시 DB·이전 비교 기준·버전 복원과 재시도를 검�
 이 경로는 지도 이미지 생성·자르기나 브라우저 canvas를 실행하지 않는다.
 전체 지역·모든 유형·속성 Lua 비용/해금 계산·운영 MySQL은 별도 검증이다.
 
+## 지도 자산 캐시
+
+PR 1a의 `parser_tidy/map_assets.py`는 런타임 호출자가 없는 비활성 라이브러리다. 별도 승인 PR 1b에서 단위 테스트를 추가한다.
+PR 2에서 `map_image.py`/`maps.py` 통합과 통합 회귀를 다루고, PR 3에서 TOK 추출을 활성화한다.
+
+추적되는 `parser_tidy/maps_poly`는 읽기 전용 시드이며 새 결과는 지역별
+`parser_tidy/.map_assets/<region>`에 둔다. 이 경로는 Git 무시 캐시로 사용할 예정이나
+`.gitignore` 연결은 후속 작업이며 이 PR에서는 활성화되지 않는다. 캐시 경로는 해당 지역 루트
+안으로 제한하고 시드에는 쓰지 않는다. placeholder는 정확히 32바이트의 ASCII 16진수이며
+대소문자를 모두 허용하지만 후행 개행은 허용하지 않는다.
+
+폴리곤 메타데이터는 `source={region,input,requested,sha256}`, `version`, `polygon`이다.
+`source.sha256`은 TOK 바이트, `polygon`은 폴리곤 JSON 바이트의 SHA256이고,
+`requested`는 요청 TOK 경로다. 캐시 출처는 `origin/verified/path/sha256/key`,
+시드 출처는 `origin/verified/path/sha256`이다. 캐시 출처의 `path`는 TOK 경로,
+`key`는 폴리곤의 `source/version`이고, 시드의 `path`는 실제 시드 경로다.
+두 출처의 `sha256`은 폴리곤 바이트 해시다. PNG 메타데이터는 `key/bbox/png/binding`,
+이미지 키는 `source/polygon/width/height/scale/version`이며 `source`에 출처를 담는다.
+`png`는 PNG 바이트 해시, `binding`은 정규 JSON으로 인코딩한 `[key,bbox,png]`의 해시다.
+채택 메타데이터는 추가로 `adopted=true`, `seed`(시드 폴리곤 해시)를 가진다.
+
+폴리곤 캐시 재사용은 정확한 원본 키·해시와 `POLYGON_VERSION`, 폴리곤 해시·구조를 검증한다.
+PNG 재사용은 이미지 키 일치와 `RENDER_VERSION`을 요구하고, 캐시 출처의 폴리곤 버전과
+현재 TOK 해시를 다시 확인한다. 시드 출처는 허용된 시드 경로·검증 표시·현재 해시를 확인한다.
+폭·높이·배율은 양의 유한수이며 크기는 각각 `int(round(width*scale))`,
+`int(round(height*scale))`이다. bbox는 이 크기 안의 정수 사각형이고 PNG 크기와 일치해야 한다.
+PNG 청크·CRC·압축 스트림·스캔라인을 검증한다. 채택은 검증된 시드와 전체 이미지 bbox만
+허용하며 기존 PNG를 유지하고 메타데이터만 게시한다. 과거 생성 이력이 아닌 현재 검사를 인증한다.
+
+임시 파일을 기록·재읽기·검증한 뒤 0644로 파일별 원자적 rename하여 게시한다.
+기존 파일의 바이트·모드를 백업하고 게시 실패 시 복구하며 새로 게시된 파일은 제거한다.
+이는 여러 파일을 한꺼번에 원자적으로 교체하는 트랜잭션이 아니다.
+
+같은 출처로 이어지는 요청의 최종 집계 결과는 `generated/reused/adopted/placeholder/missing/errors` 중 상호 배타적이다.
+폴리곤의 잠정 결과는 같은 출처 객체의 identity로 후속 이미지 결과에 승격되어 중복 집계를 피한다.
+시드 조회 성공 자체는 `reused`만 기록하며 `missing`은 사용 가능한 결과가 없을 때만 기록한다.
+폴리곤은 앞선 캐시 거절 후에도 변환·시드 대체 성공으로 `generated`/`reused`가 될 수 있다.
+`image_cached` 거절은 `None`, `adopt_image` 실패는 로그 후 `None`이며 오류 집계를 늘리지 않는다.
+`save_image`는 counts가 주어지면 실패를 `errors`로 기록하고 예외를 다시 던진다.
+
 ## MySQL과 CI 경계
 
 기본 `make check`는 네트워크나 외부 DB가 필요 없는 SQLite 검증이다.
