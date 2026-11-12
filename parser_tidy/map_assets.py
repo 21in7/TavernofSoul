@@ -299,8 +299,6 @@ def image_cached(path, metadata, key, size, counts=None):
         if value['key'] != key: return None
         _verify_key(key)
         if tuple(size) != _size(key): raise ValueError('render size differs')
-        if value.get('adopted') is True and value['bbox'] != [0, 0, size[0], size[1]]:
-            raise ValueError('adopted PNG must cover full image')
         if value != _image_meta(key, value['bbox'], data, value.get('adopted') is True):
             raise ValueError('invalid image metadata binding')
         png(data, value['bbox'], size)
@@ -309,14 +307,15 @@ def image_cached(path, metadata, key, size, counts=None):
     except Exception as exc:
         if not _absent(exc) and not isinstance(exc, _Stale): _log(exc)
         return None
-def adopt_image(row, data, provenance, scale, path, metadata, counts):
-    """Return full-image bbox or None. Adoption certifies current checks, not history."""
+def adopt_image(row, data, provenance, scale, path, metadata, counts, bbox):
+    """Return supplied bbox or None. Adoption certifies current checks, not history."""
     try:
         key = image_key(row, data, provenance, scale); seed = _seed(key)
         if os.path.realpath(metadata) in (os.path.realpath(path), os.path.realpath(seed['path'])):
             raise ValueError('adoption destination aliases an input')
         size = _size(key)
-        bbox = [0, 0, size[0], size[1]]; original = read(path); png(original, bbox, size)
+        if not isinstance(bbox, (list, tuple)): raise ValueError('invalid adoption bbox')
+        bbox = list(bbox); original = read(path); png(original, bbox, size)
         if image_cached(path, metadata, key, size) is not None: return None
         value = _image_meta(key, bbox, original, True)
         def unchanged():

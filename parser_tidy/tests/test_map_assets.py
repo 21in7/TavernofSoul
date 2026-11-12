@@ -9,6 +9,7 @@ if not sys.dont_write_bytecode or os.environ.get('PYTHONDONTWRITEBYTECODE') != '
 sys.path.insert(0, sys.argv[1])
 import map_assets as a
 POLY = [[[0, 0], [4, 0], [0, 2]]]; DATA = a.encoded(POLY)
+BAD_BBOX = (None,[0,0,0,0],[-1,1,1,2],[3,1,5,2],[1,-1,3,0],[1,2,3,3],[3,1,1,2],[1,2,3,1],[1,1,1,2],[1,1,3,1],[True,1,3,2],[1.0,1,3,2],[1,None,3,2],[],[1,1,3],[1,1,3,2,4],'1132',{'left':1},7)
 @contextmanager
 def patch(obj, key, value):
     old = getattr(obj, key); setattr(obj, key, value)
@@ -17,7 +18,7 @@ def patch(obj, key, value):
 def fail(*args, **kw): raise IOError(errno.EIO, 'injected failure')
 def put(path, data, mode=0o640):
     if not os.path.isdir(os.path.dirname(path)): os.makedirs(os.path.dirname(path))
-    if os.path.exists(path): os.chmod(path, mode)
+    if os.path.exists(path): os.chmod(path, mode | stat.S_IWUSR)
     with open(path, 'wb') as stream: stream.write(data)
     os.chmod(path, mode)
 def state(path): return (a.read(path), stat.S_IMODE(os.stat(path).st_mode), os.stat(path).st_mtime)
@@ -105,39 +106,64 @@ class Shared(unittest.TestCase):
         finally: os.umask(previous)
         self.assertEqual((state(path)[1], state(meta)[1]), (0o644, 0o644)); self.clean_temps()
     def test_adoption_and_image_reuse(self):
-        counts = a.counters(); key = self.seed_key(counts); put(self.image, png(), 0o600); os.utime(self.image, (123456789, 123456789)); before = state(self.image); previous = os.umask(0o077)
-        try: bbox = a.adopt_image(self.row, DATA, key['source'], 0.5, self.image, self.meta, counts)
-        finally: os.umask(previous)
-        self.assertEqual(bbox, [0,0,4,2]); self.assertEqual(counts, dict((k,int(k=='adopted')) for k in a.COUNTERS)); self.assertEqual(state(self.image), before); self.assertEqual(state(self.meta)[1], 0o644)
-        meta = json.loads(a.read(self.meta).decode('utf8')); self.assertTrue(meta['adopted']); self.assertEqual((meta['seed'],meta['png'],meta['key'],meta['bbox']), (a.digest(DATA),a.digest(png()),key,bbox)); self.assertEqual(meta['binding'], a.digest(a.encoded([key,bbox,a.digest(png())])))
-        fresh = a.counters(); self.assertEqual(a.image_cached(self.image,self.meta,key,(4,2),fresh), bbox); self.assertEqual(fresh, dict((k,int(k=='reused')) for k in a.COUNTERS)); saved = state(self.meta); self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,fresh)); self.assertEqual(state(self.meta),saved); self.assertEqual(fresh,dict((k,int(k=='reused')) for k in a.COUNTERS))
-        for bad in (b'{}', b'{', a.encoded(dict(meta, seed='0'*64)), a.encoded(dict(meta, bbox=[0,0,2,1]))):
-            put(self.meta,bad); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2)))
-        put(self.meta,a.encoded(meta)); put(self.seed,a.encoded([[[0,0],[8,0],[0,8]]])); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2)))
+        for supplied in ([1,1,3,2],(1,1,3,2),[0,0,4,2]):
+            expected = list(supplied); data = png(expected[2]-expected[0],expected[3]-expected[1]); counts = a.counters(); key = self.seed_key(counts)
+            put(self.image,data,0o600); os.utime(self.image,(123456789,123456789)); before = state(self.image); seed_before = state(self.seed); previous = os.umask(0o077)
+            try: bbox = a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts,supplied)
+            finally: os.umask(previous)
+            self.assertIsInstance(bbox,list); self.assertEqual(bbox,expected); self.assertEqual(list(supplied),expected); self.assertIsNot(bbox,supplied)
+            self.assertEqual(counts,dict((k,int(k=='adopted')) for k in a.COUNTERS)); self.assertEqual((state(self.image),state(self.seed)),(before,seed_before)); self.assertEqual(state(self.meta)[1],0o644)
+            meta = json.loads(a.read(self.meta).decode('utf8')); self.assertTrue(meta['adopted']); self.assertEqual((meta['seed'],meta['png'],meta['key'],meta['bbox']),(a.digest(DATA),a.digest(data),key,expected)); self.assertEqual(meta['binding'],a.digest(a.encoded([key,expected,a.digest(data)])))
+            saved = state(self.meta); bbox[0] = -1
+            if isinstance(supplied,list): supplied[0] = -2
+            fresh = a.counters(); self.assertEqual(a.image_cached(self.image,self.meta,key,(4,2),fresh),expected); self.assertEqual(fresh,dict((k,int(k=='reused')) for k in a.COUNTERS))
+            self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,fresh,expected)); self.assertEqual((state(self.image),state(self.meta)),(before,saved)); self.assertEqual(fresh,dict((k,int(k=='reused')) for k in a.COUNTERS))
+            for bad in (b'{}',b'{',a.encoded(dict(meta,seed='0'*64)),a.encoded(dict(meta,binding='0'*64)),a.encoded(dict(meta,bbox=[0,0,2,1]))):
+                put(self.meta,bad); rejected = a.counters(); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2),rejected)); self.assertEqual(sum(rejected.values()),0)
+            for invalid in BAD_BBOX + ([0,0,1,2],):
+                tampered = dict(meta,bbox=invalid); tampered['binding'] = a.digest(a.encoded([key,invalid,meta['png']]))
+                put(self.meta,a.encoded(tampered)); rejected = a.counters(); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2),rejected)); self.assertEqual(sum(rejected.values()),0)
+            changed_key = dict(key,version=key['version']+1); tampered = dict(meta,key=changed_key,binding=a.digest(a.encoded([changed_key,expected,meta['png']])))
+            put(self.meta,a.encoded(tampered)); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2)))
+            put(self.meta,a.encoded(meta))
+            with patch(a,'RENDER_VERSION',a.RENDER_VERSION+1): self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2)))
+            for bad_png in (data[:-1],png(1,2)):
+                tampered = dict(meta,png=a.digest(bad_png),binding=a.digest(a.encoded([key,expected,a.digest(bad_png)])))
+                put(self.image,bad_png); put(self.meta,a.encoded(tampered)); rejected = a.counters(); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2),rejected)); self.assertEqual(sum(rejected.values()),0)
+            put(self.image,data); put(self.meta,a.encoded(meta))
+            put(self.seed,a.encoded([[[0,0],[8,0],[0,8]]])); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2))); os.unlink(self.meta)
     def test_adoption_rejections_and_failed_metadata(self):
         key = self.seed_key(); put(self.meta,b'previous metadata',0o640)
         for data in (png(2,1),png(3,2),png(4,1),b'bad signature',png()[:-1],png()+b'x',png()[:29]+b'BAD!'+png()[33:],png(depth=3),png(packed=b'bad deflate'),png(packed=zlib.compress((b'\0'+b'\xff'*16)*2)[:-1]),png(scan=(b'\5'+b'\0'*16)*2),png()[:-12],png()[:-12]+chunk(b'ABCD',b'')+png()[-12:],png()[:8]+chunk(b'IHDR',b'\0'*12)+png()[33:],png()[:33]+png()):
-            put(self.image,data,0o600); before = (state(self.image),state(self.meta)); counts = a.counters(); self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts)); self.assertEqual((state(self.image),state(self.meta)),before); self.assertEqual(sum(counts.values()),0)
+            put(self.image,data,0o600); before = (state(self.image),state(self.meta)); counts = a.counters(); self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts,[0,0,4,2])); self.assertEqual((state(self.image),state(self.meta)),before); self.assertEqual(sum(counts.values()),0)
+        put(self.image,png(2,1),0o600); before = (state(self.image),state(self.meta))
+        for invalid in BAD_BBOX + ([0,0,4,2],[1,0,3,2],[1,1,4,2]):
+            counts = a.counters(); self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts,invalid)); self.assertEqual((state(self.image),state(self.meta)),before); self.assertEqual(sum(counts.values()),0)
         put(self.image,png(),0o600); before = (state(self.image),state(self.meta)); provenance = key['source']['provenance']
         for bad in (dict(provenance,origin='cache'),dict(provenance,origin='unknown'),dict(provenance,verified=False),dict(provenance,sha256='0'*64)):
-            self.assertIsNone(a.adopt_image(self.row,DATA,bad,0.5,self.image,self.meta,a.counters())); self.assertEqual((state(self.image),state(self.meta)),before)
+            counts = a.counters(); self.assertIsNone(a.adopt_image(self.row,DATA,bad,0.5,self.image,self.meta,counts,[0,0,4,2])); self.assertEqual((state(self.image),state(self.meta)),before); self.assertEqual(sum(counts.values()),0)
         stage = a._stage
         def changed(*args, **kw):
             result = stage(*args, **kw); put(self.seed,a.encoded([[[0,0],[8,0],[0,8]]])); return result
         for injected in (fail, changed):
-            put(self.seed,DATA)
-            with patch(a,'_stage',injected): self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,a.counters()))
-            self.assertEqual((state(self.image),state(self.meta)),before); self.clean_temps()
-        self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,a.counters())); self.assertEqual((state(self.image),state(self.meta)),before)
+            put(self.seed,DATA); counts = a.counters()
+            with patch(a,'_stage',injected): self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts,[0,0,4,2]))
+            self.assertEqual((state(self.image),state(self.meta)),before); self.assertEqual(sum(counts.values()),0); self.clean_temps()
+        counts = a.counters(); self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts,[0,0,4,2])); self.assertEqual((state(self.image),state(self.meta)),before); self.assertEqual(sum(counts.values()),0)
         put(self.seed,DATA); descriptor = a.os.fdopen
-        with patch(a.os,'fdopen',lambda *args,**kw:BadWriter(descriptor(*args,**kw))): self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,a.counters()))
-        self.assertEqual((state(self.image),state(self.meta)),before); self.clean_temps()
+        for attr, injected in (('fdopen',lambda *args,**kw:BadWriter(descriptor(*args,**kw))),('chmod',fail),('rename',fail)):
+            counts = a.counters()
+            with patch(a.os,attr,injected): self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts,[0,0,4,2]))
+            self.assertEqual((state(self.image),state(self.meta)),before); self.assertEqual(sum(counts.values()),0); self.clean_temps()
+        os.unlink(self.meta); counts = a.counters()
+        with patch(a.os,'rename',fail): self.assertIsNone(a.adopt_image(self.row,DATA,key['source'],0.5,self.image,self.meta,counts,[0,0,4,2]))
+        self.assertFalse(os.path.exists(self.meta)); self.assertEqual(state(self.image),before[0]); self.assertEqual(sum(counts.values()),0); self.clean_temps()
     def test_saved_image_outcome_and_summary(self):
         counts = a.counters(); key = self.seed_key(counts)
         image = type('Image',(),{'save':lambda self,stream,**kw:stream.write(png())})(); a.save_image(image,[0,0,4,2],self.image,self.meta,key,(4,2),counts); self.assertEqual(counts,dict((k,int(k=='generated')) for k in a.COUNTERS)); self.assertEqual((state(self.image)[1],state(self.meta)[1]),(0o644,0o644)); self.assertEqual(a.image_cached(self.image,self.meta,key,(4,2)),[0,0,4,2]); messages = []
         with patch(a.logging,'warning',lambda *args: messages.append(args)): a.summary('unit',counts)
         self.assertIn('adopted=0',messages[0][2])
-        put(self.tok,b'tok'); self.assets = self.new(); value,data,source = self.outcome('generated',lambda stream:POLY); key = a.image_key(self.row,data,source,0.5); self.assertEqual(source['provenance']['origin'],'cache'); self.assertIsNone(a.adopt_image(self.row,data,source,0.5,self.image,self.meta,a.counters())); a.save_image(image,[0,0,4,2],self.image,self.meta,key,(4,2)); os.unlink(self.tok); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2)))
+        put(self.tok,b'tok'); self.assets = self.new(); value,data,source = self.outcome('generated',lambda stream:POLY); key = a.image_key(self.row,data,source,0.5); self.assertEqual(source['provenance']['origin'],'cache'); self.assertIsNone(a.adopt_image(self.row,data,source,0.5,self.image,self.meta,a.counters(),[0,0,4,2])); a.save_image(image,[0,0,4,2],self.image,self.meta,key,(4,2)); os.unlink(self.tok); self.assertIsNone(a.image_cached(self.image,self.meta,key,(4,2)))
 result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Shared)); print(json.dumps(dict(executable=sys.executable,version=list(sys.version_info[:2]),tests=result.testsRun))); sys.exit(0 if result.wasSuccessful() else 1)
 '''
 class MapAssetsInterpreters(unittest.TestCase):
