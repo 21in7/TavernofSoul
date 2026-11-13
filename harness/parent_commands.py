@@ -1303,7 +1303,7 @@ class ExternalMerge:
                         isinstance(self.ledger.get('pending_request_id'), str) and
                         transport.HEX.fullmatch(self.ledger['pending_request_id']))
                 require(not self.ledger.get('merge_sha') and (known_unsent or (awaiting_ci and
-                        self.ledger.get('step') in ('pr', 'head_checks', 'merge_checks', 'statuses', 'final_pr') and
+                        self.ledger.get('step') in ('pr', 'head_checks', 'merge_checks', 'statuses', 'final_pr', 'merge') and
                         self.ledger.get('pending_request_id') is None and
                         (self.ledger.get('pending_write') is None or self.ledger.get('pending_write') is False))),
                         'external_pending_merge_required')
