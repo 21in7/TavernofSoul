@@ -26,6 +26,9 @@ def chunk(kind, body): return struct.pack('>I', len(body)) + kind + body + struc
 def png(w=4, h=2, depth=8, scan=None, packed=None):
     raw = (b'\0' + b'\xff\0\0\xff' * w) * h if scan is None else scan
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, depth, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw) if packed is None else packed) + chunk(b'IEND', b'')
+def scan_png(w, h, scan, color=6, depth=8, interlace=0):
+    header = chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, depth, color, 0, 0, interlace))
+    return b'\x89PNG\r\n\x1a\n' + header + (chunk(b'PLTE', b'\0'*6) if color == 3 else b'') + chunk(b'IDAT', zlib.compress(scan)) + chunk(b'IEND', b'')
 class BadWriter(object):
     def __init__(self, stream): self.stream = stream
     def __enter__(self): return self
@@ -47,6 +50,45 @@ class Shared(unittest.TestCase):
         put(self.seed, DATA, 0o444); counts = a.counters() if counts is None else counts
         value, data, source = self.assets.polygon(self.row, counts); self.assertEqual(value, POLY); self.assertEqual(source['provenance'],dict(origin='seed',verified=True,path=self.seed,sha256=a.digest(DATA))); return a.image_key(self.row, data, source, 0.5)
     def clean_temps(self): self.assertEqual(glob.glob(os.path.dirname(self.image) + '/.map-*'), [])
+    def test_png_rgba_filters_lengths_and_crc(self):
+        self.assertIsNone(a.png(png(), [0,0,4,2], (4,2)))
+        row = b'\0' + b'\xff'*8
+        for kind in range(5):
+            self.assertIsNone(a.png(png(2,2,scan=row + struct.pack('B',kind) + b'\xff'*8), [0,0,2,2], (2,2)))
+        for kind in (5, 255):
+            for scan in (struct.pack('B',kind) + row[1:] + row, row + struct.pack('B',kind) + row[1:]):
+                with self.assertRaises(ValueError): a.png(png(2,2,scan=scan), [0,0,2,2], (2,2))
+        for scan in ((row*2)[:-1], row*2 + b'\0'):
+            with self.assertRaises(ValueError): a.png(png(2,2,scan=scan), [0,0,2,2], (2,2))
+        data = png(); corrupt = data[:-13] + struct.pack('B',ord(data[-13:-12]) ^ 1) + data[-12:]
+        with self.assertRaises(ValueError): a.png(corrupt, [0,0,4,2], (4,2))
+    def test_png_stream_completion(self):
+        packed = zlib.compress((b'\0' + b'\xff\0\0\xff'*4)*2)
+        for bad in tuple(packed[:-n] for n in range(1,5)) + (packed+b'\0', packed+b'garbage', packed+zlib.compress(b''), packed+packed):
+            with self.assertRaises((ValueError,zlib.error)): a.png(png(packed=bad), [0,0,4,2], (4,2))
+    def test_png_palette_reconstruction(self):
+        # Each second row reconstructs to indices [1, 1], including Sub/Up.
+        for kind, encoded in enumerate((b'\1\1', b'\1\0', b'\0\0', b'\1\0', b'\0\0')):
+            scan = b'\0\1\1' + struct.pack('B',kind) + encoded
+            self.assertIsNone(a.png(scan_png(2,2,scan,color=3), [0,0,2,2], (2,2)))
+        for scan in (b'\0\0\2\0\0\0', b'\0\1\1\1\1\1', b'\0\1\1\2\1\0'):
+            with self.assertRaises(ValueError): a.png(scan_png(2,2,scan,color=3), [0,0,2,2], (2,2))
+        self.assertIsNone(a.png(scan_png(2,1,b'\0\x10',color=3,depth=2), [0,0,2,1], (2,1)))
+        with self.assertRaises(ValueError): a.png(scan_png(2,1,b'\0\x20',color=3,depth=2), [0,0,2,1], (2,1))
+    def test_png_adam7_scan_traversal(self):
+        # All seven passes of a 5x5 image, with different row lengths.
+        scans = ((1,1),(1,1),(2,1),(1,2),(3,1),(2,3),(5,2))
+        for color, depth, channels in ((0,1,1),(2,16,3),(4,8,2),(6,8,4)):
+            rows, offsets, length = [], [], 0
+            for w, h in scans:
+                for unused in range(h):
+                    row = struct.pack('B',len(rows)%5) + b'\xff'*((w*channels*depth+7)//8)
+                    offsets.append(length); rows.append(row); length += len(row)
+            raw = b''.join(rows)
+            self.assertIsNone(a.png(scan_png(5,5,raw,color,depth,1), [0,0,5,5], (5,5)))
+            for offset in offsets:
+                bad = raw[:offset] + b'\5' + raw[offset+1:]
+                with self.assertRaises(ValueError): a.png(scan_png(5,5,bad,color,depth,1), [0,0,5,5], (5,5))
     def test_source_resolution(self):
         for data, expected in ((b'a'*31,'ok'),(b'a'*32,'placeholder'),(b'A'*32,'placeholder'),(b'a'*33,'ok'),(b'a'*31+b'\n','ok'),(b' '*32,'ok'),(b'g'*32,'ok'),(b'a'*32+b'\n','ok'),(b' '+b'a'*32,'ok'),(b'\xff'*32,'ok'),(b'abc','ok'),(b'0123456789abcdefABCDEF0123456789','placeholder')):
             put(self.tok, data); self.assets = self.new(); self.assertEqual(self.assets.source(self.row)['status'], expected)

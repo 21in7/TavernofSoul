@@ -245,15 +245,21 @@ def png(data, bbox, size):
     scans = [((width - x + dx - 1) // dx, (height - y + dy - 1) // dy) for x, y, dx, dy in passes if width > x and height > y]
     expected = sum(((w * bits + 7) // 8 + 1) * h for w, h in scans)
     packed = b''.join(compressed); decoder = zlib.decompressobj()
-    raw = decoder.decompress(packed, expected + 1)
-    if len(raw) != expected or decoder.unconsumed_tail or decoder.unused_data or zlib.decompress(packed) != raw:
+    # Python 2.7 has no decoder.eof: an unused sentinel proves stream completion.
+    raw = decoder.decompress(packed + b'\0', expected + 1)
+    if len(raw) != expected or decoder.unconsumed_tail or decoder.unused_data != b'\0':
         raise ValueError('invalid PNG image data')
-    raw, pos, stride = bytearray(raw), 0, max(1, (bits + 7) // 8)
+    pos, stride = 0, max(1, (bits + 7) // 8)
     for w, h in scans:
-        length, prior = (w * bits + 7) // 8, [0] * ((w * bits + 7) // 8)
+        length = (w * bits + 7) // 8
+        prior = [0] * length if color == 3 else None
         for unused in range(h):
-            filter_type = raw[pos]; line = raw[pos + 1:pos + length + 1]; pos += length + 1
+            filter_type = ord(raw[pos:pos + 1])
             if filter_type > 4: raise ValueError('invalid PNG filter')
+            if color != 3:
+                pos += length + 1
+                continue
+            line = bytearray(raw[pos + 1:pos + length + 1]); pos += length + 1
             for i in range(length):
                 a, b, c = (line[i - stride] if i >= stride else 0), prior[i], (prior[i - stride] if i >= stride else 0)
                 p = a + b - c; distances = (abs(p - a), abs(p - b), abs(p - c))
