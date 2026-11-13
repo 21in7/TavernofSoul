@@ -183,7 +183,7 @@ inflight 또는 불명 dispatch가 있으면 거절한다. 다른 과거 요청�
 아니며 모든 historical transport/attempt bytes를 보존한다. receipt/head.json을 새 journal hash로 고치거나
 삭제하지 않는다. external checkpoint가 있으면 native request/accept/resume/cleanup와 parent next/accept를 차단한다.
 
-awaiting_ci에서는 승인 PR/head를 대조하고 현재 pending write/request, incomplete begin receipt,
+awaiting_ci는 pr·head_checks·merge_checks·statuses·final_pr·merge 단계를 허용하며, 승인 PR/head를 대조하고 현재 pending write/request, incomplete begin receipt,
 inflight/unknown dispatch 또는 완료 receipt로 설명되지 않는 parent attempt가 있으면 거절한다.
 최신 receipt와 현재 journal의 일치도 최초 진입 때 확인한다. 완료된 과거 receipt의 nonzero exit가
 awaiting_ci 종료를 나타낼 수 있으며 이를 새 pending write로 간주하지 않는다. merge 요청을 만들거나

@@ -926,6 +926,73 @@ def test_proof_build_real_complete_gets_native_roundtrip(native_proof_input):
     assert retained_files(item) == before
 
 
+@pytest.mark.parametrize('status,request_id,write,merged,checks,error', [
+    ('awaiting_ci', None, False, False, True, None),
+    ('awaiting_ci', None, None, False, True, None),
+    ('awaiting_ci', None, False, False, False, 'external_checks_required'),
+    ('awaiting_connector', REQUEST, True, False, False, None),
+    ('awaiting_ci', REQUEST, True, False, True, 'external_pending_merge_required'),
+    ('awaiting_ci', REQUEST, False, False, True, 'external_pending_merge_required'),
+    ('awaiting_ci', None, True, False, True, 'external_pending_merge_required'),
+    ('awaiting_ci', None, 0, False, True, 'external_pending_merge_required'),
+    ('awaiting_connector', REQUEST, False, False, True, 'external_pending_merge_required'),
+    ('awaiting_connector', REQUEST, 1, False, True, 'external_pending_merge_required'),
+    ('awaiting_connector', None, True, False, True, 'external_pending_merge_required'),
+    ('awaiting_connector', 'invalid', True, False, True, 'external_pending_merge_required'),
+    ('awaiting_ci', None, False, True, True, 'external_pending_merge_required'),
+    ('awaiting_connector', REQUEST, True, True, True, 'external_pending_merge_required')])
+def test_external_merge_admission_at_merge(native_proof_input, monkeypatch,
+        status, request_id, write, merged, checks, error):
+    item = native_proof_input
+    directory, ledger = item['directory'], item['ledger']
+    ledger.update(status=status, step='merge', pending_request_id=request_id, pending_write=write)
+    if merged:
+        ledger['merge_sha'] = MERGE
+    native.save(directory, ledger)
+    arguments = {'pr_number': 11}
+    for key, value in [('proof', item['proof']), ('checks', checks_for(item['proof']))]:
+        path = directory / ('synthetic-' + key + '.json')
+        durable(path, value)
+        if key == 'proof' or checks:
+            arguments[key + '_file'] = str(path)
+            arguments['sha256' if key == 'proof' else 'checks_sha256'] = transport.digest(path.read_bytes())
+    # Synthetic receipt and local cleanup seams; admission and both proof gates stay real.
+    request = None if request_id is None else {'request_id': request_id, 'tool': native.TOOLS['merge_pull_request'],
+        'arguments': {'repository_full_name': ledger['config']['repository'], 'pr_number': 11,
+                      'expected_head_sha': HEAD, 'merge_method': 'squash'}}
+    monkeypatch.setattr(parent, 'evidence', lambda *args: (
+        ({'native_exit_code': 0}, None, {'request': request, 'github': {'status': status}}), {}))
+    monkeypatch.setattr(parent.git_cleanup, 'Git', lambda *args: SimpleNamespace(ref=lambda ref: MERGE))
+    for name in ('synced_checkout', 'verify_park'):
+        monkeypatch.setattr(parent.ExternalMerge, name, lambda *args, **kwargs: None)
+    cleaned = []
+
+    def cleanup(*args, **kwargs):
+        def run():
+            cleaned.append(True)
+            return dict(version='cleanup-v1', status='complete',
+                        **{key: {} for key in ('remote', 'prune', 'sync', 'local', 'completion')})
+        return SimpleNamespace(state={}, run_external=run)
+
+    monkeypatch.setattr(parent.git_cleanup, 'Cleanup', cleanup)
+    monkeypatch.setattr(parent.ExternalMerge, 'archive_phase', lambda self, *args:
+        self.result.update(status='verified', code='synthetic_cleanup_complete'))
+    before = retained_files(item)
+    inputs = {path: path.read_bytes() for path in directory.glob('synthetic-*.json')}
+    result = parent.execute('agent-git-external-merge', directory.name, **arguments)
+    if error:
+        assert result['code'] == error and not result['executed'] and not cleaned
+        assert retained_files(item) == before
+        assert all(path.read_bytes() == raw for path, raw in inputs.items())
+        assert not (directory / 'external-merge.json').exists()
+    else:
+        assert result['status'] == 'verified' and result['code'] == 'synthetic_cleanup_complete'
+        assert cleaned == [True] and result['side_effects']['cleanup_invoked']
+        state = json.loads((directory / 'external-merge.json').read_text())
+        assert state['discard']['status'] == ('no_request' if request_id is None else 'unsent_discarded')
+        assert 'cleanup' in result['completed_stages']
+
+
 @pytest.mark.parametrize('fault', ['missing_page', 'head', 'url'])
 def test_proof_build_and_both_native_gates_reject_head_collection(native_proof_input, fault):
     item = native_proof_input
