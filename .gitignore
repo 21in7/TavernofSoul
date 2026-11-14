@@ -75,3 +75,4 @@ venv/
 
 # Claude Code generates SDK typings when loading the compaction function module.
 /harness/compaction/.claude-plugin/types/
+parser_tidy/.map_assets/

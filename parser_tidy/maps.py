@@ -16,6 +16,7 @@ from ipfparser.contracts import canonical_item_id
 import luautil
 
 import  imageutil
+import map_assets
 
 MAP_SCALE = 0.5
 
@@ -94,22 +95,40 @@ def parse_maps_images(constants):
     log = logging.getLogger("parse.items")
     log.setLevel("INFO")
 
-    ies_path = os.path.join(constants.PATH_INPUT_DATA, 'ies.ipf', 'map.ies')
-    ies_path = constants.file_dict['map.ies']['path']
-    rows = []
-    with open(ies_path, 'r', encoding = 'utf-8') as ies_file:
-        for row in csv.DictReader(ies_file, delimiter=',', quotechar='"'):
-            rows.append(row)
-            image_path = os.path.join(constants.PATH_BUILD_ASSETS_IMAGES_MAPS, row['ClassName'].lower() + '.png')
+    polygon_counts, png_counts = map_assets.counters(), map_assets.counters()
+    try:
+        assets = map_assets.Assets(constants)
+        rows = map_assets.rows(constants)
+    except Exception as exc:
+        polygon_counts['errors'] += 1
+        png_counts['errors'] += 1
+        logging.warning('Map image stage: %s', exc)
+        rows = []
+    for row in rows:
+        outcome = map_assets.counters()
+        polygon_recorded = False
+        try:
+            image_path = os.path.join(constants.PATH_BUILD_ASSETS_IMAGES_MAPS, map_assets.name(row) + '.png')
             map = constants.data['maps_by_name'][row['ClassName']]
-            if (exists(image_path) and map['bbox'] != [0,0,0,0]):
-                continue
-            polygons = constants.importJSON(os.path.join('maps_poly',row['ClassName'].lower()+'poly.json'))
-            if polygons == {}:
+            polygons, polygon_data, source = assets.polygon(row, outcome)
+            for kind in map_assets.COUNTERS:
+                polygon_counts[kind] += outcome[kind]
+            polygon_recorded = True
+            if polygons is None:
                 continue
             # Scale map to save some space
-            image_height = int(round(int(row['Height']) * MAP_SCALE))
-            image_width = int(round(int(row['Width']) * MAP_SCALE))
+            image_height = int(round(float(row['Height']) * MAP_SCALE))
+            image_width = int(round(float(row['Width']) * MAP_SCALE))
+            key = map_assets.image_key(row, polygon_data, source, MAP_SCALE)
+            metadata = assets.paths(row, '.png')[1]
+            bbox = map_assets.image_cached(image_path, metadata, key, (image_width, image_height), outcome)
+            if bbox is None and not os.path.lexists(metadata):
+                bbox = map_assets.adopt_image(row, polygon_data, source, MAP_SCALE,
+                                              image_path, metadata, outcome, map.get('bbox'))
+            if bbox is not None:
+                map['bbox'] = bbox
+                constants.data['maps'][map['$ID']] = map
+                continue
 
             offset_x = image_width / 2.0
             offset_y = image_height / 2.0
@@ -130,17 +149,26 @@ def parse_maps_images(constants):
             image = Image.composite(image, image_shadow, image_shadow)
             bbox,image= trim(image)
             log.info("map : {} bbox : {}".format(row['ClassName'], bbox))
-            # Save image to disk
+            # Publish only validated PNG and matching regional metadata.
             try:
-                os.mkdir(constants.PATH_BUILD_ASSETS_IMAGES_MAPS)
-            except:
-                pass
-            image.save(image_path, optimize=True)
-            image.close()
-            image_shadow.close()
+                map_assets.save_image(image, bbox, image_path, metadata, key, (image_width, image_height), outcome)
+            finally:
+                image.close()
+                image_shadow.close()
             
             map['bbox'] = bbox
             constants.data['maps'][map['$ID']] = map
+        except Exception as exc:
+            if not polygon_recorded:
+                polygon_counts['errors'] += 1
+            outcome = map_assets.counters()
+            outcome['errors'] = 1
+            logging.warning('Map image %s: %s', row.get('ClassName'), exc)
+        finally:
+            for kind in map_assets.COUNTERS:
+                png_counts[kind] += outcome[kind]
+    map_assets.summary('polygon', polygon_counts)
+    map_assets.summary('PNG', png_counts)
 
 
 def parse_links(c = None):
