@@ -50,6 +50,49 @@ class Shared(unittest.TestCase):
         put(self.seed, DATA, 0o444); counts = a.counters() if counts is None else counts
         value, data, source = self.assets.polygon(self.row, counts); self.assertEqual(value, POLY); self.assertEqual(source['provenance'],dict(origin='seed',verified=True,path=self.seed,sha256=a.digest(DATA))); return a.image_key(self.row, data, source, 0.5)
     def clean_temps(self): self.assertEqual(glob.glob(os.path.dirname(self.image) + '/.map-*'), [])
+    def test_published_image_readonly(self):
+        key = self.seed_key(); key['source']['region'] = a.PUBLISH_REGION
+        meta = os.path.join(self.root, '.map_assets', a.PUBLISH_REGION, 'map.png.meta.json')
+        data = png(); value = a._image_meta(key, [0,0,4,2], data)
+        put(self.image, data); put(meta, a.encoded(value))
+        before = {p:state(p) for p in (self.image, meta, self.seed)}
+        with patch(a, '_publish', fail), patch(a, 'Assets', fail), patch(a, '_verify_key', fail):
+            counts = a.counters()
+            self.assertEqual(a.published_image(self.row, 0.5, self.image, counts), [0,0,4,2])
+            self.assertEqual(counts, dict((k,int(k=='reused')) for k in a.COUNTERS))
+        self.assertEqual(before, {p:state(p) for p in before})
+        self.assertFalse(os.path.exists(os.path.join(self.root, '.map_assets', 'itos')))
+        self.assertFalse(os.path.exists(os.path.join(self.root, '.map_assets', 'jtos')))
+        # Adopted seed and cache publications both work without source file access.
+        for origin in ('seed', 'cache'):
+            if origin == 'seed': value = a._image_meta(key, [0,0,4,2], data, True)
+            else:
+                key['source']['provenance'] = dict(origin='cache',verified=True,sha256=key['polygon'],
+                    key=dict(version=a.POLYGON_VERSION,source=dict(region=a.PUBLISH_REGION)),path='/absent.tok')
+                value = a._image_meta(key, [0,0,4,2], data)
+            put(meta, a.encoded(value)); saved = state(meta)
+            self.assertEqual(a.published_image(self.row, 0.5, self.image, a.counters()), [0,0,4,2])
+            self.assertEqual(state(meta), saved)
+    def test_published_image_missing_preserves_files(self):
+        key = self.seed_key(); key['source']['region'] = a.PUBLISH_REGION
+        meta = os.path.join(self.root, '.map_assets', a.PUBLISH_REGION, 'map.png.meta.json')
+        data = png(); value = a._image_meta(key, [0,0,4,2], data); put(self.image, data)
+        for field, bad in (('png','0'*64),('binding','0'*64),('bbox',[0,0,0,0])):
+            broken = dict(value); broken[field] = bad; put(meta, a.encoded(broken))
+            before = (state(self.image), state(meta)); counts = a.counters()
+            self.assertIsNone(a.published_image(self.row, 0.5, self.image, counts))
+            self.assertEqual(counts,dict((k,int(k=='missing')) for k in a.COUNTERS))
+            self.assertEqual(before,(state(self.image),state(meta)))
+        for field, bad in (('width',9.2),('version',99),('scale',1)):
+            broken = dict(key); broken[field] = bad
+            put(meta, a.encoded(a._image_meta(broken,[0,0,4,2],data)))
+            self.assertIsNone(a.published_image(self.row,0.5,self.image,a.counters()))
+        key['source']['region'] = 'itos'; put(meta,a.encoded(a._image_meta(key,[0,0,4,2],data)))
+        self.assertIsNone(a.published_image(self.row,0.5,self.image,a.counters()))
+        put(meta,b'{'); self.assertIsNone(a.published_image(self.row,0.5,self.image,a.counters()))
+        os.unlink(meta); before = state(self.image)
+        self.assertIsNone(a.published_image(self.row,0.5,self.image,a.counters()))
+        self.assertEqual(state(self.image),before); self.assertFalse(os.path.exists(meta))
     def test_png_rgba_filters_lengths_and_crc(self):
         self.assertIsNone(a.png(png(), [0,0,4,2], (4,2)))
         row = b'\0' + b'\xff'*8

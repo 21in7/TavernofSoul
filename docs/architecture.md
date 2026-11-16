@@ -962,6 +962,15 @@ importer 실패 시 DB·이전 비교 기준·버전 복원과 재시도를 검�
 `map_image.py`(Python 2.7)는 `map_assets`를 통해 TOK를 폴리곤으로 변환하고, `maps.py`(Python 3.8)는 검증된 폴리곤으로 PNG를 생성한다.
 PR 1b의 단위 테스트에 이어 Git clean 통합 회귀는 바로 다음 PR 2b에서 추가하며, TOK 추출 활성화는 PR 3에서 다룬다.
 
+게시 지역 상수 `map_assets.PUBLISH_REGION`은 `ktos`이며 이 지역의 기존 변환·승계·렌더 경로를 유지한다.
+그 밖의 지역(itos·jtos 포함)은 `map_image.py`에서 TOK 변환 없이 0 카운터 요약만 출력한다.
+`maps.py`는 지역 폴리곤 선택·승계·렌더 없이 ktos의 PNG 메타데이터를 읽고 PNG 해시·binding·출처·버전·bbox·크기를 검증한다.
+자기 지역 map 행의 Width/Height와 배율로 계산한 전체 크기가 게시 정보와 같을 때만 bbox를 반영하고 PNG `reused`로 센다.
+소비자는 현재 TOK/시드 파일의 freshness를 조회하지 않고 게시된 스냅샷을 검증한다. 유효 결과가 없으면 PNG·이전 bbox를 보존하고 PNG `missing`으로 센다.
+소비 지역은 공유 PNG·ktos 캐시/메타데이터·자기 지역 `.map_assets`에 쓰지 않으며 폴리곤 요약은 모두 0이다.
+소비 지역은 자기 지역의 다음 parser 실행 때 게시 지역 bbox를 반영하며 그 지연을 허용한다. cron/main의 게시 세대 연동·자동 재실행·배경 없음 UI는 추가하지 않는다.
+cache 출처의 기존 PNG 승계는 확대하지 않으며 전체 재렌더는 bg 전체 재추출 운영 작업에서 수동 1회 수행한다.
+
 추적되는 `parser_tidy/maps_poly`는 읽기 전용 시드이며 새 결과는 지역별
 `parser_tidy/.map_assets/<region>`에 둔다. 루트 `.gitignore`가 캐시를 제외하며, 검증된 캐시 → 읽기 전용 시드 → 없음 순으로 조회한다.
 캐시 경로는 해당 지역 루트 안으로 제한하고 시드에는 쓰지 않는다. placeholder는 정확히 32바이트의 ASCII 16진수이며
