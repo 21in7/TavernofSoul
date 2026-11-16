@@ -38,6 +38,8 @@ def parse_maps_images(c):
     logging.debug('Parsing Maps images...')
     counts = map_assets.counters()
     try:
+        if c.region != map_assets.PUBLISH_REGION:
+            return
         assets = map_assets.Assets(c)
         for row in map_assets.rows(c):
             try:

@@ -97,7 +97,8 @@ def parse_maps_images(constants):
 
     polygon_counts, png_counts = map_assets.counters(), map_assets.counters()
     try:
-        assets = map_assets.Assets(constants)
+        publisher = constants.region == map_assets.PUBLISH_REGION
+        assets = map_assets.Assets(constants) if publisher else None
         rows = map_assets.rows(constants)
     except Exception as exc:
         polygon_counts['errors'] += 1
@@ -110,6 +111,13 @@ def parse_maps_images(constants):
         try:
             image_path = os.path.join(constants.PATH_BUILD_ASSETS_IMAGES_MAPS, map_assets.name(row) + '.png')
             map = constants.data['maps_by_name'][row['ClassName']]
+            if not publisher:
+                polygon_recorded = True
+                bbox = map_assets.published_image(row, MAP_SCALE, image_path, outcome)
+                if bbox is not None:
+                    map['bbox'] = bbox
+                    constants.data['maps'][map['$ID']] = map
+                continue
             polygons, polygon_data, source = assets.polygon(row, outcome)
             for kind in map_assets.COUNTERS:
                 polygon_counts[kind] += outcome[kind]

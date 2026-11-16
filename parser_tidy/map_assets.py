@@ -3,6 +3,7 @@
 import csv, errno, hashlib, io, json, logging, math, os, re, stat, struct, sys, tempfile, zlib
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 POLYGON_VERSION = RENDER_VERSION = 1
+PUBLISH_REGION = 'ktos'
 COUNTERS = ('generated', 'reused', 'adopted', 'placeholder', 'missing', 'errors')
 _SEEDS = [os.path.join(SCRIPT_DIR, 'maps_poly')]
 NUMBERS = (int, float) if sys.version_info[0] == 3 else (int, long, float)
@@ -313,6 +314,43 @@ def image_cached(path, metadata, key, size, counts=None):
     except Exception as exc:
         if not _absent(exc) and not isinstance(exc, _Stale): _log(exc)
         return None
+def published_image(row, scale, path, counts):
+    """Read the publisher snapshot without opening TOK/seed or writing any cache."""
+    try:
+        root = os.path.join(SCRIPT_DIR, '.map_assets', PUBLISH_REGION)
+        metadata = os.path.join(root, name(row) + '.png.meta.json')
+        if not _inside(metadata, root) or os.path.islink(metadata) or os.path.islink(path):
+            raise ValueError('unsafe published image path')
+        value = json.loads(read(metadata).decode('utf-8')); data = read(path)
+        key = value['key']; provenance = key['source']['provenance']
+        fields = set(('key', 'bbox', 'png', 'binding'))
+        if value.get('adopted') is True:
+            fields.update(('adopted', 'seed'))
+            if provenance['origin'] != 'seed' or value['seed'] != key['polygon']:
+                raise ValueError('invalid adopted publisher image')
+        if (set(value) != fields or not _hash(value['png']) or value['png'] != digest(data) or
+                value['binding'] != digest(encoded([key, value['bbox'], value['png']]))):
+            raise ValueError('invalid publisher binding')
+        if (key['source']['region'] != PUBLISH_REGION or key['version'] != RENDER_VERSION or
+                provenance.get('verified') is not True or provenance.get('origin') not in ('seed', 'cache') or
+                not _hash(key['polygon']) or provenance.get('sha256') != key['polygon']):
+            raise ValueError('invalid publisher provenance')
+        if provenance['origin'] == 'cache' and (provenance['key']['version'] != POLYGON_VERSION or
+                provenance['key']['source']['region'] != PUBLISH_REGION):
+            raise ValueError('invalid publisher polygon key')
+        dimensions = [float(row['Width']), float(row['Height']), float(scale), key['width'], key['height'], key['scale']]
+        if any(isinstance(n, bool) or not isinstance(n, NUMBERS) or not 0 < n < float('inf') for n in dimensions):
+            raise ValueError('invalid publisher dimensions')
+        size = tuple(int(round(n * float(scale))) for n in dimensions[:2])
+        if key['scale'] != float(scale) or _size(key) != size: raise ValueError('publisher size differs')
+        png(data, value['bbox'], size)
+        counts['reused'] += 1
+        return value['bbox']
+    except Exception as exc:
+        if not _absent(exc): _log(exc)
+        counts['missing'] += 1
+        return None
+
 def adopt_image(row, data, provenance, scale, path, metadata, counts, bbox):
     """Return supplied bbox or None. Adoption certifies current checks, not history."""
     try:
